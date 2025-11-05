@@ -28,9 +28,26 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // QUIC varint encoding (RFC 9000 §16)
+    const byteorder_mod = b.addModule("byteorder", .{
+        .root_source_file = b.path("src/byteorder.zig"),
+        .target = target,
+    });
+
+    const varint_mod = b.addModule("varint", .{
+        .root_source_file = b.path("src/varint.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "byteorder", .module = byteorder_mod },
+        },
+    });
+
     const transport_params_mod = b.addModule("quic_transport_params", .{
         .root_source_file = b.path("src/quic_transport_params.zig"),
         .target = target,
+        .imports = &.{
+            .{ .name = "varint", .module = varint_mod },
+        },
     });
 
     const sig_mod = b.addModule("sig", .{
