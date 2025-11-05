@@ -1,0 +1,39 @@
+*cweb.log
+*.tmp
+core
+
+dist/
+result
+
+# But preserve important cmd files
+!cmd/
+
+clients/rust/target/
+test-clients/quinn-client/target/
+test-clients/quinn-client/target/
+test_clients/rust/target/release/
+test_clients/rust/target/release/
+
+
+.direnv/
+.zig-cache/
+zig-out/
+
+.vscode/
+.rightnow/
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, build with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# ignore mac files
+.DS_Store

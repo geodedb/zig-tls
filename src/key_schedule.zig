@@ -16,7 +16,7 @@ pub const H = std.crypto.hash.sha2.Sha256; // 32-byte digest
 const Hmac = std.crypto.auth.hmac.Hmac;
 const Hkdf = std.crypto.kdf.hkdf.Hkdf;
 const HmacSha256 = Hmac(H);
-const HkdfSha256 = Hkdf(HmacSha256);
+pub const HkdfSha256 = Hkdf(HmacSha256);
 
 /// QUIC v1 Initial Salt (RFC 9001 §5.2, Appendix A.1 vectors use this)
 /// 38762cf7f55934b34d179ae6a4c80cadccbb7f0a
