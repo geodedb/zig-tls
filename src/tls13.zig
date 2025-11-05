@@ -2380,6 +2380,10 @@ pub const Engine = struct {
     ee_sent: bool = false,
     /// Whether the server has already staged its complete handshake flight in the outbox
     server_handshake_flight_enqueued: bool = false,
+    /// Cached intermediate handshake_secret (used to derive master_secret). Cached to avoid recomputing from ECDHE.
+    /// RFC 8446 §7.1: handshake_secret = HKDF-Extract(Derive-Secret(early_secret, "derived", ""), ECDHE)
+    /// This prevents bugs from ECDHE buffer corruption/reuse when deriving application secrets.
+    handshake_secret: ?[H.digest_length]u8 = null,
     /// Stored handshake traffic secrets (derived immediately after SH) for correct Finished verification
     handshake_client_secret: ?[H.digest_length]u8 = null,
     handshake_server_secret: ?[H.digest_length]u8 = null,
@@ -2412,7 +2416,7 @@ pub const Engine = struct {
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .server_handshake_flight_enqueued = false, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .cached_app_client = null, .cached_app_server = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
+        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .server_handshake_flight_enqueued = false, .handshake_secret = null, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .cached_app_client = null, .cached_app_server = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
@@ -2592,6 +2596,7 @@ pub const Engine = struct {
                     const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_hash);
                     std.debug.print("onCryptoRecv: Derived client_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ hs.client_hs[0], hs.client_hs[1], hs.client_hs[2], hs.client_hs[3] });
                     std.debug.print("onCryptoRecv: Derived server_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ hs.server_hs[0], hs.server_hs[1], hs.server_hs[2], hs.server_hs[3] });
+                    self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
                     self.handshake_client_secret = hs.client_hs;
                     self.handshake_server_secret = hs.server_hs;
                     // FIX: Removed premature computeApplicationSecrets() call
@@ -2874,6 +2879,7 @@ pub const Engine = struct {
                         std.debug.print("TLS: Using fallback for Finished verification\n", .{});
                         // Fallback (should not happen in real mode past this point)
                         const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_before);
+                        self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
                         break :blk switch (self.role) {
                             .Client => self.verifyPeerFinished(hs.server_hs, p.body),
                             .Server => self.verifyPeerFinished(hs.client_hs, p.body),
@@ -3009,6 +3015,7 @@ pub const Engine = struct {
         if (ch_sh_ready) {
             const th = self.transcript.finalize();
             const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
+            self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;
             // REMOVED: Do NOT compute application secrets here - we only have CH+SH,
@@ -3370,6 +3377,7 @@ pub const Engine = struct {
         std.debug.print("computeHandshakeSecrets: client_hs first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ hs.client_hs[0], hs.client_hs[1], hs.client_hs[2], hs.client_hs[3] });
         std.debug.print("computeHandshakeSecrets: server_hs first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ hs.server_hs[0], hs.server_hs[1], hs.server_hs[2], hs.server_hs[3] });
         // Store the secrets in the engine for later use
+        self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
         self.handshake_client_secret = hs.client_hs;
         self.handshake_server_secret = hs.server_hs;
         return .{ .client = hs.client_hs, .server = hs.server_hs };
@@ -3414,25 +3422,11 @@ pub const Engine = struct {
         std.debug.print("\n", .{});
         std.debug.print("Transcript hash length: {} bytes\n", .{th.len});
 
-        // Recompute master_secret path locally to retain master
-        const early_secret = ks.extract(&[_]u8{}, &[_]u8{});
-        std.debug.print("DERIVATION: early_secret (first 16): ", .{});
-        for (early_secret[0..16]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-
-        var derived: [H.digest_length]u8 = undefined;
-        ks.expandLabel(early_secret, "derived", &[_]u8{}, &derived) catch return null;
-        std.debug.print("DERIVATION: derived1 (first 16): ", .{});
-        for (derived[0..16]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-
-        std.debug.print("DERIVATION: ECDHE secret (first 16): ", .{});
-        for (self.ecdhe_secret.?[0..16]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-
-        const handshake_secret = ks.extract(&derived, self.ecdhe_secret.?);
-        std.debug.print("DERIVATION: handshake_secret (first 16): ", .{});
-        for (handshake_secret[0..16]) |b| std.debug.print("{X:0>2} ", .{b});
+        // Use cached handshake_secret instead of recomputing from ECDHE
+        // This prevents bugs from ECDHE buffer corruption/reuse
+        const handshake_secret = self.handshake_secret orelse return null;
+        std.debug.print("DERIVATION: Using cached handshake_secret (FULL 32 bytes): ", .{});
+        for (handshake_secret) |b| std.debug.print("{X:0>2} ", .{b});
         std.debug.print("\n", .{});
 
         var derived2: [H.digest_length]u8 = undefined;
@@ -3578,6 +3572,7 @@ pub const Engine = struct {
             const th = snap.finalize();
             std.debug.print("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7] });
             const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
+            self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;
             // NOTE: Do NOT derive Application secrets here! They must be derived after Finished is added to transcript
