@@ -95,17 +95,18 @@ const EVP_CTRL_GCM_SET_TAG = 0x11;
 // Test Utilities
 // ============================================================================
 
-fn hexToBytes(comptime hex: []const u8, out: []u8) void {
+fn hexToBytes(hex: []const u8, out: []u8) void {
     var i: usize = 0;
     while (i < hex.len) : (i += 2) {
         out[i / 2] = std.fmt.parseInt(u8, hex[i .. i + 2], 16) catch unreachable;
     }
 }
 
-fn expectEqualHex(comptime hex: []const u8, actual: []const u8) !void {
-    var expected: [hex.len / 2]u8 = undefined;
-    hexToBytes(hex, &expected);
-    try testing.expectEqualSlices(u8, &expected, actual);
+fn expectEqualHex(hex: []const u8, actual: []const u8) !void {
+    const expected = try std.testing.allocator.alloc(u8, hex.len / 2);
+    defer std.testing.allocator.free(expected);
+    hexToBytes(hex, expected);
+    try testing.expectEqualSlices(u8, expected, actual);
 }
 
 // ============================================================================
@@ -216,13 +217,22 @@ test "Client initial secret derivation parity" {
     var initial_secret: [32]u8 = undefined;
     hexToBytes(initial_secret_hex, &initial_secret);
 
-    const label = "tls13 client in";
-
-    // Our implementation
+    // Our implementation using HKDF-Expand-Label (RFC 8446 §7.1)
     var our_client_secret: [32]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&our_client_secret, label, initial_secret);
+    try key_schedule.expandLabel(initial_secret, "client in", "", &our_client_secret);
 
-    // BoringSSL implementation
+    // Construct HkdfLabel for BoringSSL comparison
+    // HkdfLabel structure: length (2) + label_len (1) + label + context_len (1) + context
+    const label = "client in";
+    const full_label = "tls13 " ++ label;
+    var hkdf_label: [2 + 1 + full_label.len + 1]u8 = undefined;
+    hkdf_label[0] = 0x00; // length high byte
+    hkdf_label[1] = 0x20; // length low byte (32 bytes)
+    hkdf_label[2] = full_label.len;
+    @memcpy(hkdf_label[3..3+full_label.len], full_label);
+    hkdf_label[3 + full_label.len] = 0; // context length (empty)
+
+    // BoringSSL implementation with proper HkdfLabel
     var ssl_client_secret: [32]u8 = undefined;
     const result = HKDF_expand(
         &ssl_client_secret,
@@ -230,8 +240,8 @@ test "Client initial secret derivation parity" {
         EVP_sha256(),
         &initial_secret,
         initial_secret.len,
-        label.ptr,
-        label.len,
+        &hkdf_label,
+        hkdf_label.len,
     );
 
     try testing.expectEqual(@as(c_int, 1), result);
@@ -249,13 +259,22 @@ test "Server initial secret derivation parity" {
     var initial_secret: [32]u8 = undefined;
     hexToBytes(initial_secret_hex, &initial_secret);
 
-    const label = "tls13 server in";
-
-    // Our implementation
+    // Our implementation using HKDF-Expand-Label (RFC 8446 §7.1)
     var our_server_secret: [32]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&our_server_secret, label, initial_secret);
+    try key_schedule.expandLabel(initial_secret, "server in", "", &our_server_secret);
 
-    // BoringSSL implementation
+    // Construct HkdfLabel for BoringSSL comparison
+    // HkdfLabel structure: length (2) + label_len (1) + label + context_len (1) + context
+    const label = "server in";
+    const full_label = "tls13 " ++ label;
+    var hkdf_label: [2 + 1 + full_label.len + 1]u8 = undefined;
+    hkdf_label[0] = 0x00; // length high byte
+    hkdf_label[1] = 0x20; // length low byte (32 bytes)
+    hkdf_label[2] = full_label.len;
+    @memcpy(hkdf_label[3..3+full_label.len], full_label);
+    hkdf_label[3 + full_label.len] = 0; // context length (empty)
+
+    // BoringSSL implementation with proper HkdfLabel
     var ssl_server_secret: [32]u8 = undefined;
     const result = HKDF_expand(
         &ssl_server_secret,
@@ -263,8 +282,8 @@ test "Server initial secret derivation parity" {
         EVP_sha256(),
         &initial_secret,
         initial_secret.len,
-        label.ptr,
-        label.len,
+        &hkdf_label,
+        hkdf_label.len,
     );
 
     try testing.expectEqual(@as(c_int, 1), result);
