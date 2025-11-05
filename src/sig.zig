@@ -1,0 +1,703 @@
+//! Signature parsing and verification helpers for TLS 1.3.
+//!
+//! Implements the signature validation rules from RFC 8446 §4.2.3/§4.4.3 used
+//! during QUIC handshakes, covering ECDSA, RSA-PSS, and Ed25519 variants.
+const std = @import("std");
+const asn1 = @import("asn1");
+
+// Use standard library crypto
+// https://ziglang.org/documentation/master/std/#std.crypto.sign.Ed25519
+const Ed25519 = std.crypto.sign.Ed25519;
+
+/// Supported TLS 1.3 signature algorithms used by this implementation.
+pub const SigAlg = enum { ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, rsa_pss_sha256, ed25519 };
+
+/// Minimal ECDSA public key extracted from SubjectPublicKeyInfo
+pub const EcdsaSpki = struct {
+    curve_p256: bool, // true for P-256, false for P-384
+    /// SEC1 uncompressed point (0x04 || X || Y)
+    sec1_uncompressed: []const u8,
+    allocator: std.mem.Allocator,
+    /// Free allocated buffers and invalidate the struct.
+    pub fn deinit(self: *EcdsaSpki) void {
+        self.allocator.free(self.sec1_uncompressed);
+        self.* = undefined;
+    }
+};
+
+/// Minimal RSA public key extracted from SubjectPublicKeyInfo
+pub const RsaSpki = struct {
+    modulus: []const u8, // big-endian
+    exponent: u64, // limited to 64-bit for simplicity
+    allocator: std.mem.Allocator,
+    /// Free allocated buffers and invalidate the struct.
+    pub fn deinit(self: *RsaSpki) void {
+        self.allocator.free(self.modulus);
+        self.* = undefined;
+    }
+};
+
+/// Parse a DER-encoded SubjectPublicKeyInfo into ECDSA components.
+pub fn parseEcdsaSpki(spki_der: []const u8, alloc: std.mem.Allocator) !EcdsaSpki {
+    var d = asn1.Decoder.init(spki_der);
+    const seq = try d.readSequence();
+    var s1 = asn1.Decoder.init(seq);
+    const algo_seq = try s1.readSequence();
+    var a1 = asn1.Decoder.init(algo_seq);
+    const algo_oid = try a1.readOID();
+    // id-ecPublicKey: 1.2.840.10045.2.1
+    if (!(algo_oid.len >= 7 and algo_oid[0] == 0x2A and algo_oid[1] == 0x86)) return error.UnexpectedAlgorithm;
+    // Parameters: namedCurve OID
+    const curve_oid = try a1.readOID();
+    var is_p256 = false;
+    // secp256r1: 1.2.840.10045.3.1.7
+    if (curve_oid.len >= 8 and std.mem.eql(u8, curve_oid[curve_oid.len - 8 ..], &[_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07 })) {
+        is_p256 = true;
+    } else {
+        // secp384r1: 1.3.132.0.34
+        if (!(curve_oid.len >= 5 and std.mem.eql(u8, curve_oid[curve_oid.len - 5 ..], &[_]u8{ 0x2B, 0x81, 0x04, 0x00, 0x22 })))
+            return error.UnsupportedCurve;
+    }
+    // subjectPublicKey BIT STRING
+    const bitstr = try s1.readBitString();
+    if (bitstr.len == 0 or bitstr[0] != 0x04) return error.InvalidEcPoint; // require uncompressed
+    const out = try alloc.dupe(u8, bitstr);
+    return .{ .curve_p256 = is_p256, .sec1_uncompressed = out, .allocator = alloc };
+}
+
+/// Parse a DER-encoded SubjectPublicKeyInfo into RSA components.
+pub fn parseRsaSpki(spki_der: []const u8, alloc: std.mem.Allocator) !RsaSpki {
+    var d = asn1.Decoder.init(spki_der);
+    const seq = try d.readSequence();
+    var s1 = asn1.Decoder.init(seq);
+    const algo_seq = try s1.readSequence();
+    var a1 = asn1.Decoder.init(algo_seq);
+    const algo_oid = try a1.readOID();
+    // rsaEncryption: 1.2.840.113549.1.1.1
+    if (!(algo_oid.len >= 9 and std.mem.eql(u8, algo_oid[algo_oid.len - 9 ..], &[_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01 })))
+        return error.UnexpectedAlgorithm;
+    // Optional NULL params may follow; tolerate
+    _ = a1.readTLV() catch null;
+    const bitstr = try s1.readBitString();
+    // Inside is RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }
+    var d2 = asn1.Decoder.init(bitstr);
+    const rsaseq = try d2.readSequence();
+    var r = asn1.Decoder.init(rsaseq);
+    // Read modulus as raw bytes via TLV to preserve leading 0x00
+    const mod_tlv = try r.readTLV();
+    if (asn1.tagClass(mod_tlv.tag) != .universal or asn1.tagNumber(mod_tlv.tag) != 2) return error.UnexpectedTag;
+    const modulus = try alloc.dupe(u8, mod_tlv.val);
+    const e_val = try r.readInteger();
+    return .{ .modulus = modulus, .exponent = e_val, .allocator = alloc };
+}
+
+fn tls13_build_context_and_hash(alg: SigAlg, context: []const u8, th: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    _ = alg; // context depends only on TLS; alg included for future use
+    // Per RFC8446 4.4.3: signed_content = 0x20 * 64 || context || 0x00 || transcript_hash
+    const hash_len: usize = th.len; // sha256 or sha384 length
+    const ctx_len: usize = context.len;
+    var out = try allocator.alloc(u8, 64 + ctx_len + 1 + hash_len);
+    @memset(out[0..64], 0x20);
+    @memcpy(out[64 .. 64 + ctx_len], context);
+    out[64 + ctx_len] = 0x00;
+    @memcpy(out[64 + ctx_len + 1 ..][0..hash_len], th);
+    return out;
+}
+
+fn der_decode_ecdsa_sig(sig_der: []const u8, r_out: []u8, s_out: []u8) !void {
+    // ECDSA-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }
+    var d = asn1.Decoder.init(sig_der);
+    const seq = try d.readSequence();
+    var s1 = asn1.Decoder.init(seq);
+    const r_tlv = try s1.readTLV();
+    const s_tlv = try s1.readTLV();
+    if (asn1.tagClass(r_tlv.tag) != .universal or asn1.tagNumber(r_tlv.tag) != 2) return error.UnexpectedTag;
+    if (asn1.tagClass(s_tlv.tag) != .universal or asn1.tagNumber(s_tlv.tag) != 2) return error.UnexpectedTag;
+    // Copy right aligned into fixed size buffers
+    if (r_tlv.val.len > r_out.len or s_tlv.val.len > s_out.len) return error.InvalidSignature;
+    const r_pad = r_out.len - r_tlv.val.len;
+    const s_pad = s_out.len - s_tlv.val.len;
+    @memset(r_out[0..r_pad], 0);
+    @memcpy(r_out[r_pad..][0..r_tlv.val.len], r_tlv.val);
+    @memset(s_out[0..s_pad], 0);
+    @memcpy(s_out[s_pad..][0..s_tlv.val.len], s_tlv.val);
+}
+
+// ---- RSA-PSS (SHA-256) verification helpers ----
+
+const Sha256 = std.crypto.hash.sha2.Sha256;
+const Sha384 = std.crypto.hash.sha2.Sha384;
+
+fn mgf1_sha256(seed: []const u8, out: []u8) void {
+    var counter: u32 = 0;
+    var off: usize = 0;
+    while (off < out.len) : (counter += 1) {
+        var hasher = Sha256.init(.{});
+        hasher.update(seed);
+        var cbe: [4]u8 = .{ 0, 0, 0, 0 };
+        cbe[0] = @intCast((counter >> 24) & 0xff);
+        cbe[1] = @intCast((counter >> 16) & 0xff);
+        cbe[2] = @intCast((counter >> 8) & 0xff);
+        cbe[3] = @intCast(counter & 0xff);
+        hasher.update(&cbe);
+        var digest: [Sha256.digest_length]u8 = undefined;
+        hasher.final(&digest);
+        const chunk = @min(digest.len, out.len - off);
+        @memcpy(out[off..][0..chunk], digest[0..chunk]);
+        off += chunk;
+    }
+}
+
+// ---- Minimal big unsigned integer (big-endian bytes) helpers ----
+
+fn beTrim(b: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < b.len and b[i] == 0) : (i += 1) {}
+    if (i == b.len) return b[b.len - 1 ..]; // keep single 0
+    return b[i..];
+}
+
+fn beCmp(a_in: []const u8, b_in: []const u8) std.math.Order {
+    const a = beTrim(a_in);
+    const b = beTrim(b_in);
+    if (a.len < b.len) return .lt;
+    if (a.len > b.len) return .gt;
+    for (a, 0..) |av, i| {
+        const bv = b[i];
+        if (av < bv) return .lt;
+        if (av > bv) return .gt;
+    }
+    return .eq;
+}
+
+fn bitLenFromBe(bytes: []const u8) usize {
+    var i: usize = 0;
+    while (i < bytes.len and bytes[i] == 0) : (i += 1) {}
+    if (i == bytes.len) return 0;
+    const first = bytes[i];
+    var leading: u3 = 0;
+    var b = first;
+    while ((b & 0x80) == 0) : (leading += 1) b <<= 1;
+    return (bytes.len - i) * 8 - leading;
+}
+
+fn beSubInPlace(dst: *std.ArrayList(u8), b: []const u8) void {
+    // assumes dst >= b
+    var i: isize = @as(isize, @intCast(dst.items.len)) - 1;
+    var j: isize = @as(isize, @intCast(b.len)) - 1;
+    var borrow: u16 = 0;
+    while (i >= 0) : (i -= 1) {
+        const ui: usize = @as(usize, @intCast(i));
+        const a_byte: u16 = dst.items[ui];
+        const bj_index: usize = if (j >= 0) @as(usize, @intCast(j)) else 0;
+        const b_byte: u16 = if (j >= 0) @as(u16, b[bj_index]) else 0;
+        var val: i32 = @as(i32, @intCast(a_byte)) - @as(i32, @intCast(b_byte)) - @as(i32, @intCast(borrow));
+        if (val < 0) {
+            val += 256;
+            borrow = 1;
+        } else borrow = 0;
+        dst.items[ui] = @intCast(val);
+        j -= 1;
+    }
+    // normalize
+    var k: usize = 0;
+    while (k + 1 < dst.items.len and dst.items[k] == 0) : (k += 1) {}
+    if (k > 0) {
+        // shift left by k bytes
+        std.mem.copyForwards(u8, dst.items[0 .. dst.items.len - k], dst.items[k..]);
+        _ = dst.resize(std.heap.page_allocator, dst.items.len - k) catch {};
+    }
+}
+
+fn beMul(a: []const u8, b: []const u8, alloc: std.mem.Allocator) ![]u8 {
+    const at = beTrim(a);
+    const bt = beTrim(b);
+    const n = at.len;
+    const m = bt.len;
+    if (n == 1 and at[0] == 0) return alloc.dupe(u8, &[_]u8{0});
+    if (m == 1 and bt[0] == 0) return alloc.dupe(u8, &[_]u8{0});
+    var out = try alloc.alloc(u8, n + m);
+    @memset(out, 0);
+    var i: isize = @as(isize, @intCast(n)) - 1;
+    while (i >= 0) : (i -= 1) {
+        var carry: u32 = 0;
+        var j: isize = @as(isize, @intCast(m)) - 1;
+        while (j >= 0) : (j -= 1) {
+            const ai: u32 = at[@as(usize, @intCast(i))];
+            const bj: u32 = bt[@as(usize, @intCast(j))];
+            const idx: usize = @as(usize, @intCast(i + j + 1));
+            const cur: u32 = out[idx];
+            const prod: u32 = ai * bj + cur + carry;
+            out[idx] = @intCast(prod & 0xff);
+            carry = prod >> 8;
+        }
+        // propagate remaining carry to the left
+        var k: isize = i;
+        var c: u32 = carry;
+        while (c > 0 and k >= 0) : (k -= 1) {
+            const idx2: usize = @as(usize, @intCast(k));
+            const sum: u32 = @as(u32, out[idx2]) + (c & 0xff);
+            out[idx2] = @intCast(sum & 0xff);
+            c = sum >> 8;
+        }
+    }
+    // trim
+    var z: usize = 0;
+    while (z + 1 < out.len and out[z] == 0) : (z += 1) {}
+    if (z > 0) {
+        const trimmed = try alloc.alloc(u8, out.len - z);
+        @memcpy(trimmed, out[z..]);
+        alloc.free(out);
+        return trimmed;
+    }
+    return out;
+}
+
+fn modFromBytes(n: []const u8, value: []const u8, alloc: std.mem.Allocator) ![]u8 {
+    var rem = std.ArrayList(u8){};
+    defer rem.deinit(alloc);
+    // start with 0
+    try rem.append(alloc, 0);
+    for (value) |byte| {
+        // rem = rem * 256 + byte
+        try rem.append(alloc, byte);
+        // while rem >= n: rem -= n
+        while (true) {
+            const ord = beCmp(rem.items, n);
+            if (ord == .lt) break;
+            beSubInPlace(&rem, n);
+        }
+    }
+    // ensure canonical single zero if empty
+    if (rem.items.len == 0) try rem.append(alloc, 0);
+    return alloc.dupe(u8, rem.items);
+}
+
+fn modMul(n: []const u8, a: []const u8, b: []const u8, alloc: std.mem.Allocator) ![]u8 {
+    const prod = try beMul(a, b, alloc);
+    defer alloc.free(prod);
+    return modFromBytes(n, prod, alloc);
+}
+
+fn modExpSmallE(n: []const u8, base: []const u8, e: u64, alloc: std.mem.Allocator) ![]u8 {
+    var result = try alloc.dupe(u8, &[_]u8{1});
+    defer alloc.free(result);
+    var base_mod = try modFromBytes(n, base, alloc);
+    defer alloc.free(base_mod);
+
+    var exp = e;
+    while (exp > 0) : (exp >>= 1) {
+        if ((exp & 1) == 1) {
+            const tmp = try modMul(n, result, base_mod, alloc);
+            alloc.free(result);
+            result = tmp;
+        }
+        if (exp > 1) {
+            const sq = try modMul(n, base_mod, base_mod, alloc);
+            alloc.free(base_mod);
+            base_mod = sq;
+        }
+    }
+    return alloc.dupe(u8, result);
+}
+
+fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []const u8, sig: []const u8, salt_len: usize) !bool {
+    // Parse SPKI
+    var spki = try parseRsaSpki(pubkey_spki_der, std.heap.page_allocator);
+    defer spki.deinit();
+    const k: usize = spki.modulus.len; // modulus length in bytes (may include leading 0x00)
+    if (sig.len != k) return false;
+
+    // m = s^e mod n using minimal big integer
+    const m_be = try modExpSmallE(spki.modulus, sig, spki.exponent, std.heap.page_allocator);
+    defer std.heap.page_allocator.free(m_be);
+
+    // EM = I2OSP(m, k)
+    var EM = try std.heap.page_allocator.alloc(u8, k);
+    defer std.heap.page_allocator.free(EM);
+    @memset(EM, 0);
+    const m_trim = beTrim(m_be);
+    if (m_trim.len > k) return false;
+    @memcpy(EM[k - m_trim.len ..], m_trim);
+
+    // EMSA-PSS verify
+    const hLen = Sha256.digest_length;
+    if (k < hLen + salt_len + 2) return false;
+    if (EM[k - 1] != 0xBC) return false;
+
+    const emBits = bitLenFromBe(spki.modulus) - 1; // per spec
+    const maskedDB = EM[0 .. k - hLen - 1];
+    const H = EM[k - hLen - 1 .. k - 1];
+
+    // dbMask = MGF1(H, k - hLen - 1)
+    const dbMask = try std.heap.page_allocator.alloc(u8, maskedDB.len);
+    defer std.heap.page_allocator.free(dbMask);
+    mgf1_sha256(H, dbMask);
+
+    // DB = maskedDB XOR dbMask
+    const DB = try std.heap.page_allocator.alloc(u8, maskedDB.len);
+    defer std.heap.page_allocator.free(DB);
+    for (DB, 0..) |*b, i| b.* = maskedDB[i] ^ dbMask[i];
+
+    // Set leftmost 8*k - emBits bits of DB[0] to zero
+    const left_bits: usize = 8 * k - emBits;
+    if (left_bits > 8) return false; // should be <= 8
+    if (left_bits > 0) {
+        // left_bits in 1..8; mask keeps lower (8 - left_bits) bits
+        const masks = [_]u8{ 0x00, 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01 };
+        const idx = left_bits - 1;
+        const invert: u8 = masks[idx];
+        // We need to zero left_bits MSBs: DB[0] &= invert
+        DB[0] &= invert;
+    }
+
+    // Check PS || 0x01 || salt structure
+    const ps_len = k - hLen - salt_len - 2;
+    if (ps_len > DB.len) return false;
+    // PS must be all zeros
+    if (ps_len == 0) return false;
+    for (DB[0..ps_len]) |b| if (b != 0x00) return false;
+    if (DB[ps_len] != 0x01) return false;
+    const salt = DB[ps_len + 1 .. ps_len + 1 + salt_len];
+
+    // H' = Hash(0x00*8 || Hash(M) || salt) where Hash(M) = sha256(signed_content)
+    var mhash: [Sha256.digest_length]u8 = undefined;
+    {
+        var hh = Sha256.init(.{});
+        hh.update(msg_signed_content);
+        hh.final(&mhash);
+    }
+    var mprime = try std.heap.page_allocator.alloc(u8, 8 + mhash.len + salt_len);
+    defer std.heap.page_allocator.free(mprime);
+    @memset(mprime[0..8], 0);
+    @memcpy(mprime[8 .. 8 + mhash.len], &mhash);
+    @memcpy(mprime[8 + mhash.len ..][0..salt_len], salt);
+
+    var Hp: [Sha256.digest_length]u8 = undefined;
+    var hh2 = Sha256.init(.{});
+    hh2.update(mprime);
+    hh2.final(&Hp);
+
+    return std.mem.eql(u8, H, &Hp);
+}
+
+/// Verify a TLS 1.3 CertificateVerify signature given algorithm, SPKI (DER), signature,
+/// the TLS context string, and transcript hash; returns true on success.
+pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []const u8, context: []const u8, transcript_hash: []const u8) !bool {
+    switch (alg) {
+        .ed25519 => {
+            // Parse Ed25519 public key from SPKI
+            const pubkey_bytes = try parseEd25519Spki(pubkey_spki_der);
+            const pubkey = try Ed25519.PublicKey.fromBytes(pubkey_bytes);
+            // Build TLS 1.3 signed content
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
+            defer std.heap.page_allocator.free(sc);
+            // Verify Ed25519 signature
+            if (sig.len != 64) return false;
+            const signature = Ed25519.Signature.fromBytes(sig[0..64].*);
+            signature.verify(sc, pubkey) catch return false;
+            return true;
+        },
+        .rsa_pss_sha256 => {
+            // Build TLS 1.3 signed content: 64 spaces || context || 0x00 || transcript_hash
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
+            defer std.heap.page_allocator.free(sc);
+            return rsa_pss_verify_sha256(pubkey_spki_der, sc, sig, 32);
+        },
+        .ecdsa_secp256r1_sha256 => {
+            // Parse SPKI and use std.crypto ECDSA (P-256/SHA-256)
+            var spki = try parseEcdsaSpki(pubkey_spki_der, std.heap.page_allocator);
+            defer spki.deinit();
+            if (!spki.curve_p256) return false;
+            const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
+            const signature = Ecdsa.Signature.fromDer(sig) catch return false;
+            const pubkey = Ecdsa.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
+            defer std.heap.page_allocator.free(sc);
+            signature.verify(sc, pubkey) catch return false;
+            return true;
+        },
+        .ecdsa_secp384r1_sha384 => {
+            // Parse SPKI and use std.crypto ECDSA (P-384/SHA-384)
+            var spki = try parseEcdsaSpki(pubkey_spki_der, std.heap.page_allocator);
+            defer spki.deinit();
+            if (spki.curve_p256) return false; // expect P-384
+            const Ecdsa384 = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, Sha384);
+            const signature = Ecdsa384.Signature.fromDer(sig) catch return false;
+            const pubkey = Ecdsa384.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
+            defer std.heap.page_allocator.free(sc);
+            signature.verify(sc, pubkey) catch return false;
+            return true;
+        },
+    }
+}
+
+/// Sign a TLS 1.3 CertificateVerify for given algorithm using a DER private key blob (currently supports raw PKCS#8 EC for P-256 and Ed25519) and transcript hash.
+pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []const u8, transcript_hash: []const u8, alloc: std.mem.Allocator) ![]u8 {
+    switch (alg) {
+        .ed25519 => {
+            // Parse Ed25519 private key from PKCS#8
+            const seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
+            // Use standard library Ed25519 - generate keypair from seed
+            const kp = try Ed25519.KeyPair.generateDeterministic(seed);
+            // Build TLS 1.3 signed content
+            const to_sign = try tls13_build_context_and_hash(alg, context, transcript_hash, alloc);
+            defer alloc.free(to_sign);
+            // Sign the message
+            const sig = try kp.sign(to_sign, null);
+            // Return signature (Ed25519 signatures are always 64 bytes, no DER encoding)
+            const result = try alloc.alloc(u8, 64);
+            @memcpy(result, &sig.toBytes());
+            return result;
+        },
+        .ecdsa_secp256r1_sha256 => {
+            // Preferred: parse PKCS#8 -> ECPrivateKey -> scalar. Fallback to legacy pattern scan.
+            var sk: [32]u8 = undefined;
+            std.debug.print("[SIG] Starting ECDSA P-256 signature, privkey_der len={d}\n", .{privkey_der.len});
+            if (parsePkcs8EcdsaP256PrivateKey(privkey_der, &sk)) |ok| {
+                _ = ok; // already written into sk
+                std.debug.print("[SIG] Successfully parsed PKCS#8, scalar: ", .{});
+                for (sk) |b| std.debug.print("{x:0>2} ", .{b});
+                std.debug.print("\n", .{});
+            } else |err| switch (err) {
+                error.BadKey, error.Unsupported, error.Parse => {
+                    // Legacy heuristic fallback (scan for 0x04 0x20 <32-bytes>) used by early tests.
+                    if (privkey_der.len < 34) return error.BadKey;
+                    var idx: ?usize = null;
+                    var i: usize = 0;
+                    while (i + 34 <= privkey_der.len) : (i += 1) {
+                        if (privkey_der[i] == 0x04 and privkey_der[i + 1] == 0x20) {
+                            idx = i + 2;
+                            break;
+                        }
+                    }
+                    const off = idx orelse return error.BadKey;
+                    @memcpy(sk[0..], privkey_der[off .. off + 32]);
+                },
+                else => return err,
+            }
+            const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
+            // Build signing context content
+            const to_sign = try tls13_build_context_and_hash(alg, context, transcript_hash, alloc);
+            defer alloc.free(to_sign);
+            std.debug.print("[SIG] Message to sign len={d}\n", .{to_sign.len});
+            const secret = try Ecdsa.SecretKey.fromBytes(sk);
+            const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret);
+            // Pass message then optional random noise (null => deterministic per RFC6979)
+            const signature = try key_pair.sign(to_sign, null);
+            std.debug.print("[SIG] Generated signature r=\n", .{});
+            for (signature.r[0..8]) |b| std.debug.print("{x:0>2}\n", .{b});
+            std.debug.print("..., s=\n", .{});
+            for (signature.s[0..8]) |b| std.debug.print("{x:0>2}\n", .{b});
+            std.debug.print("...\n", .{});
+
+            // Manually DER-encode (SEQUENCE { r INTEGER, s INTEGER }) per RFC 3279/5480
+            const r_full = signature.r; // [32]u8
+            const s_full = signature.s; // [32]u8
+
+            // Trim leading zeros but keep at least one byte
+            const r_trim = trimLeading(&r_full);
+            const s_trim = trimLeading(&s_full);
+            const r_need_pad: bool = (r_trim[0] & 0x80) != 0;
+            const s_need_pad: bool = (s_trim[0] & 0x80) != 0;
+            // Use @intFromBool to avoid comptime_int dependency on runtime control flow
+            const r_len: usize = r_trim.len + @intFromBool(r_need_pad);
+            const s_len: usize = s_trim.len + @intFromBool(s_need_pad);
+            const seq_len: usize = 2 + r_len + 2 + s_len; // INTEGER headers + values
+            if (seq_len + 2 >= 128) return error.Encode; // should never happen for P-256
+            var out = try alloc.alloc(u8, 2 + seq_len);
+            var o: usize = 0;
+            out[o] = 0x30;
+            o += 1; // SEQUENCE
+            out[o] = @intCast(seq_len);
+            o += 1;
+            out[o] = 0x02;
+            o += 1; // INTEGER r
+            out[o] = @intCast(r_len);
+            o += 1;
+            if (r_need_pad) {
+                out[o] = 0x00;
+                o += 1;
+            }
+            @memcpy(out[o .. o + r_trim.len], r_trim);
+            o += r_trim.len;
+            out[o] = 0x02;
+            o += 1; // INTEGER s
+            out[o] = @intCast(s_len);
+            o += 1;
+            if (s_need_pad) {
+                out[o] = 0x00;
+                o += 1;
+            }
+            @memcpy(out[o .. o + s_trim.len], s_trim);
+            o += s_trim.len;
+            std.debug.assert(o == out.len);
+            return out;
+        },
+        else => return error.Unsupported,
+    }
+}
+
+fn trimLeading(x: []const u8) []const u8 {
+    var j: usize = 0;
+    while (j + 1 < x.len and x[j] == 0) : (j += 1) {}
+    return x[j..];
+}
+
+// ---- Minimal PKCS#8 / ECPrivateKey parsing (P-256 only) ----
+// Returns error.BadKey on generic structural or OID mismatch, error.Parse on malformed DER.
+// Writes 32-byte scalar into out and returns void on success.
+/// Parse Ed25519 public key from SubjectPublicKeyInfo (returns 32-byte public key)
+pub fn parseEd25519Spki(spki_der: []const u8) ![32]u8 {
+    var d = asn1.Decoder.init(spki_der);
+    const seq = try d.readSequence();
+    var s1 = asn1.Decoder.init(seq);
+    const algo_seq = try s1.readSequence();
+    var a1 = asn1.Decoder.init(algo_seq);
+    const algo_oid = try a1.readOID();
+    // id-Ed25519: 1.3.101.112 -> DER: 06 03 2B 65 70
+    const ed25519_oid = [_]u8{ 0x2B, 0x65, 0x70 };
+    if (!std.mem.eql(u8, algo_oid, &ed25519_oid)) return error.UnexpectedAlgorithm;
+    // No parameters for Ed25519
+    // subjectPublicKey BIT STRING
+    const bitstr = try s1.readBitString();
+    if (bitstr.len != 32) return error.InvalidPublicKey;
+    var result: [32]u8 = undefined;
+    @memcpy(&result, bitstr);
+    return result;
+}
+
+/// Parse Ed25519 private key (seed) from PKCS#8 (returns 32-byte seed)
+fn parsePkcs8Ed25519PrivateKey(der: []const u8) ![32]u8 {
+    var d = asn1.Decoder.init(der);
+    const seq = try d.readSequence();
+    var s1 = asn1.Decoder.init(seq);
+    // version INTEGER (expect 0)
+    const ver_tlv = try s1.readTLV();
+    if (asn1.tagClass(ver_tlv.tag) != .universal or asn1.tagNumber(ver_tlv.tag) != 2) return error.UnexpectedTag;
+    if (ver_tlv.val.len != 1 or ver_tlv.val[0] != 0x00) return error.BadKey;
+    // algorithm AlgorithmIdentifier = SEQUENCE
+    const algo_seq = try s1.readSequence();
+    var a1 = asn1.Decoder.init(algo_seq);
+    const algo_oid = try a1.readOID();
+    // id-Ed25519: 1.3.101.112 -> DER: 06 03 2B 65 70
+    const ed25519_oid = [_]u8{ 0x2B, 0x65, 0x70 };
+    if (!std.mem.eql(u8, algo_oid, &ed25519_oid)) return error.UnexpectedAlgorithm;
+    // privateKey OCTET STRING containing the 32-byte seed wrapped in OCTET STRING
+    const pk_oct = try s1.readOctetString();
+    // Ed25519 private key is wrapped as OCTET STRING containing the 32-byte seed
+    if (pk_oct.len < 34) return error.BadKey;
+    // Parse inner OCTET STRING
+    var d2 = asn1.Decoder.init(pk_oct);
+    const seed_oct = try d2.readOctetString();
+    if (seed_oct.len != 32) return error.BadKey;
+    var result: [32]u8 = undefined;
+    @memcpy(&result, seed_oct);
+    return result;
+}
+
+fn parsePkcs8EcdsaP256PrivateKey(der: []const u8, out: *[32]u8) !void {
+    if (der.len < 16) return error.Parse;
+    var i: usize = 0;
+    const T = struct {
+        fn need(n: usize, total: usize) !void {
+            if (n > total) return error.Parse;
+        }
+        fn readLen(data: []const u8, idx: *usize) !usize {
+            var pos = idx.*;
+            if (pos >= data.len) return error.Parse;
+            const b = data[pos];
+            pos += 1;
+            if ((b & 0x80) == 0) {
+                idx.* = pos;
+                return b;
+            } // short form
+            const nbytes = b & 0x7f;
+            if (nbytes == 0 or nbytes > 2) return error.Parse; // limit length size
+            if (pos + nbytes > data.len) return error.Parse;
+            var l: usize = 0;
+            var j: usize = 0;
+            while (j < nbytes) : (j += 1) {
+                l = (l << 8) | data[pos + j];
+            }
+            pos += nbytes;
+            idx.* = pos;
+            return l;
+        }
+    };
+
+    // PrivateKeyInfo ::= SEQUENCE
+    if (der[i] != 0x30) return error.Parse;
+    i += 1;
+    const seq_len = try T.readLen(der, &i);
+    if (i + seq_len != der.len) return error.Parse;
+
+    // version INTEGER (expect 0)
+    if (der[i] != 0x02) return error.Parse;
+    i += 1;
+    const ver_len = try T.readLen(der, &i);
+    if (ver_len != 1 or i + ver_len > der.len) return error.Parse;
+    if (der[i] != 0x00) return error.BadKey; // version must be 0
+    i += ver_len;
+
+    // algorithm AlgorithmIdentifier = SEQUENCE
+    if (der[i] != 0x30) return error.Parse;
+    i += 1;
+    const alg_len = try T.readLen(der, &i);
+    if (i + alg_len > der.len) return error.Parse;
+    const alg_end = i + alg_len;
+    // OID ecPublicKey
+    if (i >= alg_end or der[i] != 0x06) return error.Parse;
+    i += 1;
+    const oid1_len = try T.readLen(der, &i);
+    if (i + oid1_len > alg_end) return error.Parse;
+    const oid_ec = der[i .. i + oid1_len];
+    i += oid1_len;
+    // parameters OID namedCurve
+    if (i >= alg_end or der[i] != 0x06) return error.Parse;
+    i += 1;
+    const oid2_len = try T.readLen(der, &i);
+    if (i + oid2_len > alg_end) return error.Parse;
+    const oid_curve = der[i .. i + oid2_len];
+    i += oid2_len;
+    if (i != alg_end) return error.Parse;
+    // id-ecPublicKey 1.2.840.10045.2.1  -> DER: 06 07 2A 86 48 CE 3D 02 01
+    const ec_pub_const = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01 };
+    if (!std.mem.eql(u8, oid_ec, &ec_pub_const)) return error.BadKey;
+    // prime256v1 / secp256r1 1.2.840.10045.3.1.7 -> 06 08 2A 86 48 CE 3D 03 01 07
+    const p256_const = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07 };
+    if (!std.mem.eql(u8, oid_curve, &p256_const)) return error.Unsupported; // not P-256
+
+    // privateKey OCTET STRING containing ECPrivateKey structure
+    if (der[i] != 0x04) return error.Parse;
+    i += 1;
+    const pk_oct_len = try T.readLen(der, &i);
+    if (i + pk_oct_len > der.len) return error.Parse;
+    const pk_oct = der[i .. i + pk_oct_len];
+    i += pk_oct_len;
+    // ignore optional attributes / publicKey
+
+    // Parse ECPrivateKey inside pk_oct
+    var j: usize = 0;
+    if (pk_oct.len < 4) return error.Parse;
+    if (pk_oct[j] != 0x30) return error.Parse;
+    j += 1;
+    const ec_seq_len = try T.readLen(pk_oct, &j);
+    if (j + ec_seq_len != pk_oct.len) return error.Parse;
+    // version INTEGER (expect 1)
+    if (pk_oct[j] != 0x02) return error.Parse;
+    j += 1;
+    const ec_ver_len = try T.readLen(pk_oct, &j);
+    if (ec_ver_len != 1 or j + ec_ver_len > pk_oct.len) return error.Parse;
+    if (pk_oct[j] != 0x01) return error.BadKey; // expect 1
+    j += ec_ver_len;
+    // privateKey OCTET STRING (expect 32 bytes)
+    if (pk_oct[j] != 0x04) return error.Parse;
+    j += 1;
+    const sk_len = try T.readLen(pk_oct, &j);
+    if (sk_len != 32 or j + sk_len > pk_oct.len) return error.BadKey;
+    @memcpy(out[0..], pk_oct[j .. j + sk_len]);
+    // success
+    return;
+}
