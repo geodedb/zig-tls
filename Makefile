@@ -38,9 +38,21 @@ test-vectors:
 	@zig build test-vectors --summary all
 
 # Run conformance tests against BoringSSL/OpenSSL
-test-conformance: check-openssl
+test-conformance:
 	@echo "🔐 Running conformance tests..."
-	@zig build test-conformance --summary all
+	@if command -v pkg-config >/dev/null 2>&1; then \
+		if pkg-config --exists openssl 2>/dev/null; then \
+			echo "✅ OpenSSL development libraries detected"; \
+			echo ""; \
+			zig build test-conformance --summary all; \
+		else \
+			echo "⚠️  OpenSSL development libraries not found. Skipping conformance tests."; \
+			echo "💡 Install libssl-dev (or equivalent) to enable conformance testing."; \
+		fi; \
+	else \
+		echo "⚠️  pkg-config not available; skipping conformance tests."; \
+		echo "💡 Install pkg-config and OpenSSL dev libraries to run conformance tests."; \
+	fi
 
 # Alias for conformance tests
 conformance: test-conformance

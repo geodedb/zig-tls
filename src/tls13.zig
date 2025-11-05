@@ -234,6 +234,8 @@ const ks = @import("quic_tls");
 const x509 = @import("x509");
 const sig = @import("sig");
 const tls13_full = @import("tls13_full");
+const ocsp = @import("ocsp");
+const sct = @import("sct");
 const alert_mod = @import("alert");
 const zero_rtt_mod = @import("zero_rtt");
 const logger = @import("quic_logger");
@@ -363,6 +365,21 @@ pub const Config = struct {
     ///
     /// null = No private key (client role or testing).
     server_key_der: ?[]const u8 = null,
+
+    /// Require the peer to present a stapled OCSP response. When true, the
+    /// handshake aborts if the Certificate message omits OCSP data or if
+    /// validation fails.
+    require_ocsp: bool = false,
+
+    /// Require Signed Certificate Timestamps (SCTs). When true, the handshake
+    /// aborts if no SCT list is present or if the list is empty or rejected by
+    /// `on_sct_list`.
+    require_scts: bool = false,
+
+    /// Optional callback invoked with the parsed SCT list for additional
+    /// validation or telemetry. The callback must not retain references to the
+    /// provided slice beyond its lifetime.
+    on_sct_list: ?*const fn ([]const sct.SignedCertificateTimestamp) anyerror!void = null,
 };
 
 /// Callback hooks for QUIC integration and handshake lifecycle events.
@@ -542,6 +559,9 @@ pub const HandshakeError = error{
     /// RFC 8446 §4.1.3: Last 8 bytes of server random signal TLS 1.2 if client supports 1.3.
     /// Prevents version downgrade attacks.
     DowngradeAttempt,
+
+    /// Post-handshake authentication (CertificateRequest after handshake completion) is unsupported for QUIC.
+    PostHandshakeAuthUnsupported,
 };
 
 /// Traffic direction relative to the current endpoint (RFC 8446 §7.1).
@@ -1335,6 +1355,10 @@ pub const Context = struct {
 
                 // Parse ServerHello, extract key_share, derive handshake secrets
                 try self.handleServerHello(parsed.body);
+            },
+            .certificate_request => {
+                // RFC 9001 forbids post-handshake client authentication
+                return HandshakeError.PostHandshakeAuthUnsupported;
             },
             .finished => {
                 // RFC 8446 §4.4.4: Verify peer Finished message
@@ -2720,7 +2744,6 @@ pub const Engine = struct {
                     }
                 }
                 // Certificate message parsing: RFC 8446 Section 4.4.2
-                // FIX: Parse TLS Certificate message format before extracting DER certificate
                 if (p.typ == .certificate) {
                     std.debug.print("{s}: Processing Certificate message (len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.body.len });
                     if (self.allow_insecure) {
@@ -2728,98 +2751,108 @@ pub const Engine = struct {
                         self.peer_cert_ok = true;
                     } else {
                         std.debug.print("{s}: Attempting certificate validation\n", .{if (self.role == .Server) "Server" else "Client"});
+                        self.peer_cert_ok = false;
 
-                        // Parse TLS Certificate message format per RFC 8446 Section 4.4.2:
-                        // struct {
-                        //     opaque certificate_request_context<0..2^8-1>;
-                        //     CertificateEntry certificate_list<0..2^24-1>;
-                        // } Certificate;
-                        // struct {
-                        //     opaque cert_data<1..2^24-1>;
-                        //     Extension extensions<0..2^16-1>;
-                        // } CertificateEntry;
+                        const parsed_cert_msg_opt = blk_parsed_cert: {
+                            const msg = tls13_full.parseCertificate(self.allocator, p.body) catch |err| {
+                                std.debug.print("TLS: Failed to parse Certificate message structure: {}\n", .{err});
+                                break :blk_parsed_cert null;
+                            };
+                            break :blk_parsed_cert msg;
+                        };
 
-                        var pos: usize = 0;
-                        var cert_der: ?[]const u8 = null;
+                        if (parsed_cert_msg_opt) |parsed_cert_msg| {
+                            defer self.allocator.free(parsed_cert_msg.entries);
 
-                        parse_cert: {
-                            if (p.body.len < 1) {
-                                std.debug.print("TLS: Certificate message too short for request context\n", .{});
-                                break :parse_cert;
-                            }
-
-                            // certificate_request_context length (1 byte)
-                            const ctx_len: usize = p.body[pos];
-                            pos += 1;
-                            if (pos + ctx_len > p.body.len) {
-                                std.debug.print("TLS: Certificate message truncated at request context\n", .{});
-                                break :parse_cert;
-                            }
-                            // Skip context bytes
-                            pos += ctx_len;
-
-                            // certificate_list length (3 bytes)
-                            if (pos + 3 > p.body.len) {
-                                std.debug.print("TLS: Certificate message too short for certificate list length\n", .{});
-                                break :parse_cert;
-                            }
-                            const list_len: usize = (@as(usize, p.body[pos]) << 16) | (@as(usize, p.body[pos + 1]) << 8) | p.body[pos + 2];
-                            pos += 3;
-                            if (pos + list_len > p.body.len) {
-                                std.debug.print("TLS: Certificate message truncated at certificate list\n", .{});
-                                break :parse_cert;
-                            }
-
-                            const list_end = pos + list_len;
-
-                            // Parse first CertificateEntry (leaf certificate)
-                            if (pos + 3 <= list_end) {
-                                const cert_data_len: usize = (@as(usize, p.body[pos]) << 16) | (@as(usize, p.body[pos + 1]) << 8) | p.body[pos + 2];
-                                pos += 3;
-                                if (pos + cert_data_len <= list_end) {
-                                    cert_der = p.body[pos .. pos + cert_data_len];
-                                    std.debug.print("TLS: Extracted DER certificate (len={})\n", .{cert_data_len});
-                                } else {
-                                    std.debug.print("TLS: Certificate entry truncated\n", .{});
-                                }
+                            if (parsed_cert_msg.entries.len == 0) {
+                                std.debug.print("TLS: Certificate list empty\n", .{});
                             } else {
-                                std.debug.print("TLS: Certificate list empty or malformed\n", .{});
-                            }
-                        }
+                                if (self.leaf_spki) |old| {
+                                    self.allocator.free(old);
+                                    self.leaf_spki = null;
+                                }
 
-                        // Now parse the extracted DER certificate
-                        if (cert_der) |der| {
-                            const cert_val = x509.parseCert(self.allocator, der) catch null;
-                            if (cert_val) |c| {
-                                std.debug.print("{s}: Certificate parsed successfully\n", .{if (self.role == .Server) "Server" else "Client"});
-                                self.peer_cert_ok = true;
-                                if (self.leaf_spki) |old| self.allocator.free(old);
-                                self.leaf_spki = self.allocator.dupe(u8, c.spki) catch null;
-                                x509.checkValidity(std.time.timestamp(), &c) catch {
-                                    std.debug.print("{s}: Certificate validity check failed\n", .{if (self.role == .Server) "Server" else "Client"});
-                                    self.peer_cert_ok = false;
-                                };
-                                if (self.peer_cert_ok) {
-                                    if (self.server_name) |sni| {
-                                        x509.validateChain(self.allocator, &[_][]const u8{der}, std.time.timestamp(), sni, self.allow_insecure) catch {
-                                            self.peer_cert_ok = false;
+                                const validation_ok = blk: {
+                                    var chain_der = self.allocator.alloc([]const u8, parsed_cert_msg.entries.len) catch {
+                                        std.debug.print("TLS: Out of memory allocating certificate chain view\n", .{});
+                                        break :blk false;
+                                    };
+                                    defer self.allocator.free(chain_der);
+
+                                    var parsed_certs = self.allocator.alloc(x509.Certificate, parsed_cert_msg.entries.len) catch {
+                                        std.debug.print("TLS: Out of memory allocating parsed certificate array\n", .{});
+                                        break :blk false;
+                                    };
+                                    defer self.allocator.free(parsed_certs);
+
+                                    for (parsed_cert_msg.entries, 0..) |entry, idx| {
+                                        chain_der[idx] = entry.cert;
+                                        parsed_certs[idx] = x509.parseCert(self.allocator, entry.cert) catch {
+                                            std.debug.print("TLS: Failed to parse certificate {} in chain\n", .{idx});
+                                            break :blk false;
                                         };
                                     }
-                                }
-                                if (self.peer_cert_ok) {
-                                    if (c.eku) |eku| {
+
+                                    const leaf = parsed_certs[0];
+                                    const leaf_entry = parsed_cert_msg.entries[0];
+                                    self.leaf_spki = self.allocator.dupe(u8, leaf.spki) catch {
+                                        std.debug.print("TLS: Out of memory duplicating leaf SPKI\n", .{});
+                                        break :blk false;
+                                    };
+
+                                    const now = std.time.timestamp();
+                                    const server_name_slice: []const u8 = if (self.server_name) |sni| sni else &[_]u8{};
+
+                                    x509.validateChain(self.allocator, chain_der, now, server_name_slice, self.allow_insecure) catch |err| {
+                                        std.debug.print("TLS: Certificate chain validation failed: {}\n", .{err});
+                                        break :blk false;
+                                    };
+
+                                    if (leaf.eku) |eku| {
                                         if (!eku.server_auth) {
-                                            self.peer_cert_ok = false;
+                                            std.debug.print("TLS: Leaf certificate missing serverAuth EKU\n", .{});
+                                            break :blk false;
                                         }
                                     }
-                                }
-                            } else {
-                                std.debug.print("TLS: x509.parseCert failed\n", .{});
-                                self.peer_cert_ok = false;
+
+                                    if (leaf_entry.ocsp_response) |ocsp_bytes| {
+                                        const issuer_info = if (parsed_cert_msg.entries.len >= 2) .{ .cert = &parsed_certs[1], .der = chain_der[1] } else null;
+                                        ocsp.validateStapledResponse(self.allocator, ocsp_bytes, &leaf, chain_der[0], issuer_info, now) catch |err| {
+                                            std.debug.print("TLS: OCSP validation failed: {}\n", .{err});
+                                            break :blk false;
+                                        };
+                                    } else if (self.config.require_ocsp) {
+                                        std.debug.print("TLS: Required OCSP response missing\n", .{});
+                                        break :blk false;
+                                    }
+
+                                    if (leaf_entry.sct_list) |sct_bytes| {
+                                        const parsed_scts = sct.parseList(self.allocator, sct_bytes) catch |err| {
+                                            std.debug.print("TLS: Failed to parse SCT list: {}\n", .{err});
+                                            break :blk false;
+                                        };
+                                        defer self.allocator.free(parsed_scts);
+
+                                        if (parsed_scts.len == 0 and self.config.require_scts) {
+                                            std.debug.print("TLS: SCT list empty but required\n", .{});
+                                            break :blk false;
+                                        }
+                                        if (self.config.on_sct_list) |handler| {
+                                            handler(parsed_scts) catch |err| {
+                                                std.debug.print("TLS: SCT handler error: {}\n", .{err});
+                                                break :blk false;
+                                            };
+                                        }
+                                    } else if (self.config.require_scts) {
+                                        std.debug.print("TLS: Required SCT list missing\n", .{});
+                                        break :blk false;
+                                    }
+
+                                    break :blk true;
+                                };
+
+                                self.peer_cert_ok = validation_ok;
                             }
-                        } else {
-                            std.debug.print("TLS: Failed to extract DER certificate from Certificate message\n", .{});
-                            self.peer_cert_ok = false;
                         }
                     }
                 }
@@ -2893,13 +2926,13 @@ pub const Engine = struct {
                     if (ok) {
                         // Get the Finished message bytes
                         const finished_msg = data[off - p.n .. off];
-                        
+
                         // CRITICAL FIX: Handle transcript differently based on role
                         // For CLIENT: Must add server's Finished BEFORE deriving app secrets
                         //             because app secrets use CH...SH...EE...Cert...CV...server Finished
                         // For SERVER: Must NOT add client's Finished before deriving app secrets
                         //             because server already queued its own Finished
-                        
+
                         if (self.role == .Client) {
                             // Client: Add server's Finished to transcript FIRST
                             self.transcript.update(finished_msg);
@@ -2909,7 +2942,7 @@ pub const Engine = struct {
                             } else {
                                 std.debug.print("TLS: Added server Finished to transcript ({} bytes)\n", .{finished_msg.len});
                             }
-                            
+
                             // Now derive application secrets with server Finished included
                             std.debug.print("TLS: Deriving application traffic secrets (after adding server Finished to transcript)\n", .{});
                             _ = self.computeApplicationSecrets();
@@ -2918,7 +2951,7 @@ pub const Engine = struct {
                             // Server's own Finished is already in transcript from queueFinished()
                             std.debug.print("TLS: Deriving application traffic secrets (before adding client Finished to transcript)\n", .{});
                             _ = self.computeApplicationSecrets();
-                            
+
                             // NOW add the client Finished to transcript for resumption master secret derivation
                             self.transcript.update(finished_msg);
                             const show_len = @min(8, finished_msg.len);
@@ -3769,10 +3802,8 @@ pub const Engine = struct {
                 self.server_sig_alg = detected;
             }
 
-            std.debug.print("[CERTVERIFY] About to queue CertificateVerify with alg={}, priv_key_len={}\n", .{ 
-                self.server_sig_alg.?, self.server_priv_key.?.len 
-            });
-            
+            std.debug.print("[CERTVERIFY] About to queue CertificateVerify with alg={}, priv_key_len={}\n", .{ self.server_sig_alg.?, self.server_priv_key.?.len });
+
             // FIXED: Use the existing queueCertificateVerify() helper which properly handles transcript timing
             // This ensures CertificateVerify signature is computed over transcript that includes Certificate
             self.queueCertificateVerify() catch |e| {
@@ -3781,7 +3812,7 @@ pub const Engine = struct {
                 self.handshake_failed = true;
                 return;
             };
-            
+
             appended_any = true;
         } else {
             std.debug.print("[FLIGHT] WARNING: No server certificate configured (cert={}, key={}). Skipping Certificate/CertificateVerify.\n", .{

@@ -1037,76 +1037,193 @@ pub fn buildEncryptedExtensions(
     return msg.toOwnedSlice(allocator);
 }
 
-/// Build Certificate message (RFC 8446 §4.4.2).
+/// Parsed TLS 1.3 Certificate message with per-entry extension data.
+pub const ParsedCertificateMessage = struct {
+    context: []const u8,
+    entries: []CertificateEntryData,
+};
+
+/// Certificate entry containing DER and optional OCSP/SCT extensions.
+pub const CertificateEntryData = struct {
+    cert: []const u8,
+    ocsp_response: ?[]const u8 = null,
+    sct_list: ?[]const u8 = null,
+};
+
+/// Parse a TLS 1.3 Certificate message including OCSP stapling and SCT extensions.
+pub fn parseCertificate(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+) !ParsedCertificateMessage {
+    if (data.len < 4) return error.TooShort;
+
+    var pos: usize = 0;
+    const ctx_len = data[pos];
+    pos += 1;
+    if (pos + ctx_len > data.len) return error.TooShort;
+    const context = data[pos .. pos + ctx_len];
+    pos += ctx_len;
+
+    if (pos + 3 > data.len) return error.TooShort;
+    const list_len_u24 = readU24(data[pos .. pos + 3]);
+    const list_len: usize = @intCast(list_len_u24);
+    pos += 3;
+    if (pos + list_len > data.len) return error.MalformedCertificateList;
+    const list_end = pos + list_len;
+
+    var entries = try std.ArrayList(CertificateEntryData).initCapacity(allocator, 0);
+    errdefer entries.deinit(allocator);
+
+    while (pos < list_end) {
+        if (pos + 3 > list_end) return error.MalformedCertificateList;
+        const cert_len_u24 = readU24(data[pos .. pos + 3]);
+        const cert_len: usize = @intCast(cert_len_u24);
+        pos += 3;
+        if (pos + cert_len > list_end) return error.MalformedCertificateList;
+        const cert_slice = data[pos .. pos + cert_len];
+        pos += cert_len;
+
+        if (pos + 2 > list_end) return error.MalformedCertificateList;
+        const ext_len = readU16(data[pos .. pos + 2]);
+        pos += 2;
+        if (pos + ext_len > list_end) return error.MalformedCertificateList;
+        const ext_slice = data[pos .. pos + ext_len];
+        pos += ext_len;
+
+        var ocsp_resp: ?[]const u8 = null;
+        var sct_list: ?[]const u8 = null;
+
+        var ext_pos: usize = 0;
+        while (ext_pos + 4 <= ext_len) {
+            const ext_type = readU16(ext_slice[ext_pos .. ext_pos + 2]);
+            const ext_size = readU16(ext_slice[ext_pos + 2 .. ext_pos + 4]);
+            ext_pos += 4;
+            if (ext_pos + ext_size > ext_len) return error.MalformedCertificateList;
+            const ext_value = ext_slice[ext_pos .. ext_pos + ext_size];
+
+            switch (ext_type) {
+                0x0005 => { // status_request (RFC 6066 §8, RFC 8446 §4.4.2.1)
+                    if (ext_value.len < 4) return error.MalformedStatusRequest;
+                    const status_type = ext_value[0];
+                    if (status_type != 1) return error.UnsupportedStatusType; // only OCSP supported
+                    const resp_len = (@as(usize, ext_value[1]) << 16) | (@as(usize, ext_value[2]) << 8) | ext_value[3];
+                    if (resp_len + 4 > ext_value.len or resp_len == 0) return error.MalformedStatusRequest;
+                    ocsp_resp = ext_value[4 .. 4 + resp_len];
+                },
+                0x0012 => { // signed_certificate_timestamp (RFC 6962 §3.3)
+                    if (ext_value.len < 2) return error.MalformedSctList;
+                    const sct_vec_len = readU16(ext_value[0..2]);
+                    if (sct_vec_len == 0 or sct_vec_len + 2 != ext_value.len) return error.MalformedSctList;
+                    sct_list = ext_value[2 .. 2 + sct_vec_len];
+                },
+                else => {},
+            }
+
+            ext_pos += ext_size;
+        }
+
+        if (ext_pos != ext_len) return error.MalformedCertificateList;
+        try entries.append(.{ .cert = cert_slice, .ocsp_response = ocsp_resp, .sct_list = sct_list });
+    }
+
+    if (pos != list_end) return error.MalformedCertificateList;
+
+    return .{
+        .context = context,
+        .entries = try entries.toOwnedSlice(allocator),
+    };
+}
+
+/// Build Certificate message (RFC 8446 §4.4.2) with optional OCSP and SCT extensions.
 ///
-/// Constructs a Certificate message containing the server's or client's
-/// certificate chain. Certificates are in DER-encoded X.509 format.
-///
-/// ## Parameters
-///
-/// - `allocator`: Memory allocator for message buffer
-/// - `cert_chain`: Array of DER-encoded X.509 certificates (leaf first, root last)
-///
-/// ## Returns
-///
-/// - `[]u8`: Serialized Certificate message (caller owns memory, must free)
-///
-/// ## Certificate Chain Order
-///
-/// Certificates MUST be ordered from leaf to root:
-/// 1. End-entity certificate (server or client identity)
-/// 2. Intermediate CA certificate(s)
-/// 3. Root CA certificate (optional, usually omitted as client has it)
-///
-/// ## RFC Compliance
-///
-/// - RFC 8446 §4.4.2: Certificate message structure
-/// - RFC 5280: X.509 certificate format
-/// - RFC 8446 §4.4.2.1: Certificate extensions (currently empty in this impl)
-///
-/// ## Implementation Notes
-///
-/// - Certificate request context is empty (0-byte) for server Certificate
-/// - Certificate extensions are empty (0x0000) for each entry
-/// - Future: Could include OCSP stapling (status_request) or SCT extensions
+/// Constructs a Certificate message containing the certificate chain and per-entry
+/// extensions for OCSP stapling (status_request) and Signed Certificate Timestamps.
 pub fn buildCertificate(
     allocator: std.mem.Allocator,
-    cert_chain: []const []const u8,
+    context: []const u8,
+    entries: []const CertificateEntryData,
 ) ![]u8 {
+    if (context.len > 255) return error.CertificateContextTooLong;
+
     var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
     defer msg.deinit(allocator);
 
-    // Certificate request context (empty for server)
-    try msg.append(allocator, 0);
+    // certificate_request_context length (1 byte) + value
+    try msg.append(allocator, @intCast(context.len));
+    if (context.len > 0) try msg.appendSlice(allocator, context);
 
-    // Calculate total certificate list length
-    var total_len: u24 = 0;
-    for (cert_chain) |cert| {
-        total_len += 3 + @as(u24, @intCast(cert.len)) + 2; // cert_data length + cert_data + extensions length
+    // Precompute certificate_list length to encode as u24
+    var total_len: usize = 0;
+    for (entries) |entry| {
+        const cert_len = entry.cert.len;
+        if (cert_len > 0xFFFFFF) return error.CertificateTooLarge;
+
+        var ext_len: usize = 0;
+        if (entry.ocsp_response) |resp| {
+            if (resp.len == 0 or resp.len > 0xFFFFFF) return error.OcspResponseTooLarge;
+            const payload_len = 1 + 3 + resp.len;
+            if (payload_len > 0xFFFF) return error.OcspResponseTooLarge;
+            ext_len += 4 + payload_len; // extension header + payload
+        }
+        if (entry.sct_list) |sct| {
+            if (sct.len == 0 or sct.len > 0xFFFF) return error.SctListTooLarge;
+            const payload_len = 2 + sct.len;
+            ext_len += 4 + payload_len;
+        }
+        if (ext_len > 0xFFFF) return error.CertificateExtensionsTooLarge;
+
+        total_len += 3 + cert_len + 2 + ext_len;
     }
 
-    // Certificate list length (3 bytes)
+    if (total_len > 0xFFFFFF) return error.CertificateListTooLarge;
     try msg.appendSlice(allocator, &[_]u8{
-        @intCast(total_len >> 16),
+        @intCast((total_len >> 16) & 0xff),
         @intCast((total_len >> 8) & 0xff),
         @intCast(total_len & 0xff),
     });
 
-    // Certificate entries
-    for (cert_chain) |cert| {
-        // Certificate data length (3 bytes)
-        const cert_len: u24 = @intCast(cert.len);
+    // Emit certificate entries with extensions
+    for (entries) |entry| {
+        const cert_len = entry.cert.len;
         try msg.appendSlice(allocator, &[_]u8{
-            @intCast(cert_len >> 16),
+            @intCast((cert_len >> 16) & 0xff),
             @intCast((cert_len >> 8) & 0xff),
             @intCast(cert_len & 0xff),
         });
+        try msg.appendSlice(allocator, entry.cert);
 
-        // Certificate data
-        try msg.appendSlice(allocator, cert);
+        var ext_len: usize = 0;
+        if (entry.ocsp_response) |resp| {
+            const payload_len = 1 + 3 + resp.len;
+            ext_len += 4 + payload_len;
+        }
+        if (entry.sct_list) |sct| {
+            const payload_len = 2 + sct.len;
+            ext_len += 4 + payload_len;
+        }
 
-        // Certificate extensions (empty)
-        try msg.appendSlice(allocator, &[_]u8{ 0x00, 0x00 });
+        try msg.appendSlice(allocator, &[_]u8{ @intCast(ext_len >> 8), @intCast(ext_len & 0xff) });
+
+        if (entry.ocsp_response) |resp| {
+            const payload_len = 1 + 3 + resp.len;
+            try msg.appendSlice(allocator, &[_]u8{ 0x00, 0x05 });
+            try msg.appendSlice(allocator, &[_]u8{ @intCast(payload_len >> 8), @intCast(payload_len & 0xff) });
+            try msg.append(allocator, 0x01);
+            try msg.appendSlice(allocator, &[_]u8{
+                @intCast(resp.len >> 16),
+                @intCast((resp.len >> 8) & 0xff),
+                @intCast(resp.len & 0xff),
+            });
+            try msg.appendSlice(allocator, resp);
+        }
+
+        if (entry.sct_list) |sct| {
+            const payload_len = 2 + sct.len;
+            try msg.appendSlice(allocator, &[_]u8{ 0x00, 0x12 });
+            try msg.appendSlice(allocator, &[_]u8{ @intCast(payload_len >> 8), @intCast(payload_len & 0xff) });
+            try msg.appendSlice(allocator, &[_]u8{ @intCast(sct.len >> 8), @intCast(sct.len & 0xff) });
+            try msg.appendSlice(allocator, sct);
+        }
     }
 
     return msg.toOwnedSlice(allocator);

@@ -301,6 +301,21 @@ pub const x509 = @import("x509");
 /// Uses `std.crypto.sign` for cryptographic operations.
 pub const sig = @import("sig");
 
+/// OCSP stapling validation helpers (RFC 6960).
+///
+/// Provides:
+/// - DER parsing for OCSPResponse and BasicOCSPResponse
+/// - Stapled response validation against certificate chains
+/// - Responder certificate EKU enforcement
+pub const ocsp = @import("ocsp");
+
+/// Signed Certificate Timestamp (SCT) utilities (RFC 6962).
+///
+/// Provides:
+/// - Parsing of the SignedCertificateTimestampList extension
+/// - Lightweight view structs for SCT entries
+pub const sct = @import("sct");
+
 /// Minimal ASN.1 DER decoder for X.509 certificate parsing.
 ///
 /// Provides:

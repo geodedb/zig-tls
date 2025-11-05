@@ -58,11 +58,25 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const sct_mod = b.addModule("sct", .{
+        .root_source_file = b.path("src/sct.zig"),
+        .target = target,
+    });
+
     const x509_mod = b.addModule("x509", .{
         .root_source_file = b.path("src/x509.zig"),
         .target = target,
         .imports = &.{
             .{ .name = "asn1", .module = asn1_mod },
+        },
+    });
+
+    const ocsp_mod = b.addModule("ocsp", .{
+        .root_source_file = b.path("src/ocsp.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "asn1", .module = asn1_mod },
+            .{ .name = "x509", .module = x509_mod },
         },
     });
 
@@ -99,6 +113,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "tls13_full", .module = tls13_full_mod },
             .{ .name = "quic_logger", .module = logger_mod },
             .{ .name = "quic_transport_params", .module = transport_params_mod },
+            .{ .name = "ocsp", .module = ocsp_mod },
+            .{ .name = "sct", .module = sct_mod },
         },
     });
 
@@ -118,6 +134,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "tls13", .module = tls13_mod },
             .{ .name = "quic_logger", .module = logger_mod },
             .{ .name = "quic_transport_params", .module = transport_params_mod },
+            .{ .name = "ocsp", .module = ocsp_mod },
+            .{ .name = "sct", .module = sct_mod },
         },
     });
 
@@ -206,6 +224,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "tls13_full", .module = tls13_full_mod },
                 .{ .name = "quic_logger", .module = logger_mod },
                 .{ .name = "quic_transport_params", .module = transport_params_mod },
+                .{ .name = "ocsp", .module = ocsp_mod },
+                .{ .name = "sct", .module = sct_mod },
             },
         }),
     });

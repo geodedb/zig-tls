@@ -236,6 +236,13 @@ pub const KeyUsage = struct {
     bits: u16,
 };
 
+const key_usage_digital_signature: u16 = 0x8000;
+const key_usage_key_cert_sign: u16 = 0x0400;
+
+fn keyUsageHas(ku: KeyUsage, bit: u16) bool {
+    return (ku.bits & bit) != 0;
+}
+
 /// Extended Key Usage extension indicating certificate purposes.
 ///
 /// Represents the id-ce-extKeyUsage extension (OID 2.5.29.37) which indicates
@@ -253,6 +260,10 @@ pub const ExtKeyUsage = struct {
     /// True if id-kp-serverAuth (1.3.6.1.5.5.7.3.1) is present.
     /// RFC 5280 §4.2.1.12 - TLS WWW server authentication
     server_auth: bool = false,
+
+    /// True if id-kp-OCSPSigning (1.3.6.1.5.5.7.3.9) is present.
+    /// RFC 6960 §4.2.2.2 - Delegated OCSP responder signing
+    ocsp_signing: bool = false,
 };
 
 /// Parsed X.509 certificate with extracted fields for TLS validation.
@@ -281,6 +292,15 @@ pub const Certificate = struct {
     /// Raw TBSCertificate bytes for signature verification.
     /// RFC 5280 §4.1.2 - TBSCertificate ::= SEQUENCE { ... }
     tbs: []const u8,
+
+    /// DER-encoded issuer Name structure (RFC 5280 §4.1.2.4).
+    issuer_der: []const u8,
+
+    /// DER-encoded subject Name structure (RFC 5280 §4.1.2.6).
+    subject_der: []const u8,
+
+    /// CertificateSerialNumber raw bytes (RFC 5280 §4.1.2.2).
+    serial_number: []const u8,
 
     /// Distinguished Name from Subject field (Common Name only).
     /// RFC 5280 §4.1.2.6 - Subject field (fallback for identity)
@@ -362,7 +382,7 @@ fn unixSecondsFromYMDHMS(year: u16, month: u8, day: u8, hh: u8, mm: u8, ss: u8) 
     return days * 86400 + @as(i64, hh) * 3600 + @as(i64, mm) * 60 + @as(i64, ss);
 }
 
-fn parseTime(bytes: []const u8) !i64 {
+pub fn parseDerTime(bytes: []const u8) !i64 {
     // Accept the subset: YYYYMMDDHHMMSSZ or YYMMDDHHMMSSZ; return unix seconds
     if (bytes.len == 13 and bytes[12] == 'Z') {
         const yy = try std.fmt.parseInt(u8, bytes[0..2], 10);
@@ -460,30 +480,50 @@ fn unwrapExtnValueToBytes(extn_val_or_octets: []const u8) []const u8 {
 /// - Validate name constraints
 /// - Enforce policy constraints
 pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
-    _ = alloc; // currently not owning sub-slices
+    _ = alloc; // parsing is zero-copy for now
     var d = asn1.Decoder.init(der);
-    const seq = try d.readSequence(); // Certificate
-    var ci = asn1.Decoder.init(seq);
-    // RFC 5280 §4.1 - Parse Certificate SEQUENCE containing TBSCertificate
-    const tbs = try ci.readSequence();
-    const tbs_off_begin = (@intFromPtr(tbs.ptr) - @intFromPtr(seq.ptr)) + (seq.ptr - der.ptr);
-    const tbs_len = tbs.len;
+    const cert_seq = try d.readSequence();
+    var ci = asn1.Decoder.init(cert_seq);
 
-    // RFC 5280 §4.1.2 - Parse TBSCertificate fields: version, serial, signature, issuer, validity, subject, spki, extensions
-    var ti = asn1.Decoder.init(tbs);
-    _ = try ti.readTLV(); // version or serial
-    _ = try ti.readTLV(); // maybe version/serial/signature
-    _ = try ti.readTLV(); // signature or serial/signature
-    const issuer = try ti.readTLV();
-    _ = issuer;
-    const validity = try ti.readSequence();
-    var vd = asn1.Decoder.init(validity);
+    // RFC 5280 §4.1 - Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
+    const tbs_seq = try ci.readSequence();
+    const tbs_off_begin = (@intFromPtr(tbs_seq.ptr) - @intFromPtr(cert_seq.ptr)) + (cert_seq.ptr - der.ptr);
+    const tbs_len = tbs_seq.len;
+
+    var ti = asn1.Decoder.init(tbs_seq);
+
+    // RFC 5280 §4.1.2.1 - Parse optional version followed by serialNumber
+    const first_tlv = try ti.readTLV();
+    var serial_tlv = first_tlv;
+    if (asn1.tagClass(first_tlv.tag) == .context and asn1.tagNumber(first_tlv.tag) == 0) {
+        var vdec = asn1.Decoder.init(first_tlv.val);
+        _ = vdec.readInteger() catch return error.UnexpectedTag;
+        serial_tlv = try ti.readTLV();
+    }
+    if (!(asn1.tagClass(serial_tlv.tag) == .universal and asn1.tagNumber(serial_tlv.tag) == 2))
+        return error.UnexpectedTag;
+    const serial_bytes = serial_tlv.val;
+
+    // Skip signature algorithm (AlgorithmIdentifier)
+    _ = try ti.readSequence();
+
+    // Issuer Name (DER)
+    const issuer_seq = try ti.readSequence();
+    const issuer_der = issuer_seq;
+
+    // Validity
+    const validity_seq = try ti.readSequence();
+    var vd = asn1.Decoder.init(validity_seq);
     const not_before_tlv = try vd.readTLV();
     const not_after_tlv = try vd.readTLV();
-    const not_before = try parseTime(not_before_tlv.val);
-    const not_after = try parseTime(not_after_tlv.val);
+    const not_before = try parseDerTime(not_before_tlv.val);
+    const not_after = try parseDerTime(not_after_tlv.val);
+
+    // Subject Name (DER)
     const subject_seq = try ti.readSequence();
-    // Parse subject for CN (very shallow: look for UTF8String in RDNs)
+    const subject_der = subject_seq;
+
+    // Extract Common Name (very shallow)
     var subj_cn: ?[]const u8 = null;
     {
         var sdec = asn1.Decoder.init(subject_seq);
@@ -495,93 +535,105 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
             }
         }
     }
-    const spki_tlv = try ti.readTLV();
 
-    // Try to find extensions sequence and parse SAN/basic/ku/eku if present
+    // SubjectPublicKeyInfo
+    const spki_tlv = try ti.readTLV();
+    const spki_bytes = spki_tlv.val;
+
+    // Extensions (if any)
     var san_result: ?SubjectAltName = null;
     var basic_res: ?BasicConstraints = null;
     var ku_res: ?KeyUsage = null;
     var eku_res: ?ExtKeyUsage = null;
+
     while (true) {
         const tlv = ti.readTLV() catch break;
-        // Look for [3] EXPLICIT Extensions (context-specific constructed)
-        if (asn1.tagClass(tlv.tag) == .context and asn1.isConstructed(tlv.tag)) {
-            var ed = asn1.Decoder.init(tlv.val);
-            const exts_seq = ed.readSequence() catch continue;
-            var exd = asn1.Decoder.init(exts_seq);
-            while (true) {
-                const ext = exd.readSequence() catch break;
-                var one = asn1.Decoder.init(ext);
-                const oid = one.readOID() catch continue;
-                const critical_or_val = one.readTLV() catch continue;
-                var val = critical_or_val.val;
-                if (one.readTLV() catch null) |v2| val = v2.val;
-                const inner = unwrapExtnValueToBytes(val);
-                // id-ce-subjectAltName = 2.5.29.17
-                if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x11) {
-                    var vd2 = asn1.Decoder.init(inner);
-                    const san_seq = vd2.readSequence() catch continue;
-                    var dns_list: [8][]const u8 = undefined;
-                    var dns_len: usize = 0;
-                    var s2 = asn1.Decoder.init(san_seq);
-                    while (dns_len < dns_list.len) {
-                        const gn = s2.readTLV() catch break;
-                        if (asn1.tagClass(gn.tag) == .context and asn1.tagNumber(gn.tag) == 2) {
-                            dns_list[dns_len] = gn.val;
-                            dns_len += 1;
+        if (asn1.tagClass(tlv.tag) != .context) continue;
+        const tag_no = asn1.tagNumber(tlv.tag);
+        // Skip issuerUniqueID [1] and subjectUniqueID [2]
+        if (tag_no == 1 or tag_no == 2) continue;
+        if (!asn1.isConstructed(tlv.tag)) continue;
+
+        var ed = asn1.Decoder.init(tlv.val);
+        const exts_seq = ed.readSequence() catch continue;
+        var exd = asn1.Decoder.init(exts_seq);
+        while (true) {
+            const ext = exd.readSequence() catch break;
+            var one = asn1.Decoder.init(ext);
+            const oid = one.readOID() catch continue;
+            const critical_or_val = one.readTLV() catch continue;
+            var val = critical_or_val.val;
+            if (one.readTLV() catch null) |v2| val = v2.val;
+            const inner = unwrapExtnValueToBytes(val);
+
+            // id-ce-subjectAltName = 2.5.29.17
+            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x11) {
+                var vd2 = asn1.Decoder.init(inner);
+                const san_seq = vd2.readSequence() catch continue;
+                var dns_list: [8][]const u8 = undefined;
+                var dns_len: usize = 0;
+                var s2 = asn1.Decoder.init(san_seq);
+                while (dns_len < dns_list.len) {
+                    const gn = s2.readTLV() catch break;
+                    if (asn1.tagClass(gn.tag) == .context and asn1.tagNumber(gn.tag) == 2) {
+                        dns_list[dns_len] = gn.val;
+                        dns_len += 1;
+                    }
+                }
+                if (dns_len > 0) san_result = .{ .dns = dns_list[0..dns_len] };
+            }
+
+            // id-ce-basicConstraints = 2.5.29.19
+            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x13) {
+                var bd = asn1.Decoder.init(inner);
+                const bc_seq = bd.readSequence() catch continue;
+                var b2 = asn1.Decoder.init(bc_seq);
+                var ca = false;
+                var path_len: ?u32 = null;
+                const tlv_ca = b2.readTLV() catch null;
+                if (tlv_ca) |t| {
+                    if (asn1.tagClass(t.tag) == .universal and asn1.tagNumber(t.tag) == 1 and t.val.len >= 1)
+                        ca = (t.val[0] != 0);
+                    const tlv_pl = b2.readTLV() catch null;
+                    if (tlv_pl) |pl| {
+                        if (asn1.tagClass(pl.tag) == .universal and asn1.tagNumber(pl.tag) == 2) {
+                            var v: u32 = 0;
+                            for (pl.val) |bb| v = (v << 8) | bb;
+                            path_len = v;
                         }
                     }
-                    if (dns_len > 0) san_result = .{ .dns = dns_list[0..dns_len] };
                 }
-                // id-ce-basicConstraints = 2.5.29.19
-                if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x13) {
-                    var bd = asn1.Decoder.init(inner);
-                    const bc_seq = bd.readSequence() catch continue;
-                    var b2 = asn1.Decoder.init(bc_seq);
-                    var ca = false;
-                    var path_len: ?u32 = null;
-                    const tlv_ca = b2.readTLV() catch null;
-                    if (tlv_ca) |t| {
-                        // BOOLEAN TRUE is 0xff or 0x01 depending on encoder; accept any non-zero
-                        if (asn1.tagClass(t.tag) == .universal and asn1.tagNumber(t.tag) == 1 and t.val.len >= 1) ca = (t.val[0] != 0);
-                        const tlv_pl = b2.readTLV() catch null;
-                        if (tlv_pl) |pl| {
-                            if (asn1.tagClass(pl.tag) == .universal and asn1.tagNumber(pl.tag) == 2) {
-                                // Parse small integer
-                                var v: u32 = 0;
-                                for (pl.val) |bb| v = (v << 8) | bb;
-                                path_len = v;
-                            }
-                        }
+                basic_res = .{ .ca = ca, .path_len = path_len };
+            }
+
+            // id-ce-keyUsage = 2.5.29.15
+            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x0f) {
+                var kd = asn1.Decoder.init(inner);
+                const bits = kd.readBitString() catch continue;
+                var mask: u16 = 0;
+                for (bits, 0..) |b, idx| {
+                    const shift: u4 = @intCast((bits.len - 1 - idx) * 8);
+                    mask |= @as(u16, @intCast(b)) << shift;
+                }
+                ku_res = .{ .bits = mask };
+            }
+
+            // id-ce-extKeyUsage = 2.5.29.37
+            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x25) {
+                var ed2 = asn1.Decoder.init(inner);
+                const seq2 = ed2.readSequence() catch continue;
+                var e2 = asn1.Decoder.init(seq2);
+                var server_auth = false;
+                var ocsp_signing = false;
+                while (true) {
+                    const oid2 = e2.readOID() catch break;
+                    if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01 })) {
+                        server_auth = true;
+                    } else if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x09 })) {
+                        ocsp_signing = true;
                     }
-                    basic_res = .{ .ca = ca, .path_len = path_len };
                 }
-                // id-ce-keyUsage = 2.5.29.15
-                if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x0f) {
-                    var kd = asn1.Decoder.init(inner);
-                    const bits = kd.readBitString() catch continue;
-                    var mask: u16 = 0;
-                    // bits[0] is first 8 bits (MSB first) after 'unused bits' removal handled in readBitString
-                    for (bits, 0..) |b, idx| {
-                        const shift: u4 = @intCast((bits.len - 1 - idx) * 8);
-                        mask |= @as(u16, @intCast(b)) << shift;
-                    }
-                    ku_res = .{ .bits = mask };
-                }
-                // id-ce-extKeyUsage = 2.5.29.37; serverAuth = 1.3.6.1.5.5.7.3.1 (2B 06 01 05 05 07 03 01)
-                if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x25) {
-                    var ed2 = asn1.Decoder.init(inner);
-                    const seq2 = ed2.readSequence() catch continue;
-                    var e2 = asn1.Decoder.init(seq2);
-                    var server_auth = false;
-                    while (true) {
-                        const oid2 = e2.readOID() catch break;
-                        if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01 })) {
-                            server_auth = true;
-                        }
-                    }
-                    eku_res = .{ .server_auth = server_auth };
-                }
+                eku_res = .{ .server_auth = server_auth, .ocsp_signing = ocsp_signing };
             }
         }
     }
@@ -589,8 +641,12 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     const subject: Name = .{ .cn = subj_cn };
     const tbs_start: usize = @intCast(tbs_off_begin);
     const tbs_bytes = der[tbs_start .. tbs_start + tbs_len];
+
     return .{
         .tbs = tbs_bytes,
+        .issuer_der = issuer_der,
+        .subject_der = subject_der,
+        .serial_number = serial_bytes,
         .subject = subject,
         .san = san_result,
         .basic = basic_res,
@@ -598,7 +654,7 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
         .eku = eku_res,
         .not_before_unix = not_before,
         .not_after_unix = not_after,
-        .spki = spki_tlv.val,
+        .spki = spki_bytes,
     };
 }
 
@@ -822,6 +878,34 @@ fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const
     return false;
 }
 
+/// Extract the subjectPublicKey BIT STRING bytes from a DER-encoded SPKI structure.
+///
+/// Returns a slice referencing `spki_der` containing the raw subjectPublicKey
+/// value (without the unused-bits prefix byte). The caller must ensure the
+/// lifetime of `spki_der` covers the returned slice.
+pub fn subjectPublicKeyBytes(spki_der: []const u8) ![]const u8 {
+    var d = asn1.Decoder.init(spki_der);
+    const seq = try d.readSequence();
+    var inner = asn1.Decoder.init(seq);
+    _ = try inner.readSequence(); // AlgorithmIdentifier
+    return inner.readBitString();
+}
+
+/// Verify that `cert_der` is signed by `issuer` using the issuer SPKI.
+///
+/// Requires the parsed `Certificate` view for the subject so that TBSCertificate
+/// bytes can be supplied without re-parsing. Returns false on any parsing or
+/// signature verification failure.
+pub fn verifyCertificateSignedBy(cert: *const Certificate, cert_der: []const u8, issuer: *const Certificate) bool {
+    const parsed = parseCertSignature(cert_der) catch return false;
+    return verifyCertSig(issuer.spki, cert.tbs, parsed.algo_oid, parsed.sig_der);
+}
+
+/// Verify a DER signature over the provided TBSCertificate-compatible bytes using an SPKI.
+pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oid: []const u8, sig_der: []const u8) bool {
+    return verifyCertSig(spki_der, signed, algo_oid, sig_der);
+}
+
 /// Validate a complete X.509 certificate chain for TLS server authentication.
 ///
 /// Performs full RFC 5280 §6 certification path validation for a TLS server
@@ -913,34 +997,36 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
 
     // Leaf checks
     try checkValidity(now_unix, &certs[0]);
-    if (!matchDnsName(&certs[0], server_name)) return error.NameMismatch;
+    if (server_name.len != 0 and !matchDnsName(&certs[0], server_name)) return error.NameMismatch;
     if (certs[0].eku) |eku| if (!eku.server_auth) return error.EkuNotAllowed;
     if (certs[0].ku) |ku| {
         // Require digitalSignature bit when KeyUsage present (RFC 5280 §4.2.1.3)
-        // Our bitstring packs MSB of first byte as highest mask bit (0x8000 when 2 bytes).
-        if ((ku.bits & 0x8000) == 0) return error.KuNotAllowed;
+        if (!keyUsageHas(ku, key_usage_digital_signature)) return error.KuNotAllowed;
+    }
+    if (certs[0].basic) |b| {
+        // End-entity certificates must not assert CA=true (RFC 5280 §4.2.1.9)
+        if (b.ca) return error.BasicConstraints;
     }
 
     // Intermediates must be CA and within pathLenConstraint
-    var max_path: ?u32 = null;
-    var depth: u32 = 0;
     i = 1;
     while (i < certs.len) : (i += 1) {
-        depth += 1;
         const c = certs[i];
         // BasicConstraints CA required for all but leaf
         if (c.basic) |b| {
             if (!b.ca) return error.BasicConstraints;
-            if (b.path_len) |pl| max_path = if (max_path) |m| @min(m, pl) else pl;
+            if (i != certs.len - 1) {
+                if (b.path_len) |pl| {
+                    const subordinate_cas: u32 = @intCast(i - 1);
+                    if (subordinate_cas > pl) return error.PathLenExceeded;
+                }
+            }
         } else return error.BasicConstraints;
         if (c.ku) |ku| {
-            // Expect keyCertSign (bit 5) present when KU provided; our mask is rough, skip strict check
-            _ = ku;
+            // CA certificates MUST assert keyCertSign when KeyUsage present (RFC 5280 §4.2.1.3)
+            if (!keyUsageHas(ku, key_usage_key_cert_sign)) return error.KuNotAllowed;
         }
         try checkValidity(now_unix, &c);
-        if (max_path) |m| {
-            if (depth > m + 1) return error.PathLenExceeded; // leaf + m intermediates allowed
-        }
     }
 
     // Verify signatures along the chain

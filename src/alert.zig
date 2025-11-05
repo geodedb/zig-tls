@@ -116,6 +116,7 @@ pub fn fromHandshakeError(err: anyerror) AlertDescription {
         error.FinishedVerifyFailed => .decrypt_error,
         error.DowngradeAttempt => .illegal_parameter,
         error.DuplicateClientHello => .unexpected_message,
+        error.PostHandshakeAuthUnsupported => .unexpected_message,
         error.OutOfMemory => .internal_error,
         else => .internal_error,
     };
