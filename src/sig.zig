@@ -1,7 +1,96 @@
-//! Signature parsing and verification helpers for TLS 1.3.
+//! Signature Scheme Handling and Verification for TLS 1.3
 //!
-//! Implements the signature validation rules from RFC 8446 §4.2.3/§4.4.3 used
-//! during QUIC handshakes, covering ECDSA, RSA-PSS, and Ed25519 variants.
+//! Implements digital signature processing for TLS 1.3 CertificateVerify messages
+//! and X.509 certificate chain validation. Supports the signature algorithms
+//! specified in:
+//! - RFC 8446 §4.2.3 (Signature Algorithms Extension)
+//! - RFC 8446 §4.4.3 (Certificate Verify Message)
+//! - RFC 5480 (Elliptic Curve Cryptography Subject Public Key Information)
+//! - RFC 8017 (PKCS #1: RSA Cryptography Specifications - RSA-PSS)
+//! - RFC 8032 (Edwards-Curve Digital Signature Algorithm - Ed25519)
+//! - RFC 3279 (Algorithms and Identifiers for PKIX)
+//!
+//! This module provides:
+//! - SubjectPublicKeyInfo (SPKI) parsing for ECDSA, RSA, and Ed25519 keys
+//! - TLS 1.3 CertificateVerify signature verification with context string
+//! - X.509 certificate signature verification for chain validation
+//! - Signature scheme inference from certificate public keys
+//! - PKCS#8 private key parsing for signature generation (testing/client auth)
+//!
+//! ## Supported Signature Algorithms
+//! ### ECDSA (RFC 5480, RFC 8446 §4.2.3)
+//! - **ecdsa_secp256r1_sha256** (0x0403): ECDSA with P-256 curve and SHA-256
+//! - **ecdsa_secp384r1_sha384** (0x0503): ECDSA with P-384 curve and SHA-384
+//! - Signatures use ASN.1 DER encoding: SEQUENCE { r INTEGER, s INTEGER }
+//!
+//! ### RSA-PSS (RFC 8017, RFC 8446 §4.2.3)
+//! - **rsa_pss_rsae_sha256** (0x0804): RSA-PSS with SHA-256, salt length 32
+//! - Uses RSASSA-PSS signature scheme with MGF1-SHA256 mask generation
+//! - Salt length equals hash output length (32 bytes for SHA-256)
+//!
+//! ### EdDSA (RFC 8032, RFC 8446 §4.2.3)
+//! - **ed25519** (0x0807): Ed25519 pure EdDSA signature
+//! - Signatures are 64 bytes (R || S), no DER encoding
+//!
+//! ## TLS 1.3 CertificateVerify (RFC 8446 §4.4.3)
+//! The CertificateVerify message proves possession of the private key corresponding
+//! to the certificate. The signature is computed over a constructed message:
+//!
+//! ```
+//! digital-signature-content = 0x20 * 64 || context-string || 0x00 || transcript-hash
+//!
+//! context-string (client): "TLS 1.3, client CertificateVerify"
+//! context-string (server): "TLS 1.3, server CertificateVerify"
+//! ```
+//!
+//! This construction prevents cross-protocol attacks and provides domain separation.
+//!
+//! ## SubjectPublicKeyInfo Parsing
+//! Extracts public key material from X.509 SubjectPublicKeyInfo structures:
+//! - **ECDSA**: Parses curve OID and SEC1-encoded public key (uncompressed point)
+//! - **RSA**: Parses RSAPublicKey SEQUENCE containing modulus and exponent
+//! - **Ed25519**: Extracts 32-byte public key from BIT STRING
+//!
+//! ## RFC References
+//! ### TLS 1.3 Signature Processing
+//! - RFC 8446 §4.2.3 - SignatureScheme and supported_signature_algorithms
+//! - RFC 8446 §4.4.3 - CertificateVerify message and signature construction
+//! - RFC 8446 §4.4.2.2 - Certificate public key requirements
+//!
+//! ### Cryptographic Specifications
+//! - RFC 5480 - EC Subject Public Key Information Format
+//! - RFC 8017 - PKCS #1 v2.2: RSA Cryptography (RSA-PSS)
+//! - RFC 8032 - Edwards-Curve Digital Signature Algorithm (Ed25519)
+//! - RFC 3279 - Algorithms and Identifiers for PKIX
+//! - RFC 5758 - Additional Algorithms for PKIX (SHA-256/384/512)
+//!
+//! ### ASN.1 Encoding
+//! - RFC 5280 §4.1.2.7 - SubjectPublicKeyInfo encoding in certificates
+//! - RFC 5958 - Asymmetric Key Packages (PKCS#8 private key format)
+//! - RFC 5915 - Elliptic Curve Private Key Structure (ECPrivateKey)
+//!
+//! ## Security Considerations
+//! - **Signature Verification**: All signature verification uses Zig stdlib crypto
+//!   primitives with constant-time operations where applicable
+//! - **Context String**: TLS 1.3 context string prevents signature reuse across protocols
+//! - **Curve Validation**: Only P-256 and P-384 curves supported; others rejected
+//! - **RSA-PSS Parameters**: Fixed to SHA-256 with 32-byte salt (no parameter negotiation)
+//! - **Ed25519 Domain**: Pure Ed25519 (no Ed25519ph or Ed25519ctx variants)
+//! - **Private Key Handling**: PKCS#8 parsing for testing; production should use HSM/KMS
+//!
+//! ## Design Notes
+//! - Uses Zig standard library crypto: std.crypto.sign.ecdsa, std.crypto.sign.Ed25519
+//! - Minimal big integer arithmetic for RSA-PSS verification (custom implementation)
+//! - ASN.1 parsing via asn1.zig module for DER decoding
+//! - Signature generation primarily for testing and client authentication scenarios
+//! - Production signature generation should use hardware security modules
+//!
+//! ## Future Work
+//! - Additional curves: P-521, X25519 (though not used in TLS signatures)
+//! - RSA-PSS with SHA-384/512 (currently only SHA-256 supported)
+//! - ECDSA with SHA-384 on P-256 (rare but allowed by some implementations)
+//! - Dilithium post-quantum signatures (TLS 1.3 extension draft)
+//! - Hardware-backed signature generation via PKCS#11 or similar
 const std = @import("std");
 const asn1 = @import("asn1");
 
@@ -9,28 +98,114 @@ const asn1 = @import("asn1");
 // https://ziglang.org/documentation/master/std/#std.crypto.sign.Ed25519
 const Ed25519 = std.crypto.sign.Ed25519;
 
-/// Supported TLS 1.3 signature algorithms used by this implementation.
-pub const SigAlg = enum { ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, rsa_pss_sha256, ed25519 };
+/// TLS 1.3 signature algorithms supported by this implementation.
+///
+/// Enum of signature schemes from RFC 8446 §4.2.3 SignatureScheme registry.
+/// These values appear in the signature_algorithms extension and CertificateVerify.
+///
+/// ## RFC References
+/// - RFC 8446 §4.2.3 - SignatureScheme definition and values
+/// - RFC 8446 §B.3.1.3 - SignatureScheme values in TLS registry
+///
+/// ## Supported Algorithms
+/// - `ecdsa_secp256r1_sha256` (0x0403): ECDSA with P-256 and SHA-256
+/// - `ecdsa_secp384r1_sha384` (0x0503): ECDSA with P-384 and SHA-384
+/// - `rsa_pss_sha256` (0x0804): RSA-PSS with SHA-256 and 32-byte salt
+/// - `ed25519` (0x0807): Ed25519 pure signature scheme
+pub const SigAlg = enum {
+    /// ECDSA with NIST P-256 curve and SHA-256 (RFC 8446 §4.2.3, value 0x0403)
+    ecdsa_secp256r1_sha256,
+    /// ECDSA with NIST P-384 curve and SHA-384 (RFC 8446 §4.2.3, value 0x0503)
+    ecdsa_secp384r1_sha384,
+    /// RSA-PSS with SHA-256, MGF1-SHA256, salt=32 (RFC 8446 §4.2.3, value 0x0804)
+    rsa_pss_sha256,
+    /// Ed25519 pure signature (RFC 8446 §4.2.3, value 0x0807)
+    ed25519,
+};
 
-/// Minimal ECDSA public key extracted from SubjectPublicKeyInfo
+/// Parsed ECDSA public key from SubjectPublicKeyInfo.
+///
+/// Represents an elliptic curve public key extracted from the X.509 SPKI structure.
+/// The public key is stored in SEC1 uncompressed format (0x04 || X || Y).
+///
+/// ## RFC References
+/// - RFC 5480 §2 - Elliptic Curve Cryptography Subject Public Key Information
+/// - RFC 5480 §2.2 - Subject Public Key (SEC1 encoding)
+/// - SECG SEC1 v2.0 §2.3.3 - Elliptic-Curve-Point-to-Octet-String Conversion
+///
+/// ## Supported Curves
+/// - **P-256** (secp256r1): OID 1.2.840.10045.3.1.7, 65-byte public key (1 + 32 + 32)
+/// - **P-384** (secp384r1): OID 1.3.132.0.34, 97-byte public key (1 + 48 + 48)
+///
+/// ## Lifetime
+/// The sec1_uncompressed slice is allocated and owned by this struct. Call
+/// `deinit()` to free the memory when done.
 pub const EcdsaSpki = struct {
-    curve_p256: bool, // true for P-256, false for P-384
-    /// SEC1 uncompressed point (0x04 || X || Y)
+    /// True if P-256 curve, false if P-384 curve.
+    /// RFC 5480 §2.1.1 - ECParameters namedCurve identification
+    curve_p256: bool,
+
+    /// SEC1 uncompressed elliptic curve point: 0x04 || X || Y.
+    /// RFC 5480 §2.2 - subjectPublicKey contains ECPoint as BIT STRING
+    /// SECG SEC1 §2.3.3 - Uncompressed form with prefix byte 0x04
     sec1_uncompressed: []const u8,
+
+    /// Allocator used for sec1_uncompressed buffer.
     allocator: std.mem.Allocator,
-    /// Free allocated buffers and invalidate the struct.
+
+    /// Free allocated public key buffer and invalidate the struct.
+    ///
+    /// ## Security Considerations
+    /// This does NOT zeroize the public key (public keys are not secret).
+    /// Call this when done with the SPKI to free memory.
     pub fn deinit(self: *EcdsaSpki) void {
         self.allocator.free(self.sec1_uncompressed);
         self.* = undefined;
     }
 };
 
-/// Minimal RSA public key extracted from SubjectPublicKeyInfo
+/// Parsed RSA public key from SubjectPublicKeyInfo.
+///
+/// Represents an RSA public key extracted from the X.509 SPKI structure.
+/// Contains the modulus (n) and public exponent (e) for RSA operations.
+///
+/// ## RFC References
+/// - RFC 3279 §2.3.1 - RSA Keys (rsaEncryption OID 1.2.840.113549.1.1.1)
+/// - RFC 8017 §A.1.1 - RSAPublicKey ASN.1 structure
+///
+/// ## RSAPublicKey Structure
+/// ```
+/// RSAPublicKey ::= SEQUENCE {
+///     modulus           INTEGER,  -- n
+///     publicExponent    INTEGER   -- e
+/// }
+/// ```
+///
+/// ## Typical Values
+/// - Modulus: 2048-bit (256 bytes) or 4096-bit (512 bytes), big-endian
+/// - Exponent: Usually 65537 (0x010001), limited to 64-bit in this implementation
+///
+/// ## Lifetime
+/// The modulus slice is allocated and owned by this struct. Call `deinit()`
+/// to free the memory when done.
 pub const RsaSpki = struct {
-    modulus: []const u8, // big-endian
-    exponent: u64, // limited to 64-bit for simplicity
+    /// RSA modulus (n) in big-endian byte encoding.
+    /// RFC 8017 §A.1.1 - Modulus n = p * q (product of two primes)
+    modulus: []const u8,
+
+    /// RSA public exponent (e), typically 65537.
+    /// RFC 8017 §A.1.1 - Public exponent e with 1 < e < n
+    /// Limited to 64-bit for simplicity (sufficient for standard exponents)
+    exponent: u64,
+
+    /// Allocator used for modulus buffer.
     allocator: std.mem.Allocator,
-    /// Free allocated buffers and invalidate the struct.
+
+    /// Free allocated modulus buffer and invalidate the struct.
+    ///
+    /// ## Security Considerations
+    /// This does NOT zeroize the modulus (public keys are not secret).
+    /// Call this when done with the SPKI to free memory.
     pub fn deinit(self: *RsaSpki) void {
         self.allocator.free(self.modulus);
         self.* = undefined;
@@ -381,8 +556,87 @@ fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []cons
     return std.mem.eql(u8, H, &Hp);
 }
 
-/// Verify a TLS 1.3 CertificateVerify signature given algorithm, SPKI (DER), signature,
-/// the TLS context string, and transcript hash; returns true on success.
+/// Verify a TLS 1.3 CertificateVerify signature.
+///
+/// Verifies the digital signature from a TLS 1.3 CertificateVerify message,
+/// which proves possession of the private key corresponding to the certificate.
+///
+/// ## TLS 1.3 Signature Construction (RFC 8446 §4.4.3)
+/// The signature is computed over a specially constructed message:
+/// ```
+/// content = 0x20 * 64 || context || 0x00 || transcript_hash
+/// signature = Sign(private_key, content)
+/// ```
+///
+/// This construction provides:
+/// - **Transcript binding**: Signature covers handshake transcript hash
+/// - **Context separation**: Different contexts prevent cross-protocol attacks
+/// - **Replay prevention**: Unique transcript hash prevents signature reuse
+///
+/// ## Parameters
+/// - `alg`: Signature algorithm (ECDSA, RSA-PSS, or Ed25519)
+/// - `pubkey_spki_der`: DER-encoded SubjectPublicKeyInfo from certificate
+/// - `sig`: Signature bytes (DER-encoded for ECDSA, raw for Ed25519/RSA-PSS)
+/// - `context`: TLS 1.3 context string:
+///   - Client: "TLS 1.3, client CertificateVerify" (33 bytes)
+///   - Server: "TLS 1.3, server CertificateVerify" (33 bytes)
+/// - `transcript_hash`: SHA-256/SHA-384 hash of all handshake messages up to CertificateVerify
+///
+/// ## Returns
+/// - `true` if signature verification succeeds
+/// - `false` if signature is invalid (wrong key, tampered data, or bad signature)
+///
+/// ## Errors
+/// Returns errors for:
+/// - Malformed SPKI or signature encoding
+/// - Unsupported algorithm parameters
+/// - Curve/key size mismatches
+/// - Memory allocation failures
+///
+/// ## RFC References
+/// - RFC 8446 §4.4.3 - CertificateVerify message structure and signature
+/// - RFC 8446 §4.4.3 - Digital signature content construction
+/// - RFC 8446 §4.2.3 - SignatureScheme values and requirements
+/// - RFC 5480 - ECDSA signature verification
+/// - RFC 8017 §8.1 - RSASSA-PSS signature verification
+/// - RFC 8032 §5.1.7 - Ed25519 signature verification
+///
+/// ## Algorithm-Specific Details
+/// ### ECDSA (P-256/SHA-256, P-384/SHA-384)
+/// - Signature: DER-encoded SEQUENCE { r INTEGER, s INTEGER }
+/// - Hash: SHA-256 for P-256, SHA-384 for P-384
+/// - Verification via std.crypto.sign.ecdsa.Ecdsa
+///
+/// ### RSA-PSS (SHA-256)
+/// - Signature: Raw signature bytes (modulus length)
+/// - Hash: SHA-256
+/// - Salt length: 32 bytes (matches hash length)
+/// - MGF: MGF1-SHA256
+/// - Verification via custom PSS implementation
+///
+/// ### Ed25519
+/// - Signature: 64 bytes (R || S), no DER encoding
+/// - Pure Ed25519 (no hash-then-sign, signature algorithm handles hashing)
+/// - Verification via std.crypto.sign.Ed25519
+///
+/// ## Security Considerations
+/// - Signature verification uses constant-time operations where available
+/// - Context string prevents signature reuse in different protocols
+/// - Transcript hash binding prevents man-in-the-middle attacks
+/// - Public key validation is implicit in verification (invalid keys cause failure)
+/// - Returns false on ANY verification failure (do not distinguish failure modes)
+///
+/// ## Usage Example
+/// ```zig
+/// const ok = try verifyCertificateVerify(
+///     .ecdsa_secp256r1_sha256,
+///     cert.spki,
+///     signature_from_cert_verify,
+///     "TLS 1.3, server CertificateVerify",
+///     transcript_hash_sha256
+/// );
+/// if (!ok) return error.BadCertificateVerify;
+/// ```
 pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []const u8, context: []const u8, transcript_hash: []const u8) !bool {
     switch (alg) {
         .ed25519 => {

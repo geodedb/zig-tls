@@ -1,0 +1,252 @@
+name: CI
+
+on:
+  push:
+    branches: [main, '**']
+  pull_request:
+    branches: ['**']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.os }}-${{ matrix.arch }}, zig ${{ matrix.zig }})
+    runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu24-full
+            arch: x64
+            runner: runner=2cpu-linux-x64
+          - os: ubuntu24-full
+            arch: arm64
+            runner: runner=2cpu-linux-arm64
+          - os: windows22-full
+            arch: x64
+            runner: image=windows22-full-x64/family=m7i
+        zig: ['0.15.1']
+
+    steps:
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Setup Zig 0.15.1
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Zig version
+        run: zig version
+
+      - name: Build and Test
+        run: make
+
+      - name: Upload artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcap-${{ runner.os }}-zig-${{ matrix.zig }}
+          path: |
+            zig-out/bin/
+            zig-out/lib/
+            include/
+          retention-days: 7
+
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Setup Zig 0.15.1
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Full CI build and test
+        run: make
+
+      - name: Ensure GAP updated when code changes
+        if: github.event_name == 'pull_request'
+        run: |
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}... | grep -E '\.(zig|zon|yml)$' || true)
+          if [ -n "$CHANGED" ]; then
+            echo "Code changes detected:"
+            echo "$CHANGED"
+            echo "Checking GAP.md update..."
+            git diff --name-only origin/${{ github.base_ref }}... | grep -q docs/GAP.md || { echo "GAP.md not updated"; exit 1; }
+            zig build tools
+            ./zig-out/bin/update-gap --summary "CI: code changed in PR"
+          fi
+
+  cross-builds:
+    name: Cross builds (${{ matrix.archive_os }}-${{ matrix.archive_arch }})
+    runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: runner=2cpu-linux-x64
+            target: arm-linux-gnueabihf
+            archive_os: linux
+            archive_arch: arm
+          - runner: runner=2cpu-linux-x64
+            target: aarch64-linux-gnu
+            archive_os: linux
+            archive_arch: arm64
+          - runner: runner=2cpu-linux-x64
+            target: riscv64-linux-gnu
+            archive_os: linux
+            archive_arch: riscv64
+          - runner: image=windows22-full-x64/family=m7i
+            target: aarch64-windows-msvc
+            archive_os: windows
+            archive_arch: arm64
+        zig: ['0.15.1']
+    steps:
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Setup Zig 0.15.1
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Zig version
+        run: zig version
+
+      - name: Build (cross)
+        run: make build ZIG_FLAGS='-Dtarget=${{ matrix.target }}'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcap-${{ matrix.archive_os }}-${{ matrix.archive_arch }}-zig-${{ matrix.zig }}
+          path: |
+            zig-out/bin/
+            zig-out/lib/
+            include/
+          retention-days: 7
+
+  cross-builds-macos:
+    name: Cross builds (macos-x86_64)
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        zig: ['0.15.1']
+    steps:
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Setup Zig 0.15.1
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.1
+      - name: Zig version
+        run: zig version
+      - name: Build (cross)
+        run: make build ZIG_FLAGS='-Dtarget=x86_64-macos'
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcap-macos-x86_64-zig-${{ matrix.zig }}
+          path: |
+            zig-out/bin/
+            zig-out/lib/
+            include/
+          retention-days: 7
+
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu24-full
+            arch: x64
+            runner: runner=2cpu-linux-x64
+          - os: ubuntu24-full
+            arch: arm64
+            runner: runner=2cpu-linux-arm64
+          - os: windows22-full
+            arch: x64
+            runner: image=windows22-full-x64/family=m7i
+        zig: [0.15.1]
+    runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
+    steps:
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+      - name: Build and test
+        run: make ci
+      - name: Cross-compilation check (primary targets)
+        run: make cross-compile-quick
+      - name: Ensure GAP updated on code changes
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          if git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }} | grep -E '\\.(zig|zon|md|yml)$' >/dev/null; then
+            if ! git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }} | grep -E '^docs/GAP.md$' >/dev/null; then
+              echo "GAP.md not updated for code changes" >&2
+              exit 1
+            fi
+          fi
+
+  build-test-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14]
+        zig: [0.15.1]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+      - name: Build and test
+        run: make ci
+      - name: Cross-compilation check (primary targets)
+        run: make cross-compile-quick
+      - name: Ensure GAP updated on code changes
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          if git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }} | grep -E '\\.(zig|zon|md|yml)$' >/dev/null; then
+            if ! git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }} | grep -E '^docs/GAP.md$' >/dev/null; then
+              echo "GAP.md not updated for code changes" >&2
+              exit 1
+            fi
+          fi

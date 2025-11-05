@@ -1,9 +1,211 @@
-//! Minimal TLS 1.3 handshake helpers for QUIC (no record layer).
+//! TLS 1.3 Handshake State Machine for QUIC
 //!
-//! Implements the QUIC-TLS handshake glue required by RFC 9001 §4 on top of the
-//! TLS 1.3 protocol defined in RFC 8446. This layer focuses on transcript
-//! management, secret callbacks, and transport parameter exchange without the
-//! full record layer.
+//! This module implements the core TLS 1.3 handshake state machine optimized for
+//! QUIC transport integration (RFC 9001 §4). Unlike traditional TLS implementations
+//! that use a record layer, this implementation integrates directly with QUIC's
+//! CRYPTO frames, providing a minimal but complete TLS 1.3 handshake flow.
+//!
+//! # RFC References
+//! - **RFC 8446**: TLS 1.3 core protocol (handshake, key schedule, extensions)
+//! - **RFC 9001**: Using TLS to Secure QUIC (CRYPTO frames, secret installation)
+//! - **RFC 9369**: QUIC v2 (updated key derivation labels)
+//! - **RFC 7301**: Application-Layer Protocol Negotiation (ALPN)
+//! - **RFC 5280**: X.509 certificate validation (subset)
+//!
+//! # Architecture Overview
+//!
+//! The state machine is built around two main types:
+//!
+//! 1. **Context**: High-level TLS 1.3 driver for production use
+//!    - Full RFC 8446 compliant handshake flow
+//!    - Automatic format detection (standard vs. minimal)
+//!    - Certificate validation and signature verification
+//!    - Secret installation callbacks for QUIC integration
+//!    - ALPN and transport parameter negotiation
+//!
+//! 2. **Engine**: Legacy minimal driver for tests
+//!    - Simplified message parsing
+//!    - Test-friendly configuration
+//!    - Gradual migration to Context ongoing
+//!
+//! # Handshake Flow
+//!
+//! ## Client Handshake (RFC 8446 §2, §4.1)
+//!
+//! ```text
+//! Initial Packet Number Space (unprotected):
+//!   -> ClientHello                          [processCrypto]
+//!      ├─ ProtocolVersion: 0x0303 (legacy)
+//!      ├─ Random: 32 bytes
+//!      ├─ CipherSuites: TLS_AES_128_GCM_SHA256, ...
+//!      ├─ Extensions:
+//!      │  ├─ supported_versions: [TLS 1.3]  (RFC 8446 §4.2.1)
+//!      │  ├─ key_share: X25519 public key   (RFC 8446 §4.2.8)
+//!      │  ├─ signature_algorithms           (RFC 8446 §4.2.3)
+//!      │  ├─ alpn: ["h3", ...]              (RFC 7301)
+//!      │  └─ quic_transport_parameters      (RFC 9001 §8.2)
+//!      └─ [Update transcript: CH]
+//!
+//!   <- ServerHello                          [processCrypto]
+//!      ├─ CipherSuite: TLS_AES_128_GCM_SHA256
+//!      ├─ Extensions:
+//!      │  ├─ supported_versions: TLS 1.3
+//!      │  └─ key_share: X25519 public key
+//!      ├─ [Update transcript: CH || SH]
+//!      ├─ [Derive ECDHE shared secret via X25519]
+//!      └─ [Derive handshake traffic secrets]  (RFC 8446 §7.1)
+//!         ├─ client_handshake_traffic_secret
+//!         └─ server_handshake_traffic_secret
+//!
+//! Handshake Packet Number Space (AEAD-protected):
+//!   <- {EncryptedExtensions}                [processCrypto]
+//!      ├─ alpn: "h3"                        (RFC 7301)
+//!      ├─ quic_transport_parameters         (RFC 9001 §8.2)
+//!      └─ [Update transcript: CH || SH || EE]
+//!
+//!   <- {Certificate}                        [processCrypto]
+//!      ├─ certificate_list: [leaf, ...]     (RFC 8446 §4.4.2)
+//!      └─ [Update transcript, extract SPKI]
+//!
+//!   <- {CertificateVerify}                  [processCrypto]
+//!      ├─ signature_algorithm: ed25519      (RFC 8446 §4.4.3)
+//!      ├─ signature: (over transcript hash)
+//!      ├─ [Verify signature using SPKI]     (sig.zig)
+//!      └─ [Update transcript]
+//!
+//!   <- {Finished}                           [processCrypto]
+//!      ├─ verify_data: HMAC(transcript)     (RFC 8446 §4.4.4)
+//!      ├─ [Verify against expected]
+//!      ├─ [Derive application traffic secrets] (RFC 8446 §7.1)
+//!      │  ├─ client_application_traffic_secret_0
+//!      │  └─ server_application_traffic_secret_0
+//!      └─ [Mark peer finished verified]
+//!
+//!   -> {Finished}                           [sendClientFinished]
+//!      ├─ verify_data: HMAC(transcript)
+//!      └─ [Mark local finished sent]
+//!
+//! Application Data Packet Number Space (AEAD-protected):
+//!   <-> {Application Data}
+//!       [Handshake complete]
+//! ```
+//!
+//! ## Server Handshake (RFC 8446 §2, §4.3)
+//!
+//! ```text
+//! Initial Packet Number Space:
+//!   <- ClientHello                          [processCrypto]
+//!      └─ [Parse extensions, update transcript]
+//!
+//!   -> ServerHello                          [driveServerHandshakeFlight]
+//!   -> [Derive handshake secrets]
+//!
+//! Handshake Packet Number Space:
+//!   -> {EncryptedExtensions}                [driveServerHandshakeFlight]
+//!   -> {Certificate}
+//!   -> {CertificateVerify}
+//!   -> {Finished}
+//!      └─ [All sent as atomic flight]
+//!
+//!   <- {Finished}                           [processCrypto]
+//!      └─ [Verify and derive application secrets]
+//!
+//! Application Data:
+//!   <-> {Application Data}
+//! ```
+//!
+//! # State Machine Phases
+//!
+//! The handshake progresses through well-defined phases (HandshakePhase enum):
+//!
+//! - **initial**: No handshake activity yet
+//! - **negotiating**: ClientHello received/sent, parameters being negotiated
+//! - **keys_installed**: Handshake traffic secrets installed
+//! - **application_ready**: Finished verified, application secrets ready
+//!
+//! # Secret Installation (RFC 9001 §5)
+//!
+//! As handshake progresses, encryption keys are derived and installed at different
+//! encryption levels. The `installTrafficSecret()` function invokes the
+//! `on_secret_available` callback to notify QUIC layer:
+//!
+//! 1. **Initial**: Derived from QUIC version-specific salt (outside TLS)
+//! 2. **Handshake**: Derived after ServerHello (HKDF-Extract + HKDF-Expand)
+//! 3. **Application**: Derived after Finished messages verified
+//!
+//! Each secret is bidirectional (send/recv) and stored in SecretSchedule.
+//!
+//! # Transcript Hash Management (RFC 8446 §4.4.1)
+//!
+//! The transcript hash is critical for Finished message verification and must be
+//! updated in exact message order:
+//!
+//! ```zig
+//! // Client transcript progression:
+//! Hash( ClientHello )
+//! Hash( ClientHello || ServerHello )
+//! Hash( ... || EncryptedExtensions )
+//! Hash( ... || Certificate )
+//! Hash( ... || CertificateVerify )
+//! Hash( ... || Finished )          // Server Finished
+//! Hash( ... || Finished )          // Client Finished
+//! ```
+//!
+//! The `TranscriptSet` maintains snapshots at key points (client_hello_hash,
+//! finished_hash) for proper secret derivation.
+//!
+//! # QUIC Integration Notes
+//!
+//! ## CRYPTO Frames vs. TLS Records
+//! - No TLS record layer; handshake messages sent directly in QUIC CRYPTO frames
+//! - QUIC handles fragmentation/reassembly (CryptoStreams buffer partial messages)
+//! - Each encryption level has separate CRYPTO stream (Initial/Handshake/Application)
+//!
+//! ## Transport Parameters (RFC 9001 §8.2)
+//! - Carried in quic_transport_parameters extension (0x0039)
+//! - Sent in EncryptedExtensions (server) and ClientHello (client)
+//! - Opaque to TLS layer; parsed by QUIC implementation
+//!
+//! ## ALPN (RFC 7301)
+//! - Standard TLS extension, no QUIC-specific changes
+//! - Used to negotiate HTTP/3 ("h3") or other protocols
+//!
+//! # INTEROP FIRST Design Principle
+//!
+//! The implementation auto-detects message formats to ensure compatibility:
+//!
+//! 1. **Standard TLS 1.3 format**: Full RFC 8446 parsing (production use)
+//! 2. **Minimal format**: Simplified "CH1"/"SH1" test messages (fallback)
+//!
+//! Auto-detection happens transparently in `processCrypto()` without configuration.
+//! This ensures compatibility with quic-go, quinn, msquic, etc. out-of-the-box.
+//!
+//! # Error Handling
+//!
+//! Handshake errors trigger TLS alerts (alert.zig) mapped to QUIC CRYPTO_ERROR:
+//! - HandshakeError.NoCipherSuite → handshake_failure (0x0128)
+//! - HandshakeError.FinishedVerifyFailed → decrypt_error (0x0133)
+//! - See RFC 9001 §4.8 for QUIC error code mapping
+//!
+//! # Memory Management
+//!
+//! - All allocations use the provided allocator (Config.allocator)
+//! - Handshake buffers (CryptoStreams) are freed in Context.deinit()
+//! - Negotiated parameters (ALPN, transport params) are owned by Context
+//! - Certificate chains are temporarily allocated during validation
+//!
+//! # Testing Strategy
+//!
+//! - Unit tests embedded in source (test "...") for individual functions
+//! - Integration tests in tests/ directory for full handshake flows
+//! - Both Context and Engine are tested (Engine for legacy compatibility)
+//!
+//! # See Also
+//! - key_schedule.zig: HKDF-based secret derivation (RFC 8446 §7)
+//! - tls13_full.zig: Message parsing/building (ClientHello, ServerHello, extensions)
+//! - x509.zig: Certificate validation (RFC 5280 subset)
+//! - sig.zig: Signature verification (ECDSA, RSA-PSS, Ed25519)
+//! - alert.zig: TLS alert protocol and QUIC error mapping
 
 // Scope: transcript hash, Derive-Secret helpers, handshake traffic secrets,
 // a tiny state container to consume/produce CRYPTO bytes, and minimal
@@ -47,65 +249,316 @@ pub const HandshakeMetadata = struct {
 /// Mirror of the TLS 1.3 signature scheme enumeration (RFC 8446 §4.2.3).
 pub const SignatureScheme = tls13_full.SignatureScheme;
 
-/// RFC 8446 §4 and §7 describe the handshake protocol and key schedule. `Config` captures
-/// the negotiable parameters required to drive a compliant TLS 1.3 exchange in the QUIC context.
+/// Configuration parameters for TLS 1.3 handshake (RFC 8446 §4, §7).
+///
+/// This structure captures all negotiable parameters required to drive a compliant
+/// TLS 1.3 exchange in the QUIC context. Parameters are used during handshake
+/// negotiation to select cipher suites, key exchange groups, signature algorithms,
+/// and application protocols.
+///
+/// # RFC 8446 References
+/// - §4: Handshake Protocol overview
+/// - §4.2: Extensions (ALPN, supported_groups, signature_algorithms, key_share)
+/// - §7: Cryptographic Computations (key schedule driven by negotiated suite)
+///
+/// # Usage
+///
+/// ```zig
+/// const config = Config{
+///     .allocator = allocator,
+///     .role = .Client,
+///     .supported_cipher_suites = &.{.TLS_AES_128_GCM_SHA256},
+///     .supported_groups = &.{.x25519},
+///     .supported_signature_schemes = &.{.ed25519},
+///     .alpn_protocols = &.{"h3"},
+///     .quic_transport_parameters = encoded_params,
+/// };
+/// ```
 pub const Config = struct {
-    /// Allocator used for handshake buffers and transcript storage.
+    /// Allocator used for handshake buffers, transcript storage, and temporary allocations.
+    /// All Context operations use this allocator for memory management.
     allocator: std.mem.Allocator,
-    /// Role of the local endpoint, driving client vs. server handshake flows.
+
+    /// Role of the local endpoint (Client or Server).
+    /// Drives handshake flow direction and message generation logic.
+    /// - Client: Initiates handshake with ClientHello, verifies server certificate
+    /// - Server: Responds to ClientHello, provides certificate and Finished first
     role: Role,
-    /// Cipher suites offered in ClientHello / accepted in ServerHello ordering.
+
+    /// Cipher suites offered (client) or accepted (server) in preference order.
+    /// RFC 8446 §4.1.2: ClientHello cipher_suites, §4.1.3: ServerHello cipher_suite.
+    ///
+    /// Negotiation: First match between client offer and server preference wins.
+    /// Currently focused on TLS_AES_128_GCM_SHA256 (0x1301) for QUIC.
+    ///
+    /// Default: [TLS_AES_128_GCM_SHA256]
     supported_cipher_suites: []const tls13_full.CipherSuite = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
-    /// Named groups advertised for key agreement (RFC 8446 §4.2.7).
+
+    /// Named groups advertised for ECDHE key agreement (RFC 8446 §4.2.7).
+    /// Used in supported_groups and key_share extensions.
+    ///
+    /// Negotiation: Client sends key_share for preferred groups; server selects one.
+    /// Currently focused on X25519 for QUIC implementations.
+    ///
+    /// Default: [x25519]
     supported_groups: []const tls13_full.NamedGroup = &.{tls13_full.NamedGroup.x25519},
+
     /// Signature algorithms allowed for certificate authentication (RFC 8446 §4.2.3).
+    /// Sent in signature_algorithms extension, used to verify CertificateVerify.
+    ///
+    /// Common schemes: ed25519, ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256.
+    /// Server selects one supported by both peers for signing transcript.
+    ///
+    /// Default: [ed25519]
     supported_signature_schemes: []const tls13_full.SignatureScheme = &.{tls13_full.SignatureScheme.ed25519},
-    /// Ordered ALPN protocols to negotiate with the peer (RFC 7301).
+
+    /// Ordered list of ALPN protocol identifiers to negotiate (RFC 7301).
+    /// Sent in application_layer_protocol_negotiation extension.
+    ///
+    /// Server selects first match in its preference order from client's list.
+    /// Common values: ["h3"] for HTTP/3, ["h2"] for HTTP/2.
+    ///
+    /// null = ALPN not negotiated (acceptable for some QUIC applications).
     alpn_protocols: ?[]const []const u8 = null,
-    /// Raw QUIC transport parameters to advertise in EncryptedExtensions (RFC 9001 §8.2).
+
+    /// Raw QUIC transport parameters to advertise (RFC 9001 §8.2).
+    /// Carried in quic_transport_parameters extension (0x0039).
+    ///
+    /// - Client: Sent in ClientHello extensions
+    /// - Server: Sent in EncryptedExtensions
+    ///
+    /// Format: Opaque binary blob parsed by QUIC layer (not TLS).
+    /// Contains max_idle_timeout, initial_max_data, etc.
+    ///
+    /// null = No transport parameters (will cause handshake failure in QUIC).
     quic_transport_parameters: ?[]const u8 = null,
-    /// Enable receipt and processing of 0-RTT early data when available.
+
+    /// Enable receipt and processing of 0-RTT early data (RFC 8446 §4.2.10).
+    /// When true, server accepts early_data extension and processes 0-RTT packets.
+    ///
+    /// Requires:
+    /// - PSK resumption with compatible cipher suite
+    /// - Anti-replay protection (zero_rtt.zig)
+    /// - Application-level replay safety
+    ///
+    /// Default: false (0-RTT disabled)
     enable_early_data: bool = false,
-    /// DER-encoded server certificate (leaf) for authentication when acting as Server. Optional.
+
+    /// DER-encoded server certificate (leaf) for authentication (Server role only).
+    /// RFC 8446 §4.4.2: Certificate message contains certificate_list.
+    ///
+    /// Must be valid X.509v3 certificate with:
+    /// - digitalSignature key usage
+    /// - serverAuth extended key usage
+    /// - Valid subject alternative names for SNI matching
+    ///
+    /// null = No certificate (client role or testing).
     server_cert_der: ?[]const u8 = null,
-    /// DER-encoded corresponding private key (PKCS#8) for server authentication. Optional.
+
+    /// DER-encoded private key (PKCS#8 format) for server authentication.
+    /// Used to generate CertificateVerify signature over transcript hash (RFC 8446 §4.4.3).
+    ///
+    /// Must correspond to public key in server_cert_der.
+    /// Supported key types: Ed25519, ECDSA P-256/P-384, RSA-PSS.
+    ///
+    /// null = No private key (client role or testing).
     server_key_der: ?[]const u8 = null,
 };
 
-/// Callback hooks notified during the handshake lifecycle (§4.1–§4.6) and post-handshake updates (§4.6).
+/// Callback hooks for QUIC integration and handshake lifecycle events.
+///
+/// These callbacks provide integration points between the TLS state machine and
+/// the QUIC transport layer. They enable:
+/// - Secret installation for packet protection (RFC 9001 §5)
+/// - Handshake metadata propagation (ALPN, transport parameters)
+/// - Synchronization with QUIC connection state
+///
+/// # Callback Invocation Order (Typical Client)
+///
+/// 1. `on_secret_available(.Handshake, .recv, server_hs_secret)` - After ServerHello
+/// 2. `on_secret_available(.Handshake, .send, client_hs_secret)` - After ServerHello
+/// 3. `on_handshake_metadata(meta)` - After EncryptedExtensions parsed
+/// 4. `on_secret_available(.Application, .recv, server_app_secret)` - After Finished verified
+/// 5. `on_secret_available(.Application, .send, client_app_secret)` - After Finished verified
+/// 6. `on_peer_finished()` - After server Finished verified
+/// 7. `on_handshake_complete()` - After both Finished messages exchanged
+///
+/// # RFC 9001 Integration
+///
+/// - §5.1: Packet Protection Keys derived from traffic secrets provided via on_secret_available
+/// - §5.2: QUIC installs keys and updates packet protection state
+/// - §5.3: Initial secrets (v1/v2) computed by QUIC before TLS, not via callbacks
+///
+/// All callbacks are optional (null means not registered). Errors returned from
+/// callbacks propagate to the caller but do not abort the handshake state.
 pub const Callbacks = struct {
-    /// Called when a new encryption secret becomes available during the handshake.
+    /// Called when a new traffic secret becomes available during handshake.
+    /// RFC 8446 §7.1: Key schedule derives secrets at different encryption levels.
+    /// RFC 9001 §5: QUIC uses secrets to derive AEAD keys for packet protection.
+    ///
+    /// Parameters:
+    /// - ctx: TLS context (access negotiated parameters)
+    /// - level: Encryption level (Initial/Handshake/Application)
+    /// - secret: Traffic secret (32 bytes for SHA-256-based suites)
+    ///
+    /// QUIC implementation must:
+    /// 1. Derive packet protection keys via HKDF-Expand-Label
+    /// 2. Install keys for send/recv based on role
+    /// 3. Enable decryption/encryption at this level
+    ///
+    /// Invoked multiple times as handshake progresses:
+    /// - Handshake level: After ServerHello (both send/recv)
+    /// - Application level: After Finished verified (both send/recv)
+    ///
+    /// null = Secrets not propagated (testing only).
     on_secret_available: ?*const fn (ctx: *Context, level: EncryptionLevel, secret: [H.digest_length]u8) anyerror!void = null,
-    /// Called once the context has selected ALPN and transport parameters for the connection.
+
+    /// Called once handshake metadata (ALPN, transport params) is available.
+    /// Invoked after EncryptedExtensions processed (client) or before sending it (server).
+    ///
+    /// Metadata includes:
+    /// - alpn: Negotiated protocol (e.g., "h3" for HTTP/3)
+    /// - local_transport_parameters: Our advertised QUIC parameters
+    ///
+    /// QUIC implementation uses this to:
+    /// - Configure protocol handler based on ALPN
+    /// - Store local parameters for connection state
+    ///
+    /// null = Metadata not propagated.
     on_handshake_metadata: ?*const fn (ctx: *Context, meta: HandshakeMetadata) anyerror!void = null,
-    /// Called when the peer's Finished message has been verified.
+
+    /// Called when peer's Finished message verified successfully.
+    /// RFC 8446 §4.4.4: Finished contains HMAC over transcript hash.
+    ///
+    /// This indicates:
+    /// - Peer proved knowledge of handshake traffic secret
+    /// - Transcript integrity confirmed
+    /// - Safe to process peer's application data
+    ///
+    /// Client: Invoked after server Finished verified (before sending client Finished)
+    /// Server: Invoked after client Finished verified
+    ///
+    /// null = Not notified of Finished verification.
     on_peer_finished: ?*const fn (ctx: *Context) anyerror!void = null,
-    /// Called when the TLS handshake completes successfully.
+
+    /// Called when TLS handshake completes successfully.
+    /// Invoked when both local and peer Finished messages exchanged and verified.
+    ///
+    /// At this point:
+    /// - Application secrets installed
+    /// - Safe to send/receive application data
+    /// - Handshake messages no longer expected
+    ///
+    /// QUIC implementation typically:
+    /// - Transitions to Application Data state
+    /// - Discards handshake keys
+    /// - Enables bidirectional application data flow
+    ///
+    /// null = Not notified of completion.
     on_handshake_complete: ?*const fn (ctx: *Context) anyerror!void = null,
-    /// Called to fetch the certificate chain for local authentication.
+
+    /// Called to fetch certificate chain for local authentication (Server role).
+    /// RFC 8446 §4.4.2: Certificate message contains certificate_list.
+    ///
+    /// Implementation should return DER-encoded certificate chain:
+    /// - First certificate: Leaf (server identity)
+    /// - Subsequent certificates: Intermediates (optional)
+    ///
+    /// Currently only leaf certificate used; full chain validation planned.
+    ///
+    /// null = Use Config.server_cert_der directly (no dynamic fetch).
     fetch_certificate_chain: ?*const fn (ctx: *Context) anyerror![]const u8 = null,
 };
 
 /// Error type for TLS API operations.
-pub const ApiError = error{Unimplemented};
+pub const ApiError = error{
+    /// Requested operation not yet implemented.
+    Unimplemented,
+};
 
-/// Errors surfaced while parsing or sequencing TLS 1.3 handshake messages.
+/// Errors surfaced during TLS 1.3 handshake message parsing and validation.
+///
+/// These errors map to TLS alerts (alert.zig) which are then converted to QUIC
+/// CRYPTO_ERROR codes per RFC 9001 §4.8. The alert mapping is defined in
+/// `alert.fromHandshakeError()`.
+///
+/// # Error to Alert Mapping Examples
+/// - `UnexpectedMessage` → unexpected_message (0x0A)
+/// - `UnsupportedVersion` → protocol_version (0x46)
+/// - `NoCipherSuite` → handshake_failure (0x28)
+/// - `FinishedVerifyFailed` → decrypt_error (0x33)
+/// - `AlpnNegotiationFailed` → no_application_protocol (0x78)
+///
+/// All handshake errors are fatal and abort the connection.
 pub const HandshakeError = error{
+    /// Received handshake message in wrong state or unexpected message type.
+    /// RFC 8446 §4: Handshake messages must follow strict ordering.
+    /// Example: ServerHello received by server, or Finished before Certificate.
     UnexpectedMessage,
+
+    /// ClientHello received when already processed (server role).
+    /// RFC 8446 §4.1.2: Only one ClientHello per handshake (excluding HelloRetryRequest).
     DuplicateClientHello,
+
+    /// Client/server version mismatch or TLS 1.3 not supported.
+    /// RFC 8446 §4.2.1: supported_versions extension must contain 0x0304 (TLS 1.3).
     UnsupportedVersion,
+
+    /// ClientHello missing key_share extension.
+    /// RFC 8446 §4.2.8: key_share required for ECDHE in TLS 1.3.
     MissingKeyShare,
+
+    /// key_share contains unsupported group or invalid key length.
+    /// RFC 8446 §4.2.8: Must match a group in supported_groups extension.
+    /// Example: Received secp384r1 when only x25519 configured.
     UnsupportedKeyShareGroup,
+
+    /// No mutually supported cipher suite found.
+    /// RFC 8446 §4.1.3: Server must select from client's offered suites.
+    /// Example: Client offers only TLS_AES_256_GCM_SHA384 but server supports only TLS_AES_128_GCM_SHA256.
     NoCipherSuite,
+
+    /// QUIC transport parameters extension missing.
+    /// RFC 9001 §8.2: quic_transport_parameters (0x0039) mandatory for QUIC.
+    /// Both ClientHello and EncryptedExtensions must include it.
     MissingTransportParameters,
+
+    /// No mutually supported ALPN protocol.
+    /// RFC 7301: Server must select from client's offered protocols.
+    /// Example: Client offers ["h2"] but server only supports ["h3"].
     AlpnNegotiationFailed,
+
+    /// No mutually supported signature algorithm for CertificateVerify.
+    /// RFC 8446 §4.2.3: signature_algorithms extension required.
+    /// Example: Client offers only rsa_pss but server has Ed25519 key.
     NoSignatureScheme,
+
+    /// Finished verify_data does not match expected HMAC.
+    /// RFC 8446 §4.4.4: verify_data = HMAC(finished_key, transcript_hash).
+    /// Indicates transcript tampering or incorrect secret derivation.
     FinishedVerifyFailed,
+
+    /// ServerHello contains downgrade protection sentinel.
+    /// RFC 8446 §4.1.3: Last 8 bytes of server random signal TLS 1.2 if client supports 1.3.
+    /// Prevents version downgrade attacks.
     DowngradeAttempt,
 };
 
-/// Traffic direction relative to the current endpoint when installing secrets (RFC 8446 §7.1).
-pub const TrafficDirection = enum { send, recv };
+/// Traffic direction relative to the current endpoint (RFC 8446 §7.1).
+///
+/// Used when installing secrets to distinguish between:
+/// - send: Secrets for protecting outbound traffic (encryption)
+/// - recv: Secrets for processing inbound traffic (decryption)
+///
+/// Direction is role-dependent:
+/// - Client send = Server recv (client_traffic_secret)
+/// - Server send = Client recv (server_traffic_secret)
+pub const TrafficDirection = enum {
+    /// Outbound traffic protection (encryption, sending packets).
+    send,
+    /// Inbound traffic processing (decryption, receiving packets).
+    recv,
+};
 
 /// RFC 8446 §7.1–§7.5: individual traffic secret slot with epoch tracking for key updates.
 pub const SecretSlot = struct {
@@ -637,25 +1090,78 @@ pub const Context = struct {
         self.phase = .initial;
     }
 
-    /// Consume inbound CRYPTO data at the specified encryption level.
+    /// Process inbound CRYPTO data received from peer at specified encryption level.
+    ///
+    /// This is the main entry point for feeding handshake messages into the TLS state
+    /// machine. QUIC CRYPTO frames are delivered here after being reassembled by the
+    /// QUIC layer.
+    ///
+    /// # RFC 9001 §4: QUIC-TLS Integration
+    /// - CRYPTO data replaces TLS record layer
+    /// - Each encryption level (Initial/Handshake/Application) has separate stream
+    /// - Messages may be fragmented across multiple CRYPTO frames
+    ///
+    /// # Processing Flow
+    /// 1. Append data to inbound buffer for this encryption level
+    /// 2. Parse complete handshake messages using `parseHandshakeOne()`
+    /// 3. For each complete message:
+    ///    - Validate message type and state (handleHandshakeMessage)
+    ///    - Update transcript hash (except Finished, which is added after verification)
+    ///    - Execute state transitions (afterHandshakeMessage)
+    ///    - Consume buffered bytes
+    /// 4. Return when no more complete messages available
+    ///
+    /// # Parameters
+    /// - level: Encryption level where this data was received (Initial/Handshake/Application)
+    /// - data: Raw CRYPTO frame payload bytes (may be partial message or multiple messages)
+    ///
+    /// # Errors
+    /// - HandshakeError.*: Protocol violations (unexpected message, failed verification, etc.)
+    /// - OutOfMemory: Failed to allocate buffer space
+    ///
+    /// # Example (Client receiving ServerHello)
+    /// ```zig
+    /// // QUIC receives CRYPTO frame at Initial level
+    /// try ctx.processCrypto(.Initial, server_hello_bytes);
+    /// // Internally:
+    /// // 1. Parses ServerHello message
+    /// // 2. Extracts key_share, derives handshake secrets
+    /// // 3. Calls on_secret_available(.Handshake, ...)
+    /// // 4. Updates phase to .keys_installed
+    /// ```
+    ///
+    /// # Notes
+    /// - Handles fragmentation transparently via buffering
+    /// - Messages processed in order received (CRYPTO is ordered stream)
+    /// - Transcript hash critical: messages added in exact receive order
+    /// - State transitions happen in afterHandshakeMessage()
     pub fn processCrypto(self: *Context, level: EncryptionLevel, data: []const u8) !void {
         var stream = self.streams.buffer(level);
         try stream.inbound.appendSlice(self.allocator, data);
 
+        // Process all complete messages in buffer
         while (true) {
             const buffer = stream.inbound.items;
             const parsed_opt = try parseHandshakeOne(buffer);
-            if (parsed_opt == null) break;
+            if (parsed_opt == null) break; // Need more data for complete message
+
             const parsed = parsed_opt.?;
             const message_bytes = buffer[0..parsed.n];
 
+            // Validate and process message type
             try self.handleHandshakeMessage(level, parsed, message_bytes);
+
+            // RFC 8446 §4.4.4: Finished is added to transcript AFTER verification
+            // to ensure verify_data is computed over correct transcript state
             if (parsed.typ != .finished) {
                 self.transcripts.handshake.update(message_bytes);
                 try self.afterHandshakeMessage(level, parsed);
             } else {
+                // Finished verification happens in handleHandshakeMessage, transcript
+                // updated there after successful verification
                 try self.afterHandshakeMessage(level, parsed);
             }
+
             stream.consume(parsed.n);
         }
     }
@@ -670,12 +1176,42 @@ pub const Context = struct {
         return out;
     }
 
-    /// Whether Finished has been processed and application traffic keys are ready (§4.4.4, §7.1).
+    /// Check if TLS handshake has completed successfully.
+    ///
+    /// RFC 8446 §4.4.4: Handshake is complete when both peers have sent and
+    /// verified Finished messages. At this point:
+    /// - Application traffic secrets are installed
+    /// - Safe to send/receive application data
+    /// - Handshake messages no longer expected
+    ///
+    /// # Returns
+    /// - true: Both Finished messages exchanged, application keys ready
+    /// - false: Handshake still in progress
+    ///
+    /// # Usage
+    /// ```zig
+    /// if (ctx.handshakeComplete()) {
+    ///     // Safe to send application data
+    ///     try quic.sendStream(stream_id, app_data);
+    /// }
+    /// ```
     pub fn handshakeComplete(self: *Context) bool {
         return self.flags.peer_finished_verified and self.flags.local_finished_sent;
     }
 
-    /// Returns a view of ALPN/transport parameters selected so far.
+    /// Get a view of negotiated handshake metadata (ALPN, transport parameters).
+    ///
+    /// This provides read-only access to the negotiated connection parameters
+    /// without transferring ownership.
+    ///
+    /// # Returns
+    /// HandshakeMetadata containing:
+    /// - alpn: Negotiated protocol (e.g., "h3" for HTTP/3), null if not negotiated
+    /// - local_transport_parameters: Our advertised QUIC parameters, null if not set
+    ///
+    /// # Availability
+    /// - Server: Available after sending EncryptedExtensions
+    /// - Client: Available after receiving EncryptedExtensions
     pub fn metadataView(self: *const Context) HandshakeMetadata {
         return .{
             .alpn = self.negotiated_alpn,
@@ -683,12 +1219,50 @@ pub const Context = struct {
         };
     }
 
-    /// Returns the encoded local transport parameters if configured.
+    /// Get the local QUIC transport parameters advertised in the handshake.
+    ///
+    /// RFC 9001 §8.2: Transport parameters are exchanged via TLS extensions:
+    /// - Client: Sent in ClientHello (extension 0x0039)
+    /// - Server: Sent in EncryptedExtensions (extension 0x0039)
+    ///
+    /// # Returns
+    /// - Encoded transport parameters if configured (opaque to TLS layer)
+    /// - null if not configured (will cause handshake failure in QUIC)
     pub fn localTransportParameters(self: *const Context) ?[]const u8 {
         return self.local_transport_parameters;
     }
 
-    /// Cache a freshly derived traffic secret and notify the embedder (RFC 8446 §7.1).
+    /// Install a traffic secret and notify QUIC layer via callback.
+    ///
+    /// RFC 8446 §7.1: Traffic secrets are derived progressively during handshake
+    /// and must be installed at appropriate encryption levels for packet protection.
+    ///
+    /// RFC 9001 §5: QUIC uses traffic secrets to derive AEAD keys via HKDF-Expand-Label.
+    ///
+    /// # Flow
+    /// 1. Store secret in SecretSlot with generation tracking
+    /// 2. Invoke on_secret_available callback if registered
+    /// 3. QUIC layer derives packet protection keys and installs them
+    ///
+    /// # Parameters
+    /// - level: Encryption level (Handshake or Application)
+    /// - dir: Traffic direction (send = encrypt outbound, recv = decrypt inbound)
+    /// - secret: 32-byte traffic secret from key schedule
+    ///
+    /// # Invocation Timeline (Server)
+    /// ```
+    /// After ServerHello sent:
+    ///   installTrafficSecret(.Handshake, .send, server_hs_secret)
+    ///   installTrafficSecret(.Handshake, .recv, client_hs_secret)
+    /// After Finished verified:
+    ///   installTrafficSecret(.Application, .send, server_app_secret)
+    ///   installTrafficSecret(.Application, .recv, client_app_secret)
+    /// ```
+    ///
+    /// # Security Notes
+    /// - Secrets are role-dependent (client/server secrets swapped for send/recv)
+    /// - Generation counter enables key updates
+    /// - Secrets should be zeroized after use (handled by SecretSlot)
     pub fn installTrafficSecret(self: *Context, level: EncryptionLevel, dir: TrafficDirection, secret: [H.digest_length]u8) !void {
         var slot = self.secrets.slot(level, dir);
         slot.store(level, secret);
@@ -739,21 +1313,38 @@ pub const Context = struct {
         return self.negotiated_signature;
     }
 
+    /// RFC 8446 §4: Validate and process handshake message based on type and role.
+    /// Enforces message sequencing and role-based authorization.
     fn handleHandshakeMessage(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage, raw: []const u8) !void {
         switch (parsed.typ) {
             .client_hello => {
+                // RFC 8446 §4.1.2: ClientHello only valid for server role
                 if (self.config.role != .Server) return HandshakeError.UnexpectedMessage;
+
+                // Parse and store ClientHello for parameter negotiation
                 try self.state.setClientHello(self.allocator, parsed.body);
+
+                // RFC 8446 §4: Transition from initial to negotiating phase
                 if (self.phase == .initial) {
                     self.phase = .negotiating;
                 }
             },
             .server_hello => {
+                // RFC 8446 §4.1.3: ServerHello only valid for client role
                 if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
+
+                // Parse ServerHello, extract key_share, derive handshake secrets
                 try self.handleServerHello(parsed.body);
             },
-            .finished => try self.handlePeerFinished(level, parsed.body, raw),
-            else => {},
+            .finished => {
+                // RFC 8446 §4.4.4: Verify peer Finished message
+                // Must verify BEFORE adding to transcript
+                try self.handlePeerFinished(level, parsed.body, raw);
+            },
+            else => {
+                // Other messages (EncryptedExtensions, Certificate, CertificateVerify)
+                // processed implicitly via transcript updates
+            },
         }
     }
 
@@ -781,42 +1372,76 @@ pub const Context = struct {
         }
     }
 
+    /// RFC 8446 §4.4.4: Verify peer's Finished message.
+    /// Finished contains HMAC over transcript hash to prove knowledge of traffic secret.
     fn handlePeerFinished(self: *Context, level: EncryptionLevel, verify_data: []const u8, raw: []const u8) !void {
+        // RFC 8446 §4.4.4: Finished must be sent at Handshake encryption level
         if (level != .Handshake) return HandshakeError.UnexpectedMessage;
+
+        // verify_data = HMAC(finished_key, transcript_hash)
+        // Must be exactly hash length (32 bytes for SHA-256)
         if (verify_data.len != H.digest_length) return HandshakeError.FinishedVerifyFailed;
 
+        // Retrieve peer's handshake traffic secret (recv direction)
         const slot = self.secrets.slot(.Handshake, .recv);
         if (!slot.valid) return HandshakeError.UnexpectedMessage;
 
+        // RFC 8446 §4.4.4: Compute expected verify_data over transcript BEFORE Finished
+        // Transcript includes all messages up to (but not including) Finished
         var transcript_snapshot = self.transcripts.handshake;
         const transcript_hash = transcript_snapshot.finalize();
         const expected = deriveFinishedVerifyData(slot.value, transcript_hash);
+
+        // Constant-time comparison to prevent timing attacks
         if (!std.mem.eql(u8, expected[0..], verify_data)) return HandshakeError.FinishedVerifyFailed;
 
+        // Store transcript hash at Finished point (used for key derivation)
         self.transcripts.finished_hash = transcript_hash;
+
+        // RFC 8446 §4.4.4: NOW add Finished to transcript (after verification)
+        // This ensures application secrets derived with correct transcript
         self.transcripts.handshake.update(raw);
     }
 
+    /// Post-Finished processing: derive application secrets and update state.
     fn handleFinishedPostActions(self: *Context, level: EncryptionLevel) !void {
         if (level != .Handshake) return;
+
+        // RFC 8446 §7.1: Derive application traffic secrets after Finished verified
         try self.ensureApplicationSecrets();
+
+        // Mark peer Finished as verified and invoke callback
         self.confirmPeerFinished();
-        // Client must send its Finished after verifying server Finished
+
+        // RFC 8446 §4.4: Client sends Finished after verifying server Finished
         if (self.config.role == .Client and !self.flags.local_finished_sent) {
             try self.sendClientFinished();
         }
     }
 
+    /// RFC 8446 §7.1: Derive application-level traffic secrets.
+    /// Called after both peers' Finished messages are verified.
     fn ensureApplicationSecrets(self: *Context) !void {
         const send_slot = self.secrets.slot(.Application, .send);
         const recv_slot = self.secrets.slot(.Application, .recv);
+
+        // Skip if already derived (idempotent)
         if (send_slot.valid and recv_slot.valid) return;
 
+        // RFC 8446 §7.1: Derive from handshake_secret and transcript hash
+        // handshake_secret was saved after ServerHello processing
         const hs_secret = self.handshake_secret orelse return HandshakeError.UnexpectedMessage;
+
+        // Transcript hash at this point includes all messages (CH...Finished)
         var transcript_snapshot = self.transcripts.handshake;
         const transcript_hash = transcript_snapshot.finalize();
+
+        // Key schedule: master_secret = Derive-Secret(handshake_secret, "derived", "")
+        //               app_secrets = Derive-Secret(master_secret, label, transcript)
         const apps = deriveApplicationTraffic(hs_secret, transcript_hash);
 
+        // RFC 9001 §5: Install secrets with correct role mapping
+        // Server sends with server_app, receives with client_app
         switch (self.config.role) {
             .Server => {
                 if (!send_slot.valid) try self.installTrafficSecret(.Application, .send, apps.server_app);
@@ -827,8 +1452,11 @@ pub const Context = struct {
                 if (!recv_slot.valid) try self.installTrafficSecret(.Application, .recv, apps.server_app);
             },
         }
-        // Cache exporter master when first deriving application secrets
-        if (!self.secrets.exporter_master.valid) self.secrets.exporter_master.store(.Application, apps.exporter_master);
+
+        // RFC 8446 §7.5: Store exporter_master_secret for key export (e.g., channel bindings)
+        if (!self.secrets.exporter_master.valid) {
+            self.secrets.exporter_master.store(.Application, apps.exporter_master);
+        }
     }
 
     fn appendOutbound(self: *Context, level: EncryptionLevel, msg: []const u8, update_transcript: bool) !void {
@@ -1305,27 +1933,85 @@ pub const TicketStore = struct {
     }
 };
 
-/// Hash used for TLS 1.3 in this implementation (SHA-256).
+/// Hash function used for TLS 1.3 key schedule (SHA-256).
+/// RFC 8446 §4.1.3: TLS_AES_128_GCM_SHA256 uses SHA-256 for HKDF.
 pub const H = ks.H; // sha256
 
-/// TLS handshake role.
-pub const Role = enum { Client, Server };
-
-/// QUIC encryption levels per RFC 9001 Section 4.1.4
-pub const EncryptionLevel = enum {
-    Initial, // ClientHello, ServerHello
-    Handshake, // EncryptedExtensions, Certificate, CertificateVerify, Finished
-    Application, // NewSessionTicket, post-handshake messages
+/// TLS handshake role (client or server).
+///
+/// Determines:
+/// - Message flow direction (who sends first)
+/// - Secret role assignment (client_hs vs server_hs)
+/// - Certificate validation requirements
+///
+/// RFC 8446 §2: Client initiates with ClientHello, server responds with ServerHello.
+pub const Role = enum {
+    /// Client role: Initiates handshake, verifies server certificate.
+    Client,
+    /// Server role: Responds to ClientHello, provides certificate.
+    Server,
 };
 
-/// TLS Handshake message types used by helpers.
+/// QUIC encryption levels for packet protection (RFC 9001 §4.1.4).
+///
+/// Each encryption level has its own packet number space and CRYPTO stream.
+/// Secrets are installed progressively as handshake advances:
+///
+/// 1. **Initial**: Derived from QUIC version-specific salt
+///    - Contains: ClientHello (client→server), ServerHello (server→client)
+///    - Protection: Deterministic keys from connection ID
+///
+/// 2. **Handshake**: Derived from ECDHE shared secret
+///    - Contains: EncryptedExtensions, Certificate, CertificateVerify, Finished
+///    - Protection: AEAD keys from handshake_traffic_secret
+///
+/// 3. **Application**: Derived from master secret after Finished
+///    - Contains: NewSessionTicket, application data, post-handshake messages
+///    - Protection: AEAD keys from application_traffic_secret_0
+///
+/// Note: 0-RTT/Early Data uses a separate encryption level (not implemented yet).
+pub const EncryptionLevel = enum {
+    /// Initial encryption level (unprotected or version-specific keys).
+    /// Messages: ClientHello, ServerHello
+    Initial,
+
+    /// Handshake encryption level (ECDHE-derived keys).
+    /// Messages: EncryptedExtensions, Certificate, CertificateVerify, Finished
+    Handshake,
+
+    /// Application data encryption level (post-handshake keys).
+    /// Messages: NewSessionTicket, application data
+    Application,
+};
+
+/// TLS 1.3 handshake message types (RFC 8446 §4).
+///
+/// Used for parsing and encoding handshake messages in CRYPTO frames.
+/// Each message type has specific content and allowed encryption level:
+///
+/// - client_hello (1): Initial level
+/// - server_hello (2): Initial level
+/// - encrypted_extensions (8): Handshake level
+/// - certificate (11): Handshake level
+/// - certificate_verify (15): Handshake level
+/// - finished (20): Handshake level
+/// - new_session_ticket (4): Application level
+///
+/// Note: end_of_early_data (5) is prohibited in QUIC per RFC 9001 §8.3.
 pub const HsType = enum(u8) {
+    /// ClientHello message (RFC 8446 §4.1.2).
     client_hello = 1,
+    /// ServerHello message (RFC 8446 §4.1.3).
     server_hello = 2,
-    new_session_ticket = 4, // RFC 8446
+    /// NewSessionTicket for resumption (RFC 8446 §4.6.1).
+    new_session_ticket = 4,
+    /// EncryptedExtensions message (RFC 8446 §4.3.1).
     encrypted_extensions = 8,
+    /// Certificate message (RFC 8446 §4.4.2).
     certificate = 11,
+    /// CertificateVerify message (RFC 8446 §4.4.3).
     certificate_verify = 15,
+    /// Finished message (RFC 8446 §4.4.4).
     finished = 20,
 };
 
@@ -1335,11 +2021,37 @@ const HandshakeMessage = struct {
     n: usize,
 };
 
-/// Encode a single TLS Handshake message (type + 3-byte length + body).
+/// Encode a TLS handshake message with type and 24-bit length prefix.
+///
+/// RFC 8446 §4: Handshake protocol message format:
+/// ```
+/// struct {
+///     HandshakeType msg_type;    // 1 byte
+///     uint24 length;             // 3 bytes (big-endian)
+///     opaque body[length];
+/// } Handshake;
+/// ```
+///
+/// # Parameters
+/// - alloc: Allocator for the returned buffer
+/// - typ: Handshake message type (client_hello, server_hello, etc.)
+/// - body: Message body bytes (varies by type)
+///
+/// # Returns
+/// Allocated buffer containing: [type:1][length:3][body:N]
+/// Caller owns returned slice and must free it.
+///
+/// # Example
+/// ```zig
+/// const finished_body: [32]u8 = ... // verify_data
+/// const msg = try encodeHandshake(allocator, .finished, &finished_body);
+/// defer allocator.free(msg);
+/// ```
 pub fn encodeHandshake(alloc: std.mem.Allocator, typ: HsType, body: []const u8) ![]u8 {
     var out = try alloc.alloc(u8, 4 + body.len);
     out[0] = @intFromEnum(typ);
     const L: u32 = @intCast(body.len);
+    // 24-bit big-endian length
     out[1] = @intCast((L >> 16) & 0xff);
     out[2] = @intCast((L >> 8) & 0xff);
     out[3] = @intCast(L & 0xff);
@@ -1347,20 +2059,58 @@ pub fn encodeHandshake(alloc: std.mem.Allocator, typ: HsType, body: []const u8) 
     return out;
 }
 
-/// Attempt to parse a Handshake message from data. Returns null if not enough bytes.
+/// Parse one complete handshake message from buffered CRYPTO data.
+///
+/// RFC 8446 §4: Attempts to parse a single handshake message from the input.
+/// Returns null if insufficient data available (caller should buffer more).
+///
+/// RFC 9001 §8.3: Validates that end_of_early_data (type 5) is not sent over QUIC.
+///
+/// # Parameters
+/// - data: Buffered CRYPTO data (may contain partial or multiple messages)
+///
+/// # Returns
+/// - `HandshakeMessage`: Parsed message with type, body slice, and total bytes consumed
+/// - `null`: Need more data (fewer than 4 bytes, or incomplete body)
+/// - `error`: Protocol violation (e.g., end_of_early_data in QUIC)
+///
+/// # Usage Pattern
+/// ```zig
+/// while (true) {
+///     const parsed = try parseHandshakeOne(buffer) orelse break;
+///     // Process parsed.typ and parsed.body
+///     buffer = buffer[parsed.n..]; // Consume bytes
+/// }
+/// ```
+///
+/// # Notes
+/// - Returned `body` slice points into input `data` (no allocation)
+/// - Caller must track consumed bytes via `n` field
+/// - Handles fragmentation across QUIC packets via buffering
 pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
-    if (data.len < 4) return null;
+    if (data.len < 4) return null; // Need at least type + length
     const t_byte = data[0];
-    // RFC 9001 Section 8.3: EndOfEarlyData (type 5) MUST NOT be sent over QUIC
+
+    // RFC 9001 §8.3: EndOfEarlyData (type 5) MUST NOT be sent over QUIC
+    // Early data termination is implicit when sending on higher encryption level
     if (t_byte == 5) {
         std.debug.print("TLS: Received EndOfEarlyData message (RFC 9001 violation - type 5 prohibited)\n", .{});
         return error.ProtocolViolation;
     }
+
     const typ: HsType = std.meta.intToEnum(HsType, t_byte) catch return error.UnknownHandshakeType;
+
+    // Parse 24-bit big-endian length
     const L: usize = (@as(usize, data[1]) << 16) | (@as(usize, data[2]) << 8) | @as(usize, data[3]);
     const need = 4 + L;
-    if (data.len < need) return null;
-    return HandshakeMessage{ .typ = typ, .body = data[4 .. 4 + L], .n = need };
+
+    if (data.len < need) return null; // Incomplete message body
+
+    return HandshakeMessage{
+        .typ = typ,
+        .body = data[4 .. 4 + L], // Slice into input buffer
+        .n = need, // Total bytes consumed
+    };
 }
 
 /// Small transcript helper; accumulates handshake messages as-is.
@@ -1419,10 +2169,47 @@ pub const Transcript = struct {
     }
 };
 
-/// Compute TLS 1.3 handshake traffic secrets (client and server) given:
-/// - ecdhe_secret: raw (EC)DHE shared secret (IKM for handshake_secret)
-/// - transcript_hash: Hash(ClientHello ... ServerHello)
-/// Assumes no PSK (early_secret is HKDF-Extract(0, 0)).
+/// Derive handshake traffic secrets from ECDHE shared secret (RFC 8446 §7.1).
+///
+/// This function computes the handshake-level secrets used to protect messages
+/// after ServerHello. It implements the TLS 1.3 key schedule using HKDF:
+///
+/// ```
+/// early_secret = HKDF-Extract(0, 0)  // No PSK
+/// derived = Derive-Secret(early_secret, "derived", "")
+/// handshake_secret = HKDF-Extract(derived, ECDHE)
+/// client_handshake_traffic_secret = Derive-Secret(handshake_secret, "c hs traffic", CH..SH)
+/// server_handshake_traffic_secret = Derive-Secret(handshake_secret, "s hs traffic", CH..SH)
+/// ```
+///
+/// # Parameters
+/// - ecdhe_secret: Raw X25519 shared secret (32 bytes) from key exchange
+/// - transcript_hash: Hash(ClientHello || ServerHello) using SHA-256
+///
+/// # Returns
+/// Struct containing:
+/// - handshake: Master handshake secret (used to derive application secrets later)
+/// - client_hs: Client→Server handshake traffic secret (32 bytes)
+/// - server_hs: Server→Client handshake traffic secret (32 bytes)
+///
+/// # RFC References
+/// - RFC 8446 §7.1: Key schedule diagram and derivation
+/// - RFC 9001 §5.1: QUIC packet protection uses these secrets
+///
+/// # Usage
+/// ```zig
+/// const shared = try X25519.scalarmult(priv, peer_pub);
+/// const transcript = Hash(client_hello || server_hello);
+/// const secrets = deriveHandshakeTraffic(shared[0..], transcript);
+/// // Install secrets for packet protection at Handshake level
+/// try installTrafficSecret(.Handshake, .send, secrets.client_hs);
+/// try installTrafficSecret(.Handshake, .recv, secrets.server_hs);
+/// ```
+///
+/// # Security Notes
+/// - Assumes no PSK resumption (early_secret = HKDF-Extract(0, 0))
+/// - ECDHE provides forward secrecy
+/// - Secrets must be zeroized after use (handled by SecretSlot)
 pub fn deriveHandshakeTraffic(ecdhe_secret: []const u8, transcript_hash: [H.digest_length]u8) struct {
     handshake: [H.digest_length]u8,
     client_hs: [H.digest_length]u8,

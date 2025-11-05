@@ -1,32 +1,76 @@
-//! QUIC-TLS Key Schedule (RFC 9001/9369) — HKDF labels and exporter.
+//! Key Schedule Module - HKDF-based key derivation for TLS 1.3 and QUIC
 //!
-//! Implements the HKDF extract/expand sequence from RFC 9001 §5.1 plus QUIC v2
-//! label updates from RFC 9369 §3. These helpers are shared by the handshake
-//! stack and the standalone key schedule tests.
+//! Implements the HKDF-Extract and HKDF-Expand operations specified in:
+//! - RFC 8446 §7.1 (Key Schedule)
+//! - RFC 9001 §5.1 (QUIC Initial Secrets)
+//! - RFC 9369 §3 (QUIC v2 Label Updates)
+//!
+//! This module provides the cryptographic key derivation functions used
+//! throughout the TLS 1.3 handshake and QUIC packet protection. All secret
+//! derivation follows the TLS 1.3 key schedule design with HKDF-SHA256 as
+//! the primary KDF.
+//!
+//! ## Key Features
+//! - QUIC v1 and v2 initial secret derivation with version-specific salts
+//! - TLS 1.3 HKDF-Expand-Label implementation with "tls13 " prefix
+//! - Traffic secret derivation for client/server send/receive directions
+//! - Key update support for post-handshake secret rotation
+//! - Tested against RFC 9001 Appendix A.1 test vectors
+//!
+//! ## Design Notes
+//! Uses Zig standard library HKDF (std.crypto.kdf.hkdf.Hkdf) for all
+//! cryptographic operations. No external dependencies required.
 const std = @import("std");
 
 // TODO: this should be using
 // https://ziglang.org/documentation/master/std/#std.crypto.hkdf.HkdfSha256
 // https://ziglang.org/documentation/master/std/#std.crypto.hkdf.HkdfSha512
 
-/// Hash used for TLS_AES_128_GCM_SHA256 and CHACHA20_POLY1305_SHA256
+/// Hash function used for TLS_AES_128_GCM_SHA256 and CHACHA20_POLY1305_SHA256.
+///
+/// This is SHA-256, which produces a 32-byte (256-bit) digest as specified in
+/// RFC 8446 §7.1. All HKDF operations in this module use SHA-256 as the hash
+/// primitive for consistency with the primary cipher suite.
 pub const H = std.crypto.hash.sha2.Sha256; // 32-byte digest
 
-/// Use standard library HMAC and HKDF
+/// Use standard library HMAC and HKDF implementations.
+/// RFC 5869 defines HKDF-Extract and HKDF-Expand.
+/// RFC 2104 defines HMAC construction.
 const Hmac = std.crypto.auth.hmac.Hmac;
 const Hkdf = std.crypto.kdf.hkdf.Hkdf;
 const HmacSha256 = Hmac(H);
+
+/// HKDF-SHA256 implementation used for all key derivation operations.
+/// Combines RFC 5869 HKDF with RFC 2104 HMAC-SHA256.
 pub const HkdfSha256 = Hkdf(HmacSha256);
 
-/// QUIC v1 Initial Salt (RFC 9001 §5.2, Appendix A.1 vectors use this)
-/// 38762cf7f55934b34d179ae6a4c80cadccbb7f0a
+/// QUIC v1 Initial Salt used for deriving initial packet protection secrets.
+///
+/// This 20-byte constant is defined in RFC 9001 §5.2 and is used as the salt
+/// for HKDF-Extract when deriving the initial secret from the destination
+/// connection ID. The value is fixed for all QUIC v1 connections.
+///
+/// Value: 38762cf7f55934b34d179ae6a4c80cadccbb7f0a
+///
+/// ## RFC Reference
+/// RFC 9001 §5.2 - Initial Secrets
+/// RFC 9001 Appendix A.1 - Test Vectors
 pub const initial_salt_v1: [20]u8 = .{
     0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17,
     0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a,
 };
 
-/// QUIC v2 Initial Salt (RFC 9369 §A.1)
-/// 0dede3def700a6db819381be6e269dcbf9bd2ed9
+/// QUIC v2 Initial Salt used for deriving initial packet protection secrets.
+///
+/// This 20-byte constant is defined in RFC 9369 §A.1 and differs from the
+/// QUIC v1 salt to prevent cross-version packet processing. Used as the salt
+/// for HKDF-Extract when deriving the initial secret from the destination
+/// connection ID in QUIC v2 connections.
+///
+/// Value: 0dede3def700a6db819381be6e269dcbf9bd2ed9
+///
+/// ## RFC Reference
+/// RFC 9369 §A.1 - QUIC Version 2 Initial Salt
 pub const initial_salt_v2: [20]u8 = .{
     0x0d, 0xed, 0xe3, 0xde, 0xf7, 0x00, 0xa6, 0xdb, 0x81, 0x93,
     0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9,
@@ -36,33 +80,71 @@ fn toU8(v: usize) u8 {
     return @as(u8, @intCast(v));
 }
 
+/// Construct the HkdfLabel structure for HKDF-Expand-Label operations.
+///
+/// Creates the binary encoding of the HkdfLabel structure defined in RFC 8446 §7.1:
+///
+/// ```
+/// struct {
+///   uint16 length;              // Output length in bytes
+///   opaque label<7..255>;       // "tls13 " prefix + label string
+///   opaque context<0..255>;     // Context value (usually transcript hash)
+/// } HkdfLabel;
+/// ```
+///
+/// The "tls13 " prefix is automatically prepended to the label parameter.
+///
+/// ## Parameters
+/// - `alloc`: Allocator for the returned buffer
+/// - `label`: Label string (without "tls13 " prefix)
+/// - `context`: Context bytes (often a transcript hash)
+/// - `out_len`: Desired output length from HKDF-Expand
+///
+/// ## Returns
+/// DER-like encoded HkdfLabel structure suitable for HKDF info parameter.
+///
+/// ## RFC Reference
+/// RFC 8446 §7.1 - Key Schedule and HKDF-Expand-Label definition
 fn hkdfLabel(alloc: std.mem.Allocator, label: []const u8, context: []const u8, out_len: u16) ![]u8 {
-    // struct {
-    //   uint16 length;
-    //   opaque label<7..255>; // "tls13 " + label
-    //   opaque context<0..255>;
-    // } HkdfLabel;
+    // RFC 8446 §7.1 - HkdfLabel structure encoding
     const prefix = "tls13 ";
     const full_label = try std.mem.concat(alloc, u8, &[_][]const u8{ prefix, label });
     defer alloc.free(full_label);
     const total = 2 + 1 + full_label.len + 1 + context.len;
     var out = try alloc.alloc(u8, total);
     var i: usize = 0;
+    // RFC 8446 §7.1 - Length field (big-endian uint16)
     out[i] = @as(u8, @truncate(out_len >> 8));
     i += 1;
     out[i] = @as(u8, @truncate(out_len));
     i += 1;
+    // RFC 8446 §7.1 - Label length and value
     out[i] = toU8(full_label.len);
     i += 1;
     @memcpy(out[i .. i + full_label.len], full_label);
     i += full_label.len;
+    // RFC 8446 §7.1 - Context length and value
     out[i] = toU8(context.len);
     i += 1;
     if (context.len != 0) @memcpy(out[i .. i + context.len], context);
     return out;
 }
 
-/// Public HMAC helper for TLS Finished and other KATs.
+/// Compute HMAC-SHA256 over data with the given key.
+///
+/// This is used for TLS 1.3 Finished message verification and Known Answer
+/// Tests (KATs). Implements RFC 2104 HMAC construction with SHA-256.
+///
+/// ## Parameters
+/// - `key`: HMAC key material
+/// - `data`: Message to authenticate
+///
+/// ## Returns
+/// 32-byte HMAC-SHA256 tag
+///
+/// ## RFC References
+/// - RFC 2104 - HMAC: Keyed-Hashing for Message Authentication
+/// - RFC 8446 §4.4.4 - Finished message uses HMAC for verification
 pub fn hmacSha256(key: []const u8, data: []const u8) [H.digest_length]u8 {
     var out: [HmacSha256.mac_length]u8 = undefined;
     HmacSha256.create(&out, data, key);
@@ -79,53 +161,200 @@ fn hkdfExpand(out: []u8, prk: [H.digest_length]u8, info: []const u8) void {
     std.log.debug("hkdfExpand: AFTER expand, out[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ out[0], out[1], out[2], out[3] });
 }
 
-/// HKDF-Expand-Label as per TLS 1.3 using H.
+/// HKDF-Expand-Label derives keying material using TLS 1.3 label convention.
+///
+/// Implements the TLS 1.3 HKDF-Expand-Label function from RFC 8446 §7.1:
+///
+/// ```
+/// HKDF-Expand-Label(Secret, Label, Context, Length) =
+///     HKDF-Expand(Secret, HkdfLabel, Length)
+/// ```
+///
+/// The HkdfLabel structure encodes the label with "tls13 " prefix, context,
+/// and output length. This abstraction is used throughout the TLS 1.3 key
+/// schedule for deriving traffic secrets, keys, and IVs.
+///
+/// ## Parameters
+/// - `prk`: Pseudorandom key from previous HKDF-Extract (32 bytes for SHA256)
+/// - `label`: Label string WITHOUT "tls13 " prefix (e.g., "client in", "key")
+/// - `context`: Context bytes, typically a transcript hash or empty
+/// - `out`: Output buffer to fill with derived keying material
+///
+/// ## RFC References
+/// - RFC 8446 §7.1 - Key Schedule and HKDF-Expand-Label definition
+/// - RFC 5869 - HKDF: Extract-and-Expand HKDF
 pub fn expandLabel(prk: [H.digest_length]u8, label: []const u8, context: []const u8, out: []u8) !void {
     var fbb: [256]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&fbb);
     const alloc = fba.allocator();
+    // RFC 8446 §7.1 - Construct HkdfLabel as HKDF info parameter
     const info = try hkdfLabel(alloc, label, context, @as(u16, @intCast(out.len)));
     defer alloc.free(info);
     std.log.debug("expandLabel: label='{s}', context.len={}, out.len={}, info[0..8]={X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ label, context.len, out.len, info[0], info[1], info[2], info[3], info[4], info[5], info[6], info[7] });
+    // RFC 5869 - HKDF-Expand step
     hkdfExpand(out, prk, info);
 }
 
-/// HKDF-Extract
+/// HKDF-Extract derives a pseudorandom key from input keying material.
+///
+/// Implements RFC 5869 HKDF-Extract using HMAC-SHA256:
+///
+/// ```
+/// PRK = HMAC-Hash(salt, IKM)
+/// ```
+///
+/// Used as the first step in the two-step HKDF key derivation process.
+/// The output PRK is then used with HKDF-Expand to derive specific keys.
+///
+/// ## Parameters
+/// - `salt`: Optional salt value (uses zero-length salt if null)
+/// - `ikm`: Input Keying Material to extract from
+///
+/// ## Returns
+/// 32-byte pseudorandom key suitable for HKDF-Expand operations
+///
+/// ## RFC References
+/// - RFC 5869 §2.2 - HKDF-Extract definition
+/// - RFC 8446 §7.1 - TLS 1.3 uses HKDF-Extract for secret derivation
 pub fn extract(salt: ?[]const u8, ikm: []const u8) [H.digest_length]u8 {
+    // RFC 5869 §2.2 - HKDF-Extract(salt, IKM) -> PRK
     return hkdfExtractRaw(salt, ikm);
 }
 
-/// Derive initial_secret from DCID for QUIC v1.
+/// Derive the initial secret from the destination connection ID for QUIC v1.
+///
+/// This function implements RFC 9001 §5.2 initial secret derivation:
+///
+/// ```
+/// initial_secret = HKDF-Extract(initial_salt, client_dst_connection_id)
+/// ```
+///
+/// The initial secret is the root of the key hierarchy for QUIC Initial
+/// packet protection. Client and server initial secrets are then derived
+/// from this value.
+///
+/// ## Parameters
+/// - `dcid`: Destination Connection ID used as Input Keying Material
+///
+/// ## Returns
+/// 32-byte initial secret for deriving client/server initial protection keys
+///
+/// ## RFC References
+/// - RFC 9001 §5.2 - Initial Secrets
+/// - RFC 9001 Appendix A.1 - Test Vectors
 pub fn deriveInitialSecretV1(dcid: []const u8) [H.digest_length]u8 {
+    // RFC 9001 §5.2 - Use QUIC v1 initial salt as HKDF salt
     return extract(&initial_salt_v1, dcid);
 }
 
-/// Derive initial_secret from DCID for QUIC v2.
+/// Derive the initial secret from the destination connection ID for QUIC v2.
+///
+/// This function implements RFC 9369 §A.1 initial secret derivation using
+/// the QUIC v2-specific salt:
+///
+/// ```
+/// initial_secret = HKDF-Extract(initial_salt_v2, client_dst_connection_id)
+/// ```
+///
+/// The v2 salt differs from v1 to prevent cross-version packet confusion.
+///
+/// ## Parameters
+/// - `dcid`: Destination Connection ID used as Input Keying Material
+///
+/// ## Returns
+/// 32-byte initial secret for deriving client/server initial protection keys
+///
+/// ## RFC References
+/// - RFC 9369 §A.1 - QUIC Version 2 Initial Salt
 pub fn deriveInitialSecretV2(dcid: []const u8) [H.digest_length]u8 {
+    // RFC 9369 §A.1 - Use QUIC v2 initial salt
     return extract(&initial_salt_v2, dcid);
 }
 
-/// Derive initial_secret from DCID for the given QUIC version.
+/// Derive the initial secret from DCID for the specified QUIC version.
+///
+/// Convenience function that selects the appropriate initial salt based on
+/// the QUIC version negotiated for the connection.
+///
+/// ## Parameters
+/// - `version_v2`: True for QUIC v2, false for QUIC v1
+/// - `dcid`: Destination Connection ID
+///
+/// ## Returns
+/// 32-byte initial secret using version-appropriate salt
+///
+/// ## RFC References
+/// - RFC 9001 §5.2 - QUIC v1 Initial Secrets
+/// - RFC 9369 §A.1 - QUIC v2 Initial Secrets
 pub fn deriveInitialSecret(version_v2: bool, dcid: []const u8) [H.digest_length]u8 {
     return if (version_v2) deriveInitialSecretV2(dcid) else deriveInitialSecretV1(dcid);
 }
 
-/// Derive client/server initial secrets from initial_secret.
+/// Derive client and server initial secrets from the initial secret.
+///
+/// Splits the initial secret into client and server directional secrets using
+/// HKDF-Expand-Label with role-specific labels:
+///
+/// ```
+/// client_initial_secret = HKDF-Expand-Label(initial_secret, "client in", "", 32)
+/// server_initial_secret = HKDF-Expand-Label(initial_secret, "server in", "", 32)
+/// ```
+///
+/// These secrets are then used to derive the actual packet protection keys,
+/// IVs, and header protection keys for Initial packets.
+///
+/// ## Parameters
+/// - `initial_secret`: Root initial secret from deriveInitialSecret*()
+///
+/// ## Returns
+/// Struct containing both client and server 32-byte initial secrets
+///
+/// ## RFC References
+/// - RFC 9001 §5.2 - Client and Server Initial Secrets
+/// - RFC 9001 Appendix A.1 - Test vectors demonstrating split
 pub fn deriveClientServerInitial(initial_secret: [H.digest_length]u8) struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
     var client: [H.digest_length]u8 = undefined;
     var server: [H.digest_length]u8 = undefined;
+    // RFC 9001 §5.2 - Derive client initial secret with "client in" label
     expandLabel(initial_secret, "client in", &[_]u8{}, &client) catch unreachable;
+    // RFC 9001 §5.2 - Derive server initial secret with "server in" label
     expandLabel(initial_secret, "server in", &[_]u8{}, &server) catch unreachable;
     return .{ .client = client, .server = server };
 }
 
-/// Derive key (16), iv (12), hp (16) from a traffic secret for QUIC v1.
+/// Derive packet protection key, IV, and header protection key from traffic secret (QUIC v1).
+///
+/// Expands a traffic secret into the three keying material components needed
+/// for QUIC packet protection using QUIC v1 labels:
+///
+/// ```
+/// key = HKDF-Expand-Label(secret, "quic key", "", 16)  // AEAD key
+/// iv  = HKDF-Expand-Label(secret, "quic iv", "", 12)   // AEAD IV base
+/// hp  = HKDF-Expand-Label(secret, "quic hp", "", 16)   // Header protection key
+/// ```
+///
+/// ## Parameters
+/// - `secret`: Traffic secret (client_initial_secret, server_initial_secret, etc.)
+///
+/// ## Returns
+/// Struct containing:
+/// - `key`: 16-byte AEAD encryption key for AES-128-GCM
+/// - `iv`: 12-byte IV base for nonce derivation
+/// - `hp`: 16-byte header protection key for AES-ECB
+///
+/// ## RFC References
+/// - RFC 9001 §5.1 - Packet Protection Keys
+/// - RFC 9001 §5.4 - Header Protection
+/// - RFC 9001 Appendix A.1 - Key derivation test vectors
 pub fn deriveKeyIvHp(secret: [H.digest_length]u8) struct { key: [16]u8, iv: [12]u8, hp: [16]u8 } {
     var key: [16]u8 = undefined;
     var iv: [12]u8 = undefined;
     var hp: [16]u8 = undefined;
+    // RFC 9001 §5.1 - Derive AEAD key with "quic key" label
     expandLabel(secret, "quic key", &[_]u8{}, &key) catch unreachable;
+    // RFC 9001 §5.1 - Derive IV with "quic iv" label
     expandLabel(secret, "quic iv", &[_]u8{}, &iv) catch unreachable;
+    // RFC 9001 §5.4 - Derive header protection key with "quic hp" label
     expandLabel(secret, "quic hp", &[_]u8{}, &hp) catch unreachable;
 
     // DIAGNOSTIC: Log the exact keys being derived
@@ -152,15 +381,54 @@ pub fn deriveKeyIvHpV2(secret: [H.digest_length]u8) struct { key: [16]u8, iv: [1
     return .{ .key = key, .iv = iv, .hp = hp };
 }
 
-/// TLS 1.3 traffic secret update: Derive next application traffic secret.
-/// next_secret = HKDF-Expand-Label(current_secret, "traffic upd", "")
+/// Update traffic secret for post-handshake key update (TLS 1.3 §7.2 / RFC 9001 §6).
+///
+/// Derives the next generation application traffic secret from the current one
+/// using the "traffic upd" label. This enables forward secrecy after the handshake
+/// by allowing either peer to rotate keys without a full handshake:
+///
+/// ```
+/// application_traffic_secret_N+1 = HKDF-Expand-Label(
+///     application_traffic_secret_N, "traffic upd", "", 32)
+/// ```
+///
+/// ## Parameters
+/// - `current_secret`: Current application traffic secret
+///
+/// ## Returns
+/// Next-generation application traffic secret (32 bytes)
+///
+/// ## RFC References
+/// - RFC 8446 §7.2 - Updating Traffic Secrets
+/// - RFC 8446 §4.6.3 - KeyUpdate message
+/// - RFC 9001 §6 - Key Update in QUIC
 pub fn updateTrafficSecret(current_secret: [H.digest_length]u8) [H.digest_length]u8 {
     var next: [H.digest_length]u8 = undefined;
+    // RFC 8446 §7.2 - Use "traffic upd" label for key update
     expandLabel(current_secret, "traffic upd", &[_]u8{}, &next) catch unreachable;
     return next;
 }
 
-/// Derive a secret using HKDF-Expand-Label
+/// Generic secret derivation using HKDF-Expand-Label with custom label and context.
+///
+/// Convenience wrapper around expandLabel for deriving 32-byte secrets with
+/// arbitrary labels and context. Commonly used throughout the TLS 1.3 key schedule:
+///
+/// ```
+/// Derive-Secret(Secret, Label, Messages) =
+///     HKDF-Expand-Label(Secret, Label, Transcript-Hash(Messages), Hash.length)
+/// ```
+///
+/// ## Parameters
+/// - `secret`: Input secret to derive from
+/// - `label`: Label string (without "tls13 " prefix)
+/// - `context`: Context bytes (often a transcript hash)
+///
+/// ## Returns
+/// 32-byte derived secret
+///
+/// ## RFC References
+/// - RFC 8446 §7.1 - Derive-Secret definition
 pub fn deriveSecret(secret: [H.digest_length]u8, label: []const u8, context: []const u8) [H.digest_length]u8 {
     var derived: [H.digest_length]u8 = undefined;
     expandLabel(secret, label, context, &derived) catch unreachable;
