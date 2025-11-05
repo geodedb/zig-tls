@@ -1,4 +1,4 @@
-//! zig-tls: TLS 1.3 implementation for QUIC
+//! ztls: TLS 1.3 implementation for QUIC
 //!
 //! This library provides a TLS 1.3 implementation strictly adhering to RFC 8446
 //! and RFC 9001 (QUIC-TLS). It is designed to be integrated into QUIC stacks
@@ -7,7 +7,7 @@
 //! ## Usage
 //!
 //! ```zig
-//! const tls = @import("zig-tls");
+//! const tls = @import("ztls");
 //!
 //! // Create a TLS context for a QUIC connection
 //! var ctx = try tls.Context.init(config, callbacks);

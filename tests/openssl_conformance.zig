@@ -39,17 +39,27 @@ extern "c" fn EVP_sha256() ?*const EVP_MD;
 extern "c" fn EVP_sha384() ?*const EVP_MD;
 extern "c" fn EVP_sha512() ?*const EVP_MD;
 
-// KDF functions (OpenSSL 3.x)
-extern "c" fn EVP_PKEY_CTX_new_id(id: c_int, engine: ?*ENGINE) ?*EVP_PKEY_CTX;
-extern "c" fn EVP_PKEY_CTX_free(ctx: ?*EVP_PKEY_CTX) void;
-extern "c" fn EVP_PKEY_derive_init(ctx: ?*EVP_PKEY_CTX) c_int;
-extern "c" fn EVP_PKEY_CTX_set_hkdf_md(ctx: ?*EVP_PKEY_CTX, md: ?*const EVP_MD) c_int;
-extern "c" fn EVP_PKEY_CTX_set1_hkdf_salt(ctx: ?*EVP_PKEY_CTX, salt: [*]const u8, saltlen: c_int) c_int;
-extern "c" fn EVP_PKEY_CTX_set1_hkdf_key(ctx: ?*EVP_PKEY_CTX, key: [*]const u8, keylen: c_int) c_int;
-extern "c" fn EVP_PKEY_CTX_add1_hkdf_info(ctx: ?*EVP_PKEY_CTX, info: [*]const u8, infolen: c_int) c_int;
-extern "c" fn EVP_PKEY_derive(ctx: ?*EVP_PKEY_CTX, key: [*]u8, keylen: *usize) c_int;
+// KDF functions (simpler HKDF API available in both OpenSSL and BoringSSL)
+// Note: OpenSSL HKDF_extract takes (secret/ikm, salt) order, same as BoringSSL
+extern "c" fn HKDF_extract(
+    out_key: [*]u8,
+    out_len: *usize,
+    digest: ?*const EVP_MD,
+    secret: [*]const u8,
+    secret_len: usize,
+    salt: [*]const u8,
+    salt_len: usize,
+) c_int;
 
-const EVP_PKEY_HKDF = 1036;
+extern "c" fn HKDF_expand(
+    out_key: [*]u8,
+    out_len: usize,
+    digest: ?*const EVP_MD,
+    prk: [*]const u8,
+    prk_len: usize,
+    info: [*]const u8,
+    info_len: usize,
+) c_int;
 
 // Cipher functions
 extern "c" fn EVP_aes_128_gcm() ?*const EVP_CIPHER;
@@ -107,8 +117,7 @@ fn expectEqualHex(hex: []const u8, actual: []const u8) !void {
 // ============================================================================
 
 test "HKDF-Extract parity with OpenSSL 3.x" {
-    // OpenSSL 3.x uses EVP_PKEY_derive for HKDF
-    // This test validates our HKDF-Extract implementation
+    // Validate our HKDF-Extract implementation against OpenSSL
 
     const salt_hex = "000102030405060708090a0b0c0d0e0f";
     var salt: [16]u8 = undefined;
@@ -119,30 +128,22 @@ test "HKDF-Extract parity with OpenSSL 3.x" {
     hexToBytes(ikm_hex, &ikm);
 
     // Our implementation
-    const our_prk = key_schedule.HkdfSha256.extract(&salt, &ikm);
+    const our_prk = key_schedule.HkdfSha256.extract(salt[0..], ikm[0..]);
 
-    // OpenSSL 3.x HKDF implementation
-    // Note: OpenSSL combines extract+expand in EVP_PKEY_derive
-    // For extract-only, we use mode without info
+    // OpenSSL implementation using HKDF_extract
     var ssl_prk: [32]u8 = undefined;
     var ssl_prk_len: usize = ssl_prk.len;
 
-    const pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, null) orelse return error.HkdfContextFailed;
-    defer EVP_PKEY_CTX_free(pctx);
+    const result = HKDF_extract(
+        &ssl_prk,
+        &ssl_prk_len,
+        EVP_sha256(),
+        &ikm,
+        ikm.len,
+        &salt,
+        salt.len,
+    );
 
-    var result = EVP_PKEY_derive_init(pctx);
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_set_hkdf_md(pctx, EVP_sha256());
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_set1_hkdf_salt(pctx, &salt, @intCast(salt.len));
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_set1_hkdf_key(pctx, &ikm, @intCast(ikm.len));
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_derive(pctx, &ssl_prk, &ssl_prk_len);
     try testing.expectEqual(@as(c_int, 1), result);
     try testing.expectEqual(@as(usize, 32), ssl_prk_len);
 
@@ -161,28 +162,20 @@ test "HKDF-Expand parity with OpenSSL 3.x" {
     var our_okm: [16]u8 = undefined;
     key_schedule.HkdfSha256.expand(&our_okm, info, prk);
 
-    // OpenSSL 3.x implementation
+    // OpenSSL implementation using HKDF_expand
     var ssl_okm: [16]u8 = undefined;
-    var ssl_okm_len: usize = ssl_okm.len;
 
-    const pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, null) orelse return error.HkdfContextFailed;
-    defer EVP_PKEY_CTX_free(pctx);
+    const result = HKDF_expand(
+        &ssl_okm,
+        ssl_okm.len,
+        EVP_sha256(),
+        &prk,
+        prk.len,
+        info.ptr,
+        info.len,
+    );
 
-    var result = EVP_PKEY_derive_init(pctx);
     try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_set_hkdf_md(pctx, EVP_sha256());
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_set1_hkdf_key(pctx, &prk, @intCast(prk.len));
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_add1_hkdf_info(pctx, info.ptr, @intCast(info.len));
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_derive(pctx, &ssl_okm, &ssl_okm_len);
-    try testing.expectEqual(@as(c_int, 1), result);
-    try testing.expectEqual(@as(usize, 16), ssl_okm_len);
 
     try testing.expectEqualSlices(u8, &our_okm, &ssl_okm);
 }
@@ -196,35 +189,26 @@ test "QUIC initial secrets match OpenSSL" {
 
     // Our implementation
     const our_initial = key_schedule.HkdfSha256.extract(
-        &key_schedule.initial_salt_v1,
-        &dcid
+        key_schedule.initial_salt_v1[0..],
+        dcid[0..]
     );
 
-    // OpenSSL implementation
+    // OpenSSL implementation using HKDF_extract
     var ssl_initial: [32]u8 = undefined;
     var ssl_initial_len: usize = ssl_initial.len;
 
-    const pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, null) orelse return error.HkdfContextFailed;
-    defer EVP_PKEY_CTX_free(pctx);
-
-    var result = EVP_PKEY_derive_init(pctx);
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_set_hkdf_md(pctx, EVP_sha256());
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_set1_hkdf_salt(
-        pctx,
+    const result = HKDF_extract(
+        &ssl_initial,
+        &ssl_initial_len,
+        EVP_sha256(),
+        &dcid,
+        dcid.len,
         &key_schedule.initial_salt_v1,
-        @intCast(key_schedule.initial_salt_v1.len),
+        key_schedule.initial_salt_v1.len,
     );
-    try testing.expectEqual(@as(c_int, 1), result);
 
-    result = EVP_PKEY_CTX_set1_hkdf_key(pctx, &dcid, @intCast(dcid.len));
     try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_derive(pctx, &ssl_initial, &ssl_initial_len);
-    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqual(@as(usize, 32), ssl_initial_len);
 
     try testing.expectEqualSlices(u8, &our_initial, &ssl_initial);
 
@@ -246,42 +230,46 @@ test "Traffic secret expansion matches OpenSSL" {
         expected_hex: []const u8,
     }{
         .{
-            .label = "tls13 client in",
+            .label = "client in",
             .expected_hex = "c00cf151ca5be075ed0ebfb5c80323c4" ++
                            "2d6b7db67881289af4008f1f6c357aea",
         },
         .{
-            .label = "tls13 server in",
+            .label = "server in",
             .expected_hex = "3c199828fd139efd216c155ad844cc81" ++
                            "fb82fa8d7446fa7d78be803acdda951b",
         },
     };
 
     for (test_cases) |tc| {
-        // Our implementation
+        // Our implementation using HKDF-Expand-Label
         var our_secret: [32]u8 = undefined;
-        key_schedule.HkdfSha256.expand(&our_secret, tc.label, initial_secret);
+        try key_schedule.expandLabel(initial_secret, tc.label, "", &our_secret);
 
-        // OpenSSL implementation
+        // Construct HkdfLabel for OpenSSL comparison
+        const prefix = "tls13 ";
+        const full_label_len = prefix.len + tc.label.len;
+        var hkdf_label: [2 + 1 + 32 + 1]u8 = undefined; // max label size
+        hkdf_label[0] = 0x00; // length high byte
+        hkdf_label[1] = 0x20; // length low byte (32 bytes)
+        hkdf_label[2] = @intCast(full_label_len);
+        @memcpy(hkdf_label[3..3+prefix.len], prefix);
+        @memcpy(hkdf_label[3+prefix.len..3+prefix.len+tc.label.len], tc.label);
+        hkdf_label[3 + full_label_len] = 0; // context length (empty)
+
+        // OpenSSL implementation using raw HKDF_expand with HkdfLabel structure
         var ssl_secret: [32]u8 = undefined;
-        var ssl_secret_len: usize = ssl_secret.len;
 
-        const pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, null) orelse return error.HkdfContextFailed;
-        defer EVP_PKEY_CTX_free(pctx);
+        const result = HKDF_expand(
+            &ssl_secret,
+            ssl_secret.len,
+            EVP_sha256(),
+            &initial_secret,
+            initial_secret.len,
+            &hkdf_label,
+            3 + full_label_len + 1,
+        );
 
-        var result = EVP_PKEY_derive_init(pctx);
-        try testing.expectEqual(@as(c_int, 1), result);
-
-        result = EVP_PKEY_CTX_set_hkdf_md(pctx, EVP_sha256());
-        try testing.expectEqual(@as(c_int, 1), result);
-
-        result = EVP_PKEY_CTX_set1_hkdf_key(pctx, &initial_secret, @intCast(initial_secret.len));
-        try testing.expectEqual(@as(c_int, 1), result);
-
-        result = EVP_PKEY_CTX_add1_hkdf_info(pctx, tc.label.ptr, @intCast(tc.label.len));
-        try testing.expectEqual(@as(c_int, 1), result);
-
-        result = EVP_PKEY_derive(pctx, &ssl_secret, &ssl_secret_len);
         try testing.expectEqual(@as(c_int, 1), result);
 
         try testing.expectEqualSlices(u8, &our_secret, &ssl_secret);
@@ -405,32 +393,36 @@ test "Key update derivation matches OpenSSL" {
     var current_secret: [32]u8 = undefined;
     hexToBytes(current_secret_hex, &current_secret);
 
-    const update_label = "tls13 traffic upd";
+    const update_label = "traffic upd";
 
-    // Our implementation
+    // Our implementation using HKDF-Expand-Label
     var our_next: [32]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&our_next, update_label, current_secret);
+    try key_schedule.expandLabel(current_secret, update_label, "", &our_next);
 
-    // OpenSSL implementation
+    // Construct HkdfLabel for OpenSSL comparison
+    const prefix = "tls13 ";
+    const full_label_len = prefix.len + update_label.len;
+    var hkdf_label: [2 + 1 + 32 + 1]u8 = undefined; // max label size
+    hkdf_label[0] = 0x00; // length high byte
+    hkdf_label[1] = 0x20; // length low byte (32 bytes)
+    hkdf_label[2] = @intCast(full_label_len);
+    @memcpy(hkdf_label[3..3+prefix.len], prefix);
+    @memcpy(hkdf_label[3+prefix.len..3+prefix.len+update_label.len], update_label);
+    hkdf_label[3 + full_label_len] = 0; // context length (empty)
+
+    // OpenSSL implementation using raw HKDF_expand with HkdfLabel structure
     var ssl_next: [32]u8 = undefined;
-    var ssl_next_len: usize = ssl_next.len;
 
-    const pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, null) orelse return error.HkdfContextFailed;
-    defer EVP_PKEY_CTX_free(pctx);
+    const result = HKDF_expand(
+        &ssl_next,
+        ssl_next.len,
+        EVP_sha256(),
+        &current_secret,
+        current_secret.len,
+        &hkdf_label,
+        3 + full_label_len + 1,
+    );
 
-    var result = EVP_PKEY_derive_init(pctx);
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_set_hkdf_md(pctx, EVP_sha256());
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_set1_hkdf_key(pctx, &current_secret, @intCast(current_secret.len));
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_add1_hkdf_info(pctx, update_label.ptr, @intCast(update_label.len));
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_derive(pctx, &ssl_next, &ssl_next_len);
     try testing.expectEqual(@as(c_int, 1), result);
 
     try testing.expectEqualSlices(u8, &our_next, &ssl_next);
@@ -443,32 +435,36 @@ test "Exporter secret derivation matches OpenSSL" {
     var master_secret: [32]u8 = undefined;
     hexToBytes(master_secret_hex, &master_secret);
 
-    const label = "tls13 exp master";
+    const label = "exp master";
 
-    // Our implementation
+    // Our implementation using HKDF-Expand-Label
     var our_exporter: [32]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&our_exporter, label, master_secret);
+    try key_schedule.expandLabel(master_secret, label, "", &our_exporter);
 
-    // OpenSSL implementation
+    // Construct HkdfLabel for OpenSSL comparison
+    const prefix = "tls13 ";
+    const full_label_len = prefix.len + label.len;
+    var hkdf_label: [2 + 1 + 32 + 1]u8 = undefined; // max label size
+    hkdf_label[0] = 0x00; // length high byte
+    hkdf_label[1] = 0x20; // length low byte (32 bytes)
+    hkdf_label[2] = @intCast(full_label_len);
+    @memcpy(hkdf_label[3..3+prefix.len], prefix);
+    @memcpy(hkdf_label[3+prefix.len..3+prefix.len+label.len], label);
+    hkdf_label[3 + full_label_len] = 0; // context length (empty)
+
+    // OpenSSL implementation using raw HKDF_expand with HkdfLabel structure
     var ssl_exporter: [32]u8 = undefined;
-    var ssl_exporter_len: usize = ssl_exporter.len;
 
-    const pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, null) orelse return error.HkdfContextFailed;
-    defer EVP_PKEY_CTX_free(pctx);
+    const result = HKDF_expand(
+        &ssl_exporter,
+        ssl_exporter.len,
+        EVP_sha256(),
+        &master_secret,
+        master_secret.len,
+        &hkdf_label,
+        3 + full_label_len + 1,
+    );
 
-    var result = EVP_PKEY_derive_init(pctx);
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_set_hkdf_md(pctx, EVP_sha256());
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_set1_hkdf_key(pctx, &master_secret, @intCast(master_secret.len));
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_CTX_add1_hkdf_info(pctx, label.ptr, @intCast(label.len));
-    try testing.expectEqual(@as(c_int, 1), result);
-
-    result = EVP_PKEY_derive(pctx, &ssl_exporter, &ssl_exporter_len);
     try testing.expectEqual(@as(c_int, 1), result);
 
     try testing.expectEqualSlices(u8, &our_exporter, &ssl_exporter);

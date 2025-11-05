@@ -1,4 +1,4 @@
-# Makefile for zig-tls TLS 1.3 implementation
+# Makefile for ztls TLS 1.3 implementation
 #
 # Usage:
 #   make              - Build and run all tests
@@ -10,7 +10,7 @@
 .PHONY: all build test test-unit test-vectors test-conformance conformance clean check fmt help install-deps
 
 # Default target - build and run all tests (excluding conformance which requires OpenSSL)
-all: build test-unit test-vectors
+all: build test-unit test-vectors test-conformance
 	@echo ""
 	@echo "✅ All builds and tests completed successfully!"
 	@echo ""
@@ -19,7 +19,7 @@ all: build test-unit test-vectors
 
 # Build the library
 build:
-	@echo "🔨 Building zig-tls library..."
+	@echo "🔨 Building ztls library..."
 	@zig build
 
 # Run all standard tests (unit + vectors)
@@ -135,7 +135,7 @@ dev: fmt check test-unit
 
 # Show help message
 help:
-	@echo "zig-tls TLS 1.3 Implementation - Build System"
+	@echo "ztls TLS 1.3 Implementation - Build System"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make [target]"

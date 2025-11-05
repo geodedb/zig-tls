@@ -171,6 +171,7 @@
                   rust-analyzer
                   clippy
                   boringssl
+                  openssl
                   glibc
                   glibc.dev
                   gcc.cc.lib

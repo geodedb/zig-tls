@@ -1,4 +1,4 @@
-# zig-tls
+# ztls
 
 A **TLS 1.3** implementation for QUIC written in Zig, strictly adhering to RFC 8446 (TLS 1.3) and RFC 9001 (QUIC-TLS).
 
@@ -103,7 +103,7 @@ tests/
 
 ```zig
 const std = @import("std");
-const tls = @import("zig-tls");
+const tls = @import("ztls");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

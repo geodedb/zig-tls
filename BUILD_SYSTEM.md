@@ -1,6 +1,6 @@
-# zig-tls Build System
+# ztls Build System
 
-This document describes the build system setup for the zig-tls TLS 1.3 implementation.
+This document describes the build system setup for the ztls TLS 1.3 implementation.
 
 ## Overview
 
@@ -33,7 +33,7 @@ zig build test-conformance
 
 The following modules are exposed and can be imported:
 
-- `zig-tls` - Main library entry point (re-exports everything)
+- `ztls` - Main library entry point (re-exports everything)
 - `tls13` - TLS 1.3 handshake state machine
 - `quic_tls` - Key schedule (HKDF-based key derivation)
 - `record` - TLS 1.3 record layer and AEAD operations
@@ -175,7 +175,7 @@ To use this library in your QUIC implementation:
 
 ```zig
 const std = @import("std");
-const tls = @import("zig-tls");
+const tls = @import("ztls");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

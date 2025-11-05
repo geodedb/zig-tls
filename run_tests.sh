@@ -1,5 +1,5 @@
 #!/bin/bash
-# Comprehensive test runner for zig-tls
+# Comprehensive test runner for ztls
 # Runs all module tests and reports coverage
 
 set -e

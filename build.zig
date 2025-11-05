@@ -86,7 +86,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Main library module that re-exports everything
-    const zig_tls_mod = b.addModule("zig-tls", .{
+    const zig_tls_mod = b.addModule("ztls", .{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .imports = &.{

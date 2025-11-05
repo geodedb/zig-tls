@@ -183,7 +183,7 @@ test "RFC XXXX §Y.Z - [test name]" {
 # Example GitHub Actions workflow
 - name: Run TLS 1.3 Tests
   run: |
-    cd zig-tls
+    cd ztls
     ./run_tests.sh
 ```
 
