@@ -13,13 +13,14 @@ const tls13 = @import("tls13");
 const key_schedule = @import("quic_tls");
 const alert = @import("alert");
 const record = @import("record");
+const openssl_hkdf = @import("openssl_hkdf_compat.zig");
 
 // ============================================================================
 // BoringSSL FFI Declarations
 // ============================================================================
 
 // OpenSSL/BoringSSL EVP (Envelope) API for cryptographic operations
-const EVP_MD = opaque {};
+const EVP_MD = openssl_hkdf.EVP_MD;
 const EVP_MD_CTX = opaque {};
 const EVP_PKEY = opaque {};
 const EVP_PKEY_CTX = opaque {};
@@ -29,27 +30,6 @@ const ENGINE = opaque {};
 
 extern "c" fn EVP_sha256() ?*const EVP_MD;
 extern "c" fn EVP_sha384() ?*const EVP_MD;
-
-// HKDF functions (BoringSSL specific)
-extern "c" fn HKDF_extract(
-    out_key: [*]u8,
-    out_len: *usize,
-    digest: ?*const EVP_MD,
-    secret: [*]const u8,
-    secret_len: usize,
-    salt: [*]const u8,
-    salt_len: usize,
-) c_int;
-
-extern "c" fn HKDF_expand(
-    out_key: [*]u8,
-    out_len: usize,
-    digest: ?*const EVP_MD,
-    prk: [*]const u8,
-    prk_len: usize,
-    info: [*]const u8,
-    info_len: usize,
-) c_int;
 
 // AES-GCM AEAD operations
 extern "c" fn EVP_aes_128_gcm() ?*const EVP_CIPHER;
@@ -129,8 +109,8 @@ test "HKDF-Extract parity with BoringSSL" {
 
     // BoringSSL implementation
     var ssl_prk: [32]u8 = undefined;
-    var ssl_prk_len: usize = 0;
-    const result = HKDF_extract(
+    var ssl_prk_len: usize = ssl_prk.len;
+    const result = openssl_hkdf.hkdfExtract(
         &ssl_prk,
         &ssl_prk_len,
         EVP_sha256(),
@@ -161,7 +141,7 @@ test "HKDF-Expand parity with BoringSSL" {
 
     // BoringSSL implementation
     var ssl_okm: [16]u8 = undefined;
-    const result = HKDF_expand(
+    const result = openssl_hkdf.hkdfExpand(
         &ssl_okm,
         ssl_okm.len,
         EVP_sha256(),
@@ -190,8 +170,8 @@ test "QUIC initial secret derivation parity" {
 
     // BoringSSL implementation
     var ssl_initial: [32]u8 = undefined;
-    var ssl_initial_len: usize = 0;
-    const result = HKDF_extract(
+    var ssl_initial_len: usize = ssl_initial.len;
+    const result = openssl_hkdf.hkdfExtract(
         &ssl_initial,
         &ssl_initial_len,
         EVP_sha256(),
@@ -234,7 +214,7 @@ test "Client initial secret derivation parity" {
 
     // BoringSSL implementation with proper HkdfLabel
     var ssl_client_secret: [32]u8 = undefined;
-    const result = HKDF_expand(
+    const result = openssl_hkdf.hkdfExpand(
         &ssl_client_secret,
         ssl_client_secret.len,
         EVP_sha256(),
@@ -276,7 +256,7 @@ test "Server initial secret derivation parity" {
 
     // BoringSSL implementation with proper HkdfLabel
     var ssl_server_secret: [32]u8 = undefined;
-    const result = HKDF_expand(
+    const result = openssl_hkdf.hkdfExpand(
         &ssl_server_secret,
         ssl_server_secret.len,
         EVP_sha256(),
@@ -379,8 +359,8 @@ test "Full handshake key schedule parity" {
     const our_early = key_schedule.HkdfSha256.extract(&zeros, &zeros);
 
     var ssl_early: [32]u8 = undefined;
-    var ssl_early_len: usize = 0;
-    const result = HKDF_extract(
+    var ssl_early_len: usize = ssl_early.len;
+    const result = openssl_hkdf.hkdfExtract(
         &ssl_early,
         &ssl_early_len,
         EVP_sha256(),

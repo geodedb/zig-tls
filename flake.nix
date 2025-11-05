@@ -163,6 +163,7 @@
                 tcpdump
                 tshark
                 pythonWithPackages
+                pkg-config
 
                   # Rust toolchain for client tests
                   rustc

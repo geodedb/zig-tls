@@ -85,7 +85,7 @@
 //! - Streaming decoder: Maintains offset state for sequential TLV parsing
 //! - Explicit error handling: All parsing errors are typed and propagated
 //! - No allocations: All operations work on caller-provided buffers
-//! - Future: Migration to std.crypto.codecs.asn1 when available in Zig stdlib
+//! - Uses `std.crypto.codecs.asn1` from Zig standard library
 //!
 //! ## Usage Example
 //! ```zig
@@ -102,8 +102,7 @@
 //! - RFC 5280: X.509 Certificate Profile
 //! - RFC 5911: ASN.1 Modules for X.509
 const std = @import("std");
-
-// TODO: This should be using https://ziglang.org/documentation/master/std/#std.crypto.codecs.asn1
+const std_asn1 = std.crypto.codecs.asn1;
 
 /// ASN.1 tag class categories for DER TLV headers.
 ///
@@ -235,6 +234,8 @@ pub fn tagNumber(b: u8) u8 {
 /// maintains an internal offset and provides methods to sequentially parse
 /// TLV structures and extract typed values.
 ///
+/// This implementation uses `std.crypto.codecs.asn1` from the Zig standard library.
+///
 /// ## Design Philosophy
 /// - **Zero-copy**: Returns slices into the input buffer without allocations
 /// - **Streaming**: Maintains parsing state for sequential TLV traversal
@@ -257,11 +258,8 @@ pub fn tagNumber(b: u8) u8 {
 /// ## RFC Reference
 /// X.690 §8.1 - Basic encoding rules for TLV structures
 pub const Decoder = struct {
-    /// Input buffer containing DER-encoded data.
-    buf: []const u8,
-
-    /// Current parsing offset (next byte to read).
-    off: usize = 0,
+    /// Standard library ASN.1 decoder
+    decoder: std_asn1.Decoder,
 
     /// Initialize a decoder over a DER-encoded buffer.
     ///
@@ -280,83 +278,7 @@ pub const Decoder = struct {
     /// var decoder = asn1.Decoder.init(der_data);
     /// ```
     pub fn init(buf: []const u8) Decoder {
-        return .{ .buf = buf, .off = 0 };
-    }
-
-    /// Read a single byte from the buffer and advance the offset.
-    ///
-    /// Internal helper for reading tag bytes, length octets, and value data.
-    /// Validates that the offset is within buffer bounds before reading.
-    ///
-    /// ## Returns
-    /// The byte at the current offset, or error.Truncated if at end of buffer
-    ///
-    /// ## Errors
-    /// - `error.Truncated`: Attempted to read past end of buffer
-    fn readByte(self: *Decoder) !u8 {
-        if (self.off >= self.buf.len) return error.Truncated;
-        const b = self.buf[self.off];
-        self.off += 1;
-        return b;
-    }
-
-    /// Read and decode a DER length field.
-    ///
-    /// Implements length octets parsing per X.690 §8.1.3. DER uses two
-    /// length encoding forms:
-    ///
-    /// **Short form** (0-127 bytes): Single byte with bit 7 = 0
-    /// ```
-    /// 0xxxxxxx = length
-    /// ```
-    ///
-    /// **Long form** (128+ bytes): First byte specifies number of length octets
-    /// ```
-    /// 1nnnnnnn [length bytes in big-endian]
-    /// ```
-    /// where nnnnnnn = number of subsequent length octets (1-127)
-    ///
-    /// **Indefinite form** (0x80): FORBIDDEN in DER, returned as error
-    ///
-    /// ## Returns
-    /// Length value in bytes, or error if malformed
-    ///
-    /// ## Errors
-    /// - `error.Truncated`: Not enough bytes for length encoding
-    /// - `error.IndefiniteLength`: Indefinite length (0x80) not allowed in DER
-    /// - `error.LengthTooLarge`: Length field >8 bytes (potential overflow attack)
-    ///
-    /// ## Security Considerations
-    /// Limits length encoding to 8 bytes (max 2^64-1) to prevent integer overflow.
-    /// Real-world certificates use much smaller lengths (typically <4 bytes).
-    ///
-    /// ## RFC Reference
-    /// X.690 §8.1.3.3 - Short form length (0-127)
-    /// X.690 §8.1.3.5 - Long form length (128+)
-    /// X.690 §10.1 - DER requires definite length form only
-    fn readLen(self: *Decoder) !usize {
-        const b = try self.readByte();
-
-        // X.690 §8.1.3.3: Short form (bit 8 = 0)
-        if ((b & 0x80) == 0) return b;
-
-        // X.690 §8.1.3.5: Long form (bit 8 = 1, bits 7-1 = number of octets)
-        const n = b & 0x7f;
-
-        // X.690 §10.1: DER forbids indefinite length encoding
-        if (n == 0) return error.IndefiniteLength;
-
-        // Security: Reject unreasonably large length encodings (>8 bytes)
-        // This prevents integer overflow and excessive memory allocation
-        if (n > 8) return error.LengthTooLarge;
-
-        // Parse big-endian multi-byte length value
-        var val: usize = 0;
-        var i: usize = 0;
-        while (i < n) : (i += 1) {
-            val = (val << 8) | try self.readByte();
-        }
-        return val;
+        return .{ .decoder = std_asn1.Decoder.init(buf) };
     }
 
     /// Parse the next TLV header without consuming the value bytes.
@@ -389,10 +311,8 @@ pub const Decoder = struct {
     /// ## RFC Reference
     /// X.690 §8.1 - TLV header consists of tag + length fields
     pub fn nextHeader(self: *Decoder) !struct { tag: u8, len: usize, hdr_len: usize } {
-        const start = self.off;
-        const tag = try self.readByte();
-        const len = try self.readLen();
-        return .{ .tag = tag, .len = len, .hdr_len = self.off - start };
+        const hdr = try self.decoder.nextHeader();
+        return .{ .tag = hdr.tag, .len = hdr.len, .hdr_len = hdr.hdr_len };
     }
 
     /// Read one complete TLV structure.
@@ -429,14 +349,7 @@ pub const Decoder = struct {
     /// ## RFC Reference
     /// X.690 §8.1 - Complete TLV structure encoding
     pub fn readTLV(self: *Decoder) !struct { tag: u8, val: []const u8 } {
-        const h = try self.nextHeader();
-
-        // Security: Validate value length against buffer bounds
-        if (self.off + h.len > self.buf.len) return error.Truncated;
-
-        const val = self.buf[self.off .. self.off + h.len];
-        self.off += h.len;
-        return .{ .tag = h.tag, .val = val };
+        return self.decoder.readTLV();
     }
 
     /// Read a SEQUENCE and return its content bytes for nested decoding.
@@ -473,13 +386,7 @@ pub const Decoder = struct {
     /// X.690 §10.1 - DER requires definite length
     /// RFC 5280 §4.1 - X.509 Certificate uses nested SEQUENCE structures
     pub fn readSequence(self: *Decoder) ![]const u8 {
-        const tlv = try self.readTLV();
-
-        // X.690 §8.9: SEQUENCE has universal class, constructed, tag number 16
-        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 16 or !isConstructed(tlv.tag))
-            return error.UnexpectedTag;
-
-        return tlv.val;
+        return self.decoder.readSequence();
     }
 
     /// Read an INTEGER and return its value as u64.
@@ -517,19 +424,7 @@ pub const Decoder = struct {
     /// X.690 §10.4 - DER INTEGER encoding rules
     /// RFC 5280 §4.1.2.2 - Certificate serial number as INTEGER
     pub fn readInteger(self: *Decoder) !u64 {
-        const tlv = try self.readTLV();
-
-        // X.690 §8.3: INTEGER has universal class, primitive, tag number 2
-        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 2)
-            return error.UnexpectedTag;
-
-        // X.690 §8.3.2: INTEGER value is big-endian two's complement
-        // Only support non-negative values up to 64 bits
-        var v: u64 = 0;
-        for (tlv.val) |b| {
-            v = (v << 8) | b;
-        }
-        return v;
+        return self.decoder.readInteger();
     }
 
     /// Read an OCTET STRING and return its content bytes.
@@ -566,13 +461,7 @@ pub const Decoder = struct {
     /// X.690 §10.2 - DER requires primitive encoding for strings
     /// RFC 5280 §4.2 - Extension values are OCTET STRINGs containing DER
     pub fn readOctetString(self: *Decoder) ![]const u8 {
-        const tlv = try self.readTLV();
-
-        // X.690 §8.7: OCTET STRING has universal class, primitive, tag number 4
-        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 4)
-            return error.UnexpectedTag;
-
-        return tlv.val;
+        return self.decoder.readOctetString();
     }
 
     /// Read a BIT STRING and return its content bytes (without unused bits prefix).
@@ -620,22 +509,7 @@ pub const Decoder = struct {
     /// X.690 §11.2 - DER BIT STRING encoding rules
     /// RFC 5280 §4.1 - SubjectPublicKeyInfo uses BIT STRING for public key
     pub fn readBitString(self: *Decoder) ![]const u8 {
-        const tlv = try self.readTLV();
-
-        // X.690 §8.6: BIT STRING has universal class, primitive, tag number 3
-        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 3)
-            return error.UnexpectedTag;
-
-        // X.690 §8.6.2.2: First byte is number of unused bits in final byte
-        if (tlv.val.len == 0) return error.Truncated;
-        const unused = tlv.val[0];
-
-        // X.690 §11.2.1: Unused bits value must be 0-7
-        if (unused > 7) return error.InvalidBitString;
-
-        // Return payload without the initial 'unused bits' byte
-        // Note: We don't validate that unused bits are zero (DER requirement)
-        return tlv.val[1..];
+        return self.decoder.readBitString();
     }
 
     /// Read an OBJECT IDENTIFIER and return its encoded bytes.
@@ -684,14 +558,7 @@ pub const Decoder = struct {
     /// X.690 §8.19.2 - OID encoding rules (base-128)
     /// RFC 5280 §4.1.1.2 - AlgorithmIdentifier uses OID
     pub fn readOID(self: *Decoder) ![]const u8 {
-        const tlv = try self.readTLV();
-
-        // X.690 §8.19: OBJECT IDENTIFIER has universal class, primitive, tag number 6
-        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 6)
-            return error.UnexpectedTag;
-
-        // Return encoded OID bytes (caller interprets if needed)
-        return tlv.val;
+        return self.decoder.readOID();
     }
 
     /// Read a UTF8String and return its content bytes.
@@ -731,13 +598,7 @@ pub const Decoder = struct {
     /// X.690 §8.23 - UTF8String encoding (tag 12)
     /// RFC 5280 §4.1.2.4 - DN attributes prefer UTF8String
     pub fn readUtf8String(self: *Decoder) ![]const u8 {
-        const tlv = try self.readTLV();
-
-        // X.690 §8.23: UTF8String has universal class, primitive, tag number 12
-        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 12)
-            return error.UnexpectedTag;
-
-        return tlv.val;
+        return self.decoder.readUtf8String();
     }
 
     /// Read an IA5String and return its content bytes.
@@ -776,12 +637,6 @@ pub const Decoder = struct {
     /// X.690 §8.21 - IA5String encoding (tag 22)
     /// RFC 5280 §4.2.1.6 - SubjectAltName dNSName uses IA5String
     pub fn readIa5String(self: *Decoder) ![]const u8 {
-        const tlv = try self.readTLV();
-
-        // X.690 §8.21: IA5String has universal class, primitive, tag number 22
-        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 22)
-            return error.UnexpectedTag;
-
-        return tlv.val;
+        return self.decoder.readIa5String();
     }
 };

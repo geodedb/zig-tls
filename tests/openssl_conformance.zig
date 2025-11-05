@@ -14,12 +14,13 @@ const tls13 = @import("tls13");
 const key_schedule = @import("quic_tls");
 const alert = @import("alert");
 const record = @import("record");
+const openssl_hkdf = @import("openssl_hkdf_compat.zig");
 
 // ============================================================================
 // OpenSSL 3.x FFI Declarations
 // ============================================================================
 
-const EVP_MD = opaque {};
+const EVP_MD = openssl_hkdf.EVP_MD;
 const EVP_MD_CTX = opaque {};
 const EVP_PKEY = opaque {};
 const EVP_PKEY_CTX = opaque {};
@@ -38,28 +39,6 @@ const X509_STORE_CTX = opaque {};
 extern "c" fn EVP_sha256() ?*const EVP_MD;
 extern "c" fn EVP_sha384() ?*const EVP_MD;
 extern "c" fn EVP_sha512() ?*const EVP_MD;
-
-// KDF functions (simpler HKDF API available in both OpenSSL and BoringSSL)
-// Note: OpenSSL HKDF_extract takes (secret/ikm, salt) order, same as BoringSSL
-extern "c" fn HKDF_extract(
-    out_key: [*]u8,
-    out_len: *usize,
-    digest: ?*const EVP_MD,
-    secret: [*]const u8,
-    secret_len: usize,
-    salt: [*]const u8,
-    salt_len: usize,
-) c_int;
-
-extern "c" fn HKDF_expand(
-    out_key: [*]u8,
-    out_len: usize,
-    digest: ?*const EVP_MD,
-    prk: [*]const u8,
-    prk_len: usize,
-    info: [*]const u8,
-    info_len: usize,
-) c_int;
 
 // Cipher functions
 extern "c" fn EVP_aes_128_gcm() ?*const EVP_CIPHER;
@@ -134,7 +113,7 @@ test "HKDF-Extract parity with OpenSSL 3.x" {
     var ssl_prk: [32]u8 = undefined;
     var ssl_prk_len: usize = ssl_prk.len;
 
-    const result = HKDF_extract(
+    const result = openssl_hkdf.hkdfExtract(
         &ssl_prk,
         &ssl_prk_len,
         EVP_sha256(),
@@ -165,7 +144,7 @@ test "HKDF-Expand parity with OpenSSL 3.x" {
     // OpenSSL implementation using HKDF_expand
     var ssl_okm: [16]u8 = undefined;
 
-    const result = HKDF_expand(
+    const result = openssl_hkdf.hkdfExpand(
         &ssl_okm,
         ssl_okm.len,
         EVP_sha256(),
@@ -197,7 +176,7 @@ test "QUIC initial secrets match OpenSSL" {
     var ssl_initial: [32]u8 = undefined;
     var ssl_initial_len: usize = ssl_initial.len;
 
-    const result = HKDF_extract(
+    const result = openssl_hkdf.hkdfExtract(
         &ssl_initial,
         &ssl_initial_len,
         EVP_sha256(),
@@ -260,7 +239,7 @@ test "Traffic secret expansion matches OpenSSL" {
         // OpenSSL implementation using raw HKDF_expand with HkdfLabel structure
         var ssl_secret: [32]u8 = undefined;
 
-        const result = HKDF_expand(
+        const result = openssl_hkdf.hkdfExpand(
             &ssl_secret,
             ssl_secret.len,
             EVP_sha256(),
@@ -413,7 +392,7 @@ test "Key update derivation matches OpenSSL" {
     // OpenSSL implementation using raw HKDF_expand with HkdfLabel structure
     var ssl_next: [32]u8 = undefined;
 
-    const result = HKDF_expand(
+    const result = openssl_hkdf.hkdfExpand(
         &ssl_next,
         ssl_next.len,
         EVP_sha256(),
@@ -455,7 +434,7 @@ test "Exporter secret derivation matches OpenSSL" {
     // OpenSSL implementation using raw HKDF_expand with HkdfLabel structure
     var ssl_exporter: [32]u8 = undefined;
 
-    const result = HKDF_expand(
+    const result = openssl_hkdf.hkdfExpand(
         &ssl_exporter,
         ssl_exporter.len,
         EVP_sha256(),

@@ -18,13 +18,10 @@
 //! - Tested against RFC 9001 Appendix A.1 test vectors
 //!
 //! ## Design Notes
-//! Uses Zig standard library HKDF (std.crypto.kdf.hkdf.Hkdf) for all
-//! cryptographic operations. No external dependencies required.
+//! Uses Zig standard library HKDF implementations (std.crypto.kdf.hkdf.HkdfSha256,
+//! std.crypto.kdf.hkdf.HkdfSha512) for all cryptographic operations.
+//! No external dependencies required.
 const std = @import("std");
-
-// TODO: this should be using
-// https://ziglang.org/documentation/master/std/#std.crypto.hkdf.HkdfSha256
-// https://ziglang.org/documentation/master/std/#std.crypto.hkdf.HkdfSha512
 
 /// Hash function used for TLS_AES_128_GCM_SHA256 and CHACHA20_POLY1305_SHA256.
 ///
@@ -33,16 +30,14 @@ const std = @import("std");
 /// primitive for consistency with the primary cipher suite.
 pub const H = std.crypto.hash.sha2.Sha256; // 32-byte digest
 
-/// Use standard library HMAC and HKDF implementations.
-/// RFC 5869 defines HKDF-Extract and HKDF-Expand.
-/// RFC 2104 defines HMAC construction.
-const Hmac = std.crypto.auth.hmac.Hmac;
-const Hkdf = std.crypto.kdf.hkdf.Hkdf;
-const HmacSha256 = Hmac(H);
-
 /// HKDF-SHA256 implementation used for all key derivation operations.
+/// Uses std.crypto.kdf.hkdf.HkdfSha256 from Zig standard library.
 /// Combines RFC 5869 HKDF with RFC 2104 HMAC-SHA256.
-pub const HkdfSha256 = Hkdf(HmacSha256);
+pub const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
+
+/// HKDF-SHA512 implementation for future use with cipher suites requiring SHA-512.
+/// Uses std.crypto.kdf.hkdf.HkdfSha512 from Zig standard library.
+pub const HkdfSha512 = std.crypto.kdf.hkdf.HkdfSha512;
 
 /// QUIC v1 Initial Salt used for deriving initial packet protection secrets.
 ///
@@ -146,6 +141,7 @@ fn hkdfLabel(alloc: std.mem.Allocator, label: []const u8, context: []const u8, o
 /// - RFC 2104 - HMAC: Keyed-Hashing for Message Authentication
 /// - RFC 8446 §4.4.4 - Finished message uses HMAC for verification
 pub fn hmacSha256(key: []const u8, data: []const u8) [H.digest_length]u8 {
+    const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
     var out: [HmacSha256.mac_length]u8 = undefined;
     HmacSha256.create(&out, data, key);
     return out;
