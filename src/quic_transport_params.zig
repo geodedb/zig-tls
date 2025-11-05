@@ -102,7 +102,7 @@
 //! - RFC 9001 §8.2 (QUIC Transport Parameters Extension)
 
 const std = @import("std");
-const varint = @import("varint.zig");
+const varint = @import("varint");
 
 // Re-export varint functions for convenience
 pub const encodeVarint = varint.encode;

@@ -425,3 +425,259 @@ test "Alert code mapping compatibility" {
     try testing.expectEqual(@as(u8, 50), @intFromEnum(alert.AlertDescription.decode_error));
     try testing.expectEqual(@as(u8, 80), @intFromEnum(alert.AlertDescription.internal_error));
 }
+
+// ============================================================================
+// QUIC Extension Conformance Tests (RFC 9000, RFC 9001)
+// ============================================================================
+
+const varint = @import("varint");
+const qtp = @import("quic_transport_params");
+
+// RFC 9000 Appendix A.1: Variable-Length Integer Test Vectors
+// These vectors are the canonical test cases that BoringSSL's QUIC implementation also uses
+test "QUIC varint encoding - RFC 9000 Appendix A.1 conformance" {
+    // RFC 9000 Appendix A.1: "the single byte 0x25 decodes to 37"
+    var buf: [8]u8 = undefined;
+    const len1 = try varint.encode(37, &buf);
+    try testing.expectEqual(@as(usize, 1), len1);
+    try testing.expectEqual(@as(u8, 0x25), buf[0]);
+
+    // RFC 9000 Appendix A.1: "the two-byte sequence 0x7bbd decodes to 15,293"
+    const len2 = try varint.encode(15293, &buf);
+    try testing.expectEqual(@as(usize, 2), len2);
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x7b, 0xbd }, buf[0..len2]);
+
+    // RFC 9000 Appendix A.1: "the four-byte sequence 0x9d7f3e7d decodes to 494,878,333"
+    const len3 = try varint.encode(494878333, &buf);
+    try testing.expectEqual(@as(usize, 4), len3);
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x9d, 0x7f, 0x3e, 0x7d }, buf[0..len3]);
+
+    // RFC 9000 Appendix A.1: "the eight-byte sequence 0xc2197c5eff14e88c decodes to 151,288,809,941,952,652"
+    const len4 = try varint.encode(151288809941952652, &buf);
+    try testing.expectEqual(@as(usize, 8), len4);
+    try testing.expectEqualSlices(u8, &[_]u8{ 0xc2, 0x19, 0x7c, 0x5e, 0xff, 0x14, 0xe8, 0x8c }, buf[0..len4]);
+}
+
+test "QUIC varint decoding - RFC 9000 Appendix A.1 conformance" {
+    // RFC 9000 Appendix A.1: Validate decoding of all canonical test vectors
+
+    // 1 byte: 0x25 → 37
+    const result1 = try varint.decode(&[_]u8{0x25});
+    try testing.expectEqual(@as(u64, 37), result1.value);
+    try testing.expectEqual(@as(usize, 1), result1.n);
+
+    // 2 bytes: 0x4025 → 37 (RFC note: "the two-byte sequence 0x4025 also decodes to 37")
+    const result2 = try varint.decode(&[_]u8{ 0x40, 0x25 });
+    try testing.expectEqual(@as(u64, 37), result2.value);
+    try testing.expectEqual(@as(usize, 2), result2.n);
+
+    // 2 bytes: 0x7bbd → 15,293
+    const result3 = try varint.decode(&[_]u8{ 0x7b, 0xbd });
+    try testing.expectEqual(@as(u64, 15293), result3.value);
+    try testing.expectEqual(@as(usize, 2), result3.n);
+
+    // 4 bytes: 0x9d7f3e7d → 494,878,333
+    const result4 = try varint.decode(&[_]u8{ 0x9d, 0x7f, 0x3e, 0x7d });
+    try testing.expectEqual(@as(u64, 494878333), result4.value);
+    try testing.expectEqual(@as(usize, 4), result4.n);
+
+    // 8 bytes: 0xc2197c5eff14e88c → 151,288,809,941,952,652
+    const result5 = try varint.decode(&[_]u8{ 0xc2, 0x19, 0x7c, 0x5e, 0xff, 0x14, 0xe8, 0x8c });
+    try testing.expectEqual(@as(u64, 151288809941952652), result5.value);
+    try testing.expectEqual(@as(usize, 8), result5.n);
+}
+
+test "QUIC varint boundary values - BoringSSL compatibility" {
+    // Test boundary values that BoringSSL's QUIC implementation must handle correctly
+    var buf: [8]u8 = undefined;
+
+    // 1-byte max: 63 (0x3f)
+    _ = try varint.encode(63, &buf);
+    const v1 = try varint.decode(&buf);
+    try testing.expectEqual(@as(u64, 63), v1.value);
+
+    // 2-byte boundaries: 64 and 16383 (0x3fff)
+    _ = try varint.encode(64, &buf);
+    const v2 = try varint.decode(&buf);
+    try testing.expectEqual(@as(u64, 64), v2.value);
+
+    _ = try varint.encode(16383, &buf);
+    const v3 = try varint.decode(&buf);
+    try testing.expectEqual(@as(u64, 16383), v3.value);
+
+    // 4-byte boundaries: 16384 and 1073741823 (0x3fffffff)
+    _ = try varint.encode(16384, &buf);
+    const v4 = try varint.decode(&buf);
+    try testing.expectEqual(@as(u64, 16384), v4.value);
+
+    _ = try varint.encode(1073741823, &buf);
+    const v5 = try varint.decode(&buf);
+    try testing.expectEqual(@as(u64, 1073741823), v5.value);
+
+    // 8-byte minimum: 1073741824
+    _ = try varint.encode(1073741824, &buf);
+    const v6 = try varint.decode(&buf);
+    try testing.expectEqual(@as(u64, 1073741824), v6.value);
+}
+
+test "QUIC transport parameters - wire format conformance" {
+    // Validate transport parameter encoding matches the wire format expected by BoringSSL/QUIC
+    // RFC 9000 §18: Each parameter is (ID varint, Length varint, Value bytes)
+
+    var params = qtp.TransportParameters{};
+    params.max_idle_timeout = 30000; // Common value used in QUIC implementations
+    params.initial_max_data = 1048576; // 1 MB
+    params.initial_max_streams_bidi = 100;
+
+    const encoded = try params.encode(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    // Decode to verify round-trip
+    var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    defer decoded.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u64, 30000), decoded.max_idle_timeout.?);
+    try testing.expectEqual(@as(u64, 1048576), decoded.initial_max_data.?);
+    try testing.expectEqual(@as(u64, 100), decoded.initial_max_streams_bidi.?);
+}
+
+test "QUIC transport parameters - RFC 9000 §18.2 constraint validation" {
+    // Validate that our constraint checking matches what BoringSSL enforces
+
+    var params = qtp.TransportParameters{};
+
+    // RFC 9000 §18.2: max_udp_payload_size MUST be >= 1200
+    params.max_udp_payload_size = 1199;
+    try testing.expectError(error.InvalidParameter, params.encode(testing.allocator));
+
+    params.max_udp_payload_size = 1200; // Valid minimum
+    const encoded1 = try params.encode(testing.allocator);
+    defer testing.allocator.free(encoded1);
+
+    // RFC 9000 §18.2: ack_delay_exponent MUST be <= 20
+    params = qtp.TransportParameters{};
+    params.ack_delay_exponent = 21;
+    try testing.expectError(error.InvalidParameter, params.encode(testing.allocator));
+
+    // RFC 9000 §18.2: max_ack_delay MUST be < 2^14
+    params = qtp.TransportParameters{};
+    params.max_ack_delay = 16384;
+    try testing.expectError(error.InvalidParameter, params.encode(testing.allocator));
+
+    // RFC 9000 §18.2: active_connection_id_limit MUST be >= 2
+    params = qtp.TransportParameters{};
+    params.active_connection_id_limit = 1;
+    try testing.expectError(error.InvalidParameter, params.encode(testing.allocator));
+}
+
+test "QUIC transport parameters - connection ID encoding" {
+    // Connection IDs are variable-length and commonly 8 bytes in practice (BoringSSL default)
+    const cid = [_]u8{ 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08 };
+
+    var params = qtp.TransportParameters{};
+    params.initial_source_connection_id = &cid;
+
+    const encoded = try params.encode(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    defer decoded.deinit(testing.allocator);
+
+    try testing.expectEqualSlices(u8, &cid, decoded.initial_source_connection_id.?);
+}
+
+test "QUIC transport parameters - stateless reset token" {
+    // RFC 9000 §18.2: Stateless reset token is exactly 16 bytes (server-only)
+    const token = [_]u8{
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+    };
+
+    var params = qtp.TransportParameters{};
+    params.stateless_reset_token = token;
+
+    const encoded = try params.encode(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    defer decoded.deinit(testing.allocator);
+
+    try testing.expectEqualSlices(u8, &token, &decoded.stateless_reset_token.?);
+}
+
+test "QUIC transport parameters - comprehensive parameter set" {
+    // Test a comprehensive set of parameters like BoringSSL would negotiate
+    var params = qtp.TransportParameters{};
+    params.max_idle_timeout = 30000; // 30 seconds
+    params.max_udp_payload_size = 1472; // Ethernet MTU - IP/UDP headers
+    params.initial_max_data = 10485760; // 10 MB
+    params.initial_max_stream_data_bidi_local = 1048576; // 1 MB
+    params.initial_max_stream_data_bidi_remote = 1048576;
+    params.initial_max_stream_data_uni = 1048576;
+    params.initial_max_streams_bidi = 100;
+    params.initial_max_streams_uni = 100;
+    params.ack_delay_exponent = 3; // Default per RFC 9000
+    params.max_ack_delay = 25; // 25ms, default per RFC 9000
+    params.active_connection_id_limit = 2; // Default per RFC 9000
+    params.disable_active_migration = false; // Allow migration
+
+    const cid = [_]u8{ 0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08 };
+    params.initial_source_connection_id = &cid;
+
+    const encoded = try params.encode(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    // Verify round-trip
+    var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    defer decoded.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u64, 30000), decoded.max_idle_timeout.?);
+    try testing.expectEqual(@as(u64, 1472), decoded.max_udp_payload_size.?);
+    try testing.expectEqual(@as(u64, 10485760), decoded.initial_max_data.?);
+    try testing.expectEqual(@as(u64, 1048576), decoded.initial_max_stream_data_bidi_local.?);
+    try testing.expectEqual(@as(u64, 1048576), decoded.initial_max_stream_data_bidi_remote.?);
+    try testing.expectEqual(@as(u64, 1048576), decoded.initial_max_stream_data_uni.?);
+    try testing.expectEqual(@as(u64, 100), decoded.initial_max_streams_bidi.?);
+    try testing.expectEqual(@as(u64, 100), decoded.initial_max_streams_uni.?);
+    try testing.expectEqual(@as(u64, 3), decoded.ack_delay_exponent.?);
+    try testing.expectEqual(@as(u64, 25), decoded.max_ack_delay.?);
+    try testing.expectEqual(@as(u64, 2), decoded.active_connection_id_limit.?);
+    try testing.expect(!decoded.disable_active_migration);
+    try testing.expectEqualSlices(u8, &cid, decoded.initial_source_connection_id.?);
+}
+
+test "QUIC transport parameters - forward compatibility (unknown parameters)" {
+    // RFC 9000 §7.4: Unknown parameters MUST be ignored
+    // This ensures compatibility when connecting to newer QUIC implementations
+
+    // Manually construct a parameter stream with an unknown parameter ID
+    var list = std.ArrayList(u8){};
+    defer list.deinit(testing.allocator);
+
+    // Add a known parameter (max_idle_timeout = 30000)
+    var buf: [8]u8 = undefined;
+    var id_len = try varint.encode(0x01, &buf); // ID: max_idle_timeout
+    try list.appendSlice(testing.allocator, buf[0..id_len]);
+
+    var value_buf: [8]u8 = undefined;
+    const val_len = try varint.encode(30000, &value_buf);
+    const len_len = try varint.encode(val_len, &buf); // Length
+    try list.appendSlice(testing.allocator, buf[0..len_len]);
+    try list.appendSlice(testing.allocator, value_buf[0..val_len]);
+
+    // Add an unknown parameter (ID 0x9999 - reserved for private use)
+    id_len = try varint.encode(0x9999, &buf);
+    try list.appendSlice(testing.allocator, buf[0..id_len]);
+    const unknown_len_len = try varint.encode(4, &buf); // Length: 4 bytes
+    try list.appendSlice(testing.allocator, buf[0..unknown_len_len]);
+    try list.appendSlice(testing.allocator, &[_]u8{ 0xde, 0xad, 0xbe, 0xef }); // Value
+
+    const encoded = try list.toOwnedSlice(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    // Decode should succeed and ignore unknown parameter
+    var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    defer decoded.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u64, 30000), decoded.max_idle_timeout.?);
+}

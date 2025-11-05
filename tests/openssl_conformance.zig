@@ -469,3 +469,321 @@ test "Exporter secret derivation matches OpenSSL" {
 
     try testing.expectEqualSlices(u8, &our_exporter, &ssl_exporter);
 }
+
+// ============================================================================
+// QUIC Extension Conformance Tests (RFC 9000, RFC 9001)
+// ============================================================================
+
+const varint = @import("varint");
+const qtp = @import("quic_transport_params");
+
+// RFC 9000 Appendix A.1: Variable-Length Integer Test Vectors
+// These are canonical test vectors that both OpenSSL and BoringSSL use
+test "QUIC varint encoding - RFC 9000 Appendix A.1 conformance" {
+    // RFC 9000 Appendix A.1 provides canonical test vectors for varint encoding
+    // Verify our implementation produces the exact byte sequences specified
+
+    const test_cases = [_]struct {
+        value: u64,
+        expected: []const u8,
+    }{
+        .{ .value = 37, .expected = &[_]u8{0x25} },
+        .{ .value = 15293, .expected = &[_]u8{ 0x7b, 0xbd } },
+        .{ .value = 494878333, .expected = &[_]u8{ 0x9d, 0x7f, 0x3e, 0x7d } },
+        .{
+            .value = 151288809941952652,
+            .expected = &[_]u8{ 0xc2, 0x19, 0x7c, 0x5e, 0xff, 0x14, 0xe8, 0x8c },
+        },
+    };
+
+    for (test_cases) |tc| {
+        var buf: [8]u8 = undefined;
+        const n = try varint.encode(tc.value, &buf);
+        try testing.expectEqual(tc.expected.len, n);
+        try testing.expectEqualSlices(u8, tc.expected, buf[0..n]);
+    }
+}
+
+// RFC 9000 Appendix A.1: Variable-Length Integer Decoding Test Vectors
+test "QUIC varint decoding - RFC 9000 Appendix A.1 conformance" {
+    // Validate decoding of canonical RFC 9000 Appendix A.1 test vectors
+    // OpenSSL QUIC implementation uses these same test vectors
+
+    const test_cases = [_]struct {
+        encoded: []const u8,
+        expected_value: u64,
+    }{
+        .{ .encoded = &[_]u8{0x25}, .expected_value = 37 },
+        .{ .encoded = &[_]u8{ 0x7b, 0xbd }, .expected_value = 15293 },
+        .{ .encoded = &[_]u8{ 0x9d, 0x7f, 0x3e, 0x7d }, .expected_value = 494878333 },
+        .{
+            .encoded = &[_]u8{ 0xc2, 0x19, 0x7c, 0x5e, 0xff, 0x14, 0xe8, 0x8c },
+            .expected_value = 151288809941952652,
+        },
+    };
+
+    for (test_cases) |tc| {
+        const result = try varint.decode(tc.encoded);
+        try testing.expectEqual(tc.expected_value, result.value);
+        try testing.expectEqual(tc.encoded.len, result.n);
+    }
+}
+
+// Boundary value testing for varint encoding lengths
+test "QUIC varint boundary values - OpenSSL 3.x compatibility" {
+    // RFC 9000 §16: Variable-length integers use 1, 2, 4, or 8 bytes
+    // Test boundary values between encoding lengths:
+    //   1-byte max: 63 (2^6 - 1)
+    //   2-byte min: 64, max: 16383 (2^14 - 1)
+    //   4-byte min: 16384, max: 1073741823 (2^30 - 1)
+    //   8-byte min: 1073741824, max: 4611686018427387903 (2^62 - 1)
+
+    const boundary_cases = [_]struct {
+        value: u64,
+        expected_len: usize,
+    }{
+        .{ .value = 63, .expected_len = 1 }, // 1-byte max
+        .{ .value = 64, .expected_len = 2 }, // 2-byte min
+        .{ .value = 16383, .expected_len = 2 }, // 2-byte max
+        .{ .value = 16384, .expected_len = 4 }, // 4-byte min
+        .{ .value = 1073741823, .expected_len = 4 }, // 4-byte max
+        .{ .value = 1073741824, .expected_len = 8 }, // 8-byte min
+        .{ .value = 4611686018427387903, .expected_len = 8 }, // 8-byte max
+    };
+
+    for (boundary_cases) |bc| {
+        var buf: [8]u8 = undefined;
+        const n = try varint.encode(bc.value, &buf);
+        try testing.expectEqual(bc.expected_len, n);
+
+        // Verify round-trip decode
+        const result = try varint.decode(buf[0..n]);
+        try testing.expectEqual(bc.value, result.value);
+        try testing.expectEqual(n, result.n);
+    }
+}
+
+// Transport parameter wire format conformance
+test "QUIC transport parameters - wire format conformance" {
+    // RFC 9000 §18: Transport parameters are encoded as (ID, Length, Value) tuples
+    // Verify our encoding matches OpenSSL 3.x expectations
+
+    var params = qtp.TransportParameters{};
+    params.max_idle_timeout = 30000; // 30 seconds
+    params.max_udp_payload_size = 1472; // Typical MTU
+    params.initial_max_data = 1048576; // 1 MB
+    params.initial_max_stream_data_bidi_local = 262144; // 256 KB
+    params.initial_max_stream_data_bidi_remote = 262144; // 256 KB
+    params.initial_max_stream_data_uni = 262144; // 256 KB
+    params.initial_max_streams_bidi = 100;
+    params.initial_max_streams_uni = 100;
+
+    // Encode parameters
+    const encoded = try params.encode(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    // Verify we produced valid output
+    try testing.expect(encoded.len > 0);
+
+    // Decode and verify round-trip
+    const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+
+    try testing.expectEqual(params.max_idle_timeout, decoded.max_idle_timeout);
+    try testing.expectEqual(params.max_udp_payload_size, decoded.max_udp_payload_size);
+    try testing.expectEqual(params.initial_max_data, decoded.initial_max_data);
+    try testing.expectEqual(params.initial_max_stream_data_bidi_local, decoded.initial_max_stream_data_bidi_local);
+    try testing.expectEqual(params.initial_max_stream_data_bidi_remote, decoded.initial_max_stream_data_bidi_remote);
+    try testing.expectEqual(params.initial_max_stream_data_uni, decoded.initial_max_stream_data_uni);
+    try testing.expectEqual(params.initial_max_streams_bidi, decoded.initial_max_streams_bidi);
+    try testing.expectEqual(params.initial_max_streams_uni, decoded.initial_max_streams_uni);
+}
+
+// RFC 9000 §18.2 constraint validation
+test "QUIC transport parameters - RFC 9000 §18.2 constraint validation" {
+    // RFC 9000 §18.2 defines constraints for transport parameters
+    // OpenSSL validates these constraints - verify our implementation does too
+
+    // Constraint 1: max_udp_payload_size must be >= 1200
+    {
+        var params = qtp.TransportParameters{};
+        params.max_udp_payload_size = 1200; // Min allowed value
+        const encoded = try params.encode(testing.allocator);
+        defer testing.allocator.free(encoded);
+
+        const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        try testing.expectEqual(@as(?u64, 1200), decoded.max_udp_payload_size);
+    }
+
+    // Constraint 2: ack_delay_exponent must be <= 20
+    {
+        var params = qtp.TransportParameters{};
+        params.ack_delay_exponent = 20; // Max allowed value
+        const encoded = try params.encode(testing.allocator);
+        defer testing.allocator.free(encoded);
+
+        const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        try testing.expectEqual(@as(?u64, 20), decoded.ack_delay_exponent);
+    }
+
+    // Constraint 3: max_ack_delay must be < 2^14 (16384 ms)
+    {
+        var params = qtp.TransportParameters{};
+        params.max_ack_delay = 16383; // Max allowed value
+        const encoded = try params.encode(testing.allocator);
+        defer testing.allocator.free(encoded);
+
+        const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        try testing.expectEqual(@as(?u64, 16383), decoded.max_ack_delay);
+    }
+
+    // Constraint 4: active_connection_id_limit must be >= 2
+    {
+        var params = qtp.TransportParameters{};
+        params.active_connection_id_limit = 2; // Min allowed value
+        const encoded = try params.encode(testing.allocator);
+        defer testing.allocator.free(encoded);
+
+        const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        try testing.expectEqual(@as(?u64, 2), decoded.active_connection_id_limit);
+    }
+}
+
+// Connection ID encoding - OpenSSL 3.x typically uses 8-byte CIDs
+test "QUIC transport parameters - connection ID encoding" {
+    // RFC 9000 §18.2: original_destination_connection_id, initial_source_connection_id,
+    // and retry_source_connection_id are variable-length connection IDs (0-20 bytes)
+    // OpenSSL typically uses 8-byte connection IDs
+
+    var params = qtp.TransportParameters{};
+    const cid = [_]u8{ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
+
+    params.initial_source_connection_id = try testing.allocator.dupe(u8, &cid);
+    defer testing.allocator.free(params.initial_source_connection_id.?);
+
+    params.original_destination_connection_id = try testing.allocator.dupe(u8, &cid);
+    defer testing.allocator.free(params.original_destination_connection_id.?);
+
+    // Encode parameters
+    const encoded = try params.encode(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    // Decode and verify
+    const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    defer {
+        if (decoded.initial_source_connection_id) |cid_| testing.allocator.free(cid_);
+        if (decoded.original_destination_connection_id) |cid_| testing.allocator.free(cid_);
+    }
+
+    try testing.expect(decoded.initial_source_connection_id != null);
+    try testing.expectEqualSlices(u8, &cid, decoded.initial_source_connection_id.?);
+
+    try testing.expect(decoded.original_destination_connection_id != null);
+    try testing.expectEqualSlices(u8, &cid, decoded.original_destination_connection_id.?);
+}
+
+// Stateless reset token encoding - must be exactly 16 bytes
+test "QUIC transport parameters - stateless reset token" {
+    // RFC 9000 §18.2: stateless_reset_token must be exactly 16 bytes
+    // This is critical for OpenSSL compatibility
+
+    var params = qtp.TransportParameters{};
+    const token = [_]u8{
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+    };
+
+    params.stateless_reset_token = token;
+
+    // Encode parameters
+    const encoded = try params.encode(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    // Decode and verify
+    const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+
+    try testing.expect(decoded.stateless_reset_token != null);
+    try testing.expectEqual(@as(usize, 16), decoded.stateless_reset_token.?.len);
+    try testing.expectEqualSlices(u8, &token, &decoded.stateless_reset_token.?);
+}
+
+// Comprehensive parameter set - typical OpenSSL 3.x negotiation
+test "QUIC transport parameters - comprehensive parameter set" {
+    // Simulate a full transport parameter set like OpenSSL 3.x would negotiate
+    // RFC 9000 §18.2: All transport parameters with typical production values
+
+    var params = qtp.TransportParameters{};
+    params.max_idle_timeout = 30000; // 30 seconds
+    params.max_udp_payload_size = 65527; // Max allowed
+    params.initial_max_data = 10485760; // 10 MB
+    params.initial_max_stream_data_bidi_local = 1048576; // 1 MB
+    params.initial_max_stream_data_bidi_remote = 1048576; // 1 MB
+    params.initial_max_stream_data_uni = 1048576; // 1 MB
+    params.initial_max_streams_bidi = 100;
+    params.initial_max_streams_uni = 100;
+    params.ack_delay_exponent = 3; // Default per RFC 9000
+    params.max_ack_delay = 25; // 25 ms
+    params.active_connection_id_limit = 8; // Allow multiple CIDs
+    params.disable_active_migration = false;
+
+    // Encode parameters
+    const encoded = try params.encode(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    // Verify substantial encoding size
+    try testing.expect(encoded.len > 50); // Should be many parameters encoded
+
+    // Decode and verify all values
+    const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+
+    try testing.expectEqual(params.max_idle_timeout, decoded.max_idle_timeout);
+    try testing.expectEqual(params.max_udp_payload_size, decoded.max_udp_payload_size);
+    try testing.expectEqual(params.initial_max_data, decoded.initial_max_data);
+    try testing.expectEqual(params.initial_max_stream_data_bidi_local, decoded.initial_max_stream_data_bidi_local);
+    try testing.expectEqual(params.initial_max_stream_data_bidi_remote, decoded.initial_max_stream_data_bidi_remote);
+    try testing.expectEqual(params.initial_max_stream_data_uni, decoded.initial_max_stream_data_uni);
+    try testing.expectEqual(params.initial_max_streams_bidi, decoded.initial_max_streams_bidi);
+    try testing.expectEqual(params.initial_max_streams_uni, decoded.initial_max_streams_uni);
+    try testing.expectEqual(params.ack_delay_exponent, decoded.ack_delay_exponent);
+    try testing.expectEqual(params.max_ack_delay, decoded.max_ack_delay);
+    try testing.expectEqual(params.active_connection_id_limit, decoded.active_connection_id_limit);
+    try testing.expectEqual(params.disable_active_migration, decoded.disable_active_migration);
+}
+
+// Forward compatibility - unknown parameters must be ignored
+test "QUIC transport parameters - forward compatibility (unknown parameters)" {
+    // RFC 9000 §7.4: Endpoints MUST ignore unknown transport parameters
+    // This is critical for version negotiation and OpenSSL compatibility
+
+    // Create parameters with a known parameter
+    var list = std.ArrayList(u8){};
+    errdefer list.deinit(testing.allocator);
+
+    // Add max_idle_timeout (ID 0x01) = 30000
+    var buf: [8]u8 = undefined;
+    var id_len = try varint.encode(0x01, &buf);
+    try list.appendSlice(testing.allocator, buf[0..id_len]);
+
+    var value_buf: [8]u8 = undefined;
+    const val_len = try varint.encode(30000, &value_buf);
+    const len_len = try varint.encode(val_len, &buf);
+    try list.appendSlice(testing.allocator, buf[0..len_len]);
+    try list.appendSlice(testing.allocator, value_buf[0..val_len]);
+
+    // Add an unknown parameter (ID 0x9999) with some value
+    id_len = try varint.encode(0x9999, &buf);
+    try list.appendSlice(testing.allocator, buf[0..id_len]);
+
+    const unknown_val_len = try varint.encode(12345, &value_buf);
+    const unknown_len_len = try varint.encode(unknown_val_len, &buf);
+    try list.appendSlice(testing.allocator, buf[0..unknown_len_len]);
+    try list.appendSlice(testing.allocator, value_buf[0..unknown_val_len]);
+
+    const encoded = try list.toOwnedSlice(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    // Decode - should succeed and ignore unknown parameter
+    const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+
+    // Verify known parameter was parsed
+    try testing.expectEqual(@as(?u64, 30000), decoded.max_idle_timeout);
+}

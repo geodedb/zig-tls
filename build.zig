@@ -139,7 +139,13 @@ pub fn build(b: *std.Build) void {
         .{ .name = "asn1", .source = "src/asn1.zig", .imports = &.{} },
         .{ .name = "key_schedule", .source = "src/key_schedule.zig", .imports = &.{} },
         .{ .name = "quic_logger", .source = "src/quic_logger.zig", .imports = &.{} },
-        .{ .name = "quic_transport_params", .source = "src/quic_transport_params.zig", .imports = &.{} },
+        .{
+            .name = "quic_transport_params",
+            .source = "src/quic_transport_params.zig",
+            .imports = &.{
+                .{ .name = "varint", .module = varint_mod },
+            },
+        },
         .{ .name = "tls13_full", .source = "src/tls13_full.zig", .imports = &.{} },
         .{
             .name = "sig",
@@ -254,6 +260,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "quic_tls", .module = key_schedule_mod },
                 .{ .name = "alert", .module = alert_mod },
                 .{ .name = "record", .module = record_mod },
+                .{ .name = "varint", .module = varint_mod },
+                .{ .name = "quic_transport_params", .module = transport_params_mod },
             },
         }),
     });
@@ -275,6 +283,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "quic_tls", .module = key_schedule_mod },
                 .{ .name = "alert", .module = alert_mod },
                 .{ .name = "record", .module = record_mod },
+                .{ .name = "varint", .module = varint_mod },
+                .{ .name = "quic_transport_params", .module = transport_params_mod },
             },
         }),
     });
