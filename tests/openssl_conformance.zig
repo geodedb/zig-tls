@@ -91,6 +91,40 @@ fn expectEqualHex(hex: []const u8, actual: []const u8) !void {
     try testing.expectEqualSlices(u8, expected, actual);
 }
 
+fn buildHkdfLabel(
+    buffer: []u8,
+    label: []const u8,
+    context: []const u8,
+    out_len: u16,
+) []const u8 {
+    const prefix = "tls13 ";
+    const full_label_len = prefix.len + label.len;
+    const total_len = 2 + 1 + full_label_len + 1 + context.len;
+    std.debug.assert(buffer.len >= total_len);
+
+    var idx: usize = 0;
+    buffer[idx] = @intCast(out_len >> 8);
+    idx += 1;
+    buffer[idx] = @intCast(out_len & 0xff);
+    idx += 1;
+    buffer[idx] = @intCast(full_label_len);
+    idx += 1;
+
+    std.mem.copyForwards(u8, buffer[idx .. idx + prefix.len], prefix);
+    idx += prefix.len;
+    std.mem.copyForwards(u8, buffer[idx .. idx + label.len], label);
+    idx += label.len;
+
+    buffer[idx] = @intCast(context.len);
+    idx += 1;
+    if (context.len != 0) {
+        std.mem.copyForwards(u8, buffer[idx .. idx + context.len], context);
+        idx += context.len;
+    }
+
+    return buffer[0..total_len];
+}
+
 // ============================================================================
 // HKDF Conformance Tests
 // ============================================================================
@@ -131,7 +165,7 @@ test "HKDF-Extract parity with OpenSSL 3.x" {
 
 test "HKDF-Expand parity with OpenSSL 3.x" {
     const prk_hex = "077709362c2e32df0ddc3f0dc47bba63" ++
-                    "90b6c73bb50f9c3122ec844ad7c2b3e5";
+        "90b6c73bb50f9c3122ec844ad7c2b3e5";
     var prk: [32]u8 = undefined;
     hexToBytes(prk_hex, &prk);
 
@@ -159,6 +193,59 @@ test "HKDF-Expand parity with OpenSSL 3.x" {
     try testing.expectEqualSlices(u8, &our_okm, &ssl_okm);
 }
 
+test "Early secret derivation matches OpenSSL" {
+    const zeros = [_]u8{0} ** key_schedule.H.digest_length;
+    const our_early = key_schedule.HkdfSha256.extract(&zeros, &zeros);
+
+    var ssl_early: [key_schedule.H.digest_length]u8 = undefined;
+    var ssl_early_len: usize = ssl_early.len;
+
+    const result = openssl_hkdf.hkdfExtract(
+        &ssl_early,
+        &ssl_early_len,
+        EVP_sha256(),
+        &zeros,
+        zeros.len,
+        &zeros,
+        zeros.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqual(@as(usize, key_schedule.H.digest_length), ssl_early_len);
+    try testing.expectEqualSlices(u8, &our_early, ssl_early[0..ssl_early_len]);
+}
+
+test "Handshake secret derivation matches OpenSSL" {
+    const early_secret_hex = "33ad0a1c607ec03b09e6cd9893680ce2" ++
+        "10adf300aa1f2660e1b22e10f170f92a";
+    var early_secret: [key_schedule.H.digest_length]u8 = undefined;
+    hexToBytes(early_secret_hex, &early_secret);
+
+    const ecdhe_hex = "8bd4054fb55b9d63fdfbacf9f04b9f0d" ++
+        "35e6d63f537563efd46272900f89492d";
+    var ecdhe: [key_schedule.H.digest_length]u8 = undefined;
+    hexToBytes(ecdhe_hex, &ecdhe);
+
+    const our_handshake = key_schedule.HkdfSha256.extract(&early_secret, &ecdhe);
+
+    var ssl_handshake: [key_schedule.H.digest_length]u8 = undefined;
+    var ssl_handshake_len: usize = ssl_handshake.len;
+
+    const result = openssl_hkdf.hkdfExtract(
+        &ssl_handshake,
+        &ssl_handshake_len,
+        EVP_sha256(),
+        &ecdhe,
+        ecdhe.len,
+        &early_secret,
+        early_secret.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqual(@as(usize, key_schedule.H.digest_length), ssl_handshake_len);
+    try testing.expectEqualSlices(u8, &our_handshake, ssl_handshake[0..ssl_handshake_len]);
+}
+
 test "QUIC initial secrets match OpenSSL" {
     // RFC 9001 test vector validation with OpenSSL
 
@@ -167,10 +254,7 @@ test "QUIC initial secrets match OpenSSL" {
     hexToBytes(dcid_hex, &dcid);
 
     // Our implementation
-    const our_initial = key_schedule.HkdfSha256.extract(
-        key_schedule.initial_salt_v1[0..],
-        dcid[0..]
-    );
+    const our_initial = key_schedule.HkdfSha256.extract(key_schedule.initial_salt_v1[0..], dcid[0..]);
 
     // OpenSSL implementation using HKDF_extract
     var ssl_initial: [32]u8 = undefined;
@@ -193,13 +277,13 @@ test "QUIC initial secrets match OpenSSL" {
 
     // Verify against RFC 9001 §A.1
     const expected_hex = "7db5df06e7a69e432496adedb0085192" ++
-                        "3595221596ae2ae9fb8115c1e9ed0a44";
+        "3595221596ae2ae9fb8115c1e9ed0a44";
     try expectEqualHex(expected_hex, &our_initial);
 }
 
 test "Traffic secret expansion matches OpenSSL" {
     const initial_secret_hex = "7db5df06e7a69e432496adedb0085192" ++
-                               "3595221596ae2ae9fb8115c1e9ed0a44";
+        "3595221596ae2ae9fb8115c1e9ed0a44";
     var initial_secret: [32]u8 = undefined;
     hexToBytes(initial_secret_hex, &initial_secret);
 
@@ -211,12 +295,12 @@ test "Traffic secret expansion matches OpenSSL" {
         .{
             .label = "client in",
             .expected_hex = "c00cf151ca5be075ed0ebfb5c80323c4" ++
-                           "2d6b7db67881289af4008f1f6c357aea",
+                "2d6b7db67881289af4008f1f6c357aea",
         },
         .{
             .label = "server in",
             .expected_hex = "3c199828fd139efd216c155ad844cc81" ++
-                           "fb82fa8d7446fa7d78be803acdda951b",
+                "fb82fa8d7446fa7d78be803acdda951b",
         },
     };
 
@@ -232,8 +316,8 @@ test "Traffic secret expansion matches OpenSSL" {
         hkdf_label[0] = 0x00; // length high byte
         hkdf_label[1] = 0x20; // length low byte (32 bytes)
         hkdf_label[2] = @intCast(full_label_len);
-        @memcpy(hkdf_label[3..3+prefix.len], prefix);
-        @memcpy(hkdf_label[3+prefix.len..3+prefix.len+tc.label.len], tc.label);
+        @memcpy(hkdf_label[3 .. 3 + prefix.len], prefix);
+        @memcpy(hkdf_label[3 + prefix.len .. 3 + prefix.len + tc.label.len], tc.label);
         hkdf_label[3 + full_label_len] = 0; // context length (empty)
 
         // OpenSSL implementation using raw HKDF_expand with HkdfLabel structure
@@ -315,17 +399,17 @@ test "SHA-256 hash consistency" {
         .{
             .input = "",
             .expected_hex = "e3b0c44298fc1c149afbf4c8996fb924" ++
-                           "27ae41e4649b934ca495991b7852b855",
+                "27ae41e4649b934ca495991b7852b855",
         },
         .{
             .input = "abc",
             .expected_hex = "ba7816bf8f01cfea414140de5dae2223" ++
-                           "b00361a396177a9cb410ff61f20015ad",
+                "b00361a396177a9cb410ff61f20015ad",
         },
         .{
             .input = "The quick brown fox jumps over the lazy dog",
             .expected_hex = "d7a8fbb307d7809469ca9abcb0082e4f" ++
-                           "8d5651e46d3cdb762d02d0bf37c9e592",
+                "8d5651e46d3cdb762d02d0bf37c9e592",
         },
     };
 
@@ -368,7 +452,7 @@ test "Key update derivation matches OpenSSL" {
     // Test application_traffic_secret_N+1 derivation
 
     const current_secret_hex = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6" ++
-                               "e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2";
+        "e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2";
     var current_secret: [32]u8 = undefined;
     hexToBytes(current_secret_hex, &current_secret);
 
@@ -385,8 +469,8 @@ test "Key update derivation matches OpenSSL" {
     hkdf_label[0] = 0x00; // length high byte
     hkdf_label[1] = 0x20; // length low byte (32 bytes)
     hkdf_label[2] = @intCast(full_label_len);
-    @memcpy(hkdf_label[3..3+prefix.len], prefix);
-    @memcpy(hkdf_label[3+prefix.len..3+prefix.len+update_label.len], update_label);
+    @memcpy(hkdf_label[3 .. 3 + prefix.len], prefix);
+    @memcpy(hkdf_label[3 + prefix.len .. 3 + prefix.len + update_label.len], update_label);
     hkdf_label[3 + full_label_len] = 0; // context length (empty)
 
     // OpenSSL implementation using raw HKDF_expand with HkdfLabel structure
@@ -410,7 +494,7 @@ test "Key update derivation matches OpenSSL" {
 
 test "Exporter secret derivation matches OpenSSL" {
     const master_secret_hex = "18df06843d13a08bf2a449844c5f8a47" ++
-                             "8001bc4d4c627984d5a41da8d0402919";
+        "8001bc4d4c627984d5a41da8d0402919";
     var master_secret: [32]u8 = undefined;
     hexToBytes(master_secret_hex, &master_secret);
 
@@ -427,8 +511,8 @@ test "Exporter secret derivation matches OpenSSL" {
     hkdf_label[0] = 0x00; // length high byte
     hkdf_label[1] = 0x20; // length low byte (32 bytes)
     hkdf_label[2] = @intCast(full_label_len);
-    @memcpy(hkdf_label[3..3+prefix.len], prefix);
-    @memcpy(hkdf_label[3+prefix.len..3+prefix.len+label.len], label);
+    @memcpy(hkdf_label[3 .. 3 + prefix.len], prefix);
+    @memcpy(hkdf_label[3 + prefix.len .. 3 + prefix.len + label.len], label);
     hkdf_label[3 + full_label_len] = 0; // context length (empty)
 
     // OpenSSL implementation using raw HKDF_expand with HkdfLabel structure
@@ -447,6 +531,60 @@ test "Exporter secret derivation matches OpenSSL" {
     try testing.expectEqual(@as(c_int, 1), result);
 
     try testing.expectEqualSlices(u8, &our_exporter, &ssl_exporter);
+}
+
+test "Resumption master secret matches OpenSSL" {
+    const master_secret_hex = "18df06843d13a08bf2a449844c5f8a47" ++
+        "8001bc4d4c627984d5a41da8d0402919";
+    var master_secret: [key_schedule.H.digest_length]u8 = undefined;
+    hexToBytes(master_secret_hex, &master_secret);
+
+    var our_resumption: [key_schedule.H.digest_length]u8 = undefined;
+    try key_schedule.expandLabel(master_secret, "res master", "", &our_resumption);
+
+    var label_buf: [64]u8 = undefined;
+    const info = buildHkdfLabel(&label_buf, "res master", "", @intCast(our_resumption.len));
+
+    var ssl_resumption: [key_schedule.H.digest_length]u8 = undefined;
+    const result = openssl_hkdf.hkdfExpand(
+        &ssl_resumption,
+        ssl_resumption.len,
+        EVP_sha256(),
+        &master_secret,
+        master_secret.len,
+        info.ptr,
+        info.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqualSlices(u8, &our_resumption, &ssl_resumption);
+}
+
+test "Finished key derivation matches OpenSSL" {
+    const secret_hex = "fed618e9e14869e95f2596081c3c67d8" ++
+        "8b7f5ab42f0e50e964e5e0b0d41d8e72";
+    var secret: [key_schedule.H.digest_length]u8 = undefined;
+    hexToBytes(secret_hex, &secret);
+
+    var our_finished: [key_schedule.H.digest_length]u8 = undefined;
+    try key_schedule.expandLabel(secret, "finished", "", &our_finished);
+
+    var label_buf: [64]u8 = undefined;
+    const info = buildHkdfLabel(&label_buf, "finished", "", @intCast(our_finished.len));
+
+    var ssl_finished: [key_schedule.H.digest_length]u8 = undefined;
+    const result = openssl_hkdf.hkdfExpand(
+        &ssl_finished,
+        ssl_finished.len,
+        EVP_sha256(),
+        &secret,
+        secret.len,
+        info.ptr,
+        info.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqualSlices(u8, &our_finished, &ssl_finished);
 }
 
 // ============================================================================

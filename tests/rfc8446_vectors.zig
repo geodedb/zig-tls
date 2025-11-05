@@ -67,14 +67,6 @@ test "RFC 9001 §A.1: QUIC Initial Secret Derivation" {
 
 test "RFC 9001 §A.2: Client Initial Secret" {
     // Test vector from RFC 9001 Appendix A.2
-    // TODO: This test requires HKDF-Expand-Label implementation (RFC 8446 §7.1)
-    // which wraps HKDF-Expand with TLS 1.3 label structure
-    //
-    // The key_schedule module needs to implement:
-    // - HkdfExpandLabel(secret, label, context, length)
-    // - Derives Secrets with proper "tls13 " + label formatting
-    //
-    // For now, we just verify basic HKDF-Expand works
 
     const initial_secret_hex =
         "7db5df06e7a69e432496adedb0085192" ++
@@ -82,17 +74,18 @@ test "RFC 9001 §A.2: Client Initial Secret" {
     var initial_secret: [32]u8 = undefined;
     hexToBytes(initial_secret_hex, &initial_secret);
 
-    const label = "client in";
     var client_initial_secret: [32]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&client_initial_secret, label, initial_secret);
+    try key_schedule.expandLabel(initial_secret, "client in", "", &client_initial_secret);
 
-    // Verify it produces deterministic output
-    try testing.expect(client_initial_secret.len == 32);
+    const expected_client_secret_hex =
+        "c00cf151ca5be075ed0ebfb5c80323c4" ++
+        "2d6b7db67881289af4008f1f6c357aea";
+
+    try expectEqualHex(expected_client_secret_hex, &client_initial_secret);
 }
 
 test "RFC 9001 §A.3: Server Initial Secret" {
     // Test vector from RFC 9001 Appendix A.3
-    // TODO: Same as above - requires HKDF-Expand-Label
 
     const initial_secret_hex =
         "7db5df06e7a69e432496adedb0085192" ++
@@ -100,12 +93,14 @@ test "RFC 9001 §A.3: Server Initial Secret" {
     var initial_secret: [32]u8 = undefined;
     hexToBytes(initial_secret_hex, &initial_secret);
 
-    const label = "server in";
     var server_initial_secret: [32]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&server_initial_secret, label, initial_secret);
+    try key_schedule.expandLabel(initial_secret, "server in", "", &server_initial_secret);
 
-    // Verify it produces deterministic output
-    try testing.expect(server_initial_secret.len == 32);
+    const expected_server_secret_hex =
+        "3c199828fd139efd216c155ad844cc81" ++
+        "fb82fa8d7446fa7d78be803acdda951b";
+
+    try expectEqualHex(expected_server_secret_hex, &server_initial_secret);
 }
 
 test "HKDF-Expand-Label format" {
@@ -113,7 +108,7 @@ test "HKDF-Expand-Label format" {
 
     // Test input
     const secret_hex = "33ad0a1c607ec03b09e6cd9893680ce2" ++
-                       "10adf300aa1f2660e1b22e10f170f92a";
+        "10adf300aa1f2660e1b22e10f170f92a";
     var secret: [32]u8 = undefined;
     hexToBytes(secret_hex, &secret);
 
@@ -151,13 +146,13 @@ test "Handshake Secret derivation" {
 
     // Mock early secret
     const early_secret_hex = "33ad0a1c607ec03b09e6cd9893680ce2" ++
-                            "10adf300aa1f2660e1b22e10f170f92a";
+        "10adf300aa1f2660e1b22e10f170f92a";
     var early_secret: [32]u8 = undefined;
     hexToBytes(early_secret_hex, &early_secret);
 
     // Mock ECDHE shared secret
     const ecdhe_hex = "8bd4054fb55b9d63fdfbacf9f04b9f0d" ++
-                     "35e6d63f537563efd46272900f89492d";
+        "35e6d63f537563efd46272900f89492d";
     var ecdhe: [32]u8 = undefined;
     hexToBytes(ecdhe_hex, &ecdhe);
 
@@ -171,19 +166,17 @@ test "Traffic key expansion" {
     // Test that we can expand traffic secrets into actual keys and IVs
 
     const traffic_secret_hex = "b6b5c37c4c5c2823e7e2f6e63e7e4d1f" ++
-                               "8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c";
+        "8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c";
     var traffic_secret: [32]u8 = undefined;
     hexToBytes(traffic_secret_hex, &traffic_secret);
 
     // Expand to key (16 bytes for AES-128)
-    const key_label = "tls13 key";
     var key: [16]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&key, key_label, traffic_secret);
+    try key_schedule.expandLabel(traffic_secret, "key", "", &key);
 
     // Expand to IV (12 bytes for AES-GCM)
-    const iv_label = "tls13 iv";
     var iv: [12]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&iv, iv_label, traffic_secret);
+    try key_schedule.expandLabel(traffic_secret, "iv", "", &iv);
 
     try testing.expect(key.len == 16);
     try testing.expect(iv.len == 12);
@@ -193,14 +186,13 @@ test "Key update" {
     // Test that application traffic secret N+1 is derived correctly from N
 
     const current_secret_hex = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6" ++
-                               "e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2";
+        "e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2";
     var current_secret: [32]u8 = undefined;
     hexToBytes(current_secret_hex, &current_secret);
 
     // Derive next generation
-    const update_label = "tls13 traffic upd";
     var next_secret: [32]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&next_secret, update_label, current_secret);
+    try key_schedule.expandLabel(current_secret, "traffic upd", "", &next_secret);
 
     // Ensure the new secret is different
     try testing.expect(!std.mem.eql(u8, &current_secret, &next_secret));
@@ -221,13 +213,12 @@ test "Exporter master secret derivation" {
     // Test exporter_master_secret = HKDF-Expand-Label(Master Secret, "exp master", ...)
 
     const master_secret_hex = "18df06843d13a08bf2a449844c5f8a47" ++
-                             "8001bc4d4c627984d5a41da8d0402919";
+        "8001bc4d4c627984d5a41da8d0402919";
     var master_secret: [32]u8 = undefined;
     hexToBytes(master_secret_hex, &master_secret);
 
-    const label = "tls13 exp master";
     var exporter_secret: [32]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&exporter_secret, label, master_secret);
+    try key_schedule.expandLabel(master_secret, "exp master", "", &exporter_secret);
 
     try testing.expect(exporter_secret.len == 32);
 }
@@ -236,13 +227,12 @@ test "Resumption master secret derivation" {
     // Test resumption_master_secret for session tickets
 
     const master_secret_hex = "18df06843d13a08bf2a449844c5f8a47" ++
-                             "8001bc4d4c627984d5a41da8d0402919";
+        "8001bc4d4c627984d5a41da8d0402919";
     var master_secret: [32]u8 = undefined;
     hexToBytes(master_secret_hex, &master_secret);
 
-    const label = "tls13 res master";
     var resumption_secret: [32]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&resumption_secret, label, master_secret);
+    try key_schedule.expandLabel(master_secret, "res master", "", &resumption_secret);
 
     try testing.expect(resumption_secret.len == 32);
 }
@@ -251,13 +241,12 @@ test "Zero-length context HKDF expansion" {
     // Test HKDF-Expand-Label with empty context
 
     const secret_hex = "fed618e9e14869e95f2596081c3c67d8" ++
-                       "8b7f5ab42f0e50e964e5e0b0d41d8e72";
+        "8b7f5ab42f0e50e964e5e0b0d41d8e72";
     var secret: [32]u8 = undefined;
     hexToBytes(secret_hex, &secret);
 
-    const label = "tls13 finished";
     var verify_data: [32]u8 = undefined;
-    key_schedule.HkdfSha256.expand(&verify_data, label, secret);
+    try key_schedule.expandLabel(secret, "finished", "", &verify_data);
 
     try testing.expect(verify_data.len == 32);
 }
