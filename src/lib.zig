@@ -1,4 +1,4 @@
-//! ztls: TLS 1.3 implementation for QUIC
+//! ztls: TLS 1.3 implementation
 //!
 //! A production-grade TLS 1.3 library strictly adhering to RFC 8446 (TLS 1.3)
 //! and RFC 9001 (QUIC-TLS). Designed for integration into QUIC transport stacks
@@ -186,7 +186,6 @@
 //! zig test src/lib.zig
 //! ```
 //!
-//! See `src/TLS_PLAN.md` for comprehensive test plan and RFC test vectors.
 //!
 //! ## Security Considerations
 //!
@@ -207,18 +206,14 @@
 //!
 //! ## Known Limitations
 //!
-//! - ASN.1/X.509 uses custom parser (stdlib migration planned when stable)
 //! - Certificate chain validation validates leaf only (full chain TODO)
 //! - OCSP stapling and SCT support are placeholders
 //! - Post-handshake authentication not yet implemented
 //! - Cipher suite support focused on AES-128-GCM (others present but less tested)
 //!
-//! See `src/TLS_PLAN.md` for comprehensive roadmap and phase completion status.
-//!
 //! ## Further Reading
 //!
 //! - **CLAUDE.md**: Detailed architecture and development guide
-//! - **TLS_PLAN.md**: Implementation roadmap with RFC section mapping
 //! - RFC 8446: https://www.rfc-editor.org/rfc/rfc8446.html (TLS 1.3)
 //! - RFC 9001: https://www.rfc-editor.org/rfc/rfc9001.html (QUIC-TLS)
 //! - RFC 9000: https://www.rfc-editor.org/rfc/rfc9000.html (QUIC Transport)

@@ -49,7 +49,6 @@ zig ast-check src/tls13.zig
 2. **RFC-Driven Development**:
    - Every implementation block cites the relevant RFC 8446 or RFC 9001 section
    - Example: `// RFC 8446 §5.1` for record framing
-   - See `src/TLS_PLAN.md` for comprehensive implementation roadmap with phase completion status
 
 3. **Zig Stdlib Migration Path**:
    - Key schedule already uses `std.crypto.kdf.hkdf.Hkdf`
@@ -138,7 +137,6 @@ Key RFCs implemented (cited throughout code):
 
 ### Testing Strategy
 
-From `src/TLS_PLAN.md`:
 - **Unit tests**: Per-module tests with RFC subsection references (embedded in source files)
 - **Integration tests**: Planned in `tests/` directory for full handshake flows
 - **Fuzz targets**: Harnesses for message parsing, certificate handling
@@ -146,8 +144,6 @@ From `src/TLS_PLAN.md`:
 
 ### Known Gaps and Future Work
 
-(Tracked in `src/TLS_PLAN.md` and comments):
-- ASN.1/X.509 migration to `std.crypto.asn1` / `std.crypto.x509` when stable
 - OCSP stapling and SCT (Signed Certificate Timestamp) support - placeholders exist
 - Full certificate chain validation - currently validates leaf only
 - Additional cipher suites (AES-256-GCM-SHA384, AES-128-CCM variants)

@@ -220,6 +220,122 @@ pub const ParameterId = enum(u64) {
     _,
 };
 
+/// RFC 9000 §18.2: Preferred Address structure used by servers to signal
+/// alternate IPv4/IPv6 endpoints alongside a connection ID and stateless
+/// reset token. Encoded exactly as described in Figure 22 of the RFC.
+pub const PreferredAddress = struct {
+    pub const max_connection_id_length: usize = 20;
+
+    /// IPv4 address advertised by the server (network byte order).
+    ipv4_address: [4]u8 = [_]u8{0} ** 4,
+    /// IPv4 port advertised by the server.
+    ipv4_port: u16 = 0,
+    /// IPv6 address advertised by the server (network byte order).
+    ipv6_address: [16]u8 = [_]u8{0} ** 16,
+    /// IPv6 port advertised by the server.
+    ipv6_port: u16 = 0,
+    /// Connection ID associated with the preferred address (sequence number 1).
+    connection_id: []const u8,
+    /// Stateless reset token corresponding to the connection ID.
+    stateless_reset_token: [16]u8,
+    /// Whether the connection_id slice is owned and should be freed on deinit.
+    owns_connection_id: bool = false,
+    /// Encode the preferred address into its wire format representation.
+    pub fn encode(self: PreferredAddress, allocator: std.mem.Allocator) ![]u8 {
+        const cid_len = self.connection_id.len;
+        if (cid_len == 0 or cid_len > max_connection_id_length or cid_len > std.math.maxInt(u8)) {
+            return error.InvalidParameter;
+        }
+
+        const total_len = 4 + 2 + 16 + 2 + 1 + cid_len + 16;
+        var out = try allocator.alloc(u8, total_len);
+        var idx: usize = 0;
+
+        std.mem.copyForwards(u8, out[idx .. idx + 4], self.ipv4_address[0..]);
+        idx += 4;
+
+        out[idx] = @as(u8, @intCast(self.ipv4_port >> 8));
+        out[idx + 1] = @as(u8, @intCast(self.ipv4_port & 0xff));
+        idx += 2;
+
+        std.mem.copyForwards(u8, out[idx .. idx + 16], self.ipv6_address[0..]);
+        idx += 16;
+
+        out[idx] = @as(u8, @intCast(self.ipv6_port >> 8));
+        out[idx + 1] = @as(u8, @intCast(self.ipv6_port & 0xff));
+        idx += 2;
+
+        out[idx] = @as(u8, @intCast(cid_len));
+        idx += 1;
+
+        std.mem.copyForwards(u8, out[idx .. idx + cid_len], self.connection_id);
+        idx += cid_len;
+
+        std.mem.copyForwards(u8, out[idx .. idx + 16], self.stateless_reset_token[0..]);
+
+        return out;
+    }
+
+    /// Decode a preferred address from wire format.
+    pub fn decode(data: []const u8, allocator: std.mem.Allocator) !PreferredAddress {
+        const base_len = 4 + 2 + 16 + 2 + 1 + 16;
+        if (data.len < base_len) return error.Truncated;
+
+        var idx: usize = 0;
+        var addr = PreferredAddress{
+            .ipv4_address = undefined,
+            .ipv4_port = 0,
+            .ipv6_address = undefined,
+            .ipv6_port = 0,
+            .connection_id = &[_]u8{},
+            .stateless_reset_token = undefined,
+        };
+
+        std.mem.copyForwards(u8, addr.ipv4_address[0..], data[idx .. idx + 4]);
+        idx += 4;
+
+        addr.ipv4_port = (@as(u16, data[idx]) << 8) | data[idx + 1];
+        idx += 2;
+
+        std.mem.copyForwards(u8, addr.ipv6_address[0..], data[idx .. idx + 16]);
+        idx += 16;
+
+        addr.ipv6_port = (@as(u16, data[idx]) << 8) | data[idx + 1];
+        idx += 2;
+
+        const conn_id_len = data[idx];
+        idx += 1;
+        if (conn_id_len == 0 or conn_id_len > max_connection_id_length) {
+            return error.InvalidParameter;
+        }
+
+        if (idx + conn_id_len + 16 > data.len) return error.Truncated;
+
+        const conn_id_buf = try allocator.dupe(u8, data[idx .. idx + conn_id_len]);
+        errdefer allocator.free(conn_id_buf);
+        addr.connection_id = conn_id_buf;
+        idx += conn_id_len;
+
+        std.mem.copyForwards(u8, addr.stateless_reset_token[0..], data[idx .. idx + 16]);
+        idx += 16;
+
+        if (idx != data.len) return error.InvalidParameter;
+
+        addr.owns_connection_id = true;
+
+        return addr;
+    }
+
+    /// Release any heap allocations owned by the preferred address.
+    pub fn deinit(self: *PreferredAddress, allocator: std.mem.Allocator) void {
+        if (self.owns_connection_id and self.connection_id.len != 0) {
+            allocator.free(@constCast(self.connection_id));
+            self.connection_id = &[_]u8{};
+        }
+        self.owns_connection_id = false;
+    }
+};
+
 /// QUIC transport parameters structure.
 ///
 /// Contains all defined transport parameters from RFC 9000 §18.2.
@@ -276,8 +392,7 @@ pub const TransportParameters = struct {
     stateless_reset_token: ?[16]u8 = null,
 
     // RFC 9000 §18.2: Preferred address (server-only, complex structure)
-    // TODO: Define PreferredAddress structure when implementing full server support
-    preferred_address: ?[]const u8 = null,
+    preferred_address: ?PreferredAddress = null,
 
     /// Encode transport parameters to wire format (RFC 9000 §18).
     ///
@@ -405,7 +520,9 @@ pub const TransportParameters = struct {
             try Writer.writeParam(&list, allocator, @intFromEnum(ParameterId.stateless_reset_token), &token);
         }
         if (self.preferred_address) |addr| {
-            try Writer.writeParam(&list, allocator, @intFromEnum(ParameterId.preferred_address), addr);
+            const encoded_addr = try addr.encode(allocator);
+            defer allocator.free(encoded_addr);
+            try Writer.writeParam(&list, allocator, @intFromEnum(ParameterId.preferred_address), encoded_addr);
         }
 
         return list.toOwnedSlice(allocator);
@@ -540,8 +657,7 @@ pub const TransportParameters = struct {
                     params.stateless_reset_token = token;
                 },
                 .preferred_address => {
-                    // RFC 9000 §18.2: Complex structure (not fully parsed here)
-                    const addr = try allocator.dupe(u8, value);
+                    const addr = try PreferredAddress.decode(value, allocator);
                     params.preferred_address = addr;
                 },
                 _ => {
@@ -565,7 +681,10 @@ pub const TransportParameters = struct {
         if (self.initial_source_connection_id) |cid| allocator.free(cid);
         if (self.original_destination_connection_id) |cid| allocator.free(cid);
         if (self.retry_source_connection_id) |cid| allocator.free(cid);
-        if (self.preferred_address) |addr| allocator.free(addr);
+        if (self.preferred_address) |*addr| {
+            addr.deinit(allocator);
+            self.preferred_address = null;
+        }
     }
 };
 
@@ -643,6 +762,262 @@ test "RFC 9000 §18.2 - flow control parameters" {
     try testing.expectEqual(@as(u64, 524288), decoded.initial_max_stream_data_uni.?);
     try testing.expectEqual(@as(u64, 100), decoded.initial_max_streams_bidi.?);
     try testing.expectEqual(@as(u64, 100), decoded.initial_max_streams_uni.?);
+}
+
+test "RFC 9000 §18.2 - preferred_address encode/decode" {
+    const connection_id = [_]u8{ 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6 };
+    const reset_token = [16]u8{
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+    };
+
+    var preferred = PreferredAddress{
+        .ipv4_address = .{ 192, 0, 2, 1 },
+        .ipv4_port = 4433,
+        .ipv6_address = .{
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+            0,    0,    0,    0,    0, 0, 0, 1,
+        },
+        .ipv6_port = 8443,
+        .connection_id = connection_id[0..],
+        .stateless_reset_token = reset_token,
+    };
+
+    var params = TransportParameters{ .preferred_address = preferred };
+
+    const encoded = try params.encode(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    var decoded = try TransportParameters.decode(encoded, testing.allocator);
+    defer decoded.deinit(testing.allocator);
+
+    try testing.expect(decoded.preferred_address != null);
+    const addr = decoded.preferred_address.?;
+
+    try testing.expectEqualSlices(u8, preferred.ipv4_address[0..], addr.ipv4_address[0..]);
+    try testing.expectEqual(@as(u16, preferred.ipv4_port), addr.ipv4_port);
+    try testing.expectEqualSlices(u8, preferred.ipv6_address[0..], addr.ipv6_address[0..]);
+    try testing.expectEqual(@as(u16, preferred.ipv6_port), addr.ipv6_port);
+    try testing.expectEqualSlices(u8, preferred.connection_id, addr.connection_id);
+    try testing.expectEqualSlices(u8, preferred.stateless_reset_token[0..], addr.stateless_reset_token[0..]);
+}
+
+test "RFC 9000 §18.2 - preferred_address validation" {
+    const reset_token = [_]u8{0} ** 16;
+
+    const zero_length = PreferredAddress{
+        .connection_id = &[_]u8{},
+        .stateless_reset_token = reset_token,
+    };
+    try testing.expectError(error.InvalidParameter, zero_length.encode(testing.allocator));
+
+    const big_cid_buf = [_]u8{0xaa} ** (PreferredAddress.max_connection_id_length + 1);
+    const too_long = PreferredAddress{
+        .connection_id = big_cid_buf[0..],
+        .stateless_reset_token = reset_token,
+    };
+    try testing.expectError(error.InvalidParameter, too_long.encode(testing.allocator));
+
+    const oversized_buf = [_]u8{0xbb} ** 256;
+    const over_byte = PreferredAddress{
+        .connection_id = oversized_buf[0..],
+        .stateless_reset_token = reset_token,
+    };
+    try testing.expectError(error.InvalidParameter, over_byte.encode(testing.allocator));
+}
+
+test "RFC 9000 §18.2 - preferred_address layout matches wire format" {
+    const connection_id = [_]u8{ 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6 };
+    const reset_token = [16]u8{
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+    };
+
+    const preferred = PreferredAddress{
+        .ipv4_address = .{ 192, 0, 2, 1 },
+        .ipv4_port = 4433,
+        .ipv6_address = .{
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+            0,    0,    0,    0,    0, 0, 0, 1,
+        },
+        .ipv6_port = 8443,
+        .connection_id = connection_id[0..],
+        .stateless_reset_token = reset_token,
+    };
+
+    const expected = [_]u8{
+        0xc0, 0x00, 0x02, 0x01,
+        0x11, 0x51, 0x20, 0x01,
+        0x0d, 0xb8, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x20, 0xfb,
+        0x06, 0xa1, 0xb2, 0xc3,
+        0xd4, 0xe5, 0xf6, 0x00,
+        0x11, 0x22, 0x33, 0x44,
+        0x55, 0x66, 0x77, 0x88,
+        0x99, 0xaa, 0xbb, 0xcc,
+        0xdd, 0xee, 0xff,
+    };
+
+    const encoded = try preferred.encode(testing.allocator);
+    defer testing.allocator.free(encoded);
+    try testing.expectEqualSlices(u8, &expected, encoded);
+
+    const full_expected = [_]u8{
+        0x0d,
+        0x2f,
+        0xc0,
+        0x00,
+        0x02,
+        0x01,
+        0x11,
+        0x51,
+        0x20,
+        0x01,
+        0x0d,
+        0xb8,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x01,
+        0x20,
+        0xfb,
+        0x06,
+        0xa1,
+        0xb2,
+        0xc3,
+        0xd4,
+        0xe5,
+        0xf6,
+        0x00,
+        0x11,
+        0x22,
+        0x33,
+        0x44,
+        0x55,
+        0x66,
+        0x77,
+        0x88,
+        0x99,
+        0xaa,
+        0xbb,
+        0xcc,
+        0xdd,
+        0xee,
+        0xff,
+    };
+
+    const params = TransportParameters{ .preferred_address = preferred };
+    const tp_encoded = try params.encode(testing.allocator);
+    defer testing.allocator.free(tp_encoded);
+    try testing.expectEqualSlices(u8, &full_expected, tp_encoded);
+}
+
+test "RFC 9000 §18.2 - preferred_address decode truncated" {
+    const encoded = [_]u8{
+        0xc0, 0x00, 0x02, 0x01,
+        0x11, 0x51, 0x20, 0x01,
+        0x0d, 0xb8, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x20, 0xfb,
+        0x06, 0xa1, 0xb2, 0xc3,
+        0xd4, 0xe5, 0xf6, 0x00,
+        0x11, 0x22, 0x33, 0x44,
+        0x55, 0x66, 0x77, 0x88,
+        0x99, 0xaa, 0xbb, 0xcc,
+        0xdd, 0xee, 0xff,
+    };
+
+    var i: usize = 0;
+    while (i < encoded.len) : (i += 1) {
+        if (i == encoded.len) break;
+        try testing.expectError(error.Truncated, PreferredAddress.decode(encoded[0..i], testing.allocator));
+    }
+}
+
+test "RFC 9000 §18.2 - preferred_address decode rejects zero length" {
+    const encoded = [_]u8{
+        0xc0, 0x00, 0x02, 0x01,
+        0x11, 0x51, 0x20, 0x01,
+        0x0d, 0xb8, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x20, 0xfb,
+        0x00, 0x00, 0x11, 0x22,
+        0x33, 0x44, 0x55, 0x66,
+        0x77, 0x88, 0x99, 0xaa,
+        0xbb, 0xcc, 0xdd, 0xee,
+        0xff,
+    };
+
+    try testing.expectError(error.InvalidParameter, PreferredAddress.decode(&encoded, testing.allocator));
+}
+
+test "RFC 9000 §18.2 - preferred_address decode rejects excess length" {
+    const payload_len = 4 + 2 + 16 + 2 + 1 + PreferredAddress.max_connection_id_length + 1 + 16;
+    var encoded: [payload_len]u8 = undefined;
+    @memset(encoded[0..], 0);
+    const len_index = 4 + 2 + 16 + 2;
+    encoded[len_index] = @intCast(PreferredAddress.max_connection_id_length + 1);
+
+    try testing.expectError(error.InvalidParameter, PreferredAddress.decode(&encoded, testing.allocator));
+}
+
+test "RFC 9000 §18.2 - preferred_address round trip fuzz" {
+    var prng = std.Random.DefaultPrng.init(0x123456789abcdef0);
+    const random = prng.random();
+
+    var iteration: usize = 0;
+    while (iteration < 128) : (iteration += 1) {
+        var ipv4: [4]u8 = undefined;
+        random.bytes(&ipv4);
+
+        var ipv6: [16]u8 = undefined;
+        random.bytes(&ipv6);
+
+        const ipv4_port = random.uintLessThan(u16, std.math.maxInt(u16));
+        const ipv6_port = random.uintLessThan(u16, std.math.maxInt(u16));
+
+        const cid_len = random.uintLessThan(u8, @intCast(PreferredAddress.max_connection_id_length)) + 1;
+        const cid_buf = try testing.allocator.alloc(u8, cid_len);
+        defer testing.allocator.free(cid_buf);
+        random.bytes(cid_buf);
+
+        var token: [16]u8 = undefined;
+        random.bytes(&token);
+
+        var preferred = PreferredAddress{
+            .ipv4_address = ipv4,
+            .ipv4_port = ipv4_port,
+            .ipv6_address = ipv6,
+            .ipv6_port = ipv6_port,
+            .connection_id = cid_buf,
+            .stateless_reset_token = token,
+        };
+
+        const encoded = try preferred.encode(testing.allocator);
+        defer testing.allocator.free(encoded);
+
+        var decoded = try PreferredAddress.decode(encoded, testing.allocator);
+        defer decoded.deinit(testing.allocator);
+
+        try testing.expectEqualSlices(u8, preferred.ipv4_address[0..], decoded.ipv4_address[0..]);
+        try testing.expectEqual(@as(u16, preferred.ipv4_port), decoded.ipv4_port);
+        try testing.expectEqualSlices(u8, preferred.ipv6_address[0..], decoded.ipv6_address[0..]);
+        try testing.expectEqual(@as(u16, preferred.ipv6_port), decoded.ipv6_port);
+        try testing.expectEqualSlices(u8, preferred.connection_id, decoded.connection_id);
+        try testing.expectEqualSlices(u8, preferred.stateless_reset_token[0..], decoded.stateless_reset_token[0..]);
+    }
 }
 
 // RFC 9000 §18.2: Test ACK parameters validation

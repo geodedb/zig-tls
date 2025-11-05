@@ -903,3 +903,47 @@ test "QUIC transport parameters - forward compatibility (unknown parameters)" {
 
     try testing.expectEqual(@as(u64, 30000), decoded.max_idle_timeout.?);
 }
+
+test "Preferred address transport parameter encoding" {
+    const connection_id = [_]u8{ 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6 };
+    const reset_token = [16]u8{
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+    };
+
+    const preferred = qtp.PreferredAddress{
+        .ipv4_address = .{ 192, 0, 2, 1 },
+        .ipv4_port = 4433,
+        .ipv6_address = .{
+            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+            0,    0,    0,    0,    0, 0, 0, 1,
+        },
+        .ipv6_port = 8443,
+        .connection_id = connection_id[0..],
+        .stateless_reset_token = reset_token,
+    };
+
+    const expected_hex =
+        "0d2fc0000201115120010db800000000000000000000000120fb06" ++
+        "a1b2c3d4e5f600112233445566778899aabbccddeeff";
+
+    var params = qtp.TransportParameters{ .preferred_address = preferred };
+    const encoded = try params.encode(testing.allocator);
+    defer testing.allocator.free(encoded);
+
+    var expected: [expected_hex.len / 2]u8 = undefined;
+    hexToBytes(expected_hex, &expected);
+    try testing.expectEqualSlices(u8, &expected, encoded);
+
+    var decoded = try qtp.TransportParameters.decode(&expected, testing.allocator);
+    defer decoded.deinit(testing.allocator);
+
+    try testing.expect(decoded.preferred_address != null);
+    const addr = decoded.preferred_address.?;
+    try testing.expectEqualSlices(u8, preferred.ipv4_address[0..], addr.ipv4_address[0..]);
+    try testing.expectEqual(@as(u16, preferred.ipv4_port), addr.ipv4_port);
+    try testing.expectEqualSlices(u8, preferred.ipv6_address[0..], addr.ipv6_address[0..]);
+    try testing.expectEqual(@as(u16, preferred.ipv6_port), addr.ipv6_port);
+    try testing.expectEqualSlices(u8, preferred.connection_id, addr.connection_id);
+    try testing.expectEqualSlices(u8, preferred.stateless_reset_token[0..], addr.stateless_reset_token[0..]);
+}
