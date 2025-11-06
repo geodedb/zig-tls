@@ -1016,3 +1016,327 @@ test "Preferred address transport parameter encoding matches OpenSSL" {
     try testing.expectEqualSlices(u8, preferred.connection_id, addr.connection_id);
     try testing.expectEqualSlices(u8, preferred.stateless_reset_token[0..], addr.stateless_reset_token[0..]);
 }
+
+// ============================================================================
+// SHA-384 Key Schedule Tests (TLS_AES_256_GCM_SHA384)
+// ============================================================================
+
+test "SHA-384 HKDF-Extract parity with OpenSSL 3.x" {
+    // Validate SHA-384 HKDF-Extract for TLS_AES_256_GCM_SHA384 cipher suite
+
+    const salt_hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f" ++
+        "202122232425262728292a2b2c2d2e2f";
+    var salt: [48]u8 = undefined;
+    hexToBytes(salt_hex, &salt);
+
+    const ikm_hex = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b" ++
+        "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
+    var ikm: [48]u8 = undefined;
+    hexToBytes(ikm_hex, &ikm);
+
+    // Our implementation
+    const our_prk = key_schedule.HkdfSha384.extract(salt[0..], ikm[0..]);
+
+    // OpenSSL implementation
+    var ssl_prk: [48]u8 = undefined;
+    var ssl_prk_len: usize = ssl_prk.len;
+
+    const result = openssl_hkdf.hkdfExtract(
+        &ssl_prk,
+        &ssl_prk_len,
+        EVP_sha384(),
+        &ikm,
+        ikm.len,
+        &salt,
+        salt.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqual(@as(usize, 48), ssl_prk_len);
+    try testing.expectEqualSlices(u8, &our_prk, &ssl_prk);
+}
+
+test "SHA-384 HKDF-Expand parity with OpenSSL 3.x" {
+    // Test SHA-384 for TLS_AES_256_GCM_SHA384
+
+    const prk_hex = "077709362c2e32df0ddc3f0dc47bba63" ++
+        "90b6c73bb50f9c3122ec844ad7c2b3e5" ++
+        "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6" ++
+        "e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2";
+    var prk: [48]u8 = undefined;
+    hexToBytes(prk_hex, &prk);
+
+    const info = "tls13 key";
+
+    // Our implementation
+    var our_okm: [32]u8 = undefined;
+    key_schedule.HkdfSha384.expand(&our_okm, info, prk);
+
+    // OpenSSL implementation
+    var ssl_okm: [32]u8 = undefined;
+
+    const result = openssl_hkdf.hkdfExpand(
+        &ssl_okm,
+        ssl_okm.len,
+        EVP_sha384(),
+        &prk,
+        prk.len,
+        info.ptr,
+        info.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqualSlices(u8, &our_okm, &ssl_okm);
+}
+
+test "SHA-384 traffic key and IV derivation matches OpenSSL" {
+    // Test complete traffic key derivation for AES-256-GCM with SHA-384
+
+    const traffic_secret_hex = "b6b5c37c4c5c2823e7e2f6e63e7e4d1f" ++
+        "8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c" ++
+        "a1a2a3a4a5a6a7a8a9aaabacadaeafb0" ++
+        "b1b2b3b4b5b6b7b8b9babbbcbdbebfc0";
+    var traffic_secret: [48]u8 = undefined;
+    hexToBytes(traffic_secret_hex, &traffic_secret);
+
+    // Test key expansion (32 bytes for AES-256)
+    {
+        const label = "key";
+        const prefix = "tls13 ";
+        const full_label_len = prefix.len + label.len;
+
+        var our_key: [32]u8 = undefined;
+        try key_schedule.expandLabel(traffic_secret[0..], label, "", &our_key);
+
+        var hkdf_label: [2 + 1 + 32 + 1]u8 = undefined;
+        hkdf_label[0] = 0x00;
+        hkdf_label[1] = 0x20; // 32 bytes
+        hkdf_label[2] = @intCast(full_label_len);
+        @memcpy(hkdf_label[3 .. 3 + prefix.len], prefix);
+        @memcpy(hkdf_label[3 + prefix.len .. 3 + prefix.len + label.len], label);
+        hkdf_label[3 + full_label_len] = 0;
+
+        var ssl_key: [32]u8 = undefined;
+        const result = openssl_hkdf.hkdfExpand(
+            &ssl_key,
+            ssl_key.len,
+            EVP_sha384(),
+            &traffic_secret,
+            traffic_secret.len,
+            &hkdf_label,
+            3 + full_label_len + 1,
+        );
+
+        try testing.expectEqual(@as(c_int, 1), result);
+        try testing.expectEqualSlices(u8, &our_key, &ssl_key);
+    }
+
+    // Test IV expansion
+    {
+        const label = "iv";
+        const prefix = "tls13 ";
+        const full_label_len = prefix.len + label.len;
+
+        var our_iv: [12]u8 = undefined;
+        try key_schedule.expandLabel(traffic_secret[0..], label, "", &our_iv);
+
+        var hkdf_label: [2 + 1 + 32 + 1]u8 = undefined;
+        hkdf_label[0] = 0x00;
+        hkdf_label[1] = 0x0c; // 12 bytes
+        hkdf_label[2] = @intCast(full_label_len);
+        @memcpy(hkdf_label[3 .. 3 + prefix.len], prefix);
+        @memcpy(hkdf_label[3 + prefix.len .. 3 + prefix.len + label.len], label);
+        hkdf_label[3 + full_label_len] = 0;
+
+        var ssl_iv: [12]u8 = undefined;
+        const result = openssl_hkdf.hkdfExpand(
+            &ssl_iv,
+            ssl_iv.len,
+            EVP_sha384(),
+            &traffic_secret,
+            traffic_secret.len,
+            &hkdf_label,
+            3 + full_label_len + 1,
+        );
+
+        try testing.expectEqual(@as(c_int, 1), result);
+        try testing.expectEqualSlices(u8, &our_iv, &ssl_iv);
+    }
+}
+
+test "SHA-384 application traffic secret derivation" {
+    // RFC 8446 test vectors adapted for SHA-384
+
+    const handshake_secret_hex = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6" ++
+        "e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2" ++
+        "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8";
+    var handshake_secret: [48]u8 = undefined;
+    hexToBytes(handshake_secret_hex, &handshake_secret);
+
+    // Derive master secret (would use transcript hash in real implementation)
+    const label = "derived";
+    const empty_hash = [_]u8{0} ** 48;
+
+    var our_derived: [48]u8 = undefined;
+    try key_schedule.expandLabel(handshake_secret[0..], label, empty_hash[0..], &our_derived);
+
+    const prefix = "tls13 ";
+    const full_label_len = prefix.len + label.len;
+    var hkdf_label: [2 + 1 + 32 + 48 + 1]u8 = undefined;
+    hkdf_label[0] = 0x00;
+    hkdf_label[1] = 0x30; // 48 bytes for SHA-384
+    hkdf_label[2] = @intCast(full_label_len);
+    @memcpy(hkdf_label[3 .. 3 + prefix.len], prefix);
+    @memcpy(hkdf_label[3 + prefix.len .. 3 + prefix.len + label.len], label);
+    hkdf_label[3 + full_label_len] = @intCast(empty_hash.len);
+    @memcpy(hkdf_label[4 + full_label_len .. 4 + full_label_len + empty_hash.len], &empty_hash);
+
+    var ssl_derived: [48]u8 = undefined;
+    const result = openssl_hkdf.hkdfExpand(
+        &ssl_derived,
+        ssl_derived.len,
+        EVP_sha384(),
+        &handshake_secret,
+        handshake_secret.len,
+        &hkdf_label,
+        4 + full_label_len + empty_hash.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqualSlices(u8, &our_derived, &ssl_derived);
+}
+
+// ============================================================================
+// SCT (Signed Certificate Timestamp) Tests
+// ============================================================================
+
+const sct = @import("sct");
+
+test "SCT parsing - OpenSSL 3.x wire format compatibility" {
+    // RFC 6962 SCT format validation
+    // OpenSSL 3.x supports SCT validation via OCSP stapling and TLS extensions
+
+    var sct_data = std.ArrayList(u8).init(testing.allocator);
+    defer sct_data.deinit();
+
+    // Construct valid SCT v1 (version 0)
+    try sct_data.append(0); // version
+    try sct_data.appendSlice(&[_]u8{0xcc} ** 32); // log ID (32 bytes)
+
+    // Timestamp: 2023-01-01 00:00:00 UTC in milliseconds
+    const timestamp: u64 = 1672531200000;
+    var ts_bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &ts_bytes, timestamp, .big);
+    try sct_data.appendSlice(&ts_bytes);
+
+    try sct_data.appendSlice(&[_]u8{ 0x00, 0x00 }); // extensions length = 0
+    try sct_data.append(4); // hash: SHA-256
+    try sct_data.append(3); // signature: ECDSA
+
+    // ECDSA P-256 signature (71 bytes typical)
+    const signature = [_]u8{0xdd} ** 71;
+    try sct_data.appendSlice(&[_]u8{ 0x00, 71 });
+    try sct_data.appendSlice(&signature);
+
+    // Build SCT list with length prefix
+    var list = std.ArrayList(u8).init(testing.allocator);
+    defer list.deinit();
+
+    const sct_bytes = try sct_data.toOwnedSlice();
+    defer testing.allocator.free(sct_bytes);
+
+    var len_bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &len_bytes, @intCast(sct_bytes.len), .big);
+    try list.appendSlice(&len_bytes);
+    try list.appendSlice(sct_bytes);
+
+    const list_bytes = try list.toOwnedSlice();
+    defer testing.allocator.free(list_bytes);
+
+    // Parse and validate
+    const parsed = try sct.parseList(testing.allocator, list_bytes);
+    defer testing.allocator.free(parsed);
+
+    try testing.expectEqual(@as(usize, 1), parsed.len);
+    try testing.expectEqual(@as(u8, 0), parsed[0].version);
+    try testing.expectEqual(@as(u64, timestamp), parsed[0].timestamp);
+    try testing.expectEqual(@as(u8, 4), parsed[0].hash_algorithm); // SHA-256
+    try testing.expectEqual(@as(u8, 3), parsed[0].signature_algorithm); // ECDSA
+    try testing.expectEqual(@as(usize, 71), parsed[0].signature.len);
+}
+
+test "SCT error handling - invalid data" {
+    // OpenSSL validates SCT structure strictly - we should too
+
+    // Test truncated SCT
+    {
+        const truncated = [_]u8{ 0x00, 0x05, 0x00, 0x01, 0x02 }; // Claims 5 bytes, provides 3
+        try testing.expectError(error.MalformedEntry, sct.parseList(testing.allocator, &truncated));
+    }
+
+    // Test empty list
+    {
+        const empty: [0]u8 = .{};
+        const parsed = try sct.parseList(testing.allocator, &empty);
+        defer testing.allocator.free(parsed);
+        try testing.expectEqual(@as(usize, 0), parsed.len);
+    }
+
+    // Test SCT with unsupported version
+    {
+        var list = std.ArrayList(u8).init(testing.allocator);
+        defer list.deinit();
+
+        try list.appendSlice(&[_]u8{ 0x00, 0x01 }); // Length = 1
+        try list.append(2); // Invalid version (only 0 is defined)
+
+        const bytes = try list.toOwnedSlice();
+        defer testing.allocator.free(bytes);
+
+        try testing.expectError(error.MalformedEntry, sct.parseList(testing.allocator, bytes));
+    }
+}
+
+test "SCT timestamp validation" {
+    // Verify SCT timestamp is correctly parsed (milliseconds since epoch)
+    // This is critical for OpenSSL compatibility where SCT timestamps
+    // are used for freshness validation
+
+    var list = std.ArrayList(u8).init(testing.allocator);
+    defer list.deinit();
+
+    var entry = std.ArrayList(u8).init(testing.allocator);
+    defer entry.deinit();
+
+    try entry.append(0); // version
+    try entry.appendSlice(&[_]u8{0x11} ** 32); // log ID
+
+    // Test known timestamp: 2024-01-15 12:30:45 UTC
+    const expected_ts: u64 = 1705322645000; // milliseconds
+    var ts_bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &ts_bytes, expected_ts, .big);
+    try entry.appendSlice(&ts_bytes);
+
+    try entry.appendSlice(&[_]u8{ 0x00, 0x00 }); // extensions
+    try entry.append(4); // hash
+    try entry.append(3); // sig alg
+    try entry.appendSlice(&[_]u8{ 0x00, 64 }); // sig len
+    try entry.appendSlice(&[_]u8{0x99} ** 64); // sig
+
+    const entry_bytes = try entry.toOwnedSlice();
+    defer testing.allocator.free(entry_bytes);
+
+    var len_bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &len_bytes, @intCast(entry_bytes.len), .big);
+    try list.appendSlice(&len_bytes);
+    try list.appendSlice(entry_bytes);
+
+    const list_bytes = try list.toOwnedSlice();
+    defer testing.allocator.free(list_bytes);
+
+    const parsed = try sct.parseList(testing.allocator, list_bytes);
+    defer testing.allocator.free(parsed);
+
+    try testing.expectEqual(@as(usize, 1), parsed.len);
+    try testing.expectEqual(expected_ts, parsed[0].timestamp);
+}

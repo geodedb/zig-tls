@@ -282,6 +282,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "record", .module = record_mod },
                 .{ .name = "varint", .module = varint_mod },
                 .{ .name = "quic_transport_params", .module = transport_params_mod },
+                .{ .name = "sct", .module = sct_mod },
+                .{ .name = "ocsp", .module = ocsp_mod },
             },
         }),
     });
@@ -305,6 +307,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "record", .module = record_mod },
                 .{ .name = "varint", .module = varint_mod },
                 .{ .name = "quic_transport_params", .module = transport_params_mod },
+                .{ .name = "sct", .module = sct_mod },
+                .{ .name = "ocsp", .module = ocsp_mod },
             },
         }),
     });

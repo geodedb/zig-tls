@@ -1010,3 +1010,265 @@ test "Preferred address transport parameter encoding" {
     try testing.expectEqualSlices(u8, preferred.connection_id, addr.connection_id);
     try testing.expectEqualSlices(u8, preferred.stateless_reset_token[0..], addr.stateless_reset_token[0..]);
 }
+
+// ============================================================================
+// SHA-384 Key Schedule Tests (TLS_AES_256_GCM_SHA384)
+// ============================================================================
+
+test "SHA-384 HKDF-Extract parity with BoringSSL" {
+    // Test SHA-384 HKDF-Extract for TLS_AES_256_GCM_SHA384 cipher suite
+
+    const salt_hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f" ++
+        "202122232425262728292a2b2c2d2e2f";
+    var salt: [48]u8 = undefined;
+    hexToBytes(salt_hex, &salt);
+
+    const ikm_hex = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b" ++
+        "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
+    var ikm: [48]u8 = undefined;
+    hexToBytes(ikm_hex, &ikm);
+
+    // Our implementation using HkdfSha384
+    const our_prk = key_schedule.HkdfSha384.extract(&salt, &ikm);
+
+    // BoringSSL implementation
+    var ssl_prk: [48]u8 = undefined;
+    var ssl_prk_len: usize = ssl_prk.len;
+    const result = openssl_hkdf.hkdfExtract(
+        &ssl_prk,
+        &ssl_prk_len,
+        EVP_sha384(),
+        &ikm,
+        ikm.len,
+        &salt,
+        salt.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqual(@as(usize, 48), ssl_prk_len);
+    try testing.expectEqualSlices(u8, &our_prk, ssl_prk[0..ssl_prk_len]);
+}
+
+test "SHA-384 HKDF-Expand parity with BoringSSL" {
+    // Test SHA-384 HKDF-Expand for TLS_AES_256_GCM_SHA384
+
+    const prk_hex = "077709362c2e32df0ddc3f0dc47bba63" ++
+        "90b6c73bb50f9c3122ec844ad7c2b3e5" ++
+        "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6" ++
+        "e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2";
+    var prk: [48]u8 = undefined;
+    hexToBytes(prk_hex, &prk);
+
+    const info = "tls13 key";
+
+    // Our implementation
+    var our_okm: [32]u8 = undefined;
+    key_schedule.HkdfSha384.expand(&our_okm, info, prk);
+
+    // BoringSSL implementation
+    var ssl_okm: [32]u8 = undefined;
+    const result = openssl_hkdf.hkdfExpand(
+        &ssl_okm,
+        ssl_okm.len,
+        EVP_sha384(),
+        &prk,
+        prk.len,
+        info.ptr,
+        info.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqualSlices(u8, &our_okm, &ssl_okm);
+}
+
+test "SHA-384 traffic secret derivation parity" {
+    // Test TLS_AES_256_GCM_SHA384 traffic secret expansion
+
+    const traffic_secret_hex = "b6b5c37c4c5c2823e7e2f6e63e7e4d1f" ++
+        "8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c" ++
+        "a1a2a3a4a5a6a7a8a9aaabacadaeafb0" ++
+        "b1b2b3b4b5b6b7b8b9babbbcbdbebfc0";
+    var traffic_secret: [48]u8 = undefined;
+    hexToBytes(traffic_secret_hex, &traffic_secret);
+
+    // Test key derivation (32 bytes for AES-256)
+    var our_key: [32]u8 = undefined;
+    try key_schedule.expandLabel(traffic_secret[0..], "key", "", &our_key);
+
+    var label_buf: [64]u8 = undefined;
+    const key_info = buildHkdfLabel(&label_buf, "key", "", @intCast(our_key.len));
+
+    var ssl_key: [32]u8 = undefined;
+    const key_result = openssl_hkdf.hkdfExpand(
+        &ssl_key,
+        ssl_key.len,
+        EVP_sha384(),
+        &traffic_secret,
+        traffic_secret.len,
+        key_info.ptr,
+        key_info.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), key_result);
+    try testing.expectEqualSlices(u8, &our_key, &ssl_key);
+
+    // Test IV derivation
+    var our_iv: [12]u8 = undefined;
+    try key_schedule.expandLabel(traffic_secret[0..], "iv", "", &our_iv);
+    const iv_info = buildHkdfLabel(&label_buf, "iv", "", @intCast(our_iv.len));
+
+    var ssl_iv: [12]u8 = undefined;
+    const iv_result = openssl_hkdf.hkdfExpand(
+        &ssl_iv,
+        ssl_iv.len,
+        EVP_sha384(),
+        &traffic_secret,
+        traffic_secret.len,
+        iv_info.ptr,
+        iv_info.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), iv_result);
+    try testing.expectEqualSlices(u8, &our_iv, &ssl_iv);
+}
+
+// ============================================================================
+// SCT (Signed Certificate Timestamp) Tests
+// ============================================================================
+
+const sct = @import("sct");
+
+test "SCT list parsing - BoringSSL format compatibility" {
+    // RFC 6962 §3.3: SCT list format is length-prefixed list of length-prefixed SCTs
+    // Validate our parser handles the wire format that BoringSSL produces
+
+    // Construct a minimal valid SCT (version 0)
+    var sct_data = std.ArrayList(u8).init(testing.allocator);
+    defer sct_data.deinit();
+
+    // Version (1 byte) = 0
+    try sct_data.append(0);
+
+    // Log ID (32 bytes) - dummy value
+    try sct_data.appendSlice(&[_]u8{0xaa} ** 32);
+
+    // Timestamp (8 bytes) - Unix time in milliseconds
+    const timestamp: u64 = 1609459200000; // 2021-01-01 00:00:00 UTC
+    var ts_bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &ts_bytes, timestamp, .big);
+    try sct_data.appendSlice(&ts_bytes);
+
+    // Extensions length (2 bytes) = 0
+    try sct_data.appendSlice(&[_]u8{ 0x00, 0x00 });
+
+    // Hash algorithm (1 byte) = SHA-256 (4)
+    try sct_data.append(4);
+
+    // Signature algorithm (1 byte) = ECDSA (3)
+    try sct_data.append(3);
+
+    // Signature length (2 bytes) and signature data
+    const sig = [_]u8{0xbb} ** 71; // Typical ECDSA P-256 signature length
+    try sct_data.appendSlice(&[_]u8{ 0x00, 71 });
+    try sct_data.appendSlice(&sig);
+
+    // Build the SCT list: length-prefixed entry
+    var sct_list = std.ArrayList(u8).init(testing.allocator);
+    defer sct_list.deinit();
+
+    const sct_bytes = try sct_data.toOwnedSlice();
+    defer testing.allocator.free(sct_bytes);
+
+    // Entry length (2 bytes)
+    const entry_len: u16 = @intCast(sct_bytes.len);
+    var len_bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &len_bytes, entry_len, .big);
+    try sct_list.appendSlice(&len_bytes);
+    try sct_list.appendSlice(sct_bytes);
+
+    const list_bytes = try sct_list.toOwnedSlice();
+    defer testing.allocator.free(list_bytes);
+
+    // Parse the SCT list
+    const parsed = try sct.parseList(testing.allocator, list_bytes);
+    defer testing.allocator.free(parsed);
+
+    try testing.expectEqual(@as(usize, 1), parsed.len);
+    try testing.expectEqual(@as(u8, 0), parsed[0].version);
+    try testing.expectEqual(@as(usize, 32), parsed[0].log_id.len);
+    try testing.expectEqual(@as(u64, timestamp), parsed[0].timestamp);
+    try testing.expectEqual(@as(usize, 0), parsed[0].extensions.len);
+    try testing.expectEqual(@as(u8, 4), parsed[0].hash_algorithm);
+    try testing.expectEqual(@as(u8, 3), parsed[0].signature_algorithm);
+    try testing.expectEqual(@as(usize, 71), parsed[0].signature.len);
+}
+
+test "SCT list parsing - multiple entries" {
+    // Test parsing multiple SCTs in a list (common in production)
+
+    var list = std.ArrayList(u8).init(testing.allocator);
+    defer list.deinit();
+
+    // Add two minimal SCTs
+    for (0..2) |i| {
+        var entry = std.ArrayList(u8).init(testing.allocator);
+        defer entry.deinit();
+
+        try entry.append(0); // version
+        try entry.appendSlice(&[_]u8{@intCast(i)} ** 32); // unique log ID
+        try entry.appendSlice(&[_]u8{ 0, 0, 0, 0, 0, 0, 0, @intCast(i) }); // timestamp
+        try entry.appendSlice(&[_]u8{ 0, 0 }); // extensions len
+        try entry.append(4); // hash alg
+        try entry.append(3); // sig alg
+        try entry.appendSlice(&[_]u8{ 0, 64 }); // sig len
+        try entry.appendSlice(&[_]u8{@intCast(i)} ** 64); // signature
+
+        const entry_bytes = try entry.toOwnedSlice();
+        defer testing.allocator.free(entry_bytes);
+
+        var len_bytes: [2]u8 = undefined;
+        std.mem.writeInt(u16, &len_bytes, @intCast(entry_bytes.len), .big);
+        try list.appendSlice(&len_bytes);
+        try list.appendSlice(entry_bytes);
+    }
+
+    const list_bytes = try list.toOwnedSlice();
+    defer testing.allocator.free(list_bytes);
+
+    const parsed = try sct.parseList(testing.allocator, list_bytes);
+    defer testing.allocator.free(parsed);
+
+    try testing.expectEqual(@as(usize, 2), parsed.len);
+    try testing.expect(parsed[0].log_id[0] == 0);
+    try testing.expect(parsed[1].log_id[0] == 1);
+}
+
+test "SCT list parsing - malformed data rejection" {
+    // Verify we reject malformed SCT lists
+
+    // Truncated length field
+    {
+        const bad_list = [_]u8{0x00}; // Only 1 byte of 2-byte length
+        try testing.expectError(error.MalformedList, sct.parseList(testing.allocator, &bad_list));
+    }
+
+    // Length exceeds available data
+    {
+        const bad_list = [_]u8{ 0x00, 0xFF, 0x00 }; // Claims 255 bytes but only has 1
+        try testing.expectError(error.MalformedEntry, sct.parseList(testing.allocator, &bad_list));
+    }
+
+    // Invalid SCT version
+    {
+        var list = std.ArrayList(u8).init(testing.allocator);
+        defer list.deinit();
+
+        try list.appendSlice(&[_]u8{ 0x00, 0x01 }); // Entry length = 1
+        try list.append(1); // Invalid version (must be 0)
+
+        const list_bytes = try list.toOwnedSlice();
+        defer testing.allocator.free(list_bytes);
+
+        try testing.expectError(error.MalformedEntry, sct.parseList(testing.allocator, list_bytes));
+    }
+}
