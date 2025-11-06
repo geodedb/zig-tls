@@ -3522,7 +3522,8 @@ pub const Engine = struct {
     }
 
     /// Build a minimally spec-compliant TLS 1.3 ServerHello (real mode)
-    pub fn queueRealServerHello(self: *Engine) !void {
+pub fn queueRealServerHello(self: *Engine) !void {
+        const dump_tls_messages = true;
         std.debug.print("queueRealServerHello: ENTER - alpn={}, local_tp={}\n", .{ self.alpn != null, self.local_tp != null });
 
         // Log transport parameters if available
@@ -3565,6 +3566,19 @@ pub const Engine = struct {
         std.debug.print("Transcript hash BEFORE ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ pre_th[0], pre_th[1], pre_th[2], pre_th[3], pre_th[4], pre_th[5], pre_th[6], pre_th[7] });
 
         try self.queueCrypto(msg);
+        if (dump_tls_messages) {
+            var idx: usize = 0;
+            const hs_type: u8 = if (msg.len > 0) msg[0] else 0;
+            std.debug.print("HANDSHAKE_MSG type=0x{X:0>2} len={}\n", .{ hs_type, msg.len });
+            while (idx < msg.len) : (idx += 16) {
+                const end = @min(idx + 16, msg.len);
+                var k: usize = idx;
+                while (k < end) : (k += 1) {
+                    std.debug.print("{X:0>2} ", .{msg[k]});
+                }
+                std.debug.print("\n", .{});
+            }
+        }
 
         self.tryComputeShared();
         if (self.ecdhe_secret != null and self.handshake_client_secret == null) {
