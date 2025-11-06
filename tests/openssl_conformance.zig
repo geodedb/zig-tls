@@ -78,6 +78,7 @@ const EVP_CTRL_AEAD_SET_TAG = 0x11;
 // ============================================================================
 
 fn hexToBytes(hex: []const u8, out: []u8) void {
+    std.debug.assert(hex.len == out.len * 2);
     var i: usize = 0;
     while (i < hex.len) : (i += 2) {
         out[i / 2] = std.fmt.parseInt(u8, hex[i .. i + 2], 16) catch unreachable;
@@ -370,7 +371,7 @@ test "Traffic secret expansion matches OpenSSL" {
     for (test_cases) |tc| {
         // Our implementation using HKDF-Expand-Label
         var our_secret: [32]u8 = undefined;
-        try key_schedule.expandLabel(initial_secret, tc.label, "", &our_secret);
+        try key_schedule.expandLabel(initial_secret[0..], tc.label, "", &our_secret);
 
         // Construct HkdfLabel for OpenSSL comparison
         const prefix = "tls13 ";
@@ -523,7 +524,7 @@ test "Key update derivation matches OpenSSL" {
 
     // Our implementation using HKDF-Expand-Label
     var our_next: [32]u8 = undefined;
-    try key_schedule.expandLabel(current_secret, update_label, "", &our_next);
+    try key_schedule.expandLabel(current_secret[0..], update_label, "", &our_next);
 
     // Construct HkdfLabel for OpenSSL comparison
     const prefix = "tls13 ";
@@ -565,7 +566,7 @@ test "Exporter secret derivation matches OpenSSL" {
 
     // Our implementation using HKDF-Expand-Label
     var our_exporter: [32]u8 = undefined;
-    try key_schedule.expandLabel(master_secret, label, "", &our_exporter);
+    try key_schedule.expandLabel(master_secret[0..], label, "", &our_exporter);
 
     // Construct HkdfLabel for OpenSSL comparison
     const prefix = "tls13 ";
@@ -603,7 +604,7 @@ test "Resumption master secret matches OpenSSL" {
     hexToBytes(master_secret_hex, &master_secret);
 
     var our_resumption: [key_schedule.H.digest_length]u8 = undefined;
-    try key_schedule.expandLabel(master_secret, "res master", "", &our_resumption);
+    try key_schedule.expandLabel(master_secret[0..], "res master", "", &our_resumption);
 
     var label_buf: [64]u8 = undefined;
     const info = buildHkdfLabel(&label_buf, "res master", "", @intCast(our_resumption.len));
@@ -630,7 +631,7 @@ test "Finished key derivation matches OpenSSL" {
     hexToBytes(secret_hex, &secret);
 
     var our_finished: [key_schedule.H.digest_length]u8 = undefined;
-    try key_schedule.expandLabel(secret, "finished", "", &our_finished);
+    try key_schedule.expandLabel(secret[0..], "finished", "", &our_finished);
 
     var label_buf: [64]u8 = undefined;
     const info = buildHkdfLabel(&label_buf, "finished", "", @intCast(our_finished.len));
@@ -1061,8 +1062,7 @@ test "SHA-384 HKDF-Expand parity with OpenSSL 3.x" {
 
     const prk_hex = "077709362c2e32df0ddc3f0dc47bba63" ++
         "90b6c73bb50f9c3122ec844ad7c2b3e5" ++
-        "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6" ++
-        "e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2";
+        "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
     var prk: [48]u8 = undefined;
     hexToBytes(prk_hex, &prk);
 
@@ -1094,8 +1094,7 @@ test "SHA-384 traffic key and IV derivation matches OpenSSL" {
 
     const traffic_secret_hex = "b6b5c37c4c5c2823e7e2f6e63e7e4d1f" ++
         "8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c" ++
-        "a1a2a3a4a5a6a7a8a9aaabacadaeafb0" ++
-        "b1b2b3b4b5b6b7b8b9babbbcbdbebfc0";
+        "a1a2a3a4a5a6a7a8a9aaabacadaeafb0";
     var traffic_secret: [48]u8 = undefined;
     hexToBytes(traffic_secret_hex, &traffic_secret);
 
@@ -1216,41 +1215,41 @@ test "SCT parsing - OpenSSL 3.x wire format compatibility" {
     // RFC 6962 SCT format validation
     // OpenSSL 3.x supports SCT validation via OCSP stapling and TLS extensions
 
-    var sct_data = std.ArrayList(u8).init(testing.allocator);
-    defer sct_data.deinit();
+    var sct_data = std.ArrayList(u8){};
+    defer sct_data.deinit(testing.allocator);
 
     // Construct valid SCT v1 (version 0)
-    try sct_data.append(0); // version
-    try sct_data.appendSlice(&[_]u8{0xcc} ** 32); // log ID (32 bytes)
+    try sct_data.append(testing.allocator, 0); // version
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0xcc} ** 32); // log ID (32 bytes)
 
     // Timestamp: 2023-01-01 00:00:00 UTC in milliseconds
     const timestamp: u64 = 1672531200000;
     var ts_bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &ts_bytes, timestamp, .big);
-    try sct_data.appendSlice(&ts_bytes);
+    try sct_data.appendSlice(testing.allocator, &ts_bytes);
 
-    try sct_data.appendSlice(&[_]u8{ 0x00, 0x00 }); // extensions length = 0
-    try sct_data.append(4); // hash: SHA-256
-    try sct_data.append(3); // signature: ECDSA
+    try sct_data.appendSlice(testing.allocator, &[_]u8{ 0x00, 0x00 }); // extensions length = 0
+    try sct_data.append(testing.allocator, 4); // hash: SHA-256
+    try sct_data.append(testing.allocator, 3); // signature: ECDSA
 
     // ECDSA P-256 signature (71 bytes typical)
     const signature = [_]u8{0xdd} ** 71;
-    try sct_data.appendSlice(&[_]u8{ 0x00, 71 });
-    try sct_data.appendSlice(&signature);
+    try sct_data.appendSlice(testing.allocator, &[_]u8{ 0x00, 71 });
+    try sct_data.appendSlice(testing.allocator, &signature);
 
     // Build SCT list with length prefix
-    var list = std.ArrayList(u8).init(testing.allocator);
-    defer list.deinit();
+    var list = std.ArrayList(u8){};
+    defer list.deinit(testing.allocator);
 
-    const sct_bytes = try sct_data.toOwnedSlice();
+    const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(sct_bytes);
 
     var len_bytes: [2]u8 = undefined;
     std.mem.writeInt(u16, &len_bytes, @intCast(sct_bytes.len), .big);
-    try list.appendSlice(&len_bytes);
-    try list.appendSlice(sct_bytes);
+    try list.appendSlice(testing.allocator, &len_bytes);
+    try list.appendSlice(testing.allocator, sct_bytes);
 
-    const list_bytes = try list.toOwnedSlice();
+    const list_bytes = try list.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(list_bytes);
 
     // Parse and validate
@@ -1284,13 +1283,13 @@ test "SCT error handling - invalid data" {
 
     // Test SCT with unsupported version
     {
-        var list = std.ArrayList(u8).init(testing.allocator);
-        defer list.deinit();
+        var list = std.ArrayList(u8){};
+        defer list.deinit(testing.allocator);
 
-        try list.appendSlice(&[_]u8{ 0x00, 0x01 }); // Length = 1
-        try list.append(2); // Invalid version (only 0 is defined)
+        try list.appendSlice(testing.allocator, &[_]u8{ 0x00, 0x01 }); // Length = 1
+        try list.append(testing.allocator, 2); // Invalid version (only 0 is defined)
 
-        const bytes = try list.toOwnedSlice();
+        const bytes = try list.toOwnedSlice(testing.allocator);
         defer testing.allocator.free(bytes);
 
         try testing.expectError(error.MalformedEntry, sct.parseList(testing.allocator, bytes));
@@ -1302,36 +1301,36 @@ test "SCT timestamp validation" {
     // This is critical for OpenSSL compatibility where SCT timestamps
     // are used for freshness validation
 
-    var list = std.ArrayList(u8).init(testing.allocator);
-    defer list.deinit();
+    var list = std.ArrayList(u8){};
+    defer list.deinit(testing.allocator);
 
-    var entry = std.ArrayList(u8).init(testing.allocator);
-    defer entry.deinit();
+    var entry = std.ArrayList(u8){};
+    defer entry.deinit(testing.allocator);
 
-    try entry.append(0); // version
-    try entry.appendSlice(&[_]u8{0x11} ** 32); // log ID
+    try entry.append(testing.allocator, 0); // version
+    try entry.appendSlice(testing.allocator, &[_]u8{0x11} ** 32); // log ID
 
     // Test known timestamp: 2024-01-15 12:30:45 UTC
     const expected_ts: u64 = 1705322645000; // milliseconds
     var ts_bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &ts_bytes, expected_ts, .big);
-    try entry.appendSlice(&ts_bytes);
+    try entry.appendSlice(testing.allocator, &ts_bytes);
 
-    try entry.appendSlice(&[_]u8{ 0x00, 0x00 }); // extensions
-    try entry.append(4); // hash
-    try entry.append(3); // sig alg
-    try entry.appendSlice(&[_]u8{ 0x00, 64 }); // sig len
-    try entry.appendSlice(&[_]u8{0x99} ** 64); // sig
+    try entry.appendSlice(testing.allocator, &[_]u8{ 0x00, 0x00 }); // extensions
+    try entry.append(testing.allocator, 4); // hash
+    try entry.append(testing.allocator, 3); // sig alg
+    try entry.appendSlice(testing.allocator, &[_]u8{ 0x00, 64 }); // sig len
+    try entry.appendSlice(testing.allocator, &[_]u8{0x99} ** 64); // sig
 
-    const entry_bytes = try entry.toOwnedSlice();
+    const entry_bytes = try entry.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(entry_bytes);
 
     var len_bytes: [2]u8 = undefined;
     std.mem.writeInt(u16, &len_bytes, @intCast(entry_bytes.len), .big);
-    try list.appendSlice(&len_bytes);
-    try list.appendSlice(entry_bytes);
+    try list.appendSlice(testing.allocator, &len_bytes);
+    try list.appendSlice(testing.allocator, entry_bytes);
 
-    const list_bytes = try list.toOwnedSlice();
+    const list_bytes = try list.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(list_bytes);
 
     const parsed = try sct.parseList(testing.allocator, list_bytes);

@@ -76,6 +76,7 @@ const EVP_CTRL_GCM_SET_TAG = 0x11;
 // ============================================================================
 
 fn hexToBytes(hex: []const u8, out: []u8) void {
+    std.debug.assert(hex.len == out.len * 2);
     var i: usize = 0;
     while (i < hex.len) : (i += 2) {
         out[i / 2] = std.fmt.parseInt(u8, hex[i .. i + 2], 16) catch unreachable;
@@ -350,7 +351,7 @@ test "Client initial secret derivation parity" {
 
     // Our implementation using HKDF-Expand-Label (RFC 8446 §7.1)
     var our_client_secret: [32]u8 = undefined;
-    try key_schedule.expandLabel(initial_secret, "client in", "", &our_client_secret);
+    try key_schedule.expandLabel(initial_secret[0..], "client in", "", &our_client_secret);
 
     // Construct HkdfLabel for BoringSSL comparison
     // HkdfLabel structure: length (2) + label_len (1) + label + context_len (1) + context
@@ -392,7 +393,7 @@ test "Server initial secret derivation parity" {
 
     // Our implementation using HKDF-Expand-Label (RFC 8446 §7.1)
     var our_server_secret: [32]u8 = undefined;
-    try key_schedule.expandLabel(initial_secret, "server in", "", &our_server_secret);
+    try key_schedule.expandLabel(initial_secret[0..], "server in", "", &our_server_secret);
 
     // Construct HkdfLabel for BoringSSL comparison
     // HkdfLabel structure: length (2) + label_len (1) + label + context_len (1) + context
@@ -433,7 +434,7 @@ test "Traffic secret expansion parity with BoringSSL" {
     hexToBytes(traffic_secret_hex, &traffic_secret);
 
     var our_key: [16]u8 = undefined;
-    try key_schedule.expandLabel(traffic_secret, "key", "", &our_key);
+    try key_schedule.expandLabel(traffic_secret[0..], "key", "", &our_key);
 
     var label_buf: [64]u8 = undefined;
     const key_info = buildHkdfLabel(&label_buf, "key", "", @intCast(our_key.len));
@@ -453,7 +454,7 @@ test "Traffic secret expansion parity with BoringSSL" {
     try testing.expectEqualSlices(u8, &our_key, &ssl_key);
 
     var our_iv: [12]u8 = undefined;
-    try key_schedule.expandLabel(traffic_secret, "iv", "", &our_iv);
+    try key_schedule.expandLabel(traffic_secret[0..], "iv", "", &our_iv);
     const iv_info = buildHkdfLabel(&label_buf, "iv", "", @intCast(our_iv.len));
 
     var ssl_iv: [12]u8 = undefined;
@@ -478,7 +479,7 @@ test "Key update derivation parity with BoringSSL" {
     hexToBytes(current_secret_hex, &current_secret);
 
     var our_next: [key_schedule.H.digest_length]u8 = undefined;
-    try key_schedule.expandLabel(current_secret, "traffic upd", "", &our_next);
+    try key_schedule.expandLabel(current_secret[0..], "traffic upd", "", &our_next);
 
     var label_buf: [64]u8 = undefined;
     const info = buildHkdfLabel(&label_buf, "traffic upd", "", @intCast(our_next.len));
@@ -506,7 +507,7 @@ test "Exporter master secret parity with BoringSSL" {
     hexToBytes(master_secret_hex, &master_secret);
 
     var our_exporter: [key_schedule.H.digest_length]u8 = undefined;
-    try key_schedule.expandLabel(master_secret, "exp master", "", &our_exporter);
+    try key_schedule.expandLabel(master_secret[0..], "exp master", "", &our_exporter);
 
     var label_buf: [64]u8 = undefined;
     const info = buildHkdfLabel(&label_buf, "exp master", "", @intCast(our_exporter.len));
@@ -533,7 +534,7 @@ test "Resumption master secret parity with BoringSSL" {
     hexToBytes(master_secret_hex, &master_secret);
 
     var our_resumption: [key_schedule.H.digest_length]u8 = undefined;
-    try key_schedule.expandLabel(master_secret, "res master", "", &our_resumption);
+    try key_schedule.expandLabel(master_secret[0..], "res master", "", &our_resumption);
 
     var label_buf: [64]u8 = undefined;
     const info = buildHkdfLabel(&label_buf, "res master", "", @intCast(our_resumption.len));
@@ -560,7 +561,7 @@ test "Finished key derivation parity with BoringSSL" {
     hexToBytes(secret_hex, &secret);
 
     var our_finished: [key_schedule.H.digest_length]u8 = undefined;
-    try key_schedule.expandLabel(secret, "finished", "", &our_finished);
+    try key_schedule.expandLabel(secret[0..], "finished", "", &our_finished);
 
     var label_buf: [64]u8 = undefined;
     const info = buildHkdfLabel(&label_buf, "finished", "", @intCast(our_finished.len));
@@ -1054,8 +1055,7 @@ test "SHA-384 HKDF-Expand parity with BoringSSL" {
 
     const prk_hex = "077709362c2e32df0ddc3f0dc47bba63" ++
         "90b6c73bb50f9c3122ec844ad7c2b3e5" ++
-        "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6" ++
-        "e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2";
+        "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
     var prk: [48]u8 = undefined;
     hexToBytes(prk_hex, &prk);
 
@@ -1086,8 +1086,7 @@ test "SHA-384 traffic secret derivation parity" {
 
     const traffic_secret_hex = "b6b5c37c4c5c2823e7e2f6e63e7e4d1f" ++
         "8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c" ++
-        "a1a2a3a4a5a6a7a8a9aaabacadaeafb0" ++
-        "b1b2b3b4b5b6b7b8b9babbbcbdbebfc0";
+        "a1a2a3a4a5a6a7a8a9aaabacadaeafb0";
     var traffic_secret: [48]u8 = undefined;
     hexToBytes(traffic_secret_hex, &traffic_secret);
 
@@ -1143,50 +1142,50 @@ test "SCT list parsing - BoringSSL format compatibility" {
     // Validate our parser handles the wire format that BoringSSL produces
 
     // Construct a minimal valid SCT (version 0)
-    var sct_data = std.ArrayList(u8).init(testing.allocator);
-    defer sct_data.deinit();
+    var sct_data = std.ArrayList(u8){};
+    defer sct_data.deinit(testing.allocator);
 
     // Version (1 byte) = 0
-    try sct_data.append(0);
+    try sct_data.append(testing.allocator, 0);
 
     // Log ID (32 bytes) - dummy value
-    try sct_data.appendSlice(&[_]u8{0xaa} ** 32);
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0xaa} ** 32);
 
     // Timestamp (8 bytes) - Unix time in milliseconds
     const timestamp: u64 = 1609459200000; // 2021-01-01 00:00:00 UTC
     var ts_bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &ts_bytes, timestamp, .big);
-    try sct_data.appendSlice(&ts_bytes);
+    try sct_data.appendSlice(testing.allocator, &ts_bytes);
 
     // Extensions length (2 bytes) = 0
-    try sct_data.appendSlice(&[_]u8{ 0x00, 0x00 });
+    try sct_data.appendSlice(testing.allocator, &[_]u8{ 0x00, 0x00 });
 
     // Hash algorithm (1 byte) = SHA-256 (4)
-    try sct_data.append(4);
+    try sct_data.append(testing.allocator, 4);
 
     // Signature algorithm (1 byte) = ECDSA (3)
-    try sct_data.append(3);
+    try sct_data.append(testing.allocator, 3);
 
     // Signature length (2 bytes) and signature data
     const sig = [_]u8{0xbb} ** 71; // Typical ECDSA P-256 signature length
-    try sct_data.appendSlice(&[_]u8{ 0x00, 71 });
-    try sct_data.appendSlice(&sig);
+    try sct_data.appendSlice(testing.allocator, &[_]u8{ 0x00, 71 });
+    try sct_data.appendSlice(testing.allocator, &sig);
 
     // Build the SCT list: length-prefixed entry
-    var sct_list = std.ArrayList(u8).init(testing.allocator);
-    defer sct_list.deinit();
+    var sct_list = std.ArrayList(u8){};
+    defer sct_list.deinit(testing.allocator);
 
-    const sct_bytes = try sct_data.toOwnedSlice();
+    const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(sct_bytes);
 
     // Entry length (2 bytes)
     const entry_len: u16 = @intCast(sct_bytes.len);
     var len_bytes: [2]u8 = undefined;
     std.mem.writeInt(u16, &len_bytes, entry_len, .big);
-    try sct_list.appendSlice(&len_bytes);
-    try sct_list.appendSlice(sct_bytes);
+    try sct_list.appendSlice(testing.allocator, &len_bytes);
+    try sct_list.appendSlice(testing.allocator, sct_bytes);
 
-    const list_bytes = try sct_list.toOwnedSlice();
+    const list_bytes = try sct_list.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(list_bytes);
 
     // Parse the SCT list
@@ -1206,33 +1205,33 @@ test "SCT list parsing - BoringSSL format compatibility" {
 test "SCT list parsing - multiple entries" {
     // Test parsing multiple SCTs in a list (common in production)
 
-    var list = std.ArrayList(u8).init(testing.allocator);
-    defer list.deinit();
+    var list = std.ArrayList(u8){};
+    defer list.deinit(testing.allocator);
 
     // Add two minimal SCTs
     for (0..2) |i| {
-        var entry = std.ArrayList(u8).init(testing.allocator);
-        defer entry.deinit();
+        var entry = std.ArrayList(u8){};
+        defer entry.deinit(testing.allocator);
 
-        try entry.append(0); // version
-        try entry.appendSlice(&[_]u8{@intCast(i)} ** 32); // unique log ID
-        try entry.appendSlice(&[_]u8{ 0, 0, 0, 0, 0, 0, 0, @intCast(i) }); // timestamp
-        try entry.appendSlice(&[_]u8{ 0, 0 }); // extensions len
-        try entry.append(4); // hash alg
-        try entry.append(3); // sig alg
-        try entry.appendSlice(&[_]u8{ 0, 64 }); // sig len
-        try entry.appendSlice(&[_]u8{@intCast(i)} ** 64); // signature
+        try entry.append(testing.allocator, 0); // version
+        try entry.appendSlice(testing.allocator, &[_]u8{@intCast(i)} ** 32); // unique log ID
+        try entry.appendSlice(testing.allocator, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, @intCast(i) }); // timestamp
+        try entry.appendSlice(testing.allocator, &[_]u8{ 0, 0 }); // extensions len
+        try entry.append(testing.allocator, 4); // hash alg
+        try entry.append(testing.allocator, 3); // sig alg
+        try entry.appendSlice(testing.allocator, &[_]u8{ 0, 64 }); // sig len
+        try entry.appendSlice(testing.allocator, &[_]u8{@intCast(i)} ** 64); // signature
 
-        const entry_bytes = try entry.toOwnedSlice();
+        const entry_bytes = try entry.toOwnedSlice(testing.allocator);
         defer testing.allocator.free(entry_bytes);
 
         var len_bytes: [2]u8 = undefined;
         std.mem.writeInt(u16, &len_bytes, @intCast(entry_bytes.len), .big);
-        try list.appendSlice(&len_bytes);
-        try list.appendSlice(entry_bytes);
+        try list.appendSlice(testing.allocator, &len_bytes);
+        try list.appendSlice(testing.allocator, entry_bytes);
     }
 
-    const list_bytes = try list.toOwnedSlice();
+    const list_bytes = try list.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(list_bytes);
 
     const parsed = try sct.parseList(testing.allocator, list_bytes);
@@ -1260,13 +1259,13 @@ test "SCT list parsing - malformed data rejection" {
 
     // Invalid SCT version
     {
-        var list = std.ArrayList(u8).init(testing.allocator);
-        defer list.deinit();
+        var list = std.ArrayList(u8){};
+        defer list.deinit(testing.allocator);
 
-        try list.appendSlice(&[_]u8{ 0x00, 0x01 }); // Entry length = 1
-        try list.append(1); // Invalid version (must be 0)
+        try list.appendSlice(testing.allocator, &[_]u8{ 0x00, 0x01 }); // Entry length = 1
+        try list.append(testing.allocator, 1); // Invalid version (must be 0)
 
-        const list_bytes = try list.toOwnedSlice();
+        const list_bytes = try list.toOwnedSlice(testing.allocator);
         defer testing.allocator.free(list_bytes);
 
         try testing.expectError(error.MalformedEntry, sct.parseList(testing.allocator, list_bytes));

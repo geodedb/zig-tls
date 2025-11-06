@@ -1494,6 +1494,6 @@ pub fn deriveFinishedVerifyData(
     transcript_hash: [H.digest_length]u8,
 ) [H.digest_length]u8 {
     var finished_key: [H.digest_length]u8 = undefined;
-    ks.expandLabel(traffic_secret, "finished", &[_]u8{}, &finished_key) catch unreachable;
+    ks.expandLabel(traffic_secret[0..], "finished", &[_]u8{}, &finished_key) catch unreachable;
     return ks.hmacSha256(&finished_key, &transcript_hash);
 }

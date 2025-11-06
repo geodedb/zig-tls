@@ -353,9 +353,15 @@ fn hkdfExpand(out: []u8, prk: [Sha256.digest_length]u8, info: []const u8) void {
 /// ## RFC References
 /// - RFC 8446 §7.1 - Key Schedule and HKDF-Expand-Label definition
 /// - RFC 5869 - HKDF: Extract-and-Expand HKDF
-pub fn expandLabel(prk: [Sha256.digest_length]u8, label: []const u8, context: []const u8, out: []u8) !void {
-    var secret = Secret.fromSlice(.sha256, prk[0..]);
-    expandLabelHash(.sha256, &secret, label, context, out) catch unreachable;
+pub fn expandLabel(prk: []const u8, label: []const u8, context: []const u8, out: []u8) !void {
+    const hash = switch (prk.len) {
+        Sha256.digest_length => Hash.sha256,
+        Sha384.digest_length => Hash.sha384,
+        else => return error.InvalidSecretLength,
+    };
+
+    var secret = Secret.fromSlice(hash, prk);
+    try expandLabelHash(hash, &secret, label, context, out);
 }
 
 /// HKDF-Extract derives a pseudorandom key from input keying material.
@@ -479,9 +485,9 @@ pub fn deriveClientServerInitial(initial_secret: [Sha256.digest_length]u8) struc
     var client: [Sha256.digest_length]u8 = undefined;
     var server: [Sha256.digest_length]u8 = undefined;
     // RFC 9001 §5.2 - Derive client initial secret with "client in" label
-    expandLabel(initial_secret, "client in", &[_]u8{}, &client) catch unreachable;
+    expandLabel(initial_secret[0..], "client in", &[_]u8{}, &client) catch unreachable;
     // RFC 9001 §5.2 - Derive server initial secret with "server in" label
-    expandLabel(initial_secret, "server in", &[_]u8{}, &server) catch unreachable;
+    expandLabel(initial_secret[0..], "server in", &[_]u8{}, &server) catch unreachable;
     return .{ .client = client, .server = server };
 }
 
@@ -762,20 +768,20 @@ test "RFC 8446 §7.1 - HKDF-Expand-Label with context" {
     var out2: [32]u8 = undefined;
 
     // Different labels produce different outputs
-    try expandLabel(prk, "label1", "", &out1);
-    try expandLabel(prk, "label2", "", &out2);
+    try expandLabel(prk[0..], "label1", "", &out1);
+    try expandLabel(prk[0..], "label2", "", &out2);
     try testing.expect(!std.mem.eql(u8, &out1, &out2));
 
     // Different contexts produce different outputs
     var out3: [32]u8 = undefined;
     var out4: [32]u8 = undefined;
-    try expandLabel(prk, "label", "context1", &out3);
-    try expandLabel(prk, "label", "context2", &out4);
+    try expandLabel(prk[0..], "label", "context1", &out3);
+    try expandLabel(prk[0..], "label", "context2", &out4);
     try testing.expect(!std.mem.eql(u8, &out3, &out4));
 
     // Same label+context produces same output
     var out5: [32]u8 = undefined;
-    try expandLabel(prk, "label1", "", &out5);
+    try expandLabel(prk[0..], "label1", "", &out5);
     try testing.expectEqualSlices(u8, &out1, &out5);
 }
 
@@ -786,9 +792,9 @@ test "RFC 8446 §7.1 - HKDF-Expand-Label with different output lengths" {
     var out_32: [32]u8 = undefined;
     var out_12: [12]u8 = undefined;
 
-    try expandLabel(prk, "test", "", &out_16);
-    try expandLabel(prk, "test", "", &out_32);
-    try expandLabel(prk, "test", "", &out_12);
+    try expandLabel(prk[0..], "test", "", &out_16);
+    try expandLabel(prk[0..], "test", "", &out_32);
+    try expandLabel(prk[0..], "test", "", &out_12);
 
     // Different lengths should produce different outputs (length is part of HkdfLabel)
     try testing.expect(!std.mem.eql(u8, out_12[0..], out_16[0..12]));
@@ -796,7 +802,7 @@ test "RFC 8446 §7.1 - HKDF-Expand-Label with different output lengths" {
 
     // Same inputs should produce same output
     var out_16_again: [16]u8 = undefined;
-    try expandLabel(prk, "test", "", &out_16_again);
+    try expandLabel(prk[0..], "test", "", &out_16_again);
     try testing.expectEqualSlices(u8, &out_16, &out_16_again);
 }
 
@@ -867,8 +873,8 @@ test "HKDF label - tls13 prefix is applied" {
 
     // These should produce different outputs because expandLabel adds "tls13 " prefix
     // We're testing that the label is not used verbatim
-    try expandLabel(prk, "key", "", &out1);
-    try expandLabel(prk, "tls13 key", "", &out2);
+    try expandLabel(prk[0..], "key", "", &out1);
+    try expandLabel(prk[0..], "tls13 key", "", &out2);
 
     // If prefix weren't added, these would be the same, but they should differ
     try testing.expect(!std.mem.eql(u8, &out1, &out2));

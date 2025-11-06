@@ -333,8 +333,8 @@ test "RFC 8446 §7.1 - HKDF-Expand-Label uses 'tls13 ' prefix" {
     var out1: [16]u8 = undefined;
     var out2: [16]u8 = undefined;
 
-    try key_schedule.expandLabel(prk, "test", "", &out1);
-    try key_schedule.expandLabel(prk, "tls13 test", "", &out2);
+    try key_schedule.expandLabel(prk[0..], "test", "", &out1);
+    try key_schedule.expandLabel(prk[0..], "tls13 test", "", &out2);
 
     // If the prefix is applied correctly, these should produce different outputs
     // because expandLabel adds "tls13 " to both labels
@@ -347,8 +347,8 @@ test "RFC 8446 §7.1 - HKDF-Expand-Label with different labels" {
     var out1: [32]u8 = undefined;
     var out2: [32]u8 = undefined;
 
-    try key_schedule.expandLabel(prk, "client in", "", &out1);
-    try key_schedule.expandLabel(prk, "server in", "", &out2);
+    try key_schedule.expandLabel(prk[0..], "client in", "", &out1);
+    try key_schedule.expandLabel(prk[0..], "server in", "", &out2);
 
     try testing.expect(!std.mem.eql(u8, &out1, &out2));
 }
@@ -359,8 +359,8 @@ test "RFC 8446 §7.1 - HKDF-Expand-Label with different contexts" {
     var out1: [32]u8 = undefined;
     var out2: [32]u8 = undefined;
 
-    try key_schedule.expandLabel(prk, "test", "context1", &out1);
-    try key_schedule.expandLabel(prk, "test", "context2", &out2);
+    try key_schedule.expandLabel(prk[0..], "test", "context1", &out1);
+    try key_schedule.expandLabel(prk[0..], "test", "context2", &out2);
 
     try testing.expect(!std.mem.eql(u8, &out1, &out2));
 }

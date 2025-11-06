@@ -75,7 +75,7 @@ test "RFC 9001 §A.2: Client Initial Secret" {
     hexToBytes(initial_secret_hex, &initial_secret);
 
     var client_initial_secret: [32]u8 = undefined;
-    try key_schedule.expandLabel(initial_secret, "client in", "", &client_initial_secret);
+    try key_schedule.expandLabel(initial_secret[0..], "client in", "", &client_initial_secret);
 
     const expected_client_secret_hex =
         "c00cf151ca5be075ed0ebfb5c80323c4" ++
@@ -94,7 +94,7 @@ test "RFC 9001 §A.3: Server Initial Secret" {
     hexToBytes(initial_secret_hex, &initial_secret);
 
     var server_initial_secret: [32]u8 = undefined;
-    try key_schedule.expandLabel(initial_secret, "server in", "", &server_initial_secret);
+    try key_schedule.expandLabel(initial_secret[0..], "server in", "", &server_initial_secret);
 
     const expected_server_secret_hex =
         "3c199828fd139efd216c155ad844cc81" ++
@@ -172,11 +172,11 @@ test "Traffic key expansion" {
 
     // Expand to key (16 bytes for AES-128)
     var key: [16]u8 = undefined;
-    try key_schedule.expandLabel(traffic_secret, "key", "", &key);
+    try key_schedule.expandLabel(traffic_secret[0..], "key", "", &key);
 
     // Expand to IV (12 bytes for AES-GCM)
     var iv: [12]u8 = undefined;
-    try key_schedule.expandLabel(traffic_secret, "iv", "", &iv);
+    try key_schedule.expandLabel(traffic_secret[0..], "iv", "", &iv);
 
     try testing.expect(key.len == 16);
     try testing.expect(iv.len == 12);
@@ -192,7 +192,7 @@ test "Key update" {
 
     // Derive next generation
     var next_secret: [32]u8 = undefined;
-    try key_schedule.expandLabel(current_secret, "traffic upd", "", &next_secret);
+    try key_schedule.expandLabel(current_secret[0..], "traffic upd", "", &next_secret);
 
     // Ensure the new secret is different
     try testing.expect(!std.mem.eql(u8, &current_secret, &next_secret));
@@ -218,7 +218,7 @@ test "Exporter master secret derivation" {
     hexToBytes(master_secret_hex, &master_secret);
 
     var exporter_secret: [32]u8 = undefined;
-    try key_schedule.expandLabel(master_secret, "exp master", "", &exporter_secret);
+    try key_schedule.expandLabel(master_secret[0..], "exp master", "", &exporter_secret);
 
     try testing.expect(exporter_secret.len == 32);
 }
@@ -232,7 +232,7 @@ test "Resumption master secret derivation" {
     hexToBytes(master_secret_hex, &master_secret);
 
     var resumption_secret: [32]u8 = undefined;
-    try key_schedule.expandLabel(master_secret, "res master", "", &resumption_secret);
+    try key_schedule.expandLabel(master_secret[0..], "res master", "", &resumption_secret);
 
     try testing.expect(resumption_secret.len == 32);
 }
@@ -246,7 +246,7 @@ test "Zero-length context HKDF expansion" {
     hexToBytes(secret_hex, &secret);
 
     var verify_data: [32]u8 = undefined;
-    try key_schedule.expandLabel(secret, "finished", "", &verify_data);
+    try key_schedule.expandLabel(secret[0..], "finished", "", &verify_data);
 
     try testing.expect(verify_data.len == 32);
 }

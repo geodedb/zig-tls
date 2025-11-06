@@ -8,6 +8,7 @@ const std = @import("std");
 pub const SctError = error{
     MalformedList,
     MalformedEntry,
+    OutOfMemory,
 };
 
 pub const SignedCertificateTimestamp = struct {
@@ -34,8 +35,8 @@ fn readU64(bytes: []const u8) u64 {
 /// an owned slice of SCT views. Each view references the original `list`
 /// buffer; callers must retain `list` for the lifetime of the returned slice.
 pub fn parseList(allocator: std.mem.Allocator, list: []const u8) SctError![]SignedCertificateTimestamp {
-    var items = std.ArrayList(SignedCertificateTimestamp).init(allocator);
-    errdefer items.deinit();
+    var items = std.ArrayList(SignedCertificateTimestamp){};
+    errdefer items.deinit(allocator);
 
     var offset: usize = 0;
     while (offset < list.len) {
@@ -80,7 +81,7 @@ pub fn parseList(allocator: std.mem.Allocator, list: []const u8) SctError![]Sign
 
         if (pos != sct_bytes.len) return SctError.MalformedEntry;
 
-        try items.append(.{
+        try items.append(allocator, .{
             .version = version,
             .log_id = log_id,
             .timestamp = timestamp,
@@ -92,5 +93,5 @@ pub fn parseList(allocator: std.mem.Allocator, list: []const u8) SctError![]Sign
     }
 
     if (offset != list.len) return SctError.MalformedList;
-    return try items.toOwnedSlice();
+    return try items.toOwnedSlice(allocator);
 }
