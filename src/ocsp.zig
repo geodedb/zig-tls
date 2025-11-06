@@ -46,6 +46,13 @@ pub const OcspError = error{
 
 pub const HashAlg = enum { sha1, sha256, sha384, sha512 };
 
+/// Issuer certificate information for OCSP validation.
+/// Contains both the parsed certificate and its DER encoding.
+pub const IssuerInfo = struct {
+    cert: *const x509.Certificate,
+    der: []const u8,
+};
+
 pub fn hashAlgFromOid(oid: []const u8) OcspError!HashAlg {
     if (oid.len >= 5 and std.mem.eql(u8, oid[oid.len - 5 ..], &[_]u8{ 0x2B, 0x0E, 0x03, 0x02, 0x1A })) {
         // 1.3.14.3.2.26 - sha1
@@ -141,7 +148,7 @@ pub fn validateStapledResponse(
     response: []const u8,
     leaf: *const x509.Certificate,
     leaf_der: []const u8,
-    issuer_opt: ?struct { cert: *const x509.Certificate, der: []const u8 },
+    issuer_opt: ?IssuerInfo,
     now_unix: i64,
 ) OcspError!void {
     if (issuer_opt == null) return OcspError.MissingIssuer;

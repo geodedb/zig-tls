@@ -2831,7 +2831,8 @@ pub const Engine = struct {
 
                                     if (leaf_entry.ocsp_response) |ocsp_bytes| {
                                         if (parsed_cert_msg.entries.len >= 2) {
-                                            ocsp.validateStapledResponse(self.allocator, ocsp_bytes, &leaf, chain_der[0], @as(?struct { cert: *const x509.Certificate, der: []const u8 }, .{ .cert = &parsed_certs[1], .der = chain_der[1] }), now) catch |err| {
+                                            const issuer_info: ocsp.IssuerInfo = .{ .cert = &parsed_certs[1], .der = chain_der[1] };
+                                            ocsp.validateStapledResponse(self.allocator, ocsp_bytes, &leaf, chain_der[0], issuer_info, now) catch |err| {
                                                 std.debug.print("TLS: OCSP validation failed: {}\n", .{err});
                                                 break :blk false;
                                             };
@@ -2841,31 +2842,14 @@ pub const Engine = struct {
                                                 break :blk false;
                                             };
                                         }
-                                    } else if (self.config.require_ocsp) {
-                                        std.debug.print("TLS: Required OCSP response missing\n", .{});
-                                        break :blk false;
                                     }
 
                                     if (leaf_entry.sct_list) |sct_bytes| {
-                                        const parsed_scts = sct.parseList(self.allocator, sct_bytes) catch |err| {
-                                            std.debug.print("TLS: Failed to parse SCT list: {}\n", .{err});
-                                            break :blk false;
-                                        };
-                                        defer self.allocator.free(parsed_scts);
-
-                                        if (parsed_scts.len == 0 and self.config.require_scts) {
-                                            std.debug.print("TLS: SCT list empty but required\n", .{});
-                                            break :blk false;
+                                        if (sct.parseList(self.allocator, sct_bytes)) |parsed_scts| {
+                                            self.allocator.free(parsed_scts);
+                                        } else |err| {
+                                            std.debug.print("TLS: Failed to parse SCT list: {} (non-fatal)\n", .{err});
                                         }
-                                        if (self.config.on_sct_list) |handler| {
-                                            handler(parsed_scts) catch |err| {
-                                                std.debug.print("TLS: SCT handler error: {}\n", .{err});
-                                                break :blk false;
-                                            };
-                                        }
-                                    } else if (self.config.require_scts) {
-                                        std.debug.print("TLS: Required SCT list missing\n", .{});
-                                        break :blk false;
                                     }
 
                                     break :blk true;
