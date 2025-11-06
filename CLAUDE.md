@@ -205,10 +205,12 @@ The project has comprehensive test coverage across multiple levels:
 - OCSP stapling (RFC 6960) - Fully implemented but lacks dedicated unit tests
 - SCT parsing (RFC 6962) - Fully implemented with conformance tests only
 
+**Implemented:**
+- Advanced X.509 features: Name constraints (RFC 5280 §4.2.1.10), policy mapping (RFC 5280 §4.2.1.5), policy constraints (RFC 5280 §4.2.1.11)
+- ChaCha20-Poly1305 OpenSSL conformance tests (enabled with runtime availability detection)
+
 **Not yet implemented:**
-- AES-128-CCM cipher suite variants (AES-CCM is less common in modern deployments)
-- Advanced X.509 features: Name constraints, policy mapping, policy constraints
-- ChaCha20-Poly1305 OpenSSL conformance tests (disabled due to limited OpenSSL build availability)
+- AES-128-CCM cipher suite variants (RFC 6655) - **Blocked**: Zig 0.15.1 stdlib does not include `std.crypto.aead.aes_ccm`. Implementation would require custom AES-CCM from scratch, which is complex and requires extensive cryptographic validation. AES-CCM is less common in modern QUIC deployments (most use AES-GCM or ChaCha20-Poly1305).
 
 **Intentionally not supported:**
 - Post-handshake authentication - Forbidden by RFC 9001 §4.4 for QUIC (client auth must occur during initial handshake)

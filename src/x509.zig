@@ -266,6 +266,94 @@ pub const ExtKeyUsage = struct {
     ocsp_signing: bool = false,
 };
 
+/// Name Constraints extension restricting valid subject names.
+///
+/// Represents the id-ce-nameConstraints extension (OID 2.5.29.30) which
+/// indicates a namespace within which all subject names in subsequent
+/// certificates in a certification path must be located.
+///
+/// ## RFC References
+/// - RFC 5280 §4.2.1.10 - Name Constraints extension
+///
+/// ## Validation Rules
+/// - MUST be marked critical when present
+/// - Applies to all certificates following the issuing CA in the path
+/// - Permitted subtrees define ALLOWED names
+/// - Excluded subtrees define FORBIDDEN names
+/// - Exclusions take precedence over permissions
+///
+/// ## Design Note
+/// Currently stores only DNS names from dNSName GeneralName entries.
+/// Other name forms (URI, email, IP, DN) can be added as needed.
+pub const NameConstraints = struct {
+    /// Permitted DNS name constraints (e.g., [".example.com", ".test.org"])
+    /// RFC 5280 §4.2.1.10 - Names MUST be within permitted subtrees
+    permitted_dns: []const []const u8 = &[_][]const u8{},
+
+    /// Excluded DNS name constraints (e.g., [".forbidden.example.com"])
+    /// RFC 5280 §4.2.1.10 - Names MUST NOT be within excluded subtrees
+    excluded_dns: []const []const u8 = &[_][]const u8{},
+};
+
+/// Policy Mappings extension for cross-domain policy equivalence.
+///
+/// Represents the id-ce-policyMappings extension (OID 2.5.29.33) which
+/// indicates that two certificate policies are considered equivalent by
+/// the issuing CA.
+///
+/// ## RFC References
+/// - RFC 5280 §4.2.1.5 - Policy Mappings extension
+///
+/// ## Validation Rules
+/// - MUST be marked critical when present
+/// - MUST NOT be present in end-entity certificates
+/// - Each mapping consists of issuer-domain-policy and subject-domain-policy OIDs
+/// - anyPolicy (2.5.29.32.0) MUST NOT appear in either field
+///
+/// ## Design Note
+/// Stores raw OID pairs without interpretation. Policy validation logic
+/// is left to the caller based on their policy requirements.
+pub const PolicyMappings = struct {
+    /// Policy mapping pairs (issuer OID -> subject OID)
+    /// RFC 5280 §4.2.1.5 - SEQUENCE OF policy mapping pairs
+    mappings: []const PolicyMapping = &[_]PolicyMapping{},
+};
+
+pub const PolicyMapping = struct {
+    /// Issuer domain policy OID (DER-encoded)
+    issuer_policy: []const u8,
+    /// Subject domain policy OID (DER-encoded)
+    subject_policy: []const u8,
+};
+
+/// Policy Constraints extension restricting policy mapping and anyPolicy.
+///
+/// Represents the id-ce-policyConstraints extension (OID 2.5.29.36) which
+/// constrains path validation by prohibiting policy mapping or requiring
+/// that each certificate in the path contain an acceptable policy identifier.
+///
+/// ## RFC References
+/// - RFC 5280 §4.2.1.11 - Policy Constraints extension
+///
+/// ## Validation Rules
+/// - MUST be marked critical when present
+/// - requireExplicitPolicy indicates number of additional certificates that may
+///   appear before an explicit policy is required
+/// - inhibitPolicyMapping indicates number of additional certificates that may
+///   appear before policy mapping is no longer permitted
+///
+/// ## Design Note
+/// Values are optional; if absent, no constraint is imposed for that field.
+pub const PolicyConstraints = struct {
+    /// Certificates remaining before explicit policy required
+    /// RFC 5280 §4.2.1.11 - requireExplicitPolicy [0]
+    require_explicit_policy: ?u32 = null,
+
+    /// Certificates remaining before policy mapping inhibited
+    /// RFC 5280 §4.2.1.11 - inhibitPolicyMapping [1]
+    inhibit_policy_mapping: ?u32 = null,
+};
+
 /// Parsed X.509 certificate with extracted fields for TLS validation.
 ///
 /// Zero-copy view over a DER-encoded X.509 certificate with parsed extension
@@ -321,6 +409,18 @@ pub const Certificate = struct {
     /// Extended Key Usage extension (certificate purposes).
     /// RFC 5280 §4.2.1.12 - Must include serverAuth for TLS servers
     eku: ?ExtKeyUsage = null,
+
+    /// Name Constraints extension (namespace restrictions).
+    /// RFC 5280 §4.2.1.10 - Restricts valid subject names in subsequent certificates
+    name_constraints: ?NameConstraints = null,
+
+    /// Policy Mappings extension (cross-domain policy equivalence).
+    /// RFC 5280 §4.2.1.5 - Indicates equivalent certificate policies
+    policy_mappings: ?PolicyMappings = null,
+
+    /// Policy Constraints extension (policy validation constraints).
+    /// RFC 5280 §4.2.1.11 - Constrains policy mapping and explicit policy requirements
+    policy_constraints: ?PolicyConstraints = null,
 
     /// Validity period start (Unix timestamp seconds since 1970-01-01T00:00:00Z).
     /// RFC 5280 §4.1.2.5 - notBefore field
@@ -569,6 +669,9 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     var basic_res: ?BasicConstraints = null;
     var ku_res: ?KeyUsage = null;
     var eku_res: ?ExtKeyUsage = null;
+    var name_constraints_res: ?NameConstraints = null;
+    var policy_mappings_res: ?PolicyMappings = null;
+    var policy_constraints_res: ?PolicyConstraints = null;
 
     while (true) {
         const tlv = ti.readTLV() catch break;
@@ -663,6 +766,119 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
                 }
                 eku_res = .{ .server_auth = server_auth, .ocsp_signing = ocsp_signing };
             }
+
+            // id-ce-nameConstraints = 2.5.29.30
+            // RFC 5280 §4.2.1.10 - Name Constraints extension
+            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x1e) {
+                var ncd = asn1.Decoder.init(inner);
+                const nc_seq = ncd.readSequence() catch continue;
+                var nc_dec = asn1.Decoder.init(nc_seq);
+
+                var permitted: [8][]const u8 = undefined;
+                var permitted_len: usize = 0;
+                var excluded: [8][]const u8 = undefined;
+                var excluded_len: usize = 0;
+
+                // Parse permitted and excluded subtrees
+                while (true) {
+                    const subtree_tlv = nc_dec.readTLV() catch break;
+                    if (asn1.tagClass(subtree_tlv.tag) != .context) continue;
+                    const tag_num = asn1.tagNumber(subtree_tlv.tag);
+
+                    // [0] IMPLICIT SEQUENCE OF GeneralSubtree (permitted)
+                    // [1] IMPLICIT SEQUENCE OF GeneralSubtree (excluded)
+                    if (tag_num == 0 or tag_num == 1) {
+                        var st_dec = asn1.Decoder.init(subtree_tlv.val);
+                        while (true) {
+                            const gs_seq = st_dec.readSequence() catch break;
+                            var gs_dec = asn1.Decoder.init(gs_seq);
+                            const gn_tlv = gs_dec.readTLV() catch break;
+                            // Look for dNSName [2]
+                            if (asn1.tagClass(gn_tlv.tag) == .context and asn1.tagNumber(gn_tlv.tag) == 2) {
+                                if (tag_num == 0 and permitted_len < permitted.len) {
+                                    permitted[permitted_len] = gn_tlv.val;
+                                    permitted_len += 1;
+                                } else if (tag_num == 1 and excluded_len < excluded.len) {
+                                    excluded[excluded_len] = gn_tlv.val;
+                                    excluded_len += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (permitted_len > 0 or excluded_len > 0) {
+                    name_constraints_res = .{
+                        .permitted_dns = permitted[0..permitted_len],
+                        .excluded_dns = excluded[0..excluded_len],
+                    };
+                }
+            }
+
+            // id-ce-policyMappings = 2.5.29.33
+            // RFC 5280 §4.2.1.5 - Policy Mappings extension
+            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x21) {
+                var pmd = asn1.Decoder.init(inner);
+                const pm_seq = pmd.readSequence() catch continue;
+                var pm_dec = asn1.Decoder.init(pm_seq);
+
+                var mappings: [16]PolicyMapping = undefined;
+                var mappings_len: usize = 0;
+
+                while (mappings_len < mappings.len) {
+                    const mapping_seq = pm_dec.readSequence() catch break;
+                    var map_dec = asn1.Decoder.init(mapping_seq);
+
+                    const issuer_policy = map_dec.readOID() catch break;
+                    const subject_policy = map_dec.readOID() catch break;
+
+                    mappings[mappings_len] = .{
+                        .issuer_policy = issuer_policy,
+                        .subject_policy = subject_policy,
+                    };
+                    mappings_len += 1;
+                }
+
+                if (mappings_len > 0) {
+                    policy_mappings_res = .{ .mappings = mappings[0..mappings_len] };
+                }
+            }
+
+            // id-ce-policyConstraints = 2.5.29.36
+            // RFC 5280 §4.2.1.11 - Policy Constraints extension
+            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x24) {
+                var pcd = asn1.Decoder.init(inner);
+                const pc_seq = pcd.readSequence() catch continue;
+                var pc_dec = asn1.Decoder.init(pc_seq);
+
+                var req_exp_policy: ?u32 = null;
+                var inh_pol_map: ?u32 = null;
+
+                while (true) {
+                    const field_tlv = pc_dec.readTLV() catch break;
+                    if (asn1.tagClass(field_tlv.tag) != .context) continue;
+                    const tag_num = asn1.tagNumber(field_tlv.tag);
+
+                    // requireExplicitPolicy [0] SkipCerts
+                    // inhibitPolicyMapping [1] SkipCerts
+                    if (tag_num == 0 or tag_num == 1) {
+                        var skip_certs: u32 = 0;
+                        for (field_tlv.val) |b| skip_certs = (skip_certs << 8) | b;
+                        if (tag_num == 0) {
+                            req_exp_policy = skip_certs;
+                        } else {
+                            inh_pol_map = skip_certs;
+                        }
+                    }
+                }
+
+                if (req_exp_policy != null or inh_pol_map != null) {
+                    policy_constraints_res = .{
+                        .require_explicit_policy = req_exp_policy,
+                        .inhibit_policy_mapping = inh_pol_map,
+                    };
+                }
+            }
         }
     }
 
@@ -680,6 +896,9 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
         .basic = basic_res,
         .ku = ku_res,
         .eku = eku_res,
+        .name_constraints = name_constraints_res,
+        .policy_mappings = policy_mappings_res,
+        .policy_constraints = policy_constraints_res,
         .not_before_unix = not_before,
         .not_after_unix = not_after,
         .spki = spki_bytes,
