@@ -46,7 +46,10 @@ pub const H = struct {
         _ = options;
         var hasher = Sha256.init(.{});
         hasher.update(data);
-        hasher.final(out);
+        var digest: [Sha256.digest_length]u8 = undefined;
+        hasher.final(&digest);
+        std.debug.assert(out.len >= digest.len);
+        std.mem.copyForwards(u8, out[0..digest.len], &digest);
     }
 };
 
