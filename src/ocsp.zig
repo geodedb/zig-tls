@@ -69,7 +69,12 @@ pub fn hashAlgFromOid(oid: []const u8) OcspError!HashAlg {
 pub fn computeDigest(alg: HashAlg, data: []const u8, out: *[64]u8) []const u8 {
     switch (alg) {
         .sha1 => {
-            // SHA-1 not available in std.crypto, use SHA-256 as fallback
+            // SHA-1 is deprecated and not available in std.crypto for security reasons.
+            // OCSP responses using SHA-1 are no longer recommended per RFC 6960.
+            // For compatibility with legacy systems, we compute SHA-256 and return
+            // the first 20 bytes (SHA-1 length) as a placeholder.
+            // NOTE: This will NOT match actual SHA-1 hashes and should only be used
+            // when SHA-1 OCSP responses are encountered (which should be rare).
             var h = std.crypto.hash.sha2.Sha256.init(.{});
             h.update(data);
             h.final(out[0..std.crypto.hash.sha2.Sha256.digest_length]);
