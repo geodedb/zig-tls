@@ -198,8 +198,16 @@ pub fn deriveKeyIvHpHash(hash: Hash, secret: *const Secret, v2: bool) KeyMateria
 
 pub fn hashBytes(hash: Hash, data: []const u8) Secret {
     return switch (hash) {
-        .sha256 => secretFromSlice(hash, Sha256.hash(data)[0..]),
-        .sha384 => secretFromSlice(hash, Sha384.hash(data)[0..]),
+        .sha256 => blk: {
+            var out: [Sha256.digest_length]u8 = undefined;
+            Sha256.hash(data, &out, .{});
+            break :blk secretFromSlice(hash, &out);
+        },
+        .sha384 => blk: {
+            var out: [Sha384.digest_length]u8 = undefined;
+            Sha384.hash(data, &out, .{});
+            break :blk secretFromSlice(hash, &out);
+        },
     };
 }
 

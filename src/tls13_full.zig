@@ -1123,7 +1123,7 @@ pub fn parseCertificate(
         }
 
         if (ext_pos != ext_len) return error.MalformedCertificateList;
-        try entries.append(.{ .cert = cert_slice, .ocsp_response = ocsp_resp, .sct_list = sct_list });
+        try entries.append(allocator, .{ .cert = cert_slice, .ocsp_response = ocsp_resp, .sct_list = sct_list });
     }
 
     if (pos != list_end) return error.MalformedCertificateList;

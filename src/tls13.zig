@@ -1810,12 +1810,7 @@ pub const Context = struct {
             const ext_len: u16 = list_len + 2;
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0d, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
             for (sigs) |scheme| {
-                const val: u16 = switch (scheme) {
-                    .ed25519 => 0x0807,
-                    .ecdsa_secp256r1_sha256 => 0x0403,
-                    .ecdsa_secp384r1_sha384 => 0x0503,
-                    .rsa_pss_rsae_sha256 => 0x0804,
-                };
+                const val: u16 = @intFromEnum(scheme);
                 try ext_buf.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
             }
         }
@@ -2341,11 +2336,8 @@ pub const QuicKeys = struct { key: [16]u8, iv: [12]u8, hp: [16]u8 };
 
 /// Derive QUIC handshake keys from a handshake traffic secret.
 pub fn deriveQuicHandshakeKeys(hash: Hash, client_or_server_hs_secret: *const Secret, v2: bool) QuicKeys {
-    if (v2) {
-        return ks.deriveKeyIvHpHash(hash, client_or_server_hs_secret, true);
-    } else {
-        return ks.deriveKeyIvHpHash(hash, client_or_server_hs_secret, false);
-    }
+    const km = ks.deriveKeyIvHpHash(hash, client_or_server_hs_secret, v2);
+    return .{ .key = km.key, .iv = km.iv, .hp = km.hp };
 }
 
 /// Derive application traffic secrets (client and server) from handshake secret.
@@ -2364,7 +2356,8 @@ pub fn deriveApplicationTraffic(hash: Hash, handshake_secret: *const Secret, tra
 
 /// Derive QUIC 1-RTT keys from an application traffic secret.
 pub fn deriveQuicAppKeys(hash: Hash, client_or_server_app_secret: *const Secret, v2: bool) QuicKeys {
-    return ks.deriveKeyIvHpHash(hash, client_or_server_app_secret, v2);
+    const km = ks.deriveKeyIvHpHash(hash, client_or_server_app_secret, v2);
+    return .{ .key = km.key, .iv = km.iv, .hp = km.hp };
 }
 
 /// Derive application traffic secrets directly from raw ECDHE secret and transcript hash.
@@ -2837,11 +2830,17 @@ pub const Engine = struct {
                                     }
 
                                     if (leaf_entry.ocsp_response) |ocsp_bytes| {
-                                        const issuer_info = if (parsed_cert_msg.entries.len >= 2) .{ .cert = &parsed_certs[1], .der = chain_der[1] } else null;
-                                        ocsp.validateStapledResponse(self.allocator, ocsp_bytes, &leaf, chain_der[0], issuer_info, now) catch |err| {
-                                            std.debug.print("TLS: OCSP validation failed: {}\n", .{err});
-                                            break :blk false;
-                                        };
+                                        if (parsed_cert_msg.entries.len >= 2) {
+                                            ocsp.validateStapledResponse(self.allocator, ocsp_bytes, &leaf, chain_der[0], @as(?struct { cert: *const x509.Certificate, der: []const u8 }, .{ .cert = &parsed_certs[1], .der = chain_der[1] }), now) catch |err| {
+                                                std.debug.print("TLS: OCSP validation failed: {}\n", .{err});
+                                                break :blk false;
+                                            };
+                                        } else {
+                                            ocsp.validateStapledResponse(self.allocator, ocsp_bytes, &leaf, chain_der[0], null, now) catch |err| {
+                                                std.debug.print("TLS: OCSP validation failed: {}\n", .{err});
+                                                break :blk false;
+                                            };
+                                        }
                                     } else if (self.config.require_ocsp) {
                                         std.debug.print("TLS: Required OCSP response missing\n", .{});
                                         break :blk false;
@@ -3169,7 +3168,11 @@ pub const Engine = struct {
         // session id (empty vector length 0)
         try body.append(self.allocator, 0); // length
         // cipher_suites vector (length 2, then suite 0x1301)
-        const suites = self.config.supported_cipher_suites;
+        const suites = &[_]tls13_full.CipherSuite{
+            tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256,
+            tls13_full.CipherSuite.TLS_AES_256_GCM_SHA384,
+            tls13_full.CipherSuite.TLS_CHACHA20_POLY1305_SHA256,
+        };
         const suites_len: u16 = @intCast(suites.len * 2);
         try body.appendSlice(self.allocator, &.{ @intCast(suites_len >> 8), @intCast(suites_len & 0xff) });
         for (suites) |suite| {
@@ -3185,18 +3188,18 @@ pub const Engine = struct {
         // supported_groups (x25519)
         try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
         // signature_algorithms
-        const sigs = self.config.supported_signature_schemes;
+        const sigs = &[_]tls13_full.SignatureScheme{
+            tls13_full.SignatureScheme.ed25519,
+            tls13_full.SignatureScheme.ecdsa_secp256r1_sha256,
+            tls13_full.SignatureScheme.ecdsa_secp384r1_sha384,
+            tls13_full.SignatureScheme.rsa_pss_rsae_sha256,
+        };
         if (sigs.len != 0) {
             const list_len: u16 = @intCast(sigs.len * 2);
             const ext_len: u16 = list_len + 2;
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0d, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
             for (sigs) |scheme| {
-                const val: u16 = switch (scheme) {
-                    .ed25519 => 0x0807,
-                    .ecdsa_secp256r1_sha256 => 0x0403,
-                    .ecdsa_secp384r1_sha384 => 0x0503,
-                    .rsa_pss_rsae_sha256 => 0x0804,
-                };
+                const val: u16 = @intFromEnum(scheme);
                 try ext_buf.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
             }
         }
@@ -3210,19 +3213,16 @@ pub const Engine = struct {
         try ext_buf.appendSlice(self.allocator, &.{ 0x00, 32 });
         try ext_buf.appendSlice(self.allocator, pubkey[0..]);
         // ALPN
-        if (self.config.alpn_protocols) |alpn_list| if (alpn_list.len != 0) {
-            var names_len: usize = 0;
-            for (alpn_list) |p| names_len += 1 + p.len;
+        if (self.alpn) |alpn_protocol| {
+            const names_len: usize = 1 + alpn_protocol.len;
             const list_len: u16 = @intCast(names_len);
             const ext_len: u16 = list_len + 2;
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
-            for (alpn_list) |p| {
-                try ext_buf.append(self.allocator, @intCast(p.len));
-                try ext_buf.appendSlice(self.allocator, p);
-            }
-        };
+            try ext_buf.append(self.allocator, @intCast(alpn_protocol.len));
+            try ext_buf.appendSlice(self.allocator, alpn_protocol);
+        }
         // QUIC transport parameters (client sends its TP in CH)
-        if (self.config.quic_transport_parameters) |tp| {
+        if (self.local_tp) |tp| {
             const tp_len: u16 = @intCast(tp.len);
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
             try ext_buf.appendSlice(self.allocator, tp);
