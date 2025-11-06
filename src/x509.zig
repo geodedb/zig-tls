@@ -523,16 +523,40 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     const subject_seq = try ti.readSequence();
     const subject_der = subject_seq;
 
-    // Extract Common Name (very shallow)
+    // Extract Common Name from X.509 Name structure
+    // RFC 5280 §4.1.2.6 - Name ::= SEQUENCE OF RelativeDistinguishedName
+    // RelativeDistinguishedName ::= SET OF AttributeTypeAndValue
+    // AttributeTypeAndValue ::= SEQUENCE { type OID, value ANY }
     var subj_cn: ?[]const u8 = null;
     {
         var sdec = asn1.Decoder.init(subject_seq);
+        // Iterate through RDNs (SETs)
         while (true) {
-            const tlv = sdec.readTLV() catch break;
-            if (asn1.tagClass(tlv.tag) == .universal and asn1.tagNumber(tlv.tag) == 12) {
-                subj_cn = tlv.val;
-                break;
+            const rdn_tlv = sdec.readTLV() catch break;
+            // Check it's a SET (tag 17 = 0x11)
+            if (asn1.tagClass(rdn_tlv.tag) != .universal or asn1.tagNumber(rdn_tlv.tag) != 17) continue;
+
+            var rdn_dec = asn1.Decoder.init(rdn_tlv.val);
+            // Iterate through AttributeTypeAndValue pairs in this RDN
+            while (true) {
+                const attr_seq = rdn_dec.readSequence() catch break;
+                var attr_dec = asn1.Decoder.init(attr_seq);
+
+                // Read OID
+                const oid_tlv = attr_dec.readTLV() catch break;
+                if (asn1.tagClass(oid_tlv.tag) != .universal or asn1.tagNumber(oid_tlv.tag) != 6) continue;
+
+                // Check if this is the CN OID (2.5.4.3)
+                // DER encoding: 06 03 55 04 03
+                if (oid_tlv.val.len == 3 and oid_tlv.val[0] == 0x55 and
+                    oid_tlv.val[1] == 0x04 and oid_tlv.val[2] == 0x03) {
+                    // Read the value (can be UTF8String, PrintableString, etc.)
+                    const value_tlv = attr_dec.readTLV() catch break;
+                    subj_cn = value_tlv.val;
+                    break;
+                }
             }
+            if (subj_cn != null) break;
         }
     }
 
@@ -995,17 +1019,29 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
     var i: usize = 0;
     while (i < chain_der.len) : (i += 1) certs[i] = try parseCert(alloc, chain_der[i]);
 
-    // Leaf checks
+    // Special case: single self-signed certificate (trust anchor)
+    const is_single_self_signed = chain_der.len == 1 and
+        std.mem.eql(u8, certs[0].subject_der, certs[0].issuer_der);
+
+    // Leaf checks (skip for single self-signed certs which are trust anchors)
     try checkValidity(now_unix, &certs[0]);
-    if (server_name.len != 0 and !matchDnsName(&certs[0], server_name)) return error.NameMismatch;
-    if (certs[0].eku) |eku| if (!eku.server_auth) return error.EkuNotAllowed;
-    if (certs[0].ku) |ku| {
-        // Require digitalSignature bit when KeyUsage present (RFC 5280 §4.2.1.3)
-        if (!keyUsageHas(ku, key_usage_digital_signature)) return error.KuNotAllowed;
-    }
-    if (certs[0].basic) |b| {
-        // End-entity certificates must not assert CA=true (RFC 5280 §4.2.1.9)
-        if (b.ca) return error.BasicConstraints;
+
+    if (!is_single_self_signed) {
+        if (server_name.len != 0 and !matchDnsName(&certs[0], server_name)) return error.NameMismatch;
+        if (certs[0].eku) |eku| if (!eku.server_auth) return error.EkuNotAllowed;
+        if (certs[0].ku) |ku| {
+            // Require digitalSignature bit when KeyUsage present (RFC 5280 §4.2.1.3)
+            if (!keyUsageHas(ku, key_usage_digital_signature)) return error.KuNotAllowed;
+        }
+        if (certs[0].basic) |b| {
+            // End-entity certificates must not assert CA=true (RFC 5280 §4.2.1.9)
+            if (b.ca) return error.BasicConstraints;
+        }
+    } else {
+        // For self-signed roots, verify CA flag is set
+        if (certs[0].basic) |b| {
+            if (!b.ca) return error.BasicConstraints;
+        }
     }
 
     // Intermediates must be CA and within pathLenConstraint

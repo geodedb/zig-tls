@@ -258,8 +258,11 @@ pub fn tagNumber(b: u8) u8 {
 /// ## RFC Reference
 /// X.690 §8.1 - Basic encoding rules for TLV structures
 pub const Decoder = struct {
-    /// Standard library ASN.1 decoder
-    decoder: std_asn1.Decoder,
+    /// Input buffer containing DER-encoded data.
+    buf: []const u8,
+
+    /// Current parsing offset (next byte to read).
+    off: usize = 0,
 
     /// Initialize a decoder over a DER-encoded buffer.
     ///
@@ -278,7 +281,30 @@ pub const Decoder = struct {
     /// var decoder = asn1.Decoder.init(der_data);
     /// ```
     pub fn init(buf: []const u8) Decoder {
-        return .{ .decoder = std_asn1.Decoder.init(buf) };
+        return .{ .buf = buf, .off = 0 };
+    }
+
+    /// Read a single byte from the buffer and advance the offset.
+    fn readByte(self: *Decoder) !u8 {
+        if (self.off >= self.buf.len) return error.Truncated;
+        const b = self.buf[self.off];
+        self.off += 1;
+        return b;
+    }
+
+    /// Read and decode a DER length field.
+    fn readLen(self: *Decoder) !usize {
+        const b = try self.readByte();
+        if ((b & 0x80) == 0) return b;
+        const n = b & 0x7f;
+        if (n == 0) return error.IndefiniteLength;
+        if (n > 8) return error.LengthTooLarge;
+        var val: usize = 0;
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            val = (val << 8) | try self.readByte();
+        }
+        return val;
     }
 
     /// Parse the next TLV header without consuming the value bytes.
@@ -311,8 +337,10 @@ pub const Decoder = struct {
     /// ## RFC Reference
     /// X.690 §8.1 - TLV header consists of tag + length fields
     pub fn nextHeader(self: *Decoder) !struct { tag: u8, len: usize, hdr_len: usize } {
-        const hdr = try self.decoder.nextHeader();
-        return .{ .tag = hdr.tag, .len = hdr.len, .hdr_len = hdr.hdr_len };
+        const start = self.off;
+        const tag = try self.readByte();
+        const len = try self.readLen();
+        return .{ .tag = tag, .len = len, .hdr_len = self.off - start };
     }
 
     /// Read one complete TLV structure.
@@ -349,7 +377,12 @@ pub const Decoder = struct {
     /// ## RFC Reference
     /// X.690 §8.1 - Complete TLV structure encoding
     pub fn readTLV(self: *Decoder) !struct { tag: u8, val: []const u8 } {
-        return self.decoder.readTLV();
+        const hdr = try self.nextHeader();
+        const end = self.off + hdr.len;
+        if (end > self.buf.len) return error.Truncated;
+        const val = self.buf[self.off..end];
+        self.off = end;
+        return .{ .tag = hdr.tag, .val = val };
     }
 
     /// Read a SEQUENCE and return its content bytes for nested decoding.
@@ -386,7 +419,10 @@ pub const Decoder = struct {
     /// X.690 §10.1 - DER requires definite length
     /// RFC 5280 §4.1 - X.509 Certificate uses nested SEQUENCE structures
     pub fn readSequence(self: *Decoder) ![]const u8 {
-        return self.decoder.readSequence();
+        const tlv = try self.readTLV();
+        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 16 or !isConstructed(tlv.tag))
+            return error.UnexpectedTag;
+        return tlv.val;
     }
 
     /// Read an INTEGER and return its value as u64.
@@ -424,7 +460,14 @@ pub const Decoder = struct {
     /// X.690 §10.4 - DER INTEGER encoding rules
     /// RFC 5280 §4.1.2.2 - Certificate serial number as INTEGER
     pub fn readInteger(self: *Decoder) !u64 {
-        return self.decoder.readInteger();
+        const tlv = try self.readTLV();
+        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 2)
+            return error.UnexpectedTag;
+        var v: u64 = 0;
+        for (tlv.val) |b| {
+            v = (v << 8) | b;
+        }
+        return v;
     }
 
     /// Read an OCTET STRING and return its content bytes.
@@ -461,7 +504,10 @@ pub const Decoder = struct {
     /// X.690 §10.2 - DER requires primitive encoding for strings
     /// RFC 5280 §4.2 - Extension values are OCTET STRINGs containing DER
     pub fn readOctetString(self: *Decoder) ![]const u8 {
-        return self.decoder.readOctetString();
+        const tlv = try self.readTLV();
+        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 4)
+            return error.UnexpectedTag;
+        return tlv.val;
     }
 
     /// Read a BIT STRING and return its content bytes (without unused bits prefix).
@@ -509,7 +555,13 @@ pub const Decoder = struct {
     /// X.690 §11.2 - DER BIT STRING encoding rules
     /// RFC 5280 §4.1 - SubjectPublicKeyInfo uses BIT STRING for public key
     pub fn readBitString(self: *Decoder) ![]const u8 {
-        return self.decoder.readBitString();
+        const tlv = try self.readTLV();
+        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 3)
+            return error.UnexpectedTag;
+        if (tlv.val.len == 0) return error.Truncated;
+        const unused_bits = tlv.val[0];
+        if (unused_bits > 7) return error.InvalidBitString;
+        return tlv.val[1..];
     }
 
     /// Read an OBJECT IDENTIFIER and return its encoded bytes.
@@ -558,7 +610,10 @@ pub const Decoder = struct {
     /// X.690 §8.19.2 - OID encoding rules (base-128)
     /// RFC 5280 §4.1.1.2 - AlgorithmIdentifier uses OID
     pub fn readOID(self: *Decoder) ![]const u8 {
-        return self.decoder.readOID();
+        const tlv = try self.readTLV();
+        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 6)
+            return error.UnexpectedTag;
+        return tlv.val;
     }
 
     /// Read a UTF8String and return its content bytes.
@@ -598,7 +653,10 @@ pub const Decoder = struct {
     /// X.690 §8.23 - UTF8String encoding (tag 12)
     /// RFC 5280 §4.1.2.4 - DN attributes prefer UTF8String
     pub fn readUtf8String(self: *Decoder) ![]const u8 {
-        return self.decoder.readUtf8String();
+        const tlv = try self.readTLV();
+        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 12)
+            return error.UnexpectedTag;
+        return tlv.val;
     }
 
     /// Read an IA5String and return its content bytes.
@@ -637,6 +695,338 @@ pub const Decoder = struct {
     /// X.690 §8.21 - IA5String encoding (tag 22)
     /// RFC 5280 §4.2.1.6 - SubjectAltName dNSName uses IA5String
     pub fn readIa5String(self: *Decoder) ![]const u8 {
-        return self.decoder.readIa5String();
+        const tlv = try self.readTLV();
+        if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 22)
+            return error.UnexpectedTag;
+        return tlv.val;
     }
 };
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "tagClass - extract tag class from tag byte" {
+    // Universal class (00 in bits 7-6)
+    try testing.expectEqual(TagClass.universal, tagClass(0x02)); // INTEGER
+    try testing.expectEqual(TagClass.universal, tagClass(0x30)); // SEQUENCE
+
+    // Application class (01 in bits 7-6)
+    try testing.expectEqual(TagClass.application, tagClass(0x40));
+    try testing.expectEqual(TagClass.application, tagClass(0x7F));
+
+    // Context-specific class (10 in bits 7-6)
+    try testing.expectEqual(TagClass.context, tagClass(0x80));
+    try testing.expectEqual(TagClass.context, tagClass(0xA0));
+    try testing.expectEqual(TagClass.context, tagClass(0xA3)); // Common in X.509 v3
+
+    // Private class (11 in bits 7-6)
+    try testing.expectEqual(TagClass.private, tagClass(0xC0));
+    try testing.expectEqual(TagClass.private, tagClass(0xFF));
+}
+
+test "isConstructed - check if tag is constructed" {
+    // Primitive tags (bit 5 = 0)
+    try testing.expect(!isConstructed(0x02)); // INTEGER
+    try testing.expect(!isConstructed(0x04)); // OCTET STRING
+    try testing.expect(!isConstructed(0x06)); // OBJECT IDENTIFIER
+
+    // Constructed tags (bit 5 = 1)
+    try testing.expect(isConstructed(0x30)); // SEQUENCE
+    try testing.expect(isConstructed(0x31)); // SET
+    try testing.expect(isConstructed(0xA0)); // Context [0] EXPLICIT
+    try testing.expect(isConstructed(0xA3)); // Context [3] EXPLICIT
+}
+
+test "tagNumber - extract tag number from tag byte" {
+    // Universal tags
+    try testing.expectEqual(@as(u8, 2), tagNumber(0x02)); // INTEGER
+    try testing.expectEqual(@as(u8, 3), tagNumber(0x03)); // BIT STRING
+    try testing.expectEqual(@as(u8, 4), tagNumber(0x04)); // OCTET STRING
+    try testing.expectEqual(@as(u8, 6), tagNumber(0x06)); // OBJECT IDENTIFIER
+    try testing.expectEqual(@as(u8, 16), tagNumber(0x30)); // SEQUENCE
+    try testing.expectEqual(@as(u8, 17), tagNumber(0x31)); // SET
+
+    // Context-specific tag numbers
+    try testing.expectEqual(@as(u8, 0), tagNumber(0xA0)); // [0]
+    try testing.expectEqual(@as(u8, 3), tagNumber(0xA3)); // [3]
+    try testing.expectEqual(@as(u8, 31), tagNumber(0xBF)); // Multi-byte indicator
+}
+
+test "Decoder.readInteger - parse INTEGER values" {
+    // Single byte integer: 42
+    {
+        const der = [_]u8{ 0x02, 0x01, 0x2A }; // INTEGER 42
+        var decoder = Decoder.init(&der);
+        const value = try decoder.readInteger();
+        try testing.expectEqual(@as(u64, 42), value);
+    }
+
+    // Two byte integer: 256
+    {
+        const der = [_]u8{ 0x02, 0x02, 0x01, 0x00 }; // INTEGER 256
+        var decoder = Decoder.init(&der);
+        const value = try decoder.readInteger();
+        try testing.expectEqual(@as(u64, 256), value);
+    }
+
+    // Multi-byte integer with leading zero (MSB is 0x80+)
+    {
+        const der = [_]u8{ 0x02, 0x03, 0x00, 0xFF, 0xFF }; // INTEGER 65535
+        var decoder = Decoder.init(&der);
+        const value = try decoder.readInteger();
+        try testing.expectEqual(@as(u64, 65535), value);
+    }
+
+    // Zero
+    {
+        const der = [_]u8{ 0x02, 0x01, 0x00 }; // INTEGER 0
+        var decoder = Decoder.init(&der);
+        const value = try decoder.readInteger();
+        try testing.expectEqual(@as(u64, 0), value);
+    }
+}
+
+test "Decoder.readSequence - parse SEQUENCE structures" {
+    // Empty sequence
+    {
+        const der = [_]u8{ 0x30, 0x00 }; // SEQUENCE { }
+        var decoder = Decoder.init(&der);
+        const seq = try decoder.readSequence();
+        try testing.expectEqual(@as(usize, 0), seq.len);
+    }
+
+    // Sequence with INTEGER
+    {
+        const der = [_]u8{ 0x30, 0x03, 0x02, 0x01, 0x05 }; // SEQUENCE { INTEGER 5 }
+        var decoder = Decoder.init(&der);
+        const seq = try decoder.readSequence();
+        try testing.expectEqual(@as(usize, 3), seq.len);
+
+        var inner = Decoder.init(seq);
+        const value = try inner.readInteger();
+        try testing.expectEqual(@as(u64, 5), value);
+    }
+
+    // Nested sequences
+    {
+        const der = [_]u8{
+            0x30, 0x06, // SEQUENCE (6 bytes) {
+            0x30, 0x04, //   SEQUENCE (4 bytes) {
+            0x02, 0x02, //     INTEGER (2 bytes)
+            0x01, 0x00, //       256
+            //   }
+            // }
+        };
+        var decoder = Decoder.init(&der);
+        const outer_seq = try decoder.readSequence();
+        try testing.expectEqual(@as(usize, 6), outer_seq.len);
+
+        var inner1 = Decoder.init(outer_seq);
+        const inner_seq = try inner1.readSequence();
+        try testing.expectEqual(@as(usize, 4), inner_seq.len);
+
+        var inner2 = Decoder.init(inner_seq);
+        const value = try inner2.readInteger();
+        try testing.expectEqual(@as(u64, 256), value);
+    }
+}
+
+test "Decoder.readOctetString - parse OCTET STRING" {
+    // Empty octet string
+    {
+        const der = [_]u8{ 0x04, 0x00 }; // OCTET STRING ""
+        var decoder = Decoder.init(&der);
+        const octets = try decoder.readOctetString();
+        try testing.expectEqual(@as(usize, 0), octets.len);
+    }
+
+    // Simple octet string
+    {
+        const der = [_]u8{ 0x04, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f }; // OCTET STRING "Hello"
+        var decoder = Decoder.init(&der);
+        const octets = try decoder.readOctetString();
+        try testing.expectEqualSlices(u8, "Hello", octets);
+    }
+
+    // Octet string with binary data
+    {
+        const der = [_]u8{ 0x04, 0x04, 0xDE, 0xAD, 0xBE, 0xEF }; // OCTET STRING with hex data
+        var decoder = Decoder.init(&der);
+        const octets = try decoder.readOctetString();
+        try testing.expectEqualSlices(u8, &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF }, octets);
+    }
+}
+
+test "Decoder.readBitString - parse BIT STRING" {
+    // Bit string with no unused bits
+    {
+        const der = [_]u8{ 0x03, 0x04, 0x00, 0x0A, 0x3B, 0x5F }; // BIT STRING, 0 unused bits
+        var decoder = Decoder.init(&der);
+        const bits = try decoder.readBitString();
+        try testing.expectEqualSlices(u8, &[_]u8{ 0x0A, 0x3B, 0x5F }, bits);
+    }
+
+    // Bit string with 6 unused bits in last byte
+    {
+        const der = [_]u8{ 0x03, 0x04, 0x06, 0x6e, 0x5d, 0xc0 }; // BIT STRING, 6 unused bits
+        var decoder = Decoder.init(&der);
+        const bits = try decoder.readBitString();
+        try testing.expectEqualSlices(u8, &[_]u8{ 0x6e, 0x5d, 0xc0 }, bits);
+    }
+
+    // Empty bit string
+    {
+        const der = [_]u8{ 0x03, 0x01, 0x00 }; // BIT STRING, 0 unused bits, no data
+        var decoder = Decoder.init(&der);
+        const bits = try decoder.readBitString();
+        try testing.expectEqual(@as(usize, 0), bits.len);
+    }
+}
+
+test "Decoder.readOID - parse OBJECT IDENTIFIER" {
+    // OID 1.2.840.113549.1.1.1 (rsaEncryption)
+    {
+        const der = [_]u8{ 0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01 };
+        var decoder = Decoder.init(&der);
+        const oid = try decoder.readOID();
+        try testing.expectEqualSlices(u8, &[_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01 }, oid);
+    }
+
+    // OID 2.5.29.17 (id-ce-subjectAltName)
+    {
+        const der = [_]u8{ 0x06, 0x03, 0x55, 0x1D, 0x11 };
+        var decoder = Decoder.init(&der);
+        const oid = try decoder.readOID();
+        try testing.expectEqualSlices(u8, &[_]u8{ 0x55, 0x1D, 0x11 }, oid);
+    }
+
+    // OID 1.3.101.112 (Ed25519)
+    {
+        const der = [_]u8{ 0x06, 0x03, 0x2B, 0x65, 0x70 };
+        var decoder = Decoder.init(&der);
+        const oid = try decoder.readOID();
+        try testing.expectEqualSlices(u8, &[_]u8{ 0x2B, 0x65, 0x70 }, oid);
+    }
+}
+
+test "Decoder.readUtf8String - parse UTF8String" {
+    // ASCII string
+    {
+        const der = [_]u8{ 0x0C, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f }; // UTF8String "Hello"
+        var decoder = Decoder.init(&der);
+        const str = try decoder.readUtf8String();
+        try testing.expectEqualSlices(u8, "Hello", str);
+    }
+
+    // UTF-8 multi-byte characters
+    {
+        const der = [_]u8{ 0x0C, 0x06, 0xE4, 0xBD, 0xA0, 0xE5, 0xA5, 0xBD }; // UTF8String "你好" (Hello in Chinese)
+        var decoder = Decoder.init(&der);
+        const str = try decoder.readUtf8String();
+        try testing.expectEqualSlices(u8, &[_]u8{ 0xE4, 0xBD, 0xA0, 0xE5, 0xA5, 0xBD }, str);
+    }
+
+    // Empty string
+    {
+        const der = [_]u8{ 0x0C, 0x00 }; // UTF8String ""
+        var decoder = Decoder.init(&der);
+        const str = try decoder.readUtf8String();
+        try testing.expectEqual(@as(usize, 0), str.len);
+    }
+}
+
+test "Decoder.readIa5String - parse IA5String" {
+    // Domain name
+    {
+        const der = [_]u8{ 0x16, 0x0B, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d }; // IA5String "example.com"
+        var decoder = Decoder.init(&der);
+        const str = try decoder.readIa5String();
+        try testing.expectEqualSlices(u8, "example.com", str);
+    }
+
+    // Email address
+    {
+        const der = [_]u8{ 0x16, 0x10, 0x75, 0x73, 0x65, 0x72, 0x40, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d }; // IA5String "user@example.com" (16 bytes)
+        var decoder = Decoder.init(&der);
+        const str = try decoder.readIa5String();
+        try testing.expectEqualSlices(u8, "user@example.com", str);
+    }
+}
+
+test "Decoder.readTLV - parse Tag-Length-Value" {
+    // Read a complete TLV structure
+    const der = [_]u8{ 0x02, 0x02, 0x01, 0x00 }; // INTEGER 256
+    var decoder = Decoder.init(&der);
+    const tlv = try decoder.readTLV();
+
+    try testing.expectEqual(@as(u8, 0x02), tlv.tag); // INTEGER tag
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x01, 0x00 }, tlv.val);
+}
+
+test "Decoder.nextHeader - peek at TLV header" {
+    const der = [_]u8{ 0x30, 0x05, 0x02, 0x01, 0x42, 0x02, 0x00 }; // SEQUENCE { INTEGER 66, INTEGER 0 }
+    var decoder = Decoder.init(&der);
+
+    // Peek at SEQUENCE header
+    const hdr1 = try decoder.nextHeader();
+    try testing.expectEqual(@as(u8, 0x30), hdr1.tag);
+    try testing.expectEqual(@as(usize, 5), hdr1.len);
+    try testing.expectEqual(@as(usize, 2), hdr1.hdr_len);
+}
+
+test "Decoder - sequential parsing" {
+    // Parse multiple TLVs sequentially
+    const der = [_]u8{
+        0x02, 0x01, 0x01, // INTEGER 1
+        0x02, 0x01, 0x02, // INTEGER 2
+        0x02, 0x01, 0x03, // INTEGER 3
+    };
+    var decoder = Decoder.init(&der);
+
+    const val1 = try decoder.readInteger();
+    try testing.expectEqual(@as(u64, 1), val1);
+
+    const val2 = try decoder.readInteger();
+    try testing.expectEqual(@as(u64, 2), val2);
+
+    const val3 = try decoder.readInteger();
+    try testing.expectEqual(@as(u64, 3), val3);
+}
+
+test "Decoder - long form length encoding" {
+    // Test length field requiring multiple bytes (> 127)
+    var der: [200]u8 = undefined;
+    der[0] = 0x04; // OCTET STRING tag
+    der[1] = 0x81; // Long form length: 1 byte follows
+    der[2] = 150; // Length = 150 bytes
+    @memset(der[3..153], 0xAB); // Fill with data
+
+    var decoder = Decoder.init(der[0..153]);
+    const octets = try decoder.readOctetString();
+    try testing.expectEqual(@as(usize, 150), octets.len);
+    try testing.expect(octets[0] == 0xAB);
+}
+
+test "Decoder - context-specific tags" {
+    // Context [3] EXPLICIT tag (common in X.509 v3 extensions)
+    const der = [_]u8{
+        0xA3, 0x04, // [3] EXPLICIT (4 bytes)
+        0x02, 0x02, //   INTEGER (2 bytes)
+        0x01, 0x00, //     value: 256
+    };
+    var decoder = Decoder.init(&der);
+    const tlv = try decoder.readTLV();
+
+    try testing.expectEqual(TagClass.context, tagClass(tlv.tag));
+    try testing.expectEqual(@as(u8, 3), tagNumber(tlv.tag));
+    try testing.expect(isConstructed(tlv.tag));
+    try testing.expectEqual(@as(usize, 4), tlv.val.len);
+
+    // Parse inner INTEGER
+    var inner = Decoder.init(tlv.val);
+    const value = try inner.readInteger();
+    try testing.expectEqual(@as(u64, 256), value);
+}

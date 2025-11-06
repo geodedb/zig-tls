@@ -68,6 +68,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{
             .{ .name = "asn1", .module = asn1_mod },
+            .{ .name = "sig", .module = sig_mod },
         },
     });
 
@@ -264,6 +265,39 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(test_vectors_step);
 
     // ========================================================================
+    // Extended Unit Tests - Comprehensive module-specific tests
+    // ========================================================================
+
+    const x509_unit_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/x509_unit_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "asn1", .module = asn1_mod },
+                .{ .name = "sig", .module = sig_mod },
+            },
+        }),
+    });
+    const run_x509_unit_test = b.addRunArtifact(x509_unit_test);
+    test_step.dependOn(&run_x509_unit_test.step);
+
+    const sig_unit_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/sig_unit_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sig", .module = sig_mod },
+                .{ .name = "asn1", .module = asn1_mod },
+            },
+        }),
+    });
+    const run_sig_unit_test = b.addRunArtifact(sig_unit_test);
+    test_step.dependOn(&run_sig_unit_test.step);
+
+    // ========================================================================
     // Conformance Tests - Interoperability with BoringSSL and OpenSSL
     // ========================================================================
 
@@ -318,6 +352,26 @@ pub fn build(b: *std.Build) void {
 
     const run_openssl_test = b.addRunArtifact(openssl_test);
     conformance_step.dependOn(&run_openssl_test.step);
+
+    // X.509 OpenSSL conformance tests
+    const x509_openssl_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/x509_openssl_conformance.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "asn1", .module = asn1_mod },
+                .{ .name = "sig", .module = sig_mod },
+            },
+        }),
+    });
+    x509_openssl_test.linkSystemLibrary("ssl");
+    x509_openssl_test.linkSystemLibrary("crypto");
+    x509_openssl_test.linkLibC();
+
+    const run_x509_openssl_test = b.addRunArtifact(x509_openssl_test);
+    conformance_step.dependOn(&run_x509_openssl_test.step);
 
     // Note: conformance tests require OpenSSL/BoringSSL development libraries
     // They are not included in the default test step
