@@ -194,11 +194,16 @@ The project has comprehensive test coverage across multiple levels:
 
 ### Known Limitations and Future Work
 
+**Implemented with full test coverage:**
+- X.509 parsing - 26 unit tests (x509_unit_tests.zig) + 31 OpenSSL conformance tests
+- ASN.1 DER decoder - 15 unit tests in asn1.zig
+- Signature verification - 10 unit tests (sig_unit_tests.zig)
+- Certificate chain validation (RFC 5280) - Fully tested via x509_unit_tests.zig and conformance tests
+- KeyUsage extension parsing - Fixed and fully tested with OpenSSL conformance
+
 **Implemented but with limited test coverage:**
-- OCSP stapling (RFC 6960) - Fully implemented but lacks unit tests
-- SCT parsing (RFC 6962) - Fully implemented with conformance tests
-- Certificate chain validation (RFC 5280) - Fully implemented with `validateChain()` but lacks dedicated tests
-- X.509 parsing - Missing unit tests for asn1.zig, x509.zig, and sig.zig modules
+- OCSP stapling (RFC 6960) - Fully implemented but lacks dedicated unit tests
+- SCT parsing (RFC 6962) - Fully implemented with conformance tests only
 
 **Not yet implemented:**
 - AES-128-CCM cipher suite variants (AES-CCM is less common in modern deployments)

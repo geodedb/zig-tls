@@ -297,6 +297,36 @@ pub fn build(b: *std.Build) void {
     const run_sig_unit_test = b.addRunArtifact(sig_unit_test);
     test_step.dependOn(&run_sig_unit_test.step);
 
+    // OCSP unit tests
+    const ocsp_unit_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/ocsp_unit_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ocsp", .module = ocsp_mod },
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "asn1", .module = asn1_mod },
+            },
+        }),
+    });
+    const run_ocsp_unit_test = b.addRunArtifact(ocsp_unit_test);
+    test_step.dependOn(&run_ocsp_unit_test.step);
+
+    // SCT unit tests
+    const sct_unit_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/sct_unit_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sct", .module = sct_mod },
+            },
+        }),
+    });
+    const run_sct_unit_test = b.addRunArtifact(sct_unit_test);
+    test_step.dependOn(&run_sct_unit_test.step);
+
     // ========================================================================
     // Conformance Tests - Interoperability with BoringSSL and OpenSSL
     // ========================================================================
@@ -372,6 +402,44 @@ pub fn build(b: *std.Build) void {
 
     const run_x509_openssl_test = b.addRunArtifact(x509_openssl_test);
     conformance_step.dependOn(&run_x509_openssl_test.step);
+
+    // OCSP OpenSSL conformance tests
+    const ocsp_openssl_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/ocsp_openssl_conformance.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ocsp", .module = ocsp_mod },
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "asn1", .module = asn1_mod },
+            },
+        }),
+    });
+    ocsp_openssl_test.linkSystemLibrary("ssl");
+    ocsp_openssl_test.linkSystemLibrary("crypto");
+    ocsp_openssl_test.linkLibC();
+
+    const run_ocsp_openssl_test = b.addRunArtifact(ocsp_openssl_test);
+    conformance_step.dependOn(&run_ocsp_openssl_test.step);
+
+    // SCT OpenSSL conformance tests
+    const sct_openssl_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/sct_openssl_conformance.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sct", .module = sct_mod },
+            },
+        }),
+    });
+    sct_openssl_test.linkSystemLibrary("ssl");
+    sct_openssl_test.linkSystemLibrary("crypto");
+    sct_openssl_test.linkLibC();
+
+    const run_sct_openssl_test = b.addRunArtifact(sct_openssl_test);
+    conformance_step.dependOn(&run_sct_openssl_test.step);
 
     // Note: conformance tests require OpenSSL/BoringSSL development libraries
     // They are not included in the default test step

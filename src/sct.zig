@@ -21,11 +21,11 @@ pub const SignedCertificateTimestamp = struct {
     signature: []const u8,
 };
 
-fn readU16(bytes: []const u8) u16 {
+pub fn readU16(bytes: []const u8) u16 {
     return (@as(u16, bytes[0]) << 8) | @as(u16, bytes[1]);
 }
 
-fn readU64(bytes: []const u8) u64 {
+pub fn readU64(bytes: []const u8) u64 {
     var val: u64 = 0;
     for (bytes) |b| val = (val << 8) | @as(u64, b);
     return val;
