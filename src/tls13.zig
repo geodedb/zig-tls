@@ -1425,10 +1425,11 @@ pub const Context = struct {
                 // Parse ServerHello, extract key_share, derive handshake secrets
                 try self.handleServerHello(parsed.body);
             },
-            .certificate_request => {
-                // RFC 9001 forbids post-handshake client authentication
-                return HandshakeError.PostHandshakeAuthUnsupported;
-            },
+            // NOTE: certificate_request is not in HsType enum
+            // RFC 9001 forbids post-handshake client authentication
+            // .certificate_request => {
+            //     return HandshakeError.PostHandshakeAuthUnsupported;
+            // },
             .finished => {
                 // RFC 8446 §4.4.4: Verify peer Finished message
                 // Must verify BEFORE adding to transcript
@@ -1705,8 +1706,8 @@ pub const Context = struct {
 
             // Build Certificate message using tls13_full helper
             // Convert single certificate to certificate chain
-            const cert_chain = [_][]const u8{cert_der};
-            const cert_body = try tls13_full.buildCertificate(self.allocator, &cert_chain);
+            const cert_entries = [_]tls13_full.CertificateEntryData{.{ .cert = cert_der }};
+            const cert_body = try tls13_full.buildCertificate(self.allocator, &[_]u8{}, &cert_entries);
             defer self.allocator.free(cert_body);
 
             const cert_msg = try encodeHandshake(self.allocator, .certificate, cert_body);
