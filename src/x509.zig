@@ -635,9 +635,13 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
                 var kd = asn1.Decoder.init(inner);
                 const bits = kd.readBitString() catch continue;
                 var mask: u16 = 0;
-                for (bits, 0..) |b, idx| {
-                    const shift: u4 = @intCast((bits.len - 1 - idx) * 8);
-                    mask |= @as(u16, @intCast(b)) << shift;
+                // KeyUsage bits are MSB-first: bit 0 is MSB of first byte
+                // We store them in a u16 with bit 0 = 0x8000
+                if (bits.len >= 1) {
+                    mask |= @as(u16, bits[0]) << 8;  // First byte goes to high byte of u16
+                }
+                if (bits.len >= 2) {
+                    mask |= @as(u16, bits[1]);  // Second byte goes to low byte of u16
                 }
                 ku_res = .{ .bits = mask };
             }

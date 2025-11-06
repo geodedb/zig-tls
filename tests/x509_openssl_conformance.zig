@@ -187,9 +187,9 @@ test "parseCert - KeyUsage conformance with OpenSSL" {
 
     // Check specific key usage bits (for TLS server)
     const ku = cert.ku.?;
-    // Check for digitalSignature (bit 0 = 0x8000) and keyAgreement (bit 4 = 0x0800)
+    // Check for digitalSignature (bit 0 = 0x8000) and keyEncipherment (bit 2 = 0x2000)
     try testing.expect((ku.bits & 0x8000) != 0); // digitalSignature
-    try testing.expect((ku.bits & 0x0800) != 0); // keyAgreement
+    try testing.expect((ku.bits & 0x2000) != 0); // keyEncipherment
 }
 
 test "parseCert - ExtendedKeyUsage conformance with OpenSSL" {
