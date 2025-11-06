@@ -242,6 +242,30 @@ const logger = @import("quic_logger");
 const transport_params = @import("quic_transport_params");
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
+const Hash = ks.Hash;
+const Secret = ks.Secret;
+const max_digest_length = ks.max_digest_length;
+const Sha256 = std.crypto.hash.sha2.Sha256;
+const Sha384 = std.crypto.hash.sha2.Sha384;
+
+fn cipherSuiteHash(suite: tls13_full.CipherSuite) Hash {
+    return switch (suite) {
+        .TLS_AES_128_GCM_SHA256, .TLS_CHACHA20_POLY1305_SHA256, .TLS_AES_128_CCM_SHA256, .TLS_AES_128_CCM_8_SHA256 => .sha256,
+        .TLS_AES_256_GCM_SHA384 => .sha384,
+    };
+}
+
+pub const Role = enum {
+    Client,
+    Server,
+};
+
+pub const EncryptionLevel = enum {
+    Initial,
+    Handshake,
+    Application,
+};
+
 /// View of negotiated handshake metadata surfaced to the QUIC connection layer.
 pub const HandshakeMetadata = struct {
     alpn: ?[]const u8 = null,
@@ -291,10 +315,14 @@ pub const Config = struct {
     /// RFC 8446 §4.1.2: ClientHello cipher_suites, §4.1.3: ServerHello cipher_suite.
     ///
     /// Negotiation: First match between client offer and server preference wins.
-    /// Currently focused on TLS_AES_128_GCM_SHA256 (0x1301) for QUIC.
+    /// Supports TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, and TLS_CHACHA20_POLY1305_SHA256.
     ///
     /// Default: [TLS_AES_128_GCM_SHA256]
-    supported_cipher_suites: []const tls13_full.CipherSuite = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+    supported_cipher_suites: []const tls13_full.CipherSuite = &.{
+        tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256,
+        tls13_full.CipherSuite.TLS_AES_256_GCM_SHA384,
+        tls13_full.CipherSuite.TLS_CHACHA20_POLY1305_SHA256,
+    },
 
     /// Named groups advertised for ECDHE key agreement (RFC 8446 §4.2.7).
     /// Used in supported_groups and key_share extensions.
@@ -410,13 +438,20 @@ pub const Config = struct {
 /// callbacks propagate to the caller but do not abort the handshake state.
 pub const Callbacks = struct {
     /// Called when a new traffic secret becomes available during handshake.
-    /// RFC 8446 §7.1: Key schedule derives secrets at different encryption levels.
-    /// RFC 9001 §5: QUIC uses secrets to derive AEAD keys for packet protection.
+    /// RFC 8446 §7.1: Traffic secrets are derived progressively during handshake
+    /// and must be installed at appropriate encryption levels for packet protection.
     ///
-    /// Parameters:
+    /// RFC 9001 §5: QUIC uses traffic secrets to derive AEAD keys via HKDF-Expand-Label.
+    ///
+    /// # Flow
+    /// - TLS derives `secret` (32 or 48 bytes depending on cipher suite hash)
+    /// - HKDF-Expand-Label is used to derive AEAD keys for packet protection
+    /// - The `secret` is used to derive AEAD keys for all encryption levels
+    ///
+    /// # Parameters
     /// - ctx: TLS context (access negotiated parameters)
     /// - level: Encryption level (Initial/Handshake/Application)
-    /// - secret: Traffic secret (32 bytes for SHA-256-based suites)
+    /// - secret: Traffic secret (32 or 48 bytes depending on cipher suite hash)
     ///
     /// QUIC implementation must:
     /// 1. Derive packet protection keys via HKDF-Expand-Label
@@ -428,7 +463,7 @@ pub const Callbacks = struct {
     /// - Application level: After Finished verified (both send/recv)
     ///
     /// null = Secrets not propagated (testing only).
-    on_secret_available: ?*const fn (ctx: *Context, level: EncryptionLevel, secret: [H.digest_length]u8) anyerror!void = null,
+    on_secret_available: ?*const fn (ctx: *Context, level: EncryptionLevel, secret: []const u8) anyerror!void = null,
 
     /// Called once handshake metadata (ALPN, transport params) is available.
     /// Invoked after EncryptedExtensions processed (client) or before sending it (server).
@@ -582,30 +617,32 @@ pub const TrafficDirection = enum {
 
 /// RFC 8446 §7.1–§7.5: individual traffic secret slot with epoch tracking for key updates.
 pub const SecretSlot = struct {
-    value: [H.digest_length]u8 = undefined,
+    value: Secret = Secret.empty(),
+    hash: Hash = .sha256,
     valid: bool = false,
     epoch: EncryptionLevel = .Initial,
     generation: u32 = 0,
 
-    /// Clears the secret slot, resetting it to its initial state.
-    pub fn clear(self: *SecretSlot) void {
+    const Self = @This();
+
+    pub fn clear(self: *Self) void {
+        self.value = Secret.empty();
+        self.hash = .sha256;
         self.valid = false;
-        self.epoch = .Initial;
         self.generation = 0;
+        self.epoch = .Initial;
     }
 
-    /// Stores a new secret in the slot with the specified encryption level.
-    pub fn store(self: *SecretSlot, level: EncryptionLevel, secret: [H.digest_length]u8) void {
+    pub fn store(self: *Self, level: EncryptionLevel, hash: Hash, secret: Secret) void {
         self.value = secret;
+        self.hash = hash;
         self.valid = true;
         self.epoch = level;
         self.generation += 1;
     }
 
-    /// Returns a slice to the secret value if valid, otherwise null.
-    pub fn slice(self: *const SecretSlot) ?[]const u8 {
-        if (!self.valid) return null;
-        return self.value[0..];
+    pub fn slice(self: *const Self) []const u8 {
+        return self.value.slice();
     }
 };
 
@@ -697,20 +734,46 @@ pub const SecretSchedule = struct {
     }
 };
 
+const HashDigestCache = struct {
+    sha256: ?Secret = null,
+    sha384: ?Secret = null,
+
+    pub fn set(self: *HashDigestCache, hash: Hash, digest: Secret) void {
+        switch (hash) {
+            .sha256 => self.sha256 = digest,
+            .sha384 => self.sha384 = digest,
+        }
+    }
+
+    pub fn get(self: *const HashDigestCache, hash: Hash) ?Secret {
+        return switch (hash) {
+            .sha256 => self.sha256,
+            .sha384 => self.sha384,
+        };
+    }
+
+    pub fn clear(self: *HashDigestCache) void {
+        self.sha256 = null;
+        self.sha384 = null;
+    }
+};
+
 /// RFC 8446 §4.4.1: transcripts and cached hashes used across handshake flights.
 pub const TranscriptSet = struct {
     handshake: Transcript,
-    client_hello_hash: ?[H.digest_length]u8 = null,
-    finished_hash: ?[H.digest_length]u8 = null,
+    client_hello_hash: HashDigestCache = .{},
+    finished_hash: HashDigestCache = .{},
 
     /// Creates a new transcript set with empty transcripts.
     pub fn init() TranscriptSet {
-        return .{ .handshake = Transcript.init(), .client_hello_hash = null, .finished_hash = null };
+        return .{ .handshake = Transcript.init(), .client_hello_hash = .{}, .finished_hash = .{} };
     }
 
     /// Resets all transcripts to their initial empty state.
     pub fn reset(self: *TranscriptSet) void {
-        self.* = TranscriptSet.init();
+        self.handshake.reset();
+        self.client_hello_hash.clear();
+        self.finished_hash.clear();
     }
 };
 
@@ -1062,10 +1125,12 @@ pub const Context = struct {
     streams: CryptoStreams = .{},
     state: HandshakeState = HandshakeState.init(),
     flags: HandshakeFlags = .{},
+    hash_kind: Hash = .sha256,
     local_transport_parameters: ?[]u8 = null,
     negotiated_alpn: ?[]u8 = null,
     negotiated_signature: ?tls13_full.SignatureScheme = null,
-    handshake_secret: ?[H.digest_length]u8 = null,
+    negotiated_cipher_suite: ?tls13_full.CipherSuite = null,
+    handshake_secret: ?Secret = null,
     client_priv: ?[32]u8 = null,
     client_pub: ?[32]u8 = null,
 
@@ -1081,9 +1146,11 @@ pub const Context = struct {
             .streams = .{},
             .state = HandshakeState.init(),
             .flags = .{},
+            .hash_kind = .sha256,
             .local_transport_parameters = null,
             .negotiated_alpn = null,
             .negotiated_signature = null,
+            .negotiated_cipher_suite = null,
             .handshake_secret = null,
             .client_priv = null,
             .client_pub = null,
@@ -1106,7 +1173,9 @@ pub const Context = struct {
             self.negotiated_alpn = null;
         }
         self.negotiated_signature = null;
+        self.negotiated_cipher_suite = null;
         self.handshake_secret = null;
+        self.hash_kind = .sha256;
         self.phase = .initial;
     }
 
@@ -1283,11 +1352,11 @@ pub const Context = struct {
     /// - Secrets are role-dependent (client/server secrets swapped for send/recv)
     /// - Generation counter enables key updates
     /// - Secrets should be zeroized after use (handled by SecretSlot)
-    pub fn installTrafficSecret(self: *Context, level: EncryptionLevel, dir: TrafficDirection, secret: [H.digest_length]u8) !void {
+    pub fn installTrafficSecret(self: *Context, level: EncryptionLevel, dir: TrafficDirection, secret: Secret) !void {
         var slot = self.secrets.slot(level, dir);
-        slot.store(level, secret);
+        slot.store(level, self.hash_kind, secret);
         if (self.callbacks.on_secret_available) |cb| {
-            try cb(self, level, secret);
+            try cb(self, level, secret.slice());
         }
     }
 
@@ -1378,18 +1447,20 @@ pub const Context = struct {
                 if (self.config.role != .Server) return;
 
                 // Debug: Print ClientHello transcript hash
-                const ch_hash = self.transcripts.handshake.finalize();
-                std.debug.print("[TRANSCRIPT_DEBUG] ClientHello hash: ", .{});
-                for (ch_hash) |b| std.debug.print("{X:0>2}", .{b});
+                const snapshot = self.transcripts.handshake.snapshot();
+                if (snapshot.sha256) |digest| {
+                    std.debug.print("[TRANSCRIPT_DEBUG] ClientHello hash (SHA-256): ", .{});
+                    for (digest.slice()) |b| std.debug.print("{X:0>2}", .{b});
+                    std.debug.print("\n", .{});
+                }
                 std.debug.print("\n", .{});
 
-                self.transcripts.client_hello_hash = ch_hash;
+                self.transcripts.client_hello_hash = snapshot;
                 try self.driveServerHandshakeFlight();
             },
             .server_hello => {
                 if (self.config.role != .Client) return;
-                // After processing ServerHello, transcript already updated; checkpoint ClientHello+ServerHello hash
-                self.transcripts.client_hello_hash = self.transcripts.client_hello_hash orelse undefined; // keep existing
+                // After processing ServerHello, transcript already updated; snapshot kept during driveServerHandshakeFlight
             },
             .finished => try self.handleFinishedPostActions(level),
             else => {},
@@ -1402,25 +1473,26 @@ pub const Context = struct {
         // RFC 8446 §4.4.4: Finished must be sent at Handshake encryption level
         if (level != .Handshake) return HandshakeError.UnexpectedMessage;
 
-        // verify_data = HMAC(finished_key, transcript_hash)
-        // Must be exactly hash length (32 bytes for SHA-256)
-        if (verify_data.len != H.digest_length) return HandshakeError.FinishedVerifyFailed;
-
         // Retrieve peer's handshake traffic secret (recv direction)
         const slot = self.secrets.slot(.Handshake, .recv);
         if (!slot.valid) return HandshakeError.UnexpectedMessage;
 
+        // verify_data = HMAC(finished_key, transcript_hash)
+        // Must be exactly the digest length for negotiated hash (SHA-256 or SHA-384)
+        const expected_len = ks.digestLength(slot.hash);
+        if (verify_data.len != expected_len) return HandshakeError.FinishedVerifyFailed;
+
         // RFC 8446 §4.4.4: Compute expected verify_data over transcript BEFORE Finished
         // Transcript includes all messages up to (but not including) Finished
         var transcript_snapshot = self.transcripts.handshake;
-        const transcript_hash = transcript_snapshot.finalize();
-        const expected = deriveFinishedVerifyData(slot.value, transcript_hash);
+        const transcript_hash = transcript_snapshot.finalize(slot.hash);
+        const expected = deriveFinishedVerifyData(slot.hash, &slot.value, transcript_hash);
 
         // Constant-time comparison to prevent timing attacks
-        if (!std.mem.eql(u8, expected[0..], verify_data)) return HandshakeError.FinishedVerifyFailed;
+        if (!std.mem.eql(u8, expected.slice(), verify_data)) return HandshakeError.FinishedVerifyFailed;
 
         // Store transcript hash at Finished point (used for key derivation)
-        self.transcripts.finished_hash = transcript_hash;
+        self.transcripts.finished_hash.set(slot.hash, transcript_hash);
 
         // RFC 8446 §4.4.4: NOW add Finished to transcript (after verification)
         // This ensures application secrets derived with correct transcript
@@ -1458,11 +1530,11 @@ pub const Context = struct {
 
         // Transcript hash at this point includes all messages (CH...Finished)
         var transcript_snapshot = self.transcripts.handshake;
-        const transcript_hash = transcript_snapshot.finalize();
+        const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
 
         // Key schedule: master_secret = Derive-Secret(handshake_secret, "derived", "")
         //               app_secrets = Derive-Secret(master_secret, label, transcript)
-        const apps = deriveApplicationTraffic(hs_secret, transcript_hash);
+        const apps = deriveApplicationTraffic(self.hash_kind, &hs_secret, transcript_hash);
 
         // RFC 9001 §5: Install secrets with correct role mapping
         // Server sends with server_app, receives with client_app
@@ -1479,7 +1551,7 @@ pub const Context = struct {
 
         // RFC 8446 §7.5: Store exporter_master_secret for key export (e.g., channel bindings)
         if (!self.secrets.exporter_master.valid) {
-            self.secrets.exporter_master.store(.Application, apps.exporter_master);
+            self.secrets.exporter_master.store(.Application, self.hash_kind, apps.exporter_master);
         }
     }
 
@@ -1558,6 +1630,8 @@ pub const Context = struct {
 
         const ch_view = self.state.clientHello() orelse return HandshakeError.UnexpectedMessage;
         const cipher_suite = self.chooseCipherSuite(ch_view.cipher_suites) orelse return HandshakeError.NoCipherSuite;
+        self.hash_kind = cipherSuiteHash(cipher_suite);
+        self.negotiated_cipher_suite = cipher_suite;
         _ = try self.selectServerSignatureScheme(ch_view);
         if (ch_view.key_share.key.len != 32) return HandshakeError.UnsupportedKeyShareGroup;
 
@@ -1601,8 +1675,8 @@ pub const Context = struct {
 
         try self.appendOutbound(.Initial, sh_msg, true);
 
-        const transcript_after_sh = self.transcripts.handshake.finalize();
-        const hs = deriveHandshakeTraffic(shared[0..], transcript_after_sh);
+        const transcript_after_sh = self.transcripts.handshake.finalize(self.hash_kind);
+        const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], transcript_after_sh);
         self.handshake_secret = hs.handshake;
         try self.installTrafficSecret(.Handshake, .send, hs.server_hs);
         try self.installTrafficSecret(.Handshake, .recv, hs.client_hs);
@@ -1641,7 +1715,7 @@ pub const Context = struct {
 
             // Build CertificateVerify message
             // Signature is over transcript hash including Certificate message we just added
-            const hash_for_sig = self.transcripts.handshake.finalize();
+            const hash_for_sig = self.transcripts.handshake.finalize(self.hash_kind);
 
             // Infer signature algorithm from certificate if not explicitly configured
             // First get the SignatureScheme, then convert to SigAlg
@@ -1673,7 +1747,7 @@ pub const Context = struct {
                 sig_alg,
                 priv_key,
                 "TLS 1.3, server CertificateVerify",
-                &hash_for_sig,
+                hash_for_sig.slice(),
                 self.allocator,
             );
             defer self.allocator.free(signature);
@@ -1691,11 +1765,11 @@ pub const Context = struct {
             std.debug.print("Server: WARNING - No certificate configured, proceeding without Certificate/CertificateVerify\n", .{});
         }
 
-        const hash_before_finished = self.transcripts.handshake.finalize();
-        self.transcripts.finished_hash = hash_before_finished;
-        const verify_data = deriveFinishedVerifyData(hs.server_hs, hash_before_finished);
+        const hash_before_finished = self.transcripts.handshake.finalize(self.hash_kind);
+        self.transcripts.finished_hash.set(self.hash_kind, hash_before_finished);
+        const verify_data = deriveFinishedVerifyData(self.hash_kind, &hs.server_hs, hash_before_finished);
 
-        const fin_msg = try encodeHandshake(self.allocator, .finished, verify_data[0..]);
+        const fin_msg = try encodeHandshake(self.allocator, .finished, verify_data.slice());
         defer self.allocator.free(fin_msg);
         try self.appendOutbound(.Handshake, fin_msg, true);
 
@@ -1720,8 +1794,7 @@ pub const Context = struct {
         std.crypto.random.bytes(&rnd);
         try body.appendSlice(self.allocator, &rnd);
         try body.append(self.allocator, 0); // empty session id
-        // cipher suites (vector len=2 -> one suite)
-        try body.appendSlice(self.allocator, &.{ 0x00, 0x02, 0x13, 0x01 });
+        try body.appendSlice(self.allocator, &.{ 0x00, 0x06, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03 });
         // compression methods
         try body.appendSlice(self.allocator, &.{ 0x01, 0x00 });
         var ext_buf = std.ArrayList(u8){};
@@ -1741,7 +1814,7 @@ pub const Context = struct {
                     .ed25519 => 0x0807,
                     .ecdsa_secp256r1_sha256 => 0x0403,
                     .ecdsa_secp384r1_sha384 => 0x0503,
-                    .rsa_pss_sha256 => 0x0804,
+                    .rsa_pss_rsae_sha256 => 0x0804,
                 };
                 try ext_buf.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
             }
@@ -1786,7 +1859,7 @@ pub const Context = struct {
         @memcpy(msg[4..], body.items);
         defer self.allocator.free(msg);
         try self.appendOutbound(.Initial, msg, true);
-        self.transcripts.client_hello_hash = self.transcripts.handshake.finalize();
+        self.transcripts.client_hello_hash = self.transcripts.handshake.snapshot();
         if (self.phase == .initial) self.phase = .negotiating;
     }
 
@@ -1806,6 +1879,10 @@ pub const Context = struct {
         const sid_len: usize = body[pos];
         pos += 1 + sid_len;
         if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
+        const suite_value: u16 = (@as(u16, body[pos]) << 8) | @as(u16, body[pos + 1]);
+        const cipher_suite = std.meta.intToEnum(tls13_full.CipherSuite, suite_value) catch return HandshakeError.NoCipherSuite;
+        self.negotiated_cipher_suite = cipher_suite;
+        self.hash_kind = cipherSuiteHash(cipher_suite);
         pos += 2; // cipher_suite
         pos += 1; // compression
         if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
@@ -1833,11 +1910,11 @@ pub const Context = struct {
         if (server_pub == null) return HandshakeError.MissingKeyShare;
         const priv = self.client_priv orelse return HandshakeError.UnexpectedMessage;
         const shared = std.crypto.dh.X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
-        const sh_snapshot = self.transcripts.handshake.finalize();
-        const hs = deriveHandshakeTraffic(shared[0..], sh_snapshot);
+        const sh_snapshot = self.transcripts.handshake.finalize(self.hash_kind);
+        const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], sh_snapshot);
         self.handshake_secret = hs.handshake;
-        try self.installTrafficSecret(.Handshake, .send, hs.client_hs);
-        try self.installTrafficSecret(.Handshake, .recv, hs.server_hs);
+        try self.installTrafficSecret(.Handshake, .send, hs.server_hs);
+        try self.installTrafficSecret(.Handshake, .recv, hs.client_hs);
         self.phase = .keys_installed;
     }
 
@@ -1845,9 +1922,9 @@ pub const Context = struct {
         const slot = self.secrets.slot(.Handshake, .send);
         if (!slot.valid) return HandshakeError.UnexpectedMessage;
         var transcript_snapshot = self.transcripts.handshake;
-        const hash_before = transcript_snapshot.finalize();
-        const verify_data = deriveFinishedVerifyData(slot.value, hash_before);
-        const fin_msg = try encodeHandshake(self.allocator, .finished, verify_data[0..]);
+        const hash_before = transcript_snapshot.finalize(slot.hash);
+        const verify_data = deriveFinishedVerifyData(slot.hash, &slot.value, hash_before);
+        const fin_msg = try encodeHandshake(self.allocator, .finished, verify_data.slice());
         defer self.allocator.free(fin_msg);
         try self.appendOutbound(.Handshake, fin_msg, true);
         self.markLocalFinished();
@@ -1865,14 +1942,15 @@ pub const Context = struct {
     pub fn exportSecret(self: *Context, label: []const u8, out: []u8) !void {
         const exp_slot = &self.secrets.exporter_master;
         if (!exp_slot.valid) return HandshakeError.UnexpectedMessage;
-        const th = self.transcripts.finished_hash orelse blk: {
+        const hash = exp_slot.hash;
+        const th = self.transcripts.finished_hash.get(hash) orelse blk: {
             var snap = self.transcripts.handshake;
-            break :blk snap.finalize();
+            break :blk snap.finalize(hash);
         };
-        var derived: [H.digest_length]u8 = undefined;
-        ks.expandLabel(exp_slot.value, label, &th, &derived) catch return HandshakeError.UnexpectedMessage;
-        const n = @min(out.len, derived.len);
-        @memcpy(out[0..n], derived[0..n]);
+        const derived = ks.deriveSecretHash(hash, &exp_slot.value, label, th.slice());
+        const derived_slice = derived.slice();
+        const n = @min(out.len, derived_slice.len);
+        @memcpy(out[0..n], derived_slice[0..n]);
         if (n < out.len) @memset(out[n..], 0);
     }
 
@@ -1880,16 +1958,16 @@ pub const Context = struct {
     pub fn performKeyUpdateSend(self: *Context) !void {
         const send_slot = self.secrets.slot(.Application, .send);
         if (!send_slot.valid) return HandshakeError.UnexpectedMessage;
-        const next = ks.updateTrafficSecret(send_slot.value);
-        send_slot.store(.Application, next);
+        const next = ks.updateTrafficSecretHash(send_slot.hash, &send_slot.value);
+        send_slot.store(.Application, send_slot.hash, next);
     }
 
     /// Accept a peer initiated key update by rotating the receive traffic secret.
     pub fn performKeyUpdateRecv(self: *Context) !void {
         const recv_slot = self.secrets.slot(.Application, .recv);
         if (!recv_slot.valid) return HandshakeError.UnexpectedMessage;
-        const next = ks.updateTrafficSecret(recv_slot.value);
-        recv_slot.store(.Application, next);
+        const next = ks.updateTrafficSecretHash(recv_slot.hash, &recv_slot.value);
+        recv_slot.store(.Application, recv_slot.hash, next);
     }
 };
 
@@ -1898,14 +1976,14 @@ pub const Context = struct {
 /// One cached TLS 1.3 session ticket with identity, resumption secret, and lifetime.
 pub const TicketEntry = struct {
     identity: []u8, // ticket bytes (owned)
-    secret: [H.digest_length]u8, // resumption_secret derived from master_secret
+    secret: Secret, // resumption_secret derived from master_secret
     lifetime: u32,
 };
 
 /// Borrowed view of a ticket entry used for read-only access without copying.
 pub const TicketEntryView = struct {
     identity: []const u8,
-    secret: [H.digest_length]u8,
+    secret: Secret,
     lifetime: u32,
 };
 
@@ -1945,7 +2023,7 @@ pub const TicketStore = struct {
     }
 
     /// Adds a new ticket to the store, evicting the oldest if at capacity.
-    pub fn add(self: *TicketStore, alloc: std.mem.Allocator, identity: []const u8, secret: [H.digest_length]u8, lifetime: u32) !void {
+    pub fn add(self: *TicketStore, alloc: std.mem.Allocator, identity: []const u8, secret: Secret, lifetime: u32) !void {
         // If capacity full, evict oldest (which is at index (count % capacity) before increment)
         const slot = self.count % capacity;
         if (self.entries[slot]) |*old| {
@@ -1955,57 +2033,6 @@ pub const TicketStore = struct {
         self.entries[slot] = TicketEntry{ .identity = id_copy, .secret = secret, .lifetime = lifetime };
         self.count += 1;
     }
-};
-
-/// Hash function used for TLS 1.3 key schedule (SHA-256).
-/// RFC 8446 §4.1.3: TLS_AES_128_GCM_SHA256 uses SHA-256 for HKDF.
-pub const H = ks.H; // sha256
-
-/// TLS handshake role (client or server).
-///
-/// Determines:
-/// - Message flow direction (who sends first)
-/// - Secret role assignment (client_hs vs server_hs)
-/// - Certificate validation requirements
-///
-/// RFC 8446 §2: Client initiates with ClientHello, server responds with ServerHello.
-pub const Role = enum {
-    /// Client role: Initiates handshake, verifies server certificate.
-    Client,
-    /// Server role: Responds to ClientHello, provides certificate.
-    Server,
-};
-
-/// QUIC encryption levels for packet protection (RFC 9001 §4.1.4).
-///
-/// Each encryption level has its own packet number space and CRYPTO stream.
-/// Secrets are installed progressively as handshake advances:
-///
-/// 1. **Initial**: Derived from QUIC version-specific salt
-///    - Contains: ClientHello (client→server), ServerHello (server→client)
-///    - Protection: Deterministic keys from connection ID
-///
-/// 2. **Handshake**: Derived from ECDHE shared secret
-///    - Contains: EncryptedExtensions, Certificate, CertificateVerify, Finished
-///    - Protection: AEAD keys from handshake_traffic_secret
-///
-/// 3. **Application**: Derived from master secret after Finished
-///    - Contains: NewSessionTicket, application data, post-handshake messages
-///    - Protection: AEAD keys from application_traffic_secret_0
-///
-/// Note: 0-RTT/Early Data uses a separate encryption level (not implemented yet).
-pub const EncryptionLevel = enum {
-    /// Initial encryption level (unprotected or version-specific keys).
-    /// Messages: ClientHello, ServerHello
-    Initial,
-
-    /// Handshake encryption level (ECDHE-derived keys).
-    /// Messages: EncryptedExtensions, Certificate, CertificateVerify, Finished
-    Handshake,
-
-    /// Application data encryption level (post-handshake keys).
-    /// Messages: NewSessionTicket, application data
-    Application,
 };
 
 /// TLS 1.3 handshake message types (RFC 8446 §4).
@@ -2139,15 +2166,21 @@ pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
 
 /// Small transcript helper; accumulates handshake messages as-is.
 pub const Transcript = struct {
-    hasher: H = H.init(.{}),
+    sha256: Sha256,
+    sha384: Sha384,
 
     /// Initialize a new transcript hash helper.
     pub fn init() Transcript {
-        return .{ .hasher = H.init(.{}) };
+        return .{
+            .sha256 = Sha256.init(.{}),
+            .sha384 = Sha384.init(.{}),
+        };
     }
+
     /// Update transcript with raw bytes (handshake messages).
     pub fn update(self: *Transcript, msg: []const u8) void {
-        self.hasher.update(msg);
+        self.sha256.update(msg);
+        self.sha384.update(msg);
         // Debug: log what's being added to transcript
         if (msg.len >= 4) {
             const msg_type = msg[0];
@@ -2183,13 +2216,53 @@ pub const Transcript = struct {
             }
         }
     }
-    /// Finalize and return current transcript hash without consuming internal state.
-    pub fn finalize(self: *Transcript) [H.digest_length]u8 {
-        var out: [H.digest_length]u8 = undefined;
-        var tmp = self.hasher; // copy
+
+    fn finalizeSha256(self: *Transcript) Secret {
+        var tmp = self.sha256;
+        var out: [Sha256.digest_length]u8 = undefined;
         tmp.final(&out);
-        std.debug.print("[TRANSCRIPT] Finalized hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}... (32 bytes)\n", .{ out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7] });
-        return out;
+        return Secret.fromSlice(.sha256, out[0..]);
+    }
+
+    fn finalizeSha384(self: *Transcript) Secret {
+        var tmp = self.sha384;
+        var out: [Sha384.digest_length]u8 = undefined;
+        tmp.final(&out);
+        return Secret.fromSlice(.sha384, out[0..]);
+    }
+
+    /// Finalize and return current transcript hash without consuming internal state.
+    pub fn finalize(self: *Transcript, hash: Hash) Secret {
+        const digest = switch (hash) {
+            .sha256 => self.finalizeSha256(),
+            .sha384 => self.finalizeSha384(),
+        };
+        const slice = digest.slice();
+        std.debug.print("[TRANSCRIPT] Finalized hash ({} bytes): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}...\n", .{
+            slice.len,
+            slice[0],
+            slice[1],
+            slice[2],
+            slice[3],
+            slice[4],
+            slice[5],
+            slice[6],
+            slice[7],
+        });
+        return digest;
+    }
+
+    /// Finalize both SHA-256 and SHA-384 digests simultaneously.
+    pub fn snapshot(self: *Transcript) HashDigestCache {
+        return .{
+            .sha256 = self.finalizeSha256(),
+            .sha384 = self.finalizeSha384(),
+        };
+    }
+
+    pub fn reset(self: *Transcript) void {
+        self.sha256 = Sha256.init(.{});
+        self.sha384 = Sha384.init(.{});
     }
 };
 
@@ -2234,137 +2307,81 @@ pub const Transcript = struct {
 /// - Assumes no PSK resumption (early_secret = HKDF-Extract(0, 0))
 /// - ECDHE provides forward secrecy
 /// - Secrets must be zeroized after use (handled by SecretSlot)
-pub fn deriveHandshakeTraffic(ecdhe_secret: []const u8, transcript_hash: [H.digest_length]u8) struct {
-    handshake: [H.digest_length]u8,
-    client_hs: [H.digest_length]u8,
-    server_hs: [H.digest_length]u8,
+pub fn deriveHandshakeTraffic(hash: Hash, ecdhe_secret: []const u8, transcript_hash: Secret) struct {
+    handshake: Secret,
+    client_hs: Secret,
+    server_hs: Secret,
 } {
-    // Debug: Print transcript hash (all bytes)
     std.debug.print("[TLS_KEY_SCHEDULE] Transcript hash (CH+SH): ", .{});
-    for (transcript_hash) |b| std.debug.print("{X:0>2}", .{b});
+    for (transcript_hash.slice()) |b| std.debug.print("{X:0>2}", .{b});
     std.debug.print("\n", .{});
     std.debug.print("[TLS_KEY_SCHEDULE] ECDHE shared secret: ", .{});
     for (ecdhe_secret) |b| std.debug.print("{X:0>2}", .{b});
     std.debug.print("\n", .{});
 
-    // early_secret = HKDF-Extract(0, 0)
-    // RFC 8446 §7.1: If a given secret is not available, then the 0-value
-    // consisting of a string of Hash.length bytes set to zeros is used.
-    const zero_value = [_]u8{0} ** H.digest_length; // 32 zero bytes for SHA-256
-    const early_secret = ks.extract(&zero_value, &zero_value);
-    // derived = Derive-Secret(early_secret, "derived", "")
-    // RFC 8446 §7.1: The context for "derived" is Hash("")
-    var empty_hash: [H.digest_length]u8 = undefined;
-    H.hash(&[_]u8{}, &empty_hash, .{});
-    var derived: [H.digest_length]u8 = undefined;
-    ks.expandLabel(early_secret, "derived", &empty_hash, &derived) catch unreachable;
-    // handshake_secret = HKDF-Extract(derived, ecdhe_secret)
-    const handshake_secret = ks.extract(&derived, ecdhe_secret);
-    // traffic secrets
-    var c_hs: [H.digest_length]u8 = undefined;
-    var s_hs: [H.digest_length]u8 = undefined;
-    ks.expandLabel(handshake_secret, "c hs traffic", &transcript_hash, &c_hs) catch unreachable;
-    ks.expandLabel(handshake_secret, "s hs traffic", &transcript_hash, &s_hs) catch unreachable;
+    const early_secret = ks.extractHash(hash, null, &[_]u8{});
+    const empty_hash = ks.hashBytes(hash, &[_]u8{});
+    const derived = ks.deriveSecretHash(hash, &early_secret, "derived", empty_hash.slice());
+    const handshake_secret = ks.extractHash(hash, derived.slice(), ecdhe_secret);
+    const client_hs = ks.deriveSecretHash(hash, &handshake_secret, "c hs traffic", transcript_hash.slice());
+    const server_hs = ks.deriveSecretHash(hash, &handshake_secret, "s hs traffic", transcript_hash.slice());
 
-    // Debug: Print derived traffic secrets (all bytes)
     std.debug.print("[TLS_KEY_SCHEDULE] Client HS traffic secret: ", .{});
-    for (c_hs) |b| std.debug.print("{X:0>2}", .{b});
+    for (client_hs.slice()) |b| std.debug.print("{X:0>2}", .{b});
     std.debug.print("\n", .{});
     std.debug.print("[TLS_KEY_SCHEDULE] Server HS traffic secret: ", .{});
-    for (s_hs) |b| std.debug.print("{X:0>2}", .{b});
+    for (server_hs.slice()) |b| std.debug.print("{X:0>2}", .{b});
     std.debug.print("\n", .{});
 
-    return .{ .handshake = handshake_secret, .client_hs = c_hs, .server_hs = s_hs };
+    return .{ .handshake = handshake_secret, .client_hs = client_hs, .server_hs = server_hs };
 }
 
 /// QUIC key material derived from a TLS traffic secret.
 pub const QuicKeys = struct { key: [16]u8, iv: [12]u8, hp: [16]u8 };
 
 /// Derive QUIC handshake keys from a handshake traffic secret.
-pub fn deriveQuicHandshakeKeys(client_or_server_hs_secret: [H.digest_length]u8, v2: bool) QuicKeys {
-    var key: [16]u8 = undefined;
-    var iv: [12]u8 = undefined;
-    var hp: [16]u8 = undefined;
+pub fn deriveQuicHandshakeKeys(hash: Hash, client_or_server_hs_secret: *const Secret, v2: bool) QuicKeys {
     if (v2) {
-        const t = ks.deriveKeyIvHpV2(client_or_server_hs_secret);
-        key = t.key;
-        iv = t.iv;
-        hp = t.hp;
+        return ks.deriveKeyIvHpHash(hash, client_or_server_hs_secret, true);
     } else {
-        const t = ks.deriveKeyIvHp(client_or_server_hs_secret);
-        key = t.key;
-        iv = t.iv;
-        hp = t.hp;
+        return ks.deriveKeyIvHpHash(hash, client_or_server_hs_secret, false);
     }
-    return .{ .key = key, .iv = iv, .hp = hp };
 }
 
 /// Derive application traffic secrets (client and server) from handshake secret.
-pub fn deriveApplicationTraffic(handshake_secret: [H.digest_length]u8, transcript_hash: [H.digest_length]u8) struct {
-    client_app: [H.digest_length]u8,
-    server_app: [H.digest_length]u8,
-    exporter_master: [H.digest_length]u8,
+pub fn deriveApplicationTraffic(hash: Hash, handshake_secret: *const Secret, transcript_hash: Secret) struct {
+    client_app: Secret,
+    server_app: Secret,
+    exporter_master: Secret,
 } {
-    // master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", ""), 0)
-    var derived2: [H.digest_length]u8 = undefined;
-    ks.expandLabel(handshake_secret, "derived", &[_]u8{}, &derived2) catch unreachable;
-    const master = ks.extract(&derived2, &[_]u8{});
-    var c_app: [H.digest_length]u8 = undefined;
-    var s_app: [H.digest_length]u8 = undefined;
-    ks.expandLabel(master, "c ap traffic", &transcript_hash, &c_app) catch unreachable;
-    ks.expandLabel(master, "s ap traffic", &transcript_hash, &s_app) catch unreachable;
-    var exp_master: [H.digest_length]u8 = undefined;
-    ks.expandLabel(master, "exp master", &transcript_hash, &exp_master) catch unreachable;
-    return .{ .client_app = c_app, .server_app = s_app, .exporter_master = exp_master };
+    const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", &[_]u8{});
+    const master = ks.extractHash(hash, derived.slice(), &[_]u8{});
+    const client_app = ks.deriveSecretHash(hash, &master, "c ap traffic", transcript_hash.slice());
+    const server_app = ks.deriveSecretHash(hash, &master, "s ap traffic", transcript_hash.slice());
+    const exporter_master = ks.deriveSecretHash(hash, &master, "exp master", transcript_hash.slice());
+    return .{ .client_app = client_app, .server_app = server_app, .exporter_master = exporter_master };
 }
 
 /// Derive QUIC 1-RTT keys from an application traffic secret.
-pub fn deriveQuicAppKeys(client_or_server_app_secret: [H.digest_length]u8, v2: bool) QuicKeys {
-    return if (v2) blk: {
-        const t = ks.deriveKeyIvHpV2(client_or_server_app_secret);
-        break :blk .{ .key = t.key, .iv = t.iv, .hp = t.hp };
-    } else blk2: {
-        const t = ks.deriveKeyIvHp(client_or_server_app_secret);
-        break :blk2 .{ .key = t.key, .iv = t.iv, .hp = t.hp };
-    };
+pub fn deriveQuicAppKeys(hash: Hash, client_or_server_app_secret: *const Secret, v2: bool) QuicKeys {
+    return ks.deriveKeyIvHpHash(hash, client_or_server_app_secret, v2);
 }
 
 /// Derive application traffic secrets directly from raw ECDHE secret and transcript hash.
 /// This computes handshake_secret then master secret per TLS 1.3 and returns c/s app secrets.
-pub fn deriveApplicationTrafficFromEcdhe(ecdhe_secret: []const u8, transcript_hash: [H.digest_length]u8) struct {
-    client_app: [H.digest_length]u8,
-    server_app: [H.digest_length]u8,
+pub fn deriveApplicationTrafficFromEcdhe(hash: Hash, ecdhe_secret: []const u8, transcript_hash: Secret) struct {
+    client_app: Secret,
+    server_app: Secret,
 } {
-    // early_secret = HKDF-Extract(0, 0)
-    // RFC 8446 §7.1: If a given secret is not available, then the 0-value
-    // consisting of a string of Hash.length bytes set to zeros is used.
-    const zero_value = [_]u8{0} ** H.digest_length; // 32 zero bytes for SHA-256
-    const early_secret = ks.extract(&zero_value, &zero_value);
-    // derived = Derive-Secret(early_secret, "derived", "")
-    // RFC 8446 §7.1: The context for "derived" is Hash("")
-    var empty_hash: [H.digest_length]u8 = undefined;
-    H.hash(&[_]u8{}, &empty_hash, .{});
-    var derived: [H.digest_length]u8 = undefined;
-    ks.expandLabel(early_secret, "derived", &empty_hash, &derived) catch unreachable;
-    // handshake_secret = HKDF-Extract(derived, ecdhe_secret)
-    const handshake_secret = ks.extract(&derived, ecdhe_secret);
-    // master_secret = HKDF-Extract(Derive-Secret(handshake_secret, "derived", ""), 0)
-    var derived2: [H.digest_length]u8 = undefined;
-    ks.expandLabel(handshake_secret, "derived", &[_]u8{}, &derived2) catch unreachable;
-    const master = ks.extract(&derived2, &[_]u8{});
-    var c_app: [H.digest_length]u8 = undefined;
-    var s_app: [H.digest_length]u8 = undefined;
-    ks.expandLabel(master, "c ap traffic", &transcript_hash, &c_app) catch unreachable;
-    ks.expandLabel(master, "s ap traffic", &transcript_hash, &s_app) catch unreachable;
-    return .{ .client_app = c_app, .server_app = s_app };
+    const hs = deriveHandshakeTraffic(hash, ecdhe_secret, transcript_hash);
+    const apps = deriveApplicationTraffic(hash, &hs.handshake, transcript_hash);
+    return .{ .client_app = apps.client_app, .server_app = apps.server_app };
 }
 
 /// TLS Finished helpers (minimal): finished_key = Expand(traffic_secret, "finished");
 /// verify_data = HMAC(finished_key, transcript_hash)
-pub fn deriveFinishedVerifyData(traffic_secret: [H.digest_length]u8, transcript_hash: [H.digest_length]u8) [H.digest_length]u8 {
-    var finished_key: [H.digest_length]u8 = undefined;
-    ks.expandLabel(traffic_secret, "finished", &[_]u8{}, &finished_key) catch unreachable;
-    return ks.hmacSha256(&finished_key, &transcript_hash);
+pub fn deriveFinishedVerifyData(hash: Hash, traffic_secret: *const Secret, transcript_hash: Secret) Secret {
+    return ks.deriveFinishedVerifyDataHash(hash, traffic_secret, &transcript_hash);
 }
 
 /// Minimal, non-interoperable handshake engine stub that accumulates
@@ -2398,6 +2415,7 @@ pub const Engine = struct {
     /// Security / verification state (minimal)
     allow_insecure: bool = true,
     peer_cert_ok: bool = false,
+    hash_kind: Hash = .sha256,
     finished_sent: bool = false,
     finished_verified: bool = false,
     /// Whether EncryptedExtensions has been sent (server) or received (client) in real mode
@@ -2407,10 +2425,10 @@ pub const Engine = struct {
     /// Cached intermediate handshake_secret (used to derive master_secret). Cached to avoid recomputing from ECDHE.
     /// RFC 8446 §7.1: handshake_secret = HKDF-Extract(Derive-Secret(early_secret, "derived", ""), ECDHE)
     /// This prevents bugs from ECDHE buffer corruption/reuse when deriving application secrets.
-    handshake_secret: ?[H.digest_length]u8 = null,
+    handshake_secret: ?Secret = null,
     /// Stored handshake traffic secrets (derived immediately after SH) for correct Finished verification
-    handshake_client_secret: ?[H.digest_length]u8 = null,
-    handshake_server_secret: ?[H.digest_length]u8 = null,
+    handshake_client_secret: ?Secret = null,
+    handshake_server_secret: ?Secret = null,
     /// Leaf certificate SPKI (DER) cached on Certificate message, owned by Engine
     leaf_spki: ?[]u8 = null,
     /// QUIC Transport Parameters (encoded blobs) carried in CRYPTO
@@ -2425,11 +2443,11 @@ pub const Engine = struct {
     server_priv_key: ?[]u8 = null,
     server_sig_alg: ?sig.SigAlg = null,
     /// Cached master_secret (to derive resumption/PSK secrets). Filled when application secrets computed.
-    master_secret: ?[H.digest_length]u8 = null,
+    master_secret: ?Secret = null,
     /// Cached application traffic secrets (computed once with correct transcript, before adding peer Finished).
     /// This prevents recomputation with wrong transcript after both Finisheds are added.
-    cached_app_client: ?[H.digest_length]u8 = null,
-    cached_app_server: ?[H.digest_length]u8 = null,
+    cached_app_client: ?Secret = null,
+    cached_app_server: ?Secret = null,
     /// Stored resumption tickets (very small cache FIFO). Each entry keeps identity and resumption_secret.
     tickets: TicketStore = .{},
     /// Optional callback invoked whenever the peer Finished verification state changes.
@@ -2440,7 +2458,7 @@ pub const Engine = struct {
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .finished_sent = false, .finished_verified = false, .ee_sent = false, .server_handshake_flight_enqueued = false, .handshake_secret = null, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .cached_app_client = null, .cached_app_server = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
+        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .hash_kind = .sha256, .finished_sent = false, .finished_verified = false, .ee_sent = false, .server_handshake_flight_enqueued = false, .handshake_secret = null, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .cached_app_client = null, .cached_app_server = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
     }
     /// Release any owned resources and buffers.
     pub fn deinit(self: *Engine) void {
@@ -2585,7 +2603,7 @@ pub const Engine = struct {
                 // For Finished verification, we need the transcript BEFORE the Finished message
                 // So take a snapshot of the current transcript state
                 var snap = self.transcript;
-                const th_before = snap.finalize();
+                const th_before = snap.finalize(self.hash_kind);
 
                 // Update the transcript with this message UNLESS it's a Finished message
                 // Finished messages are added to the transcript AFTER verification
@@ -2613,13 +2631,16 @@ pub const Engine = struct {
                 if (p.typ == .server_hello and self.handshake_client_secret == null and self.ecdhe_secret != null) {
                     // Use the actual transcript that already contains ClientHello + ServerHello
                     var snapshot = self.transcript;
-                    const th_hash = snapshot.finalize();
+                    const th_secret = snapshot.finalize(self.hash_kind);
+                    const th_hash = th_secret.slice();
                     std.debug.print("onCryptoRecv: Deriving handshake secrets after ServerHello\n", .{});
                     std.debug.print("onCryptoRecv: Transcript hash for handshake: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 of {})\n", .{ th_hash[0], th_hash[1], th_hash[2], th_hash[3], th_hash.len });
                     std.debug.print("onCryptoRecv: ECDHE secret first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3] });
-                    const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_hash);
-                    std.debug.print("onCryptoRecv: Derived client_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ hs.client_hs[0], hs.client_hs[1], hs.client_hs[2], hs.client_hs[3] });
-                    std.debug.print("onCryptoRecv: Derived server_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ hs.server_hs[0], hs.server_hs[1], hs.server_hs[2], hs.server_hs[3] });
+                    const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_secret);
+                    const client_slice = hs.client_hs.slice();
+                    const server_slice = hs.server_hs.slice();
+                    std.debug.print("onCryptoRecv: Derived client_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ client_slice[0], client_slice[1], client_slice[2], client_slice[3] });
+                    std.debug.print("onCryptoRecv: Derived server_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ server_slice[0], server_slice[1], server_slice[2], server_slice[3] });
                     self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
                     self.handshake_client_secret = hs.client_hs;
                     self.handshake_server_secret = hs.server_hs;
@@ -2881,7 +2902,7 @@ pub const Engine = struct {
                                     },
                                 };
                                 if (self.peer_cert_ok) { // Only verify if not already failed
-                                    const ok = sig.verifyCertificateVerify(alg, self.leaf_spki.?, signature, "TLS 1.3, server CertificateVerify", &th) catch false;
+                                    const ok = sig.verifyCertificateVerify(alg, self.leaf_spki.?, signature, "TLS 1.3, server CertificateVerify", th.slice()) catch false;
                                     self.peer_cert_ok = ok;
                                     if (!ok) {
                                         std.debug.print("TLS: CertificateVerify signature verification FAILED\n", .{});
@@ -2900,7 +2921,7 @@ pub const Engine = struct {
                 // Finished verification
                 if (p.typ == .finished and self.ecdhe_secret != null) {
                     std.debug.print("TLS: Processing Finished message\n", .{});
-                    var peer_secret_opt: ?[H.digest_length]u8 = null;
+                    var peer_secret_opt: ?Secret = null;
                     if (self.handshake_client_secret != null and self.handshake_server_secret != null) {
                         peer_secret_opt = switch (self.role) {
                             .Client => self.handshake_server_secret.?,
@@ -2911,8 +2932,10 @@ pub const Engine = struct {
                     const ok = if (peer_secret_opt) |ps| self.verifyPeerFinished(ps, p.body) else blk: {
                         std.debug.print("TLS: Using fallback for Finished verification\n", .{});
                         // Fallback (should not happen in real mode past this point)
-                        const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th_before);
+                        const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_before);
                         self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
+                        self.handshake_client_secret = hs.client_hs;
+                        self.handshake_server_secret = hs.server_hs;
                         break :blk switch (self.role) {
                             .Client => self.verifyPeerFinished(hs.server_hs, p.body),
                             .Server => self.verifyPeerFinished(hs.client_hs, p.body),
@@ -2989,14 +3012,13 @@ pub const Engine = struct {
                         if (pos + ext_len > b.len) continue;
                         // Compute resumption_secret if we have master_secret stored
                         if (self.master_secret) |ms| {
-                            var resumption_secret: [H.digest_length]u8 = undefined;
                             // RFC 8446 Section 4.6.1: resumption_master_secret = HKDF-Expand-Label(
                             //     master_secret, "res master", transcript_hash)
-                            // FIX: Use actual transcript hash instead of zeros for PSK security
                             var transcript_snapshot = self.transcript;
-                            const transcript_hash = transcript_snapshot.finalize();
-                            ks.expandLabel(ms, "res master", &transcript_hash, &resumption_secret) catch continue;
-                            self.tickets.add(self.allocator, ticket_bytes, resumption_secret, lifetime) catch {};
+                            const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
+                            var master_local = ms;
+                            const res_secret = ks.deriveSecretHash(self.hash_kind, &master_local, "res master", transcript_hash.slice());
+                            self.tickets.add(self.allocator, ticket_bytes, res_secret, lifetime) catch {};
                             std.debug.print("TLS: Stored session ticket (len={}, lifetime={})\n", .{ ticket_bytes.len, lifetime });
                         } else {
                             std.debug.print("TLS: Received ticket before master_secret ready; ignoring\n", .{});
@@ -3046,8 +3068,9 @@ pub const Engine = struct {
         else
             (self.ch_recv and self.sh_seen);
         if (ch_sh_ready) {
-            const th = self.transcript.finalize();
-            const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
+            var snap = self.transcript;
+            const th = snap.finalize(self.hash_kind);
+            const hs = deriveHandshakeTraffic(self.hash_kind, shared, th);
             self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;
@@ -3146,79 +3169,68 @@ pub const Engine = struct {
         // session id (empty vector length 0)
         try body.append(self.allocator, 0); // length
         // cipher_suites vector (length 2, then suite 0x1301)
-        try body.appendSlice(self.allocator, &.{ 0x00, 0x02, 0x13, 0x01 });
-        // legacy_compression_methods (length=1 then 0)
+        const suites = self.config.supported_cipher_suites;
+        const suites_len: u16 = @intCast(suites.len * 2);
+        try body.appendSlice(self.allocator, &.{ @intCast(suites_len >> 8), @intCast(suites_len & 0xff) });
+        for (suites) |suite| {
+            const value: u16 = @intFromEnum(suite);
+            try body.appendSlice(self.allocator, &.{ @intCast(value >> 8), @intCast(value & 0xff) });
+        }
+        // compression methods
         try body.appendSlice(self.allocator, &.{ 0x01, 0x00 });
-        // Build extensions into temp buffer
         var ext_buf = std.ArrayList(u8){};
         defer ext_buf.deinit(self.allocator);
-        // supported_versions (43 / 0x002b)
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 }); // len=3(0x0003), list length=2, version 0x0304
-        // supported_groups (10 / 0x000a) -> length 2 list containing x25519 (0x001d)
+        // supported_versions
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
+        // supported_groups (x25519)
         try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
-        // signature_algorithms (13 / 0x000d) list length 6 (3 algorithms)
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0d, 0x00, 0x08, 0x00, 0x06, 0x04, 0x03, 0x08, 0x04, 0x08, 0x07 });
-        // key_share (51 / 0x0033) group x25519(0x001d) key length 32
+        // signature_algorithms
+        const sigs = self.config.supported_signature_schemes;
+        if (sigs.len != 0) {
+            const list_len: u16 = @intCast(sigs.len * 2);
+            const ext_len: u16 = list_len + 2;
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0d, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
+            for (sigs) |scheme| {
+                const val: u16 = switch (scheme) {
+                    .ed25519 => 0x0807,
+                    .ecdsa_secp256r1_sha256 => 0x0403,
+                    .ecdsa_secp384r1_sha384 => 0x0503,
+                    .rsa_pss_rsae_sha256 => 0x0804,
+                };
+                try ext_buf.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
+            }
+        }
+        // key_share
         try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x33 });
-        const key_share_len: u16 = 2 + 2 + 32; // group(2)+key_len(2)+key(32)
-        const total_key_share_len: u16 = @intCast(key_share_len + 2); // plus vector length field (u16)
-        try ext_buf.appendSlice(self.allocator, &.{ @intCast(total_key_share_len >> 8), @intCast(total_key_share_len & 0xff) });
-        // inner vector length
+        const key_share_len: u16 = 2 + 2 + 32;
+        const total_len: u16 = key_share_len + 2;
+        try ext_buf.appendSlice(self.allocator, &.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
         try ext_buf.appendSlice(self.allocator, &.{ @intCast(key_share_len >> 8), @intCast(key_share_len & 0xff) });
-        // group
         try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x1d });
-        // key length (32)
         try ext_buf.appendSlice(self.allocator, &.{ 0x00, 32 });
         try ext_buf.appendSlice(self.allocator, pubkey[0..]);
-        // ALPN if configured (reuse self.alpn if already set via test harness) - ALPN ext type 16
-        if (self.alpn) |alpn_vec| {
-            // Extension type 0x0010
-            // Format: type(2)|len(2)|list_len(2)|proto_len(1)|proto
-            const list_len: usize = 1 + alpn_vec.len; // one entry
-            const ext_len: usize = 2 + list_len; // list length field + list
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff), @intCast(alpn_vec.len) });
-            try ext_buf.appendSlice(self.allocator, alpn_vec);
-        }
-        // QUIC Transport Parameters extension (0x0039) if local_tp present
-        if (self.local_tp) |tp| {
-            const tp_len: usize = tp.len;
+        // ALPN
+        if (self.config.alpn_protocols) |alpn_list| if (alpn_list.len != 0) {
+            var names_len: usize = 0;
+            for (alpn_list) |p| names_len += 1 + p.len;
+            const list_len: u16 = @intCast(names_len);
+            const ext_len: u16 = list_len + 2;
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
+            for (alpn_list) |p| {
+                try ext_buf.append(self.allocator, @intCast(p.len));
+                try ext_buf.appendSlice(self.allocator, p);
+            }
+        };
+        // QUIC transport parameters (client sends its TP in CH)
+        if (self.config.quic_transport_parameters) |tp| {
+            const tp_len: u16 = @intCast(tp.len);
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
             try ext_buf.appendSlice(self.allocator, tp);
         }
-        // Pre-Shared Key (PSK) offer if we have cached tickets. Minimal implementation:
-        // - Offer single identity (first ticket). Binder is zero-filled placeholder (not validated yet).
-        if (self.peekTicket()) |tkt| {
-            // psk_key_exchange_modes (ext 0x002d) offering mode 0 (psk_ke) only
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2d, 0x00, 0x02, 0x01, 0x00 });
-            // pre_shared_key (0x0029)
-            const id_len: u16 = @intCast(tkt.identity.len);
-            // identities vector: length(2) + identity + obfuscated_ticket_age(4)
-            const one_identity_len: usize = 2 + id_len + 4;
-            const identities_vec_len: u16 = @intCast(one_identity_len);
-            const binders_len: u16 = @intCast(1 + H.digest_length); // vector length(1) + binder (digest length)
-            const total_psk_len: u16 = @intCast(2 + identities_vec_len + 2 + binders_len);
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x29, @intCast(total_psk_len >> 8), @intCast(total_psk_len & 0xff) });
-            // identities vector length
-            try ext_buf.appendSlice(self.allocator, &.{ @intCast(identities_vec_len >> 8), @intCast(identities_vec_len & 0xff) });
-            // identity length
-            try ext_buf.appendSlice(self.allocator, &.{ @intCast(id_len >> 8), @intCast(id_len & 0xff) });
-            try ext_buf.appendSlice(self.allocator, tkt.identity);
-            // obfuscated_ticket_age (placeholder 0)
-            try ext_buf.appendSlice(self.allocator, &.{ 0, 0, 0, 0 });
-            // binders vector length
-            const binders_vec_len: u16 = @intCast(1 + H.digest_length);
-            try ext_buf.appendSlice(self.allocator, &.{ @intCast(binders_vec_len >> 8), @intCast(binders_vec_len & 0xff) });
-            // single binder length (H.digest_length)
-            try ext_buf.append(self.allocator, @as(u8, @intCast(H.digest_length)));
-            // zero-filled binder placeholder
-            var zeros: [H.digest_length]u8 = .{0} ** H.digest_length;
-            try ext_buf.appendSlice(self.allocator, &zeros);
-        }
-        // Now write extensions length
-        const exts = ext_buf.items;
-        const exts_len: u16 = @intCast(exts.len);
+        // finalize extensions
+        const exts_len: u16 = @intCast(ext_buf.items.len);
         try body.appendSlice(self.allocator, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
-        try body.appendSlice(self.allocator, exts);
+        try body.appendSlice(self.allocator, ext_buf.items);
         const msg = try encodeHandshake(self.allocator, .client_hello, body.items);
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
@@ -3237,12 +3249,15 @@ pub const Engine = struct {
 
     /// Build and queue a Finished message for this endpoint using provided traffic secret.
     /// This computes verify_data = HMAC(FinishedKey(secret), Transcript-Hash(before-Finished)).
-    pub fn queueFinished(self: *Engine, traffic_secret: [H.digest_length]u8) !void {
+    pub fn queueFinished(self: *Engine, traffic_secret: Secret) !void {
         var snap = self.transcript;
-        const th = snap.finalize();
-        std.debug.print("TLS: Queueing Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7] });
-        const verify = deriveFinishedVerifyData(traffic_secret, th);
-        const msg = try encodeHandshake(self.allocator, .finished, verify[0..]);
+        const th = snap.finalize(self.hash_kind);
+        const th_slice = th.slice();
+        if (th_slice.len >= 8) {
+            std.debug.print("TLS: Queueing Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
+        }
+        const verify = deriveFinishedVerifyData(self.hash_kind, &traffic_secret, th);
+        const msg = try encodeHandshake(self.allocator, .finished, verify.slice());
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
         self.finished_sent = true;
@@ -3251,16 +3266,20 @@ pub const Engine = struct {
     }
 
     /// Verify peer Finished given peer traffic secret.
-    pub fn verifyPeerFinished(self: *Engine, peer_secret: [H.digest_length]u8, finished_body: []const u8) bool {
+    pub fn verifyPeerFinished(self: *Engine, peer_secret: Secret, finished_body: []const u8) bool {
         // finished_body is the verify_data sent by the peer
         var snap = self.transcript;
-        const th = snap.finalize();
-        std.debug.print("TLS: Verifying Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7] });
-        const expect = deriveFinishedVerifyData(peer_secret, th);
-        const match = finished_body.len == expect.len and std.mem.eql(u8, finished_body, &expect);
+        const th = snap.finalize(self.hash_kind);
+        const th_slice = th.slice();
+        if (th_slice.len >= 8) {
+            std.debug.print("TLS: Verifying Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
+        }
+        const expect = deriveFinishedVerifyData(self.hash_kind, &peer_secret, th);
+        const expect_slice = expect.slice();
+        const match = finished_body.len == expect_slice.len and std.mem.eql(u8, finished_body, expect_slice);
         if (!match) {
-            std.debug.print("TLS: Finished verification failed. Expected len={}, got len={}\n", .{ expect.len, finished_body.len });
-            if (finished_body.len == expect.len) {
+            std.debug.print("TLS: Finished verification failed. Expected len={}, got len={}\n", .{ expect_slice.len, finished_body.len });
+            if (finished_body.len == expect_slice.len) {
                 std.debug.print("TLS: MAC mismatch\n", .{});
             }
         }
@@ -3348,13 +3367,13 @@ pub const Engine = struct {
 
         // Get transcript hash up to this point (before CertificateVerify)
         var transcript_snapshot = self.transcript;
-        const transcript_hash = transcript_snapshot.finalize();
+        const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
 
         // Context for server CertificateVerify
         const context = "TLS 1.3, server CertificateVerify";
 
         // Sign the transcript
-        const signature = try sig.signCertificateVerify(alg, privkey, context, &transcript_hash, self.allocator);
+        const signature = try sig.signCertificateVerify(alg, privkey, context, transcript_hash.slice(), self.allocator);
         defer self.allocator.free(signature);
 
         // Build CertificateVerify message body per RFC 8446 Section 4.4.3:
@@ -3394,23 +3413,18 @@ pub const Engine = struct {
     // --- New helper methods used by tests ---
 
     /// Compute handshake traffic secrets if ECDHE and both CH/SH are present.
-    pub fn computeHandshakeSecrets(self: *Engine) ?struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
-        if (self.ecdhe_secret == null) return null;
-        // For client: must have sent CH and seen SH
-        // For server: must have received CH and sent SH
-        const ch_sh_ready = if (self.role == .Client)
+    pub fn computeHandshakeSecrets(self: *Engine) ?struct { client: Secret, server: Secret } {
+        const shared = self.ecdhe_secret orelse return null;
+        const ready = if (self.role == .Client)
             (self.ch_sent and self.sh_seen)
         else
             (self.ch_recv and self.sh_seen);
-        if (!ch_sh_ready) return null;
-        const th = self.transcript.finalize();
-        std.debug.print("computeHandshakeSecrets: Computing with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 bytes of {})\n", .{ th[0], th[1], th[2], th[3], th.len });
-        std.debug.print("computeHandshakeSecrets: ecdhe_secret first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3] });
-        const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
-        std.debug.print("computeHandshakeSecrets: client_hs first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ hs.client_hs[0], hs.client_hs[1], hs.client_hs[2], hs.client_hs[3] });
-        std.debug.print("computeHandshakeSecrets: server_hs first 4 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ hs.server_hs[0], hs.server_hs[1], hs.server_hs[2], hs.server_hs[3] });
-        // Store the secrets in the engine for later use
-        self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
+        if (!ready) return null;
+
+        var snap = self.transcript;
+        const th = snap.finalize(self.hash_kind);
+        const hs = deriveHandshakeTraffic(self.hash_kind, shared, th);
+        self.handshake_secret = hs.handshake;
         self.handshake_client_secret = hs.client_hs;
         self.handshake_server_secret = hs.server_hs;
         return .{ .client = hs.client_hs, .server = hs.server_hs };
@@ -3419,79 +3433,43 @@ pub const Engine = struct {
     /// Compute application traffic secrets from current transcript and ECDHE.
     /// CRITICAL: Caches the result on first call to prevent recomputation with wrong transcript.
     /// The first call happens when processing peer Finished (BEFORE adding it to transcript).
-    /// Subsequent calls return the cached value, ensuring both calls use the same (correct) transcript.
-    pub fn computeApplicationSecrets(self: *Engine) ?struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
-        // Return cached secrets if already computed
-        if (self.cached_app_client) |c| {
-            if (self.cached_app_server) |s| {
-                std.debug.print("=== computeApplicationSecrets ({s}) - RETURNING CACHED ===\n", .{if (self.role == .Server) "Server" else "Client"});
-                std.debug.print("Cached client app secret (first 16 bytes): ", .{});
-                for (c[0..@min(16, c.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-                std.debug.print("\n", .{});
-                std.debug.print("Cached server app secret (first 16 bytes): ", .{});
-                for (s[0..@min(16, s.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-                std.debug.print("\n=========================================\n", .{});
-                return .{ .client = c, .server = s };
+    pub fn computeApplicationSecrets(self: *Engine) ?struct { client: Secret, server: Secret } {
+        if (self.cached_app_client) |client| {
+            if (self.cached_app_server) |server| {
+                return .{ .client = client, .server = server };
             }
         }
 
-        if (self.ecdhe_secret == null) return null;
-        // For client: must have sent CH and seen SH
-        // For server: must have received CH and sent SH
-        const ch_sh_ready = if (self.role == .Client)
+        const shared = self.ecdhe_secret orelse return null;
+        const ready = if (self.role == .Client)
             (self.ch_sent and self.sh_seen)
         else
             (self.ch_recv and self.sh_seen);
-        if (!ch_sh_ready) return null;
-        const th = self.transcript.finalize();
+        if (!ready) return null;
 
-        // DEBUG: Show transcript hash being used for application secret derivation
-        std.debug.print("=== computeApplicationSecrets ({s}) - COMPUTING NEW ===\n", .{if (self.role == .Server) "Server" else "Client"});
-        std.debug.print("Transcript hash for app secrets (first 16 bytes): ", .{});
-        for (th[0..@min(16, th.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-        std.debug.print("Transcript hash FULL (32 bytes): ", .{});
-        for (th) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-        std.debug.print("Transcript hash length: {} bytes\n", .{th.len});
+        var snap = self.transcript;
+        const th = snap.finalize(self.hash_kind);
+        const handshake_secret = self.handshake_secret orelse blk: {
+            const hs = deriveHandshakeTraffic(self.hash_kind, shared, th);
+            self.handshake_secret = hs.handshake;
+            self.handshake_client_secret = hs.client_hs;
+            self.handshake_server_secret = hs.server_hs;
+            break :blk hs.handshake;
+        };
 
-        // Use cached handshake_secret instead of recomputing from ECDHE
-        // This prevents bugs from ECDHE buffer corruption/reuse
-        const handshake_secret = self.handshake_secret orelse return null;
-        std.debug.print("DERIVATION: Using cached handshake_secret (FULL 32 bytes): ", .{});
-        for (handshake_secret) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
+        const master = blk2: {
+            const derived = ks.deriveSecretHash(self.hash_kind, &handshake_secret, "derived", &[_]u8{});
+            break :blk2 ks.extractHash(self.hash_kind, derived.slice(), &[_]u8{});
+        };
+        self.master_secret = master;
 
-        var derived2: [H.digest_length]u8 = undefined;
-        ks.expandLabel(handshake_secret, "derived", &[_]u8{}, &derived2) catch return null;
-        std.debug.print("DERIVATION: derived2 (first 16): ", .{});
-        for (derived2[0..16]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
+        const client_app = ks.deriveSecretHash(self.hash_kind, &master, "c ap traffic", th.slice());
+        const server_app = ks.deriveSecretHash(self.hash_kind, &master, "s ap traffic", th.slice());
 
-        const master = ks.extract(&derived2, &[_]u8{});
-        std.debug.print("DERIVATION: master_secret (FULL 32 bytes): ", .{});
-        for (master) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
+        self.cached_app_client = client_app;
+        self.cached_app_server = server_app;
 
-        self.master_secret = master; // cache for tickets
-        var c_app: [H.digest_length]u8 = undefined;
-        var s_app: [H.digest_length]u8 = undefined;
-        ks.expandLabel(master, "c ap traffic", &th, &c_app) catch return null;
-        ks.expandLabel(master, "s ap traffic", &th, &s_app) catch return null;
-
-        // CACHE the computed secrets to prevent recomputation with wrong transcript
-        self.cached_app_client = c_app;
-        self.cached_app_server = s_app;
-
-        // DEBUG: Show derived application secrets
-        std.debug.print("Client app secret (first 16 bytes): ", .{});
-        for (c_app[0..@min(16, c_app.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-        std.debug.print("Server app secret (first 16 bytes): ", .{});
-        for (s_app[0..@min(16, s_app.len)]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n=========================================\n", .{});
-
-        return .{ .client = c_app, .server = s_app };
+        return .{ .client = client_app, .server = server_app };
     }
 
     /// Queue a minimalistic ClientHello with an auto-generated X25519 key share.
@@ -3594,17 +3572,24 @@ pub const Engine = struct {
 
         // Show transcript state before adding ServerHello
         var pre_snap = self.transcript;
-        const pre_th = pre_snap.finalize();
-        std.debug.print("Transcript hash BEFORE ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ pre_th[0], pre_th[1], pre_th[2], pre_th[3], pre_th[4], pre_th[5], pre_th[6], pre_th[7] });
+        const pre_th = pre_snap.finalize(self.hash_kind);
+        const pre_slice = pre_th.slice();
+        if (pre_slice.len >= 8) {
+            std.debug.print("Transcript hash BEFORE ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ pre_slice[0], pre_slice[1], pre_slice[2], pre_slice[3], pre_slice[4], pre_slice[5], pre_slice[6], pre_slice[7] });
+        }
 
         try self.queueCrypto(msg);
 
+        self.hash_kind = cipherSuiteHash(.TLS_AES_128_GCM_SHA256);
         self.tryComputeShared();
         if (self.ecdhe_secret != null and self.handshake_client_secret == null) {
             var snap = self.transcript;
-            const th = snap.finalize();
-            std.debug.print("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7] });
-            const hs = deriveHandshakeTraffic(self.ecdhe_secret.?, th);
+            const th = snap.finalize(self.hash_kind);
+            const th_slice = th.slice();
+            if (th_slice.len >= 8) {
+                std.debug.print("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
+            }
+            const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th);
             self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;

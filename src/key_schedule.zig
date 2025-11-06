@@ -22,22 +22,190 @@
 //! std.crypto.kdf.hkdf.HkdfSha512) for all cryptographic operations.
 //! No external dependencies required.
 const std = @import("std");
+const Sha256 = std.crypto.hash.sha2.Sha256;
+const Sha384 = std.crypto.hash.sha2.Sha384;
+const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+const HmacSha384 = std.crypto.auth.hmac.sha2.HmacSha384;
+const Hkdf = std.crypto.kdf.hkdf.Hkdf;
+pub const HkdfSha256 = Hkdf(HmacSha256);
+pub const HkdfSha384 = Hkdf(HmacSha384);
 
-/// Hash function used for TLS_AES_128_GCM_SHA256 and CHACHA20_POLY1305_SHA256.
-///
-/// This is SHA-256, which produces a 32-byte (256-bit) digest as specified in
-/// RFC 8446 §7.1. All HKDF operations in this module use SHA-256 as the hash
-/// primitive for consistency with the primary cipher suite.
-pub const H = std.crypto.hash.sha2.Sha256; // 32-byte digest
+pub const KeyMaterial = struct {
+    key: [16]u8,
+    iv: [12]u8,
+    hp: [16]u8,
+};
 
-/// HKDF-SHA256 implementation used for all key derivation operations.
-/// Uses std.crypto.kdf.hkdf.HkdfSha256 from Zig standard library.
-/// Combines RFC 5869 HKDF with RFC 2104 HMAC-SHA256.
-pub const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
+/// Legacy SHA-256 helper retained for existing test vectors and APIs that assume
+/// a fixed digest length. TLS 1.3 negotiates the hash via the cipher suite, but
+/// many RFC 8446 test vectors reference the default SHA-256 schedule.
+pub const H = struct {
+    pub const digest_length = Sha256.digest_length;
 
-/// HKDF-SHA512 implementation for future use with cipher suites requiring SHA-512.
-/// Uses std.crypto.kdf.hkdf.HkdfSha512 from Zig standard library.
-pub const HkdfSha512 = std.crypto.kdf.hkdf.HkdfSha512;
+    pub fn hash(data: []const u8, out: []u8, options: anytype) void {
+        _ = options;
+        var hasher = Sha256.init(.{});
+        hasher.update(data);
+        hasher.final(out);
+    }
+};
+
+pub const Hash = enum {
+    sha256,
+    sha384,
+};
+
+pub const max_digest_length = if (Sha256.digest_length > Sha384.digest_length)
+    Sha256.digest_length
+else
+    Sha384.digest_length;
+
+pub const Secret = struct {
+    len: u8 = 0,
+    bytes: [max_digest_length]u8 = [_]u8{0} ** max_digest_length,
+
+    pub fn empty() Secret {
+        return .{};
+    }
+
+    pub fn initZero(hash: Hash) Secret {
+        var out = Secret.empty();
+        out.len = @intCast(digestLength(hash));
+        return out;
+    }
+
+    pub fn fromSlice(hash: Hash, src: []const u8) Secret {
+        std.debug.assert(src.len == digestLength(hash));
+        var out = Secret.empty();
+        out.len = @intCast(src.len);
+        std.mem.copyForwards(u8, out.bytes[0..src.len], src);
+        return out;
+    }
+
+    pub fn slice(self: *const Secret) []const u8 {
+        return self.bytes[0..self.len];
+    }
+
+    pub fn sliceMut(self: *Secret) []u8 {
+        return self.bytes[0..self.len];
+    }
+};
+
+pub fn digestLength(hash: Hash) usize {
+    return switch (hash) {
+        .sha256 => Sha256.digest_length,
+        .sha384 => Sha384.digest_length,
+    };
+}
+
+fn hkdfModule(hash: Hash) type {
+    return switch (hash) {
+        .sha256 => Hkdf(HmacSha256),
+        .sha384 => Hkdf(HmacSha384),
+    };
+}
+
+fn secretFromSlice(hash: Hash, slice: []const u8) Secret {
+    return Secret.fromSlice(hash, slice);
+}
+
+pub fn zeroSecret(hash: Hash) Secret {
+    var out = Secret.empty();
+    out.len = @intCast(digestLength(hash));
+    // bytes already zeroed by initializer
+    return out;
+}
+
+pub fn extractHash(hash: Hash, salt: ?[]const u8, ikm: []const u8) Secret {
+    const actual_salt = salt orelse &[_]u8{};
+    return switch (hash) {
+        .sha256 => secretFromSlice(hash, HkdfSha256.extract(actual_salt, ikm)[0..]),
+        .sha384 => secretFromSlice(hash, HkdfSha384.extract(actual_salt, ikm)[0..]),
+    };
+}
+
+pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, context: []const u8, out: []u8) !void {
+    var fbb: [256]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&fbb);
+    const alloc = fba.allocator();
+    const info = try hkdfLabel(alloc, label, context, @as(u16, @intCast(out.len)));
+    defer alloc.free(info);
+
+    const prk_slice = prk.slice();
+    switch (hash) {
+        .sha256 => {
+            var arr: [Sha256.digest_length]u8 = undefined;
+            std.mem.copyForwards(u8, arr[0..], prk_slice);
+            HkdfSha256.expand(out, info, arr);
+        },
+        .sha384 => {
+            var arr: [Sha384.digest_length]u8 = undefined;
+            std.mem.copyForwards(u8, arr[0..], prk_slice);
+            HkdfSha384.expand(out, info, arr);
+        },
+    }
+}
+
+pub fn deriveSecretHash(hash: Hash, secret: *const Secret, label: []const u8, context: []const u8) Secret {
+    var derived = Secret.empty();
+    derived.len = @intCast(digestLength(hash));
+    expandLabelHash(hash, secret, label, context, derived.sliceMut()) catch unreachable;
+    return derived;
+}
+
+pub fn hmacHash(hash: Hash, key: []const u8, data: []const u8) Secret {
+    return switch (hash) {
+        .sha256 => blk: {
+            var out: [Sha256.digest_length]u8 = undefined;
+            HmacSha256.create(&out, data, key);
+            break :blk secretFromSlice(hash, out[0..]);
+        },
+        .sha384 => blk: {
+            var out: [Sha384.digest_length]u8 = undefined;
+            HmacSha384.create(&out, data, key);
+            break :blk secretFromSlice(hash, out[0..]);
+        },
+    };
+}
+
+pub fn updateTrafficSecretHash(hash: Hash, current_secret: *const Secret) Secret {
+    var next = Secret.empty();
+    next.len = @intCast(digestLength(hash));
+    expandLabelHash(hash, current_secret, "traffic upd", &[_]u8{}, next.sliceMut()) catch unreachable;
+    return next;
+}
+
+pub fn deriveKeyIvHpHash(hash: Hash, secret: *const Secret, v2: bool) KeyMaterial {
+    var key: [16]u8 = undefined;
+    var iv: [12]u8 = undefined;
+    var hp: [16]u8 = undefined;
+
+    if (v2) {
+        expandLabelHash(hash, secret, "quicv2 key", &[_]u8{}, key[0..]) catch unreachable;
+        expandLabelHash(hash, secret, "quicv2 iv", &[_]u8{}, iv[0..]) catch unreachable;
+        expandLabelHash(hash, secret, "quicv2 hp", &[_]u8{}, hp[0..]) catch unreachable;
+    } else {
+        expandLabelHash(hash, secret, "quic key", &[_]u8{}, key[0..]) catch unreachable;
+        expandLabelHash(hash, secret, "quic iv", &[_]u8{}, iv[0..]) catch unreachable;
+        expandLabelHash(hash, secret, "quic hp", &[_]u8{}, hp[0..]) catch unreachable;
+    }
+
+    return .{ .key = key, .iv = iv, .hp = hp };
+}
+
+pub fn hashBytes(hash: Hash, data: []const u8) Secret {
+    return switch (hash) {
+        .sha256 => secretFromSlice(hash, Sha256.hash(data)[0..]),
+        .sha384 => secretFromSlice(hash, Sha384.hash(data)[0..]),
+    };
+}
+
+pub fn deriveFinishedVerifyDataHash(hash: Hash, traffic_secret: *const Secret, transcript_hash: *const Secret) Secret {
+    var finished_key = Secret.empty();
+    finished_key.len = @intCast(digestLength(hash));
+    expandLabelHash(hash, traffic_secret, "finished", &[_]u8{}, finished_key.sliceMut()) catch unreachable;
+    return hmacHash(hash, finished_key.slice(), transcript_hash.slice());
+}
 
 /// QUIC v1 Initial Salt used for deriving initial packet protection secrets.
 ///
@@ -140,18 +308,21 @@ fn hkdfLabel(alloc: std.mem.Allocator, label: []const u8, context: []const u8, o
 /// ## RFC References
 /// - RFC 2104 - HMAC: Keyed-Hashing for Message Authentication
 /// - RFC 8446 §4.4.4 - Finished message uses HMAC for verification
-pub fn hmacSha256(key: []const u8, data: []const u8) [H.digest_length]u8 {
-    const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
-    var out: [HmacSha256.mac_length]u8 = undefined;
-    HmacSha256.create(&out, data, key);
+pub fn hmacSha256(key: []const u8, data: []const u8) [Sha256.digest_length]u8 {
+    const secret = hmacHash(.sha256, key, data);
+    var out: [Sha256.digest_length]u8 = undefined;
+    std.mem.copyForwards(u8, out[0..], secret.slice());
     return out;
 }
 
-fn hkdfExtractRaw(salt: ?[]const u8, ikm: []const u8) [H.digest_length]u8 {
-    return HkdfSha256.extract(salt orelse &[_]u8{}, ikm);
+fn hkdfExtractRaw(salt: ?[]const u8, ikm: []const u8) [Sha256.digest_length]u8 {
+    const secret = extractHash(.sha256, salt, ikm);
+    var out: [Sha256.digest_length]u8 = undefined;
+    std.mem.copyForwards(u8, out[0..], secret.slice());
+    return out;
 }
 
-fn hkdfExpand(out: []u8, prk: [H.digest_length]u8, info: []const u8) void {
+fn hkdfExpand(out: []u8, prk: [Sha256.digest_length]u8, info: []const u8) void {
     std.log.debug("hkdfExpand: out.len={}, prk[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, info.len={}", .{ out.len, prk[0], prk[1], prk[2], prk[3], info.len });
     HkdfSha256.expand(out, info, prk);
     std.log.debug("hkdfExpand: AFTER expand, out[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ out[0], out[1], out[2], out[3] });
@@ -179,16 +350,9 @@ fn hkdfExpand(out: []u8, prk: [H.digest_length]u8, info: []const u8) void {
 /// ## RFC References
 /// - RFC 8446 §7.1 - Key Schedule and HKDF-Expand-Label definition
 /// - RFC 5869 - HKDF: Extract-and-Expand HKDF
-pub fn expandLabel(prk: [H.digest_length]u8, label: []const u8, context: []const u8, out: []u8) !void {
-    var fbb: [256]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&fbb);
-    const alloc = fba.allocator();
-    // RFC 8446 §7.1 - Construct HkdfLabel as HKDF info parameter
-    const info = try hkdfLabel(alloc, label, context, @as(u16, @intCast(out.len)));
-    defer alloc.free(info);
-    std.log.debug("expandLabel: label='{s}', context.len={}, out.len={}, info[0..8]={X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ label, context.len, out.len, info[0], info[1], info[2], info[3], info[4], info[5], info[6], info[7] });
-    // RFC 5869 - HKDF-Expand step
-    hkdfExpand(out, prk, info);
+pub fn expandLabel(prk: [Sha256.digest_length]u8, label: []const u8, context: []const u8, out: []u8) !void {
+    var secret = Secret.fromSlice(.sha256, prk[0..]);
+    expandLabelHash(.sha256, &secret, label, context, out) catch unreachable;
 }
 
 /// HKDF-Extract derives a pseudorandom key from input keying material.
@@ -212,7 +376,7 @@ pub fn expandLabel(prk: [H.digest_length]u8, label: []const u8, context: []const
 /// ## RFC References
 /// - RFC 5869 §2.2 - HKDF-Extract definition
 /// - RFC 8446 §7.1 - TLS 1.3 uses HKDF-Extract for secret derivation
-pub fn extract(salt: ?[]const u8, ikm: []const u8) [H.digest_length]u8 {
+pub fn extract(salt: ?[]const u8, ikm: []const u8) [Sha256.digest_length]u8 {
     // RFC 5869 §2.2 - HKDF-Extract(salt, IKM) -> PRK
     return hkdfExtractRaw(salt, ikm);
 }
@@ -238,7 +402,7 @@ pub fn extract(salt: ?[]const u8, ikm: []const u8) [H.digest_length]u8 {
 /// ## RFC References
 /// - RFC 9001 §5.2 - Initial Secrets
 /// - RFC 9001 Appendix A.1 - Test Vectors
-pub fn deriveInitialSecretV1(dcid: []const u8) [H.digest_length]u8 {
+pub fn deriveInitialSecretV1(dcid: []const u8) [Sha256.digest_length]u8 {
     // RFC 9001 §5.2 - Use QUIC v1 initial salt as HKDF salt
     return extract(&initial_salt_v1, dcid);
 }
@@ -262,7 +426,7 @@ pub fn deriveInitialSecretV1(dcid: []const u8) [H.digest_length]u8 {
 ///
 /// ## RFC References
 /// - RFC 9369 §A.1 - QUIC Version 2 Initial Salt
-pub fn deriveInitialSecretV2(dcid: []const u8) [H.digest_length]u8 {
+pub fn deriveInitialSecretV2(dcid: []const u8) [Sha256.digest_length]u8 {
     // RFC 9369 §A.1 - Use QUIC v2 initial salt
     return extract(&initial_salt_v2, dcid);
 }
@@ -282,7 +446,7 @@ pub fn deriveInitialSecretV2(dcid: []const u8) [H.digest_length]u8 {
 /// ## RFC References
 /// - RFC 9001 §5.2 - QUIC v1 Initial Secrets
 /// - RFC 9369 §A.1 - QUIC v2 Initial Secrets
-pub fn deriveInitialSecret(version_v2: bool, dcid: []const u8) [H.digest_length]u8 {
+pub fn deriveInitialSecret(version_v2: bool, dcid: []const u8) [Sha256.digest_length]u8 {
     return if (version_v2) deriveInitialSecretV2(dcid) else deriveInitialSecretV1(dcid);
 }
 
@@ -308,9 +472,9 @@ pub fn deriveInitialSecret(version_v2: bool, dcid: []const u8) [H.digest_length]
 /// ## RFC References
 /// - RFC 9001 §5.2 - Client and Server Initial Secrets
 /// - RFC 9001 Appendix A.1 - Test vectors demonstrating split
-pub fn deriveClientServerInitial(initial_secret: [H.digest_length]u8) struct { client: [H.digest_length]u8, server: [H.digest_length]u8 } {
-    var client: [H.digest_length]u8 = undefined;
-    var server: [H.digest_length]u8 = undefined;
+pub fn deriveClientServerInitial(initial_secret: [Sha256.digest_length]u8) struct { client: [Sha256.digest_length]u8, server: [Sha256.digest_length]u8 } {
+    var client: [Sha256.digest_length]u8 = undefined;
+    var server: [Sha256.digest_length]u8 = undefined;
     // RFC 9001 §5.2 - Derive client initial secret with "client in" label
     expandLabel(initial_secret, "client in", &[_]u8{}, &client) catch unreachable;
     // RFC 9001 §5.2 - Derive server initial secret with "server in" label
@@ -342,39 +506,15 @@ pub fn deriveClientServerInitial(initial_secret: [H.digest_length]u8) struct { c
 /// - RFC 9001 §5.1 - Packet Protection Keys
 /// - RFC 9001 §5.4 - Header Protection
 /// - RFC 9001 Appendix A.1 - Key derivation test vectors
-pub fn deriveKeyIvHp(secret: [H.digest_length]u8) struct { key: [16]u8, iv: [12]u8, hp: [16]u8 } {
-    var key: [16]u8 = undefined;
-    var iv: [12]u8 = undefined;
-    var hp: [16]u8 = undefined;
-    // RFC 9001 §5.1 - Derive AEAD key with "quic key" label
-    expandLabel(secret, "quic key", &[_]u8{}, &key) catch unreachable;
-    // RFC 9001 §5.1 - Derive IV with "quic iv" label
-    expandLabel(secret, "quic iv", &[_]u8{}, &iv) catch unreachable;
-    // RFC 9001 §5.4 - Derive header protection key with "quic hp" label
-    expandLabel(secret, "quic hp", &[_]u8{}, &hp) catch unreachable;
-
-    // DIAGNOSTIC: Log the exact keys being derived
-    std.log.debug("deriveKeyIvHp: secret[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ secret[0], secret[1], secret[2], secret[3] });
-    std.log.debug("  -> key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ key[0], key[1], key[2], key[3] });
-    std.log.debug("  -> iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ iv[0], iv[1], iv[2], iv[3] });
-    std.log.debug("  -> hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ hp[0], hp[1], hp[2], hp[3] });
-
-    return .{ .key = key, .iv = iv, .hp = hp };
+pub fn deriveKeyIvHp(secret: [Sha256.digest_length]u8) KeyMaterial {
+    var secret_wrapper = Secret.fromSlice(.sha256, secret[0..]);
+    return deriveKeyIvHpHash(.sha256, &secret_wrapper, false);
 }
 
 /// Derive key (16), iv (12), hp (16) from a traffic secret for QUIC v2.
-pub fn deriveKeyIvHpV2(secret: [H.digest_length]u8) struct { key: [16]u8, iv: [12]u8, hp: [16]u8 } {
-    var key: [16]u8 = undefined;
-    var iv: [12]u8 = undefined;
-    var hp: [16]u8 = undefined;
-    std.log.debug("deriveKeyIvHpV2: secret[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ secret[0], secret[1], secret[2], secret[3] });
-    expandLabel(secret, "quicv2 key", &[_]u8{}, &key) catch unreachable;
-    expandLabel(secret, "quicv2 iv", &[_]u8{}, &iv) catch unreachable;
-    expandLabel(secret, "quicv2 hp", &[_]u8{}, &hp) catch unreachable;
-    std.log.debug("deriveKeyIvHpV2: -> key[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ key[0], key[1], key[2], key[3] });
-    std.log.debug("deriveKeyIvHpV2: -> iv[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ iv[0], iv[1], iv[2], iv[3] });
-    std.log.debug("deriveKeyIvHpV2: -> hp[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ hp[0], hp[1], hp[2], hp[3] });
-    return .{ .key = key, .iv = iv, .hp = hp };
+pub fn deriveKeyIvHpV2(secret: [Sha256.digest_length]u8) KeyMaterial {
+    var secret_wrapper = Secret.fromSlice(.sha256, secret[0..]);
+    return deriveKeyIvHpHash(.sha256, &secret_wrapper, true);
 }
 
 /// Update traffic secret for post-handshake key update (TLS 1.3 §7.2 / RFC 9001 §6).
@@ -398,11 +538,12 @@ pub fn deriveKeyIvHpV2(secret: [H.digest_length]u8) struct { key: [16]u8, iv: [1
 /// - RFC 8446 §7.2 - Updating Traffic Secrets
 /// - RFC 8446 §4.6.3 - KeyUpdate message
 /// - RFC 9001 §6 - Key Update in QUIC
-pub fn updateTrafficSecret(current_secret: [H.digest_length]u8) [H.digest_length]u8 {
-    var next: [H.digest_length]u8 = undefined;
-    // RFC 8446 §7.2 - Use "traffic upd" label for key update
-    expandLabel(current_secret, "traffic upd", &[_]u8{}, &next) catch unreachable;
-    return next;
+pub fn updateTrafficSecret(current_secret: [Sha256.digest_length]u8) [Sha256.digest_length]u8 {
+    var secret_wrapper = Secret.fromSlice(.sha256, current_secret[0..]);
+    const updated = updateTrafficSecretHash(.sha256, &secret_wrapper);
+    var out: [Sha256.digest_length]u8 = undefined;
+    std.mem.copyForwards(u8, out[0..], updated.slice());
+    return out;
 }
 
 /// Generic secret derivation using HKDF-Expand-Label with custom label and context.
@@ -425,10 +566,12 @@ pub fn updateTrafficSecret(current_secret: [H.digest_length]u8) [H.digest_length
 ///
 /// ## RFC References
 /// - RFC 8446 §7.1 - Derive-Secret definition
-pub fn deriveSecret(secret: [H.digest_length]u8, label: []const u8, context: []const u8) [H.digest_length]u8 {
-    var derived: [H.digest_length]u8 = undefined;
-    expandLabel(secret, label, context, &derived) catch unreachable;
-    return derived;
+pub fn deriveSecret(secret: [Sha256.digest_length]u8, label: []const u8, context: []const u8) [Sha256.digest_length]u8 {
+    var secret_wrapper = Secret.fromSlice(.sha256, secret[0..]);
+    const derived = deriveSecretHash(.sha256, &secret_wrapper, label, context);
+    var out: [Sha256.digest_length]u8 = undefined;
+    std.mem.copyForwards(u8, out[0..], derived.slice());
+    return out;
 }
 
 // ============================================================================
