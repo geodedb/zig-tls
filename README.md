@@ -177,6 +177,7 @@ make test-conformance
 ## Documentation
 
 - **BUILD_SYSTEM.md** - Detailed build system documentation
+- **CONFORMANCE_TESTS.md** - BoringSSL/OpenSSL compatibility test documentation
 - **CLAUDE.md** - Project overview and AI assistance context
 - **RFC References** - All code includes RFC section citations
 

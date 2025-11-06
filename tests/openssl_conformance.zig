@@ -766,7 +766,8 @@ test "QUIC transport parameters - wire format conformance" {
     try testing.expect(encoded.len > 0);
 
     // Decode and verify round-trip
-    const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    defer decoded.deinit(testing.allocator);
 
     try testing.expectEqual(params.max_idle_timeout, decoded.max_idle_timeout);
     try testing.expectEqual(params.max_udp_payload_size, decoded.max_udp_payload_size);
@@ -790,7 +791,8 @@ test "QUIC transport parameters - RFC 9000 §18.2 constraint validation" {
         const encoded = try params.encode(testing.allocator);
         defer testing.allocator.free(encoded);
 
-        const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        defer decoded.deinit(testing.allocator);
         try testing.expectEqual(@as(?u64, 1200), decoded.max_udp_payload_size);
     }
 
@@ -801,7 +803,8 @@ test "QUIC transport parameters - RFC 9000 §18.2 constraint validation" {
         const encoded = try params.encode(testing.allocator);
         defer testing.allocator.free(encoded);
 
-        const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        defer decoded.deinit(testing.allocator);
         try testing.expectEqual(@as(?u64, 20), decoded.ack_delay_exponent);
     }
 
@@ -812,7 +815,8 @@ test "QUIC transport parameters - RFC 9000 §18.2 constraint validation" {
         const encoded = try params.encode(testing.allocator);
         defer testing.allocator.free(encoded);
 
-        const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        defer decoded.deinit(testing.allocator);
         try testing.expectEqual(@as(?u64, 16383), decoded.max_ack_delay);
     }
 
@@ -823,7 +827,8 @@ test "QUIC transport parameters - RFC 9000 §18.2 constraint validation" {
         const encoded = try params.encode(testing.allocator);
         defer testing.allocator.free(encoded);
 
-        const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+        defer decoded.deinit(testing.allocator);
         try testing.expectEqual(@as(?u64, 2), decoded.active_connection_id_limit);
     }
 }
@@ -848,11 +853,8 @@ test "QUIC transport parameters - connection ID encoding" {
     defer testing.allocator.free(encoded);
 
     // Decode and verify
-    const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
-    defer {
-        if (decoded.initial_source_connection_id) |cid_| testing.allocator.free(cid_);
-        if (decoded.original_destination_connection_id) |cid_| testing.allocator.free(cid_);
-    }
+    var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    defer decoded.deinit(testing.allocator);
 
     try testing.expect(decoded.initial_source_connection_id != null);
     try testing.expectEqualSlices(u8, &cid, decoded.initial_source_connection_id.?);
@@ -879,7 +881,8 @@ test "QUIC transport parameters - stateless reset token" {
     defer testing.allocator.free(encoded);
 
     // Decode and verify
-    const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    defer decoded.deinit(testing.allocator);
 
     try testing.expect(decoded.stateless_reset_token != null);
     try testing.expectEqual(@as(usize, 16), decoded.stateless_reset_token.?.len);
@@ -913,7 +916,8 @@ test "QUIC transport parameters - comprehensive parameter set" {
     try testing.expect(encoded.len > 50); // Should be many parameters encoded
 
     // Decode and verify all values
-    const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    defer decoded.deinit(testing.allocator);
 
     try testing.expectEqual(params.max_idle_timeout, decoded.max_idle_timeout);
     try testing.expectEqual(params.max_udp_payload_size, decoded.max_udp_payload_size);
@@ -962,7 +966,8 @@ test "QUIC transport parameters - forward compatibility (unknown parameters)" {
     defer testing.allocator.free(encoded);
 
     // Decode - should succeed and ignore unknown parameter
-    const decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    var decoded = try qtp.TransportParameters.decode(encoded, testing.allocator);
+    defer decoded.deinit(testing.allocator);
 
     // Verify known parameter was parsed
     try testing.expectEqual(@as(?u64, 30000), decoded.max_idle_timeout);
