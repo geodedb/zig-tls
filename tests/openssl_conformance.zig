@@ -193,6 +193,69 @@ test "HKDF-Expand parity with OpenSSL 3.x" {
     try testing.expectEqualSlices(u8, &our_okm, &ssl_okm);
 }
 
+// Validate our SHA-384 HKDF-Extract implementation against OpenSSL 3.x
+test "HKDF-Extract parity with OpenSSL 3.x (SHA-384)" {
+    const salt_hex = "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf" ++
+        "b0b1b2b3b4b5b6b7";
+    var salt: [24]u8 = undefined;
+    hexToBytes(salt_hex, &salt);
+
+    const ikm_hex = "0102030405060708090a0b0c0d0e0f10" ++
+        "1112131415161718191a1b1c";
+    var ikm: [28]u8 = undefined;
+    hexToBytes(ikm_hex, &ikm);
+
+    const our_prk = key_schedule.extractHash(.sha384, salt[0..], ikm[0..]);
+
+    var ssl_prk: [key_schedule.digestLength(.sha384)]u8 = undefined;
+    var ssl_prk_len: usize = ssl_prk.len;
+
+    const result = openssl_hkdf.hkdfExtract(
+        &ssl_prk,
+        &ssl_prk_len,
+        EVP_sha384(),
+        &ikm,
+        ikm.len,
+        &salt,
+        salt.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqual(@as(usize, ssl_prk.len), ssl_prk_len);
+    try testing.expectEqualSlices(u8, our_prk.slice(), ssl_prk[0..ssl_prk_len]);
+}
+
+// Validate our HKDF-Expand-Label implementation with SHA-384 against OpenSSL 3.x
+test "HKDF-Expand-Label parity with OpenSSL 3.x (SHA-384)" {
+    const prk_hex = "b1b2b3b4b5b6b7b8b9babbbcbdbebfb0" ++
+        "c1c2c3c4c5c6c7c8c9cacbcccdcecfc0" ++
+        "d1d2d3d4d5d6d7d8d9dadbdcdddedfe0";
+    var prk: [key_schedule.digestLength(.sha384)]u8 = undefined;
+    hexToBytes(prk_hex, &prk);
+
+    var secret = key_schedule.Secret.fromSlice(.sha384, prk[0..]);
+    var our_next: [key_schedule.digestLength(.sha384)]u8 = undefined;
+    try key_schedule.expandLabelHash(.sha384, &secret, "traffic upd", "", our_next[0..]);
+
+    var info_buf: [96]u8 = undefined;
+    const info = buildHkdfLabel(&info_buf, "traffic upd", "", @intCast(our_next.len));
+
+    var ssl_next: [key_schedule.digestLength(.sha384)]u8 = undefined;
+
+    const result = openssl_hkdf.hkdfExpand(
+        &ssl_next,
+        ssl_next.len,
+        EVP_sha384(),
+        &prk,
+        prk.len,
+        info.ptr,
+        info.len,
+    );
+
+    try testing.expectEqual(@as(c_int, 1), result);
+    try testing.expectEqualSlices(u8, &our_next, &ssl_next);
+}
+
 test "Early secret derivation matches OpenSSL" {
     const zeros = [_]u8{0} ** key_schedule.H.digest_length;
     const our_early = key_schedule.HkdfSha256.extract(&zeros, &zeros);
