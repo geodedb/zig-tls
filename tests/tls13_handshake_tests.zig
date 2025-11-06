@@ -102,7 +102,7 @@ test "TLS 1.3 handshake completion check" {
         .alpn_protocols = &.{"h3"},
         .supported_groups = &.{.x25519},
         .supported_signature_schemes = &.{.ed25519},
-        .quic_transport_parameters = &[_]u8{0x00, 0x01},
+        .quic_transport_parameters = &[_]u8{ 0x00, 0x01 },
     };
 
     var client_ctx = tls13.Context.init(client_config, client_callbacks);

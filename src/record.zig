@@ -1376,6 +1376,6 @@ test "AEAD open - ciphertext too short" {
     var cipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
     defer cipher.wipe();
 
-    const short_ct = [_]u8{0x01, 0x02, 0x03}; // Less than 16 bytes (tag length)
+    const short_ct = [_]u8{ 0x01, 0x02, 0x03 }; // Less than 16 bytes (tag length)
     try expectError(RecordError.CiphertextTooShort, cipher.open(allocator, 0, "", &short_ct));
 }

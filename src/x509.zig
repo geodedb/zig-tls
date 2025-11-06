@@ -649,7 +649,8 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
                 // Check if this is the CN OID (2.5.4.3)
                 // DER encoding: 06 03 55 04 03
                 if (oid_tlv.val.len == 3 and oid_tlv.val[0] == 0x55 and
-                    oid_tlv.val[1] == 0x04 and oid_tlv.val[2] == 0x03) {
+                    oid_tlv.val[1] == 0x04 and oid_tlv.val[2] == 0x03)
+                {
                     // Read the value (can be UTF8String, PrintableString, etc.)
                     const value_tlv = attr_dec.readTLV() catch break;
                     subj_cn = value_tlv.val;
@@ -741,10 +742,10 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
                 // KeyUsage bits are MSB-first: bit 0 is MSB of first byte
                 // We store them in a u16 with bit 0 = 0x8000
                 if (bits.len >= 1) {
-                    mask |= @as(u16, bits[0]) << 8;  // First byte goes to high byte of u16
+                    mask |= @as(u16, bits[0]) << 8; // First byte goes to high byte of u16
                 }
                 if (bits.len >= 2) {
-                    mask |= @as(u16, bits[1]);  // Second byte goes to low byte of u16
+                    mask |= @as(u16, bits[1]); // Second byte goes to low byte of u16
                 }
                 ku_res = .{ .bits = mask };
             }

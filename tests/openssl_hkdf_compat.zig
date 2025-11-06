@@ -87,4 +87,3 @@ pub fn hkdfExpand(
     if (derive(ctx, out_key, &len) != 1) return 0;
     return if (len == out_len) 1 else 0;
 }
-

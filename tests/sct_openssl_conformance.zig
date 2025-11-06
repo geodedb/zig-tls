@@ -31,21 +31,21 @@ test "SCT version conformance with OpenSSL" {
     defer sct_data.deinit(testing.allocator);
 
     // Build SCT with version 0
-    try sct_data.append(testing.allocator,0); // version
-    try sct_data.appendSlice(testing.allocator,&[_]u8{0xAA} ** 32); // log ID
-    try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 0, 0, 0, 0, 0, 0, 1 }); // timestamp
-    try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 0 }); // extensions length
-    try sct_data.append(testing.allocator,4); // hash alg
-    try sct_data.append(testing.allocator,3); // sig alg
-    try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 71 }); // signature length
-    try sct_data.appendSlice(testing.allocator,&[_]u8{0xFF} ** 71); // signature
+    try sct_data.append(testing.allocator, 0); // version
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0xAA} ** 32); // log ID
+    try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 1 }); // timestamp
+    try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 0 }); // extensions length
+    try sct_data.append(testing.allocator, 4); // hash alg
+    try sct_data.append(testing.allocator, 3); // sig alg
+    try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 71 }); // signature length
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0xFF} ** 71); // signature
 
     // Build list
     var list = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer list.deinit(testing.allocator);
     const entry_len: u16 = @intCast(sct_data.items.len);
     try list.writer(testing.allocator).writeInt(u16, entry_len, .big);
-    try list.appendSlice(testing.allocator,sct_data.items);
+    try list.appendSlice(testing.allocator, sct_data.items);
 
     // Parse should succeed with version 0
     const parsed = try sct.parseList(testing.allocator, list.items);
@@ -73,20 +73,20 @@ test "Hash algorithm constants conformance with RFC 6962" {
         var sct_data = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer sct_data.deinit(testing.allocator);
 
-        try sct_data.append(testing.allocator,0); // version
-        try sct_data.appendSlice(testing.allocator,&[_]u8{0xBB} ** 32); // log ID
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 0, 0, 0, 0, 0, 0, 1 }); // timestamp
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 0 }); // no extensions
-        try sct_data.append(testing.allocator,hash_alg); // hash algorithm
-        try sct_data.append(testing.allocator,3); // ECDSA
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 71 }); // signature length
-        try sct_data.appendSlice(testing.allocator,&[_]u8{0xDD} ** 71); // signature
+        try sct_data.append(testing.allocator, 0); // version
+        try sct_data.appendSlice(testing.allocator, &[_]u8{0xBB} ** 32); // log ID
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 1 }); // timestamp
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 0 }); // no extensions
+        try sct_data.append(testing.allocator, hash_alg); // hash algorithm
+        try sct_data.append(testing.allocator, 3); // ECDSA
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 71 }); // signature length
+        try sct_data.appendSlice(testing.allocator, &[_]u8{0xDD} ** 71); // signature
 
         var list = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer list.deinit(testing.allocator);
         const entry_len: u16 = @intCast(sct_data.items.len);
         try list.writer(testing.allocator).writeInt(u16, entry_len, .big);
-        try list.appendSlice(testing.allocator,sct_data.items);
+        try list.appendSlice(testing.allocator, sct_data.items);
 
         const parsed = try sct.parseList(testing.allocator, list.items);
         defer testing.allocator.free(parsed);
@@ -116,24 +116,24 @@ test "Signature algorithm constants conformance with RFC 6962" {
         var sct_data = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer sct_data.deinit(testing.allocator);
 
-        try sct_data.append(testing.allocator,0); // version
-        try sct_data.appendSlice(testing.allocator,&[_]u8{0xCC} ** 32); // log ID
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 0, 0, 0, 0, 0, 0, 1 }); // timestamp
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 0 }); // no extensions
-        try sct_data.append(testing.allocator,4); // SHA-256
-        try sct_data.append(testing.allocator,tc.sig_alg); // signature algorithm
+        try sct_data.append(testing.allocator, 0); // version
+        try sct_data.appendSlice(testing.allocator, &[_]u8{0xCC} ** 32); // log ID
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 1 }); // timestamp
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 0 }); // no extensions
+        try sct_data.append(testing.allocator, 4); // SHA-256
+        try sct_data.append(testing.allocator, tc.sig_alg); // signature algorithm
         try sct_data.writer(testing.allocator).writeInt(u16, tc.sig_len, .big);
 
         const sig = try testing.allocator.alloc(u8, tc.sig_len);
         defer testing.allocator.free(sig);
         @memset(sig, 0xEE);
-        try sct_data.appendSlice(testing.allocator,sig);
+        try sct_data.appendSlice(testing.allocator, sig);
 
         var list = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer list.deinit(testing.allocator);
         const entry_len: u16 = @intCast(sct_data.items.len);
         try list.writer(testing.allocator).writeInt(u16, entry_len, .big);
-        try list.appendSlice(testing.allocator,sct_data.items);
+        try list.appendSlice(testing.allocator, sct_data.items);
 
         const parsed = try sct.parseList(testing.allocator, list.items);
         defer testing.allocator.free(parsed);
@@ -165,20 +165,20 @@ test "Timestamp encoding conformance - milliseconds since epoch" {
         var sct_data = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer sct_data.deinit(testing.allocator);
 
-        try sct_data.append(testing.allocator,0); // version
-        try sct_data.appendSlice(testing.allocator,&[_]u8{0x11} ** 32); // log ID
+        try sct_data.append(testing.allocator, 0); // version
+        try sct_data.appendSlice(testing.allocator, &[_]u8{0x11} ** 32); // log ID
         try sct_data.writer(testing.allocator).writeInt(u64, tc.ms_timestamp, .big);
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 0 }); // no extensions
-        try sct_data.append(testing.allocator,4); // SHA-256
-        try sct_data.append(testing.allocator,3); // ECDSA
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 71 }); // signature length
-        try sct_data.appendSlice(testing.allocator,&[_]u8{0x22} ** 71); // signature
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 0 }); // no extensions
+        try sct_data.append(testing.allocator, 4); // SHA-256
+        try sct_data.append(testing.allocator, 3); // ECDSA
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 71 }); // signature length
+        try sct_data.appendSlice(testing.allocator, &[_]u8{0x22} ** 71); // signature
 
         var list = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer list.deinit(testing.allocator);
         const entry_len: u16 = @intCast(sct_data.items.len);
         try list.writer(testing.allocator).writeInt(u16, entry_len, .big);
-        try list.appendSlice(testing.allocator,sct_data.items);
+        try list.appendSlice(testing.allocator, sct_data.items);
 
         const parsed = try sct.parseList(testing.allocator, list.items);
         defer testing.allocator.free(parsed);
@@ -211,14 +211,14 @@ test "Log ID format conformance - 32 bytes SHA-256" {
         var sct_data = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer sct_data.deinit(testing.allocator);
 
-        try sct_data.append(testing.allocator,0); // version
-        try sct_data.appendSlice(testing.allocator,&log_id); // log ID
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 0, 0, 0, 0, 0, 0, 1 }); // timestamp
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 0 }); // no extensions
-        try sct_data.append(testing.allocator,4); // SHA-256
-        try sct_data.append(testing.allocator,3); // ECDSA
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 71 }); // signature length
-        try sct_data.appendSlice(testing.allocator,&[_]u8{0x33} ** 71); // signature
+        try sct_data.append(testing.allocator, 0); // version
+        try sct_data.appendSlice(testing.allocator, &log_id); // log ID
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 1 }); // timestamp
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 0 }); // no extensions
+        try sct_data.append(testing.allocator, 4); // SHA-256
+        try sct_data.append(testing.allocator, 3); // ECDSA
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 71 }); // signature length
+        try sct_data.appendSlice(testing.allocator, &[_]u8{0x33} ** 71); // signature
 
         var list = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer list.deinit(testing.allocator);
@@ -253,25 +253,25 @@ test "SCT extensions field conformance" {
         var sct_data = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer sct_data.deinit(testing.allocator);
 
-        try sct_data.append(testing.allocator,0); // version
-        try sct_data.appendSlice(testing.allocator,&[_]u8{0x44} ** 32); // log ID
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 0, 0, 0, 0, 0, 0, 1 }); // timestamp
+        try sct_data.append(testing.allocator, 0); // version
+        try sct_data.appendSlice(testing.allocator, &[_]u8{0x44} ** 32); // log ID
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 1 }); // timestamp
 
         // Extensions with length prefix
         const ext_len: u16 = @intCast(ext_data.len);
         try sct_data.writer(testing.allocator).writeInt(u16, ext_len, .big);
-        try sct_data.appendSlice(testing.allocator,ext_data);
+        try sct_data.appendSlice(testing.allocator, ext_data);
 
-        try sct_data.append(testing.allocator,4); // SHA-256
-        try sct_data.append(testing.allocator,3); // ECDSA
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 71 }); // signature length
-        try sct_data.appendSlice(testing.allocator,&[_]u8{0x55} ** 71); // signature
+        try sct_data.append(testing.allocator, 4); // SHA-256
+        try sct_data.append(testing.allocator, 3); // ECDSA
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 71 }); // signature length
+        try sct_data.appendSlice(testing.allocator, &[_]u8{0x55} ** 71); // signature
 
         var list = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer list.deinit(testing.allocator);
         const entry_len: u16 = @intCast(sct_data.items.len);
         try list.writer(testing.allocator).writeInt(u16, entry_len, .big);
-        try list.appendSlice(testing.allocator,sct_data.items);
+        try list.appendSlice(testing.allocator, sct_data.items);
 
         const parsed = try sct.parseList(testing.allocator, list.items);
         defer testing.allocator.free(parsed);
@@ -300,26 +300,26 @@ test "SCT list wire format - OpenSSL compatibility" {
         var sct_data = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
         defer sct_data.deinit(testing.allocator);
 
-        try sct_data.append(testing.allocator,0); // version
+        try sct_data.append(testing.allocator, 0); // version
 
         // Unique log ID per SCT
         var log_id: [32]u8 = undefined;
         @memset(&log_id, @intCast(i * 0x11));
-        try sct_data.appendSlice(testing.allocator,&log_id);
+        try sct_data.appendSlice(testing.allocator, &log_id);
 
         // Different timestamp per SCT
         const timestamp: u64 = 1609459200000 + (i * 1000000);
         try sct_data.writer(testing.allocator).writeInt(u64, timestamp, .big);
 
         // Extensions (empty for simplicity)
-        try sct_data.appendSlice(testing.allocator,&[_]u8{ 0, 0 });
+        try sct_data.appendSlice(testing.allocator, &[_]u8{ 0, 0 });
 
         // Varying algorithms
         const hash_algs = [_]u8{ 4, 5, 6 }; // SHA-256, SHA-384, SHA-512
-        try sct_data.append(testing.allocator,hash_algs[i]);
+        try sct_data.append(testing.allocator, hash_algs[i]);
 
         const sig_algs = [_]u8{ 3, 3, 1 }; // ECDSA, ECDSA, RSA
-        try sct_data.append(testing.allocator,sig_algs[i]);
+        try sct_data.append(testing.allocator, sig_algs[i]);
 
         // Signature (varying lengths)
         const sig_lens = [_]u16{ 71, 71, 256 };
@@ -328,12 +328,12 @@ test "SCT list wire format - OpenSSL compatibility" {
         const sig = try testing.allocator.alloc(u8, sig_lens[i]);
         defer testing.allocator.free(sig);
         @memset(sig, @intCast(0x66 + i));
-        try sct_data.appendSlice(testing.allocator,sig);
+        try sct_data.appendSlice(testing.allocator, sig);
 
         // Add to list with length prefix
         const entry_len: u16 = @intCast(sct_data.items.len);
         try full_list.writer(testing.allocator).writeInt(u16, entry_len, .big);
-        try full_list.appendSlice(testing.allocator,sct_data.items);
+        try full_list.appendSlice(testing.allocator, sct_data.items);
     }
 
     // Parse the complete list
@@ -407,35 +407,35 @@ test "Malformed SCT rejection - OpenSSL-like validation" {
 fn buildInvalidVersionSct(allocator: std.mem.Allocator) ![]u8 {
     var sct_bytes = try std.ArrayList(u8).initCapacity(allocator, 0);
     errdefer sct_bytes.deinit(allocator);
-    try sct_bytes.append(allocator,1); // Invalid version (not 0)
-    try sct_bytes.appendSlice(allocator,&[_]u8{0} ** 32);
+    try sct_bytes.append(allocator, 1); // Invalid version (not 0)
+    try sct_bytes.appendSlice(allocator, &[_]u8{0} ** 32);
     try sct_bytes.writer(allocator).writeInt(u64, 0, .big);
-    try sct_bytes.appendSlice(allocator,&[_]u8{ 0, 0 });
-    try sct_bytes.append(allocator,4);
-    try sct_bytes.append(allocator,3);
-    try sct_bytes.appendSlice(allocator,&[_]u8{ 0, 71 });
-    try sct_bytes.appendSlice(allocator,&[_]u8{0} ** 71);
+    try sct_bytes.appendSlice(allocator, &[_]u8{ 0, 0 });
+    try sct_bytes.append(allocator, 4);
+    try sct_bytes.append(allocator, 3);
+    try sct_bytes.appendSlice(allocator, &[_]u8{ 0, 71 });
+    try sct_bytes.appendSlice(allocator, &[_]u8{0} ** 71);
     return sct_bytes.toOwnedSlice(allocator);
 }
 
 fn buildTruncatedLogIdSct(allocator: std.mem.Allocator) ![]u8 {
     var sct_bytes = try std.ArrayList(u8).initCapacity(allocator, 0);
     errdefer sct_bytes.deinit(allocator);
-    try sct_bytes.append(allocator,0);
-    try sct_bytes.appendSlice(allocator,&[_]u8{0} ** 16); // Only 16 bytes instead of 32
+    try sct_bytes.append(allocator, 0);
+    try sct_bytes.appendSlice(allocator, &[_]u8{0} ** 16); // Only 16 bytes instead of 32
     return sct_bytes.toOwnedSlice(allocator);
 }
 
 fn buildZeroLengthSigSct(allocator: std.mem.Allocator) ![]u8 {
     var sct_bytes = try std.ArrayList(u8).initCapacity(allocator, 0);
     errdefer sct_bytes.deinit(allocator);
-    try sct_bytes.append(allocator,0);
-    try sct_bytes.appendSlice(allocator,&[_]u8{0} ** 32);
+    try sct_bytes.append(allocator, 0);
+    try sct_bytes.appendSlice(allocator, &[_]u8{0} ** 32);
     try sct_bytes.writer(allocator).writeInt(u64, 0, .big);
-    try sct_bytes.appendSlice(allocator,&[_]u8{ 0, 0 });
-    try sct_bytes.append(allocator,4);
-    try sct_bytes.append(allocator,3);
-    try sct_bytes.appendSlice(allocator,&[_]u8{ 0, 0 }); // Zero-length signature
+    try sct_bytes.appendSlice(allocator, &[_]u8{ 0, 0 });
+    try sct_bytes.append(allocator, 4);
+    try sct_bytes.append(allocator, 3);
+    try sct_bytes.appendSlice(allocator, &[_]u8{ 0, 0 }); // Zero-length signature
     return sct_bytes.toOwnedSlice(allocator);
 }
 

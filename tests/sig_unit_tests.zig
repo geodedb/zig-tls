@@ -110,7 +110,7 @@ test "parseEcdsaSpki - unsupported curve rejection" {
         "01d8cf09282f0e63a1e7275b54e6bb086e92b32c96e7e93bed1f953c12e8eeb91e5a8fb0e8f95e68f19ae8e5f03cf7c4e92e2f1cb893e614f8d5e37fb8b5e0" ++ // 66 bytes X
         "01008f37aa07b9a8e6871bb1f968faa3e09eb6c13c13e40e6c45e64f087c81f962bb1de5f965e0f7c19709fbebb73dd1e388171f9b582ce592c2f5f9d5e7d37f34"; // 66 bytes Y
 
-    var spki: [154]u8 = undefined;  // 308 hex chars = 154 bytes
+    var spki: [154]u8 = undefined; // 308 hex chars = 154 bytes
     hexToBytes(spki_hex, &spki);
 
     // P-521 is unsupported, so parsing should fail
