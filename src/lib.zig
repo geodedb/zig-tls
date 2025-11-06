@@ -206,15 +206,19 @@
 //!
 //! ## Known Limitations
 //!
-//! **Implemented but with limited test coverage:**
-//! - OCSP stapling (RFC 6960): Fully implemented but lacks unit tests
-//! - SCT parsing (RFC 6962): Fully implemented with conformance tests
-//! - Certificate chain validation (RFC 5280): Fully implemented with `validateChain()`
-//! - X.509 parsing: Missing unit tests for asn1, x509, and sig modules
+//! **Implemented with full test coverage:**
+//! - X.509 parsing: 26 unit tests (x509_unit_tests.zig) + 31 OpenSSL conformance tests
+//! - ASN.1 DER decoder: 15 unit tests in asn1.zig
+//! - Signature verification: 10 unit tests (sig_unit_tests.zig)
+//! - Certificate chain validation (RFC 5280): Fully tested via x509_unit_tests.zig and conformance tests
+//! - KeyUsage extension parsing: Fixed and fully tested with OpenSSL conformance
+//! - OCSP stapling (RFC 6960): 28 unit tests + 13 OpenSSL conformance tests
+//! - SCT parsing (RFC 6962): 18 unit tests + 8 OpenSSL conformance tests
 //!
 //! **Not yet implemented:**
 //! - AES-128-CCM cipher suite variants (less common in modern deployments)
 //! - Advanced X.509 features: Name constraints, policy mapping, policy constraints
+//! - ChaCha20-Poly1305 OpenSSL conformance tests (disabled due to limited OpenSSL build availability)
 //!
 //! **Intentionally not supported:**
 //! - Post-handshake authentication: Forbidden by RFC 9001 §4.4 for QUIC
