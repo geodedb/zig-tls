@@ -328,6 +328,30 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_sct_unit_test.step);
 
     // ========================================================================
+    // TLS 1.3 Handshake Integration Tests
+    // ========================================================================
+
+    const tls13_handshake_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/tls13_handshake_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+                .{ .name = "record", .module = record_mod },
+                .{ .name = "alert", .module = alert_mod },
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "sig", .module = sig_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+                .{ .name = "quic_transport_params", .module = transport_params_mod },
+            },
+        }),
+    });
+    const run_tls13_handshake_test = b.addRunArtifact(tls13_handshake_test);
+    test_step.dependOn(&run_tls13_handshake_test.step);
+
+    // ========================================================================
     // Conformance Tests - Interoperability with BoringSSL and OpenSSL
     // ========================================================================
 
@@ -440,6 +464,28 @@ pub fn build(b: *std.Build) void {
 
     const run_sct_openssl_test = b.addRunArtifact(sct_openssl_test);
     conformance_step.dependOn(&run_sct_openssl_test.step);
+
+    // TLS 1.3 Handshake conformance tests
+    const handshake_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/handshake_conformance.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+                .{ .name = "record", .module = record_mod },
+                .{ .name = "alert", .module = alert_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        }),
+    });
+    handshake_conformance_test.linkSystemLibrary("ssl");
+    handshake_conformance_test.linkSystemLibrary("crypto");
+    handshake_conformance_test.linkLibC();
+
+    const run_handshake_conformance_test = b.addRunArtifact(handshake_conformance_test);
+    conformance_step.dependOn(&run_handshake_conformance_test.step);
 
     // Note: conformance tests require OpenSSL/BoringSSL development libraries
     // They are not included in the default test step
