@@ -87,7 +87,7 @@
 //! | RFC 9001 | §4 | QUIC-TLS integration | ✓ Implemented |
 //! | RFC 9001 | §5 | Packet protection (AEAD) | ✓ Implemented |
 //! | RFC 9001 | §6 | Key update for QUIC | ✓ Implemented |
-//! | RFC 9001 | §8 | QUIC transport parameters | ✓ Placeholder |
+//! | RFC 9001 | §8 | QUIC transport parameters | ✓ Implemented |
 //! | RFC 9369 | §5 | QUIC v2 compatible labels | ✓ Implemented |
 //! | RFC 5280 | §4 | X.509 certificate format | ✓ Core features |
 //! | RFC 7301 | - | ALPN extension | ✓ Implemented |
@@ -153,10 +153,10 @@
 //!
 //! ## Supported Cipher Suites
 //!
-//! TLS 1.3 cipher suites (RFC 8446 §B.4):
-//! - `TLS_AES_128_GCM_SHA256` (0x1301) - Primary focus, fully tested
-//! - `TLS_AES_256_GCM_SHA384` (0x1302) - Supported
-//! - `TLS_CHACHA20_POLY1305_SHA256` (0x1303) - Supported
+//! All three mandatory/recommended TLS 1.3 cipher suites (RFC 8446 §B.4):
+//! - `TLS_AES_128_GCM_SHA256` (0x1301) - Fully implemented with comprehensive tests
+//! - `TLS_AES_256_GCM_SHA384` (0x1302) - Fully implemented with SHA-384 key schedule
+//! - `TLS_CHACHA20_POLY1305_SHA256` (0x1303) - Fully implemented with AEAD operations
 //!
 //! ## Supported Signature Schemes
 //!
@@ -206,10 +206,19 @@
 //!
 //! ## Known Limitations
 //!
-//! - Certificate chain validation validates leaf only (full chain TODO)
-//! - OCSP stapling and SCT support are placeholders
-//! - Post-handshake authentication not yet implemented
-//! - Cipher suite support focused on AES-128-GCM (others present but less tested)
+//! **Implemented but with limited test coverage:**
+//! - OCSP stapling (RFC 6960): Fully implemented but lacks unit tests
+//! - SCT parsing (RFC 6962): Fully implemented with conformance tests
+//! - Certificate chain validation (RFC 5280): Fully implemented with `validateChain()`
+//! - X.509 parsing: Missing unit tests for asn1, x509, and sig modules
+//!
+//! **Not yet implemented:**
+//! - AES-128-CCM cipher suite variants (less common in modern deployments)
+//! - Advanced X.509 features: Name constraints, policy mapping, policy constraints
+//!
+//! **Intentionally not supported:**
+//! - Post-handshake authentication: Forbidden by RFC 9001 §4.4 for QUIC
+//!   (client authentication must occur during the initial handshake)
 //!
 //! ## Further Reading
 //!

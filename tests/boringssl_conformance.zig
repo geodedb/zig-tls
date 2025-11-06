@@ -1025,7 +1025,7 @@ test "SHA-384 HKDF-Extract parity with BoringSSL" {
     hexToBytes(salt_hex, &salt);
 
     const ikm_hex = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b" ++
-        "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
+        "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
     var ikm: [48]u8 = undefined;
     hexToBytes(ikm_hex, &ikm);
 

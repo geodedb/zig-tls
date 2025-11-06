@@ -16,25 +16,60 @@ Key characteristics:
 
 ### Running Tests
 
-Tests are embedded in source files using Zig's built-in test framework:
+The project uses both Make and `build.zig` for flexibility:
 
 ```bash
-# Run all tests in a specific file
+# Recommended: Use Make for comprehensive test suites
+make                      # Build + run all tests (unit + vectors + conformance)
+make test                 # Run unit tests + RFC vectors
+make test-unit            # Run only unit tests
+make test-vectors         # Run RFC 8446/9001 test vectors
+make test-conformance     # Run BoringSSL/OpenSSL conformance (requires libssl-dev)
+
+# Alternative: Use zig build directly
+zig build test            # Run all unit tests
+zig build test-vectors    # Run RFC test vectors
+zig build test-conformance # Run conformance tests (requires OpenSSL)
+
+# Run tests for a single module
 zig test src/alert.zig
 zig test src/tls13.zig
 zig test src/record.zig
-
-# Run tests for all modules
-find src -name "*.zig" -exec zig test {} \;
 ```
 
-Note: There is no `build.zig` file yet - tests are run directly via `zig test`.
-
-### Checking Syntax
+### Development Workflow
 
 ```bash
-# Check syntax without running
+# Quick development iteration (format + check + test)
+make dev
+
+# Format code
+make fmt
+# or
+zig fmt src/ tests/
+
+# Check syntax
+make check
+# or
 zig ast-check src/tls13.zig
+
+# Clean build artifacts
+make clean
+```
+
+### Installing Dependencies
+
+For conformance tests, you need OpenSSL development libraries:
+
+```bash
+# Auto-install for your OS
+make install-deps
+
+# Or manually:
+# Ubuntu/Debian: sudo apt-get install libssl-dev pkg-config
+# Fedora/RHEL: sudo dnf install openssl-devel pkg-config
+# Arch: sudo pacman -S openssl pkg-config
+# macOS: brew install openssl pkg-config
 ```
 
 ## Architecture
@@ -118,13 +153,14 @@ src/
 
 ### Important Context for AI
 
-- **No build system yet**: Tests run via `zig test <file>` directly
+- **Build system**: Uses both Makefile (recommended) and `build.zig`. The build system manages module dependencies and test orchestration. See `build.zig` for module import structure.
 - **QUIC integration context**: This is not a standalone TLS library - it's designed to be embedded in a QUIC stack where CRYPTO frames replace traditional TLS records
 - **Transcript management**: The TLS handshake messages are hashed incrementally; the transcript hash is critical for Finished message verification and must be updated in the exact order messages are processed
 - **Secret callbacks**: When new encryption levels become available, the TLS layer calls back to QUIC (`on_secret_available`) so it can install keys for packet protection
 - **Transport parameters**: QUIC-specific transport parameters are carried in TLS extension 0x0039 (quic_transport_parameters) in EncryptedExtensions
-- **Cipher suite limitation**: Currently focused on TLS_AES_128_GCM_SHA256 (0x1301) as the primary suite
+- **Cipher suite support**: Primary focus on TLS_AES_128_GCM_SHA256 (0x1301), with support for AES-256-GCM-SHA384 and ChaCha20-Poly1305
 - **Version constraint**: Implementation targets Zig 0.15.1 specifically - stdlib APIs differ across Zig versions
+- **Module organization**: Library is organized as interdependent Zig modules - see `src/lib.zig` for the public API surface and module re-exports
 
 ### RFC References
 
@@ -137,17 +173,40 @@ Key RFCs implemented (cited throughout code):
 
 ### Testing Strategy
 
-- **Unit tests**: Per-module tests with RFC subsection references (embedded in source files)
-- **Integration tests**: Planned in `tests/` directory for full handshake flows
-- **Fuzz targets**: Harnesses for message parsing, certificate handling
-- **Property tests**: HKDF vector validation, transcript hash invariants
+The project has comprehensive test coverage across multiple levels:
 
-### Known Gaps and Future Work
+- **Unit tests** (94 tests): Per-module tests with RFC subsection references (embedded in source files)
+  - Run with: `make test-unit` or `zig build test`
+  - Each module includes its own test suite
 
-- OCSP stapling and SCT (Signed Certificate Timestamp) support - placeholders exist
-- Full certificate chain validation - currently validates leaf only
-- Additional cipher suites (AES-256-GCM-SHA384, AES-128-CCM variants)
-- Post-handshake authentication and key updates (partial implementation exists)
+- **RFC test vectors** (13 tests): Validates compliance with RFC 8446 & RFC 9001
+  - Run with: `make test-vectors` or `zig build test-vectors`
+  - Located in: `tests/rfc8446_vectors.zig`
+  - Tests HKDF key derivation, QUIC initial secrets, traffic secret expansion
+
+- **Conformance tests** (67 tests): BoringSSL and OpenSSL parity testing
+  - Run with: `make test-conformance` or `zig build test-conformance`
+  - Located in: `tests/boringssl_conformance.zig` and `tests/openssl_conformance.zig`
+  - Requires OpenSSL development libraries (`libssl-dev`)
+  - Tests AEAD operations, HKDF compatibility, alert code mapping, transport parameters
+
+**Total test count**: 174 tests across all suites
+
+### Known Limitations and Future Work
+
+**Implemented but with limited test coverage:**
+- OCSP stapling (RFC 6960) - Fully implemented but lacks unit tests
+- SCT parsing (RFC 6962) - Fully implemented with conformance tests
+- Certificate chain validation (RFC 5280) - Fully implemented with `validateChain()` but lacks dedicated tests
+- X.509 parsing - Missing unit tests for asn1.zig, x509.zig, and sig.zig modules
+
+**Not yet implemented:**
+- AES-128-CCM cipher suite variants (AES-CCM is less common in modern deployments)
+- Advanced X.509 features: Name constraints, policy mapping, policy constraints
+- ChaCha20-Poly1305 OpenSSL conformance tests (disabled due to limited OpenSSL build availability)
+
+**Intentionally not supported:**
+- Post-handshake authentication - Forbidden by RFC 9001 §4.4 for QUIC (client auth must occur during initial handshake)
 
 ### Code Style and Conventions
 
@@ -173,3 +232,31 @@ Key RFCs implemented (cited throughout code):
 - Extension parsing issues: Check `tls13_full.zig` for format assumptions
 - Secret derivation: Compare against RFC 8446 Appendix A test vectors
 - Certificate errors: Verify DER encoding with `openssl x509 -inform DER -in cert.der -text`
+- Test failures: Run `make clean` to clear Zig cache if tests fail unexpectedly after code changes
+
+### Common Development Scenarios
+
+**Adding a new cipher suite:**
+1. Add enum variant to `CipherSuite` in `src/tls13_full.zig`
+2. Update cipher suite mapping in `src/record.zig` for AEAD operations
+3. Add HKDF variant in `src/key_schedule.zig` if needed (e.g., SHA-384 vs SHA-256)
+4. Add test vectors in `tests/rfc8446_vectors.zig`
+5. Add conformance tests in `tests/boringssl_conformance.zig` and `tests/openssl_conformance.zig`
+
+**Adding a new signature scheme:**
+1. Add enum variant to `SignatureScheme` in `src/tls13_full.zig`
+2. Implement verification in `src/sig.zig` using `std.crypto.sign`
+3. Add test certificates and signatures in test files
+4. Update signature scheme negotiation in `src/tls13.zig`
+
+**Modifying handshake flow:**
+1. Update state machine in `src/tls13.zig` (see HandshakePhase enum)
+2. Ensure transcript hash is updated in correct order
+3. Update secret installation callbacks if encryption level changes
+4. Add tests for new flow in `src/tls13.zig` test section
+
+**Working with conformance tests:**
+- These tests link against system OpenSSL/BoringSSL libraries
+- If tests fail, check hex string lengths match buffer sizes (common issue)
+- Use `hexToBytes()` utility function for test data conversion
+- Conformance tests validate that ztls produces identical outputs to industry-standard implementations
