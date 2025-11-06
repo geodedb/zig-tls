@@ -214,11 +214,17 @@
 //! - KeyUsage extension parsing: Fixed and fully tested with OpenSSL conformance
 //! - OCSP stapling (RFC 6960): 28 unit tests + 13 OpenSSL conformance tests
 //! - SCT parsing (RFC 6962): 18 unit tests + 8 OpenSSL conformance tests
+//! - Advanced X.509 extensions (RFC 5280):
+//!   - Name Constraints (§4.2.1.10): Permitted/excluded DNS name subtrees
+//!   - Policy Mappings (§4.2.1.5): Cross-domain policy equivalence
+//!   - Policy Constraints (§4.2.1.11): Policy validation constraints
+//! - ChaCha20-Poly1305 conformance: 1 OpenSSL test with runtime availability detection
 //!
 //! **Not yet implemented:**
-//! - AES-128-CCM cipher suite variants (less common in modern deployments)
-//! - Advanced X.509 features: Name constraints, policy mapping, policy constraints
-//! - ChaCha20-Poly1305 OpenSSL conformance tests (disabled due to limited OpenSSL build availability)
+//! - AES-128-CCM cipher suite variants (RFC 6655): Blocked by Zig 0.15.1 stdlib
+//!   limitation - lacks std.crypto.aead.aes_ccm. Would require custom implementation
+//!   from scratch with extensive cryptographic validation. AES-CCM is less common
+//!   in modern QUIC deployments (most use AES-GCM or ChaCha20-Poly1305).
 //!
 //! **Intentionally not supported:**
 //! - Post-handshake authentication: Forbidden by RFC 9001 §4.4 for QUIC

@@ -200,14 +200,15 @@ The project has comprehensive test coverage across multiple levels:
 - Signature verification - 10 unit tests (sig_unit_tests.zig)
 - Certificate chain validation (RFC 5280) - Fully tested via x509_unit_tests.zig and conformance tests
 - KeyUsage extension parsing - Fixed and fully tested with OpenSSL conformance
+- Advanced X.509 extensions (RFC 5280):
+  - Name Constraints (§4.2.1.10) - Permitted/excluded DNS name subtrees
+  - Policy Mappings (§4.2.1.5) - Cross-domain policy equivalence
+  - Policy Constraints (§4.2.1.11) - Policy validation constraints
+- ChaCha20-Poly1305 conformance - 1 OpenSSL test with runtime availability detection
 
 **Implemented but with limited test coverage:**
-- OCSP stapling (RFC 6960) - Fully implemented but lacks dedicated unit tests
-- SCT parsing (RFC 6962) - Fully implemented with conformance tests only
-
-**Implemented:**
-- Advanced X.509 features: Name constraints (RFC 5280 §4.2.1.10), policy mapping (RFC 5280 §4.2.1.5), policy constraints (RFC 5280 §4.2.1.11)
-- ChaCha20-Poly1305 OpenSSL conformance tests (enabled with runtime availability detection)
+- OCSP stapling (RFC 6960) - Fully implemented, 28 unit tests + 13 OpenSSL conformance tests
+- SCT parsing (RFC 6962) - Fully implemented, 18 unit tests + 8 OpenSSL conformance tests
 
 **Not yet implemented:**
 - AES-128-CCM cipher suite variants (RFC 6655) - **Blocked**: Zig 0.15.1 stdlib does not include `std.crypto.aead.aes_ccm`. Implementation would require custom AES-CCM from scratch, which is complex and requires extensive cryptographic validation. AES-CCM is less common in modern QUIC deployments (most use AES-GCM or ChaCha20-Poly1305).
