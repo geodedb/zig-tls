@@ -44,13 +44,9 @@
 const std = @import("std");
 
 // Re-export test modules for discovery
-// TODO: Create these test modules
-// pub const section_4_1_basic_fields = @import("section_4_1_basic_fields.zig");
-// pub const section_4_2_extensions = @import("section_4_2_extensions.zig");
-// pub const section_4_2_1_3_key_usage = @import("section_4_2_1_3_key_usage.zig");
-// pub const section_4_2_1_6_subject_alt_name = @import("section_4_2_1_6_subject_alt_name.zig");
-// pub const section_4_2_1_9_basic_constraints = @import("section_4_2_1_9_basic_constraints.zig");
-// pub const section_4_2_1_12_extended_key_usage = @import("section_4_2_1_12_extended_key_usage.zig");
+pub const section_4_certificate_structure = @import("section_4_certificate_structure.zig");
+
+// TODO: Create additional test modules
 // pub const section_6_path_validation = @import("section_6_path_validation.zig");
 
 test {

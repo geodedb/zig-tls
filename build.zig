@@ -378,8 +378,8 @@ pub fn build(b: *std.Build) void {
     const run_rfc5280_test = b.addRunArtifact(rfc5280_test);
     test_rfc5280_step.dependOn(&run_rfc5280_test.step);
 
-    // Add RFC 5280 tests to main test suite (when tests are added)
-    // test_step.dependOn(test_rfc5280_step);
+    // Add RFC 5280 tests to main test suite
+    test_step.dependOn(test_rfc5280_step);
 
     // ========================================================================
     // Extended Unit Tests - Comprehensive module-specific tests

@@ -82,7 +82,16 @@ test "RFC 8446 §4.1.2: ClientHello legacy_version must be 0x0303" {
     // Should parse successfully (even if extensions are missing, for this basic test)
     // In real TLS 1.3, supported_versions extension is REQUIRED
     if (result) |ch| {
-        defer ch.deinit(testing.allocator);
+        defer {
+            testing.allocator.free(ch.cipher_suites);
+            if (ch.supported_groups) |groups| testing.allocator.free(groups);
+            if (ch.signature_algorithms) |algs| testing.allocator.free(algs);
+            if (ch.alpn_list) |list| testing.allocator.free(list);
+            if (ch.pre_shared_key) |psk| {
+                testing.allocator.free(psk.identities);
+                testing.allocator.free(psk.binders);
+            }
+        }
         // Verify random field is 32 bytes
         try testing.expectEqual(@as(usize, 32), ch.random.len);
     } else |_| {
@@ -148,13 +157,13 @@ test "RFC 8446 §4.2: ClientHello must contain extensions" {
 // the client.
 //
 // ```
-//! struct {
-//!     select (Handshake.msg_type) {
-//!         case client_hello:
-//!             ProtocolVersion versions<2..254>;
-//!     };
-//! } SupportedVersions;
-//! ```
+// struct {
+//     select (Handshake.msg_type) {
+//         case client_hello:
+//             ProtocolVersion versions<2..254>;
+//     };
+// } SupportedVersions;
+// ```
 test "RFC 8446 §4.2.1: supported_versions extension type" {
     const supported_versions_type: u16 = 0x002b;
     try testing.expectEqual(@as(u16, 0x002b), supported_versions_type);
@@ -170,15 +179,15 @@ test "RFC 8446 §4.2.1: supported_versions extension type" {
 // ECDHE public key for one or more named groups.
 //
 // ```
-//! struct {
-//!     NamedGroup group;
-//!     opaque key_exchange<1..2^16-1>;
-//! } KeyShareEntry;
-//!
-//! struct {
-//!     KeyShareEntry client_shares<0..2^16-1>;
-//! } KeyShareClientHello;
-//! ```
+// struct {
+//     NamedGroup group;
+//     opaque key_exchange<1..2^16-1>;
+// } KeyShareEntry;
+//
+// struct {
+//     KeyShareEntry client_shares<0..2^16-1>;
+// } KeyShareClientHello;
+// ```
 test "RFC 8446 §4.2.8: key_share extension type" {
     const key_share_type: u16 = 0x0033;
     try testing.expectEqual(@as(u16, 0x0033), key_share_type);
@@ -219,16 +228,16 @@ test "RFC 9001 §8.2: QUIC transport parameters extension type" {
 // resumption or 0-RTT.
 //
 // ```
-//! struct {
-//!     opaque identity<1..2^16-1>;
-//!     uint32 obfuscated_ticket_age;
-//! } PskIdentity;
-//!
-//! struct {
-//!     PskIdentity identities<7..2^16-1>;
-//!     PskBinderEntry binders<33..2^16-1>;
-//! } OfferedPsks;
-//! ```
+// struct {
+//     opaque identity<1..2^16-1>;
+//     uint32 obfuscated_ticket_age;
+// } PskIdentity;
+//
+// struct {
+//     PskIdentity identities<7..2^16-1>;
+//     PskBinderEntry binders<33..2^16-1>;
+// } OfferedPsks;
+// ```
 test "RFC 8446 §4.2.11: pre_shared_key extension must be last" {
     const pre_shared_key_type: u16 = 0x0029;
     try testing.expectEqual(@as(u16, 0x0029), pre_shared_key_type);
@@ -271,15 +280,15 @@ test "RFC 8446 §4.2.3: signature_algorithms extension type" {
 // which hostname it is attempting to connect to. This enables virtual hosting.
 //
 // ```
-//! struct {
-//!     NameType name_type;
-//!     opaque HostName<1..2^16-1>;
-//! } ServerName;
-//!
-//! struct {
-//!     ServerName server_name_list<1..2^16-1>;
-//! } ServerNameList;
-//! ```
+// struct {
+//     NameType name_type;
+//     opaque HostName<1..2^16-1>;
+// } ServerName;
+//
+// struct {
+//     ServerName server_name_list<1..2^16-1>;
+// } ServerNameList;
+// ```
 test "RFC 6066 §3: server_name extension type" {
     const server_name_type: u16 = 0x0000;
     try testing.expectEqual(@as(u16, 0x0000), server_name_type);

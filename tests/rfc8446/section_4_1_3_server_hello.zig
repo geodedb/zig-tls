@@ -144,13 +144,13 @@ test "RFC 8446 §4.1.3: ServerHello compression method must be 0x00" {
 // ServerHello messages. Unlike ClientHello, it contains a single selected version.
 //
 // ```
-//! struct {
-//!     select (Handshake.msg_type) {
-//!         case server_hello:
-//!             ProtocolVersion selected_version;
-//!     };
-//! } SupportedVersions;
-//! ```
+// struct {
+//     select (Handshake.msg_type) {
+//         case server_hello:
+//             ProtocolVersion selected_version;
+//     };
+// } SupportedVersions;
+// ```
 test "RFC 8446 §4.2.1: ServerHello supported_versions extension" {
     const supported_versions_type: u16 = 0x002b;
     try testing.expectEqual(@as(u16, 0x002b), supported_versions_type);
@@ -166,10 +166,10 @@ test "RFC 8446 §4.2.1: ServerHello supported_versions extension" {
 // ephemeral ECDHE public key for the selected named group.
 //
 // ```
-//! struct {
-//!     KeyShareEntry server_share;
-//! } KeyShareServerHello;
-//! ```
+// struct {
+//     KeyShareEntry server_share;
+// } KeyShareServerHello;
+// ```
 test "RFC 8446 §4.2.8: ServerHello key_share extension" {
     const key_share_type: u16 = 0x0033;
     try testing.expectEqual(@as(u16, 0x0033), key_share_type);

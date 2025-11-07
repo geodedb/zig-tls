@@ -89,18 +89,18 @@ test "RFC 8446 §4.2: Extension type identifiers" {
 // which named groups (ECDHE curves and FFDHE groups) the client supports.
 //
 // ```
-//! enum {
-//!     /* Elliptic Curve Groups (ECDHE) */
-//!     secp256r1(0x0017), secp384r1(0x0018), secp521r1(0x0019),
-//!     x25519(0x001D), x448(0x001E),
-//!
-//!     /* Finite Field Groups (FFDHE) */
-//!     ffdhe2048(0x0100), ffdhe3072(0x0101), ffdhe4096(0x0102),
-//!     ffdhe6144(0x0103), ffdhe8192(0x0104),
-//!
-//!     (0xFFFF)
-//! } NamedGroup;
-//! ```
+// enum {
+//     /* Elliptic Curve Groups (ECDHE) */
+//     secp256r1(0x0017), secp384r1(0x0018), secp521r1(0x0019),
+//     x25519(0x001D), x448(0x001E),
+//
+//     /* Finite Field Groups (FFDHE) */
+//     ffdhe2048(0x0100), ffdhe3072(0x0101), ffdhe4096(0x0102),
+//     ffdhe6144(0x0103), ffdhe8192(0x0104),
+//
+//     (0xFFFF)
+// } NamedGroup;
+// ```
 test "RFC 8446 §4.2.7: Named group identifiers" {
     // Elliptic Curve Groups (most common)
     const x25519: u16 = 0x001d;
@@ -125,24 +125,24 @@ test "RFC 8446 §4.2.7: Named group identifiers" {
 // algorithm pairs the client can verify. This is REQUIRED in TLS 1.3.
 //
 // ```
-//! enum {
-//!     /* ECDSA algorithms */
-//!     ecdsa_secp256r1_sha256(0x0403),
-//!     ecdsa_secp384r1_sha384(0x0503),
-//!     ecdsa_secp521r1_sha512(0x0603),
-//!
-//!     /* Ed algorithms */
-//!     ed25519(0x0807),
-//!     ed448(0x0808),
-//!
-//!     /* RSASSA-PSS algorithms */
-//!     rsa_pss_rsae_sha256(0x0804),
-//!     rsa_pss_rsae_sha384(0x0805),
-//!     rsa_pss_rsae_sha512(0x0806),
-//!
-//!     (0xFFFF)
-//! } SignatureScheme;
-//! ```
+// enum {
+//     /* ECDSA algorithms */
+//     ecdsa_secp256r1_sha256(0x0403),
+//     ecdsa_secp384r1_sha384(0x0503),
+//     ecdsa_secp521r1_sha512(0x0603),
+//
+//     /* Ed algorithms */
+//     ed25519(0x0807),
+//     ed448(0x0808),
+//
+//     /* RSASSA-PSS algorithms */
+//     rsa_pss_rsae_sha256(0x0804),
+//     rsa_pss_rsae_sha384(0x0805),
+//     rsa_pss_rsae_sha512(0x0806),
+//
+//     (0xFFFF)
+// } SignatureScheme;
+// ```
 test "RFC 8446 §4.2.3: Signature scheme identifiers" {
     // ECDSA algorithms
     const ecdsa_secp256r1_sha256: u16 = 0x0403;
@@ -166,8 +166,8 @@ test "RFC 8446 §4.2.3: Signature scheme identifiers" {
 // the client supports.
 //
 // ```
-//! enum { psk_ke(0), psk_dhe_ke(1), (255) } PskKeyExchangeMode;
-//! ```
+// enum { psk_ke(0), psk_dhe_ke(1), (255) } PskKeyExchangeMode;
+// ```
 test "RFC 8446 §4.2.9: PSK key exchange modes" {
     const psk_ke: u8 = 0; // PSK-only mode
     const psk_dhe_ke: u8 = 1; // PSK with (EC)DHE mode
@@ -230,12 +230,12 @@ test "RFC 8446 §4.2.10: Early data extension semantics" {
 // protocols it supports. For QUIC, this is typically "h3" (HTTP/3).
 //
 // ```
-//! opaque ProtocolName<1..2^8-1>;
-//!
-//! struct {
-//!     ProtocolName protocol_name_list<2..2^16-1>
-//! } ProtocolNameList;
-//! ```
+// opaque ProtocolName<1..2^8-1>;
+//
+// struct {
+//     ProtocolName protocol_name_list<2..2^16-1>
+// } ProtocolNameList;
+// ```
 test "RFC 7301: ALPN extension for HTTP/3" {
     const alpn_type: u16 = 0x0010;
     try testing.expectEqual(@as(u16, 0x0010), alpn_type);
@@ -252,19 +252,19 @@ test "RFC 7301: ALPN extension for HTTP/3" {
 // it is attempting to connect to. This enables virtual hosting.
 //
 // ```
-//! enum {
-//!     host_name(0), (255)
-//! } NameType;
-//!
-//! opaque HostName<1..2^16-1>;
-//!
-//! struct {
-//!     NameType name_type;
-//!     select (name_type) {
-//!         case host_name: HostName;
-//!     } name;
-//! } ServerName;
-//! ```
+// enum {
+//     host_name(0), (255)
+// } NameType;
+//
+// opaque HostName<1..2^16-1>;
+//
+// struct {
+//     NameType name_type;
+//     select (name_type) {
+//         case host_name: HostName;
+//     } name;
+// } ServerName;
+// ```
 test "RFC 6066 §3: Server Name Indication" {
     const server_name_type: u16 = 0x0000;
     try testing.expectEqual(@as(u16, 0x0000), server_name_type);

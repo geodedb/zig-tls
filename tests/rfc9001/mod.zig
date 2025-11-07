@@ -40,12 +40,10 @@
 const std = @import("std");
 
 // Re-export test modules for discovery
+pub const section_4_crypto_frames = @import("section_4_crypto_frames.zig");
+pub const section_8_2_transport_params = @import("section_8_2_transport_params.zig");
 pub const appendix_a_initial_secrets = @import("appendix_a_initial_secrets.zig");
 pub const section_5_packet_protection = @import("section_5_packet_protection.zig");
-
-// TODO: Add more section tests as they are created
-// pub const section_4_crypto_frames = @import("section_4_crypto_frames.zig");
-// pub const section_8_2_transport_params = @import("section_8_2_transport_params.zig");
 
 test {
     std.testing.refAllDecls(@This());
