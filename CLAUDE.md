@@ -31,10 +31,13 @@ zig build test            # Run all unit tests
 zig build test-vectors    # Run RFC test vectors
 zig build test-conformance # Run conformance tests (requires OpenSSL)
 
-# Run tests for a single module
+# Run tests for specific modules
 zig test src/alert.zig
-zig test src/tls13.zig
-zig test src/record.zig
+zig test src/tls13/context.zig
+zig test src/tls13/transcript.zig
+zig test src/tls13/messages/client_hello.zig
+zig test src/record/protection.zig
+zig test src/quic_transport_params.zig
 ```
 
 ### Development Workflow
@@ -51,7 +54,7 @@ zig fmt src/ tests/
 # Check syntax
 make check
 # or
-zig ast-check src/tls13.zig
+zig ast-check src/tls13/context.zig
 
 # Clean build artifacts
 make clean
@@ -90,44 +93,72 @@ make install-deps
    - ASN.1/X.509 parsing currently custom but migration to stdlib planned (tracked in implementation plan)
    - AEAD operations use `std.crypto.aead` (AES-GCM, ChaCha20-Poly1305)
 
-### Module Structure
+### Module Structure (Modularization Phases 1-5 Complete)
+
+The codebase is **fully modularized** into focused, single-responsibility modules:
 
 ```
 src/
-├── tls13.zig           # Main TLS 1.3 context & handshake state machine
-│                       # Provides Config, Callbacks, Context types
-│                       # Manages transcript hashing, secret derivation, CRYPTO frame processing
+├── tls13/                      # Core TLS 1.3 modules (~4,000 lines total)
+│   ├── config.zig              # Configuration (SNI, ALPN, certs, trust store)
+│   ├── context.zig             # Main TLS driver, CRYPTO frame processing (~1,697 lines)
+│   ├── engine.zig              # Legacy minimal driver (~1,759 lines)
+│   ├── key_derivation.zig      # Traffic secret derivation (RFC 8446 §7.1)
+│   ├── secret_manager.zig      # Secret lifecycle & installation
+│   ├── state.zig               # Handshake state machine (RFC 8446 §4)
+│   ├── transcript.zig          # Transcript hash management (RFC 8446 §4.4.1)
+│   ├── callbacks.zig           # QUIC integration callbacks
+│   ├── crypto_processor.zig    # CRYPTO frame buffering & parsing
+│   └── handshake_flow.zig      # Message flow orchestration
 │
-├── tls13_full.zig      # Full TLS 1.3 message parsing (ClientHello, ServerHello, extensions)
-│                       # Defines ExtensionType, NamedGroup, SignatureScheme, CipherSuite
-│                       # Handles real-world TLS format parsing for interop
+├── tls13/messages/             # TLS 1.3 message parsing (~2,300 lines total)
+│   ├── client_hello.zig        # ClientHello parsing (RFC 8446 §4.1.2)
+│   ├── server_hello.zig        # ServerHello parsing (RFC 8446 §4.1.3)
+│   ├── core_types.zig          # ExtensionType, NamedGroup, SignatureScheme, CipherSuite
+│   ├── encrypted_extensions.zig # EncryptedExtensions (RFC 8446 §4.3.1)
+│   ├── certificate.zig         # Certificate message (RFC 8446 §4.4.2)
+│   ├── certificate_verify.zig  # CertificateVerify (RFC 8446 §4.4.3)
+│   ├── finished.zig            # Finished message (RFC 8446 §4.4.4)
+│   └── new_session_ticket.zig  # NewSessionTicket (RFC 8446 §4.6.1)
 │
-├── record.zig          # TLS 1.3 record layer primitives (RFC 8446 §5)
-│                       # TLSPlaintext/TLSInnerPlaintext framing
-│                       # AEAD protection (AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305)
-│                       # Nonce derivation and usage limit tracking
+├── record/                     # TLS 1.3 record layer (RFC 8446 §5)
+│   ├── types.zig               # TLSPlaintext, TLSInnerPlaintext, ContentType
+│   ├── protection.zig          # AEAD protection (AES-GCM, ChaCha20-Poly1305)
+│   └── limits.zig              # AEAD usage limits (RFC 8446 §5.5)
 │
-├── key_schedule.zig    # HKDF-based key derivation (RFC 8446 §7, RFC 9001 §5.1)
-│                       # Uses std.crypto.kdf.hkdf.Hkdf
-│                       # Provides initial secrets, traffic secrets, key updates
+├── key_schedule.zig            # HKDF-based key derivation (RFC 8446 §7, RFC 9001 §5)
+│                               # Uses std.crypto.kdf.hkdf.Hkdf
 │
-├── x509.zig            # X.509 certificate parsing and validation (RFC 5280 subset)
-│                       # Subject Alternative Names, Basic Constraints, Key Usage
-│                       # Certificate validity checking, SNI matching
+├── x509.zig                    # X.509 certificate parsing (RFC 5280)
+│                               # SANs, Basic Constraints, Key Usage, SNI matching
 │
-├── sig.zig             # Signature scheme handling (RFC 8446 §4.2.3, §4.4.3)
-│                       # ECDSA (P-256, P-384), RSA-PSS, Ed25519
-│                       # SubjectPublicKeyInfo parsing and signature verification
+├── sig.zig                     # Signature verification (RFC 8446 §4.2.3)
+│                               # ECDSA (P-256, P-384), RSA-PSS, Ed25519
 │
-├── asn1.zig            # Minimal ASN.1 DER decoder for X.509
-│                       # TLV parsing, SEQUENCE, INTEGER, BIT STRING, OID, etc.
+├── asn1.zig                    # ASN.1 DER decoder for X.509
 │
-├── alert.zig           # TLS alert protocol (RFC 8446 §6)
-│                       # Alert descriptions, levels, QUIC error code mapping (RFC 9001 §4.8)
+├── ocsp.zig                    # OCSP stapling (RFC 6960)
 │
-└── zero_rtt.zig        # 0-RTT ticket tracking and anti-replay (RFC 8446 §8)
-                        # AntiReplayWindow, TicketState, FIFO eviction
+├── sct.zig                     # SCT parsing (RFC 6962)
+│
+├── alert.zig                   # TLS alerts (RFC 8446 §6)
+│
+├── zero_rtt.zig                # 0-RTT anti-replay (RFC 8446 §8)
+│
+└── quic_transport_params.zig   # QUIC transport parameters (RFC 9001 §8.2, RFC 9000 §18)
 ```
+
+**RFC Section to Module Mapping:**
+- **RFC 8446 §4.1.2** ClientHello → `src/tls13/messages/client_hello.zig`
+- **RFC 8446 §4.1.3** ServerHello → `src/tls13/messages/server_hello.zig`
+- **RFC 8446 §4.2** Extensions → `src/tls13/messages/core_types.zig`, `encrypted_extensions.zig`
+- **RFC 8446 §4.4.1** Transcript Hash → `src/tls13/transcript.zig`
+- **RFC 8446 §4.4.4** Finished → `src/tls13/messages/finished.zig`
+- **RFC 8446 §5** Record Layer → `src/record/protection.zig`, `src/record/types.zig`
+- **RFC 8446 §7** Key Schedule → `src/key_schedule.zig`, `src/tls13/key_derivation.zig`
+- **RFC 9001 §4** CRYPTO Frames → `src/tls13/context.zig` (processCrypto)
+- **RFC 9001 §8.2** Transport Parameters → `src/quic_transport_params.zig`
+- **RFC 5280** Certificates → `src/x509.zig`
 
 ### Key Data Flow
 
@@ -154,13 +185,21 @@ src/
 ### Important Context for AI
 
 - **Build system**: Uses both Makefile (recommended) and `build.zig`. The build system manages module dependencies and test orchestration. See `build.zig` for module import structure.
+- **Modular architecture**: Codebase is **fully modularized** (Phases 1-5 complete) with 21+ focused modules:
+  - Core TLS 1.3: `src/tls13/` (10 modules for state, config, transcript, secrets, callbacks, etc.)
+  - Message parsing: `src/tls13/messages/` (8 modules for ClientHello, ServerHello, extensions, etc.)
+  - Record layer: `src/record/` (3 modules for types, protection, limits)
+  - Supporting: key_schedule.zig, x509.zig, sig.zig, asn1.zig, quic_transport_params.zig, etc.
 - **QUIC integration context**: This is not a standalone TLS library - it's designed to be embedded in a QUIC stack where CRYPTO frames replace traditional TLS records
-- **Transcript management**: The TLS handshake messages are hashed incrementally; the transcript hash is critical for Finished message verification and must be updated in the exact order messages are processed
-- **Secret callbacks**: When new encryption levels become available, the TLS layer calls back to QUIC (`on_secret_available`) so it can install keys for packet protection
+  - CRYPTO frame processing: `src/tls13/crypto_processor.zig` and `src/tls13/context.zig`
+  - Transport parameters: `src/quic_transport_params.zig` (RFC 9001 §8.2, RFC 9000 §18)
+  - Encryption level callbacks: `src/tls13/callbacks.zig` and `src/tls13/secret_manager.zig`
+- **Transcript management**: The TLS handshake messages are hashed incrementally via `src/tls13/transcript.zig`; the transcript hash is critical for Finished message verification and must be updated in the exact order messages are processed
+- **Secret callbacks**: When new encryption levels become available, the TLS layer calls back to QUIC (`on_secret_available`) via `src/tls13/callbacks.zig` so it can install keys for packet protection
 - **Transport parameters**: QUIC-specific transport parameters are carried in TLS extension 0x0039 (quic_transport_parameters) in EncryptedExtensions
 - **Cipher suite support**: Primary focus on TLS_AES_128_GCM_SHA256 (0x1301), with support for AES-256-GCM-SHA384 and ChaCha20-Poly1305
 - **Version constraint**: Implementation targets Zig 0.15.1 specifically - stdlib APIs differ across Zig versions
-- **Module organization**: Library is organized as interdependent Zig modules - see `src/lib.zig` for the public API surface and module re-exports
+- **Module organization**: Library is organized as interdependent Zig modules - see `src/lib.zig` for the public API surface and module re-exports. Each module maps to specific RFC sections for traceability.
 
 ### RFC References
 
@@ -175,22 +214,41 @@ Key RFCs implemented (cited throughout code):
 
 The project has comprehensive test coverage across multiple levels:
 
-- **Unit tests** (94 tests): Per-module tests with RFC subsection references (embedded in source files)
+- **Unit tests** (344 tests): Per-module tests with RFC subsection references (embedded in source files)
   - Run with: `make test-unit` or `zig build test`
   - Each module includes its own test suite
+  - Covers all 21+ modules in the modular architecture
 
-- **RFC test vectors** (13 tests): Validates compliance with RFC 8446 & RFC 9001
+- **RFC compliance tests** (148 tests): Validates strict adherence to RFC specifications
+  - Run with: `make test` (included in default test suite)
+  - **RFC 8446** (79 tests): TLS 1.3 protocol tests organized by section
+    - `tests/rfc8446/section_4_1_2_client_hello.zig` (16 tests)
+    - `tests/rfc8446/section_4_1_3_server_hello.zig` (11 tests)
+    - `tests/rfc8446/section_4_2_extensions.zig` (13 tests)
+    - `tests/rfc8446/section_4_4_finished.zig` (10 tests)
+    - And more covering all TLS 1.3 protocol aspects
+  - **RFC 9001** (52 tests): QUIC-TLS integration tests
+    - `tests/rfc9001/section_4_crypto_frames.zig` (23 tests)
+    - `tests/rfc9001/section_8_2_transport_params.zig` (18 tests)
+    - `tests/rfc9001/section_5_key_schedule.zig` (11 tests)
+  - **RFC 5280** (17 tests): X.509 certificate structure tests
+    - `tests/rfc5280/section_4_certificate_structure.zig`
+
+- **RFC test vectors** (13 tests): Official test vectors from RFC appendices
   - Run with: `make test-vectors` or `zig build test-vectors`
   - Located in: `tests/rfc8446_vectors.zig`
   - Tests HKDF key derivation, QUIC initial secrets, traffic secret expansion
 
-- **Conformance tests** (67 tests): BoringSSL and OpenSSL parity testing
+- **Conformance tests** (124 tests): BoringSSL and OpenSSL parity testing
   - Run with: `make test-conformance` or `zig build test-conformance`
-  - Located in: `tests/boringssl_conformance.zig` and `tests/openssl_conformance.zig`
   - Requires OpenSSL development libraries (`libssl-dev`)
+  - **BoringSSL conformance** (34 tests): `tests/boringssl_conformance.zig`
+  - **OpenSSL conformance** (90 tests): `tests/openssl_conformance.zig`
   - Tests AEAD operations, HKDF compatibility, alert code mapping, transport parameters
 
-**Total test count**: 174 tests across all suites
+**Total test count**: 629 tests across all suites
+
+All tests include RFC section citations for traceability and are organized to match the specification structure.
 
 ### Known Limitations and Future Work
 
@@ -236,35 +294,59 @@ The project has comprehensive test coverage across multiple levels:
 
 ### Debugging Tips
 
-- Transcript hash mismatches: Enable logging in `key_schedule.zig` (has debug statements)
-- Extension parsing issues: Check `tls13_full.zig` for format assumptions
-- Secret derivation: Compare against RFC 8446 Appendix A test vectors
-- Certificate errors: Verify DER encoding with `openssl x509 -inform DER -in cert.der -text`
-- Test failures: Run `make clean` to clear Zig cache if tests fail unexpectedly after code changes
+- **Transcript hash mismatches**: Enable logging in `src/tls13/transcript.zig` and `src/key_schedule.zig` (have debug statements)
+- **Extension parsing issues**: Check `src/tls13/messages/core_types.zig` and specific message parsers for format assumptions
+- **ClientHello/ServerHello issues**: See `src/tls13/messages/client_hello.zig` and `src/tls13/messages/server_hello.zig`
+- **Handshake state errors**: Check `src/tls13/state.zig` for state machine transitions and `src/tls13/handshake_flow.zig` for message flow
+- **CRYPTO frame processing**: Debug `src/tls13/crypto_processor.zig` for buffering and `src/tls13/context.zig` for processCrypto logic
+- **Secret derivation**: Compare against RFC 8446 Appendix A test vectors; check `src/tls13/key_derivation.zig` and `src/key_schedule.zig`
+- **AEAD protection errors**: See `src/record/protection.zig` for encryption/decryption and `src/record/limits.zig` for usage limits
+- **Certificate errors**: Verify DER encoding with `openssl x509 -inform DER -in cert.der -text`; check `src/x509.zig` and `src/asn1.zig`
+- **Transport parameters**: Debug `src/quic_transport_params.zig` for encoding/decoding issues
+- **Test failures**: Run `make clean` to clear Zig cache if tests fail unexpectedly after code changes
 
 ### Common Development Scenarios
 
 **Adding a new cipher suite:**
-1. Add enum variant to `CipherSuite` in `src/tls13_full.zig`
-2. Update cipher suite mapping in `src/record.zig` for AEAD operations
+1. Add enum variant to `CipherSuite` in `src/tls13/messages/core_types.zig`
+2. Update cipher suite mapping in `src/record/protection.zig` for AEAD operations
 3. Add HKDF variant in `src/key_schedule.zig` if needed (e.g., SHA-384 vs SHA-256)
-4. Add test vectors in `tests/rfc8446_vectors.zig`
-5. Add conformance tests in `tests/boringssl_conformance.zig` and `tests/openssl_conformance.zig`
+4. Update cipher suite negotiation in `src/tls13/context.zig` or `src/tls13/handshake_flow.zig`
+5. Add test vectors in `tests/rfc8446_vectors.zig`
+6. Add conformance tests in `tests/boringssl_conformance.zig` and `tests/openssl_conformance.zig`
+7. Add RFC compliance tests in `tests/rfc8446/section_4_1_3_server_hello.zig` (cipher suite negotiation)
 
 **Adding a new signature scheme:**
-1. Add enum variant to `SignatureScheme` in `src/tls13_full.zig`
+1. Add enum variant to `SignatureScheme` in `src/tls13/messages/core_types.zig`
 2. Implement verification in `src/sig.zig` using `std.crypto.sign`
 3. Add test certificates and signatures in test files
-4. Update signature scheme negotiation in `src/tls13.zig`
+4. Update signature scheme negotiation in `src/tls13/messages/certificate_verify.zig`
+5. Add tests to `tests/rfc8446/section_4_2_extensions.zig` (signature_algorithms extension)
 
 **Modifying handshake flow:**
-1. Update state machine in `src/tls13.zig` (see HandshakePhase enum)
-2. Ensure transcript hash is updated in correct order
-3. Update secret installation callbacks if encryption level changes
-4. Add tests for new flow in `src/tls13.zig` test section
+1. Update state machine in `src/tls13/state.zig` (HandshakePhase enum)
+2. Update message processing in `src/tls13/handshake_flow.zig`
+3. Ensure transcript hash is updated in correct order via `src/tls13/transcript.zig`
+4. Update secret installation callbacks in `src/tls13/secret_manager.zig` if encryption level changes
+5. Add tests for new flow in relevant `tests/rfc8446/section_*.zig` files
+
+**Working with TLS 1.3 messages:**
+- **Parsing ClientHello**: See `src/tls13/messages/client_hello.zig` + `tests/rfc8446/section_4_1_2_client_hello.zig`
+- **Parsing ServerHello**: See `src/tls13/messages/server_hello.zig` + `tests/rfc8446/section_4_1_3_server_hello.zig`
+- **Extension handling**: See `src/tls13/messages/core_types.zig` + `tests/rfc8446/section_4_2_extensions.zig`
+- **Finished message**: See `src/tls13/messages/finished.zig` + `tests/rfc8446/section_4_4_finished.zig`
+
+**Working with QUIC integration:**
+- **CRYPTO frame processing**: See `src/tls13/crypto_processor.zig` and `src/tls13/context.zig` (processCrypto method)
+- **Transport parameters**: See `src/quic_transport_params.zig` + `tests/rfc9001/section_8_2_transport_params.zig`
+- **Encryption level transitions**: See `src/tls13/secret_manager.zig` and callbacks in `src/tls13/callbacks.zig`
 
 **Working with conformance tests:**
 - These tests link against system OpenSSL/BoringSSL libraries
 - If tests fail, check hex string lengths match buffer sizes (common issue)
 - Use `hexToBytes()` utility function for test data conversion
 - Conformance tests validate that ztls produces identical outputs to industry-standard implementations
+- Module-specific conformance tests:
+  - HKDF/key schedule: `src/key_schedule.zig`
+  - AEAD operations: `src/record/protection.zig`
+  - Transport parameters: `src/quic_transport_params.zig`
