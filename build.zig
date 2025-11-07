@@ -7,33 +7,49 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
     // Define all TLS modules
     // ========================================================================
+    //
+    // Module organization follows RFC structure:
+    // - Core cryptographic primitives (asn1, sig, key_schedule)
+    // - Certificate handling (x509, ocsp, sct)
+    // - TLS protocol (tls13, tls13_full, record)
+    // - QUIC integration (transport_params, zero_rtt)
+    // - Utilities (alert, logger, varint)
 
+    // RFC 8446 §6: Alert Protocol
+    // TLS alert descriptions and severity levels
     const alert_mod = b.addModule("alert", .{
         .root_source_file = b.path("src/alert.zig"),
         .target = target,
     });
 
+    // ITU-T X.690: ASN.1 DER encoding/decoding
+    // Used for X.509 certificate parsing
     const asn1_mod = b.addModule("asn1", .{
         .root_source_file = b.path("src/asn1.zig"),
         .target = target,
     });
 
+    // RFC 8446 §7: Key Schedule (HKDF-based)
+    // RFC 9001 §5.1: QUIC packet protection keys
     const key_schedule_mod = b.addModule("quic_tls", .{
         .root_source_file = b.path("src/key_schedule.zig"),
         .target = target,
     });
 
+    // Logging utilities for QUIC-TLS debugging
     const logger_mod = b.addModule("quic_logger", .{
         .root_source_file = b.path("src/quic_logger.zig"),
         .target = target,
     });
 
-    // QUIC varint encoding (RFC 9000 §16)
+    // RFC 9000 §16: Variable-Length Integer Encoding
+    // Network byte order utilities
     const byteorder_mod = b.addModule("byteorder", .{
         .root_source_file = b.path("src/byteorder.zig"),
         .target = target,
     });
 
+    // RFC 9000 §16: QUIC Variable-Length Integer Encoding
     const varint_mod = b.addModule("varint", .{
         .root_source_file = b.path("src/varint.zig"),
         .target = target,
@@ -42,6 +58,8 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // RFC 9000 §7.4, RFC 9001 §8.2: QUIC Transport Parameters
+    // Extension 0x0039 in TLS EncryptedExtensions
     const transport_params_mod = b.addModule("quic_transport_params", .{
         .root_source_file = b.path("src/quic_transport_params.zig"),
         .target = target,
@@ -50,6 +68,8 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // RFC 8446 §4.2.3, §4.4.3: Signature Algorithms and Verification
+    // Supports ECDSA (P-256, P-384), RSA-PSS, Ed25519
     const sig_mod = b.addModule("sig", .{
         .root_source_file = b.path("src/sig.zig"),
         .target = target,
@@ -58,11 +78,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // RFC 6962 §3.3: Signed Certificate Timestamp (SCT)
+    // Certificate Transparency extension
     const sct_mod = b.addModule("sct", .{
         .root_source_file = b.path("src/sct.zig"),
         .target = target,
     });
 
+    // RFC 5280: X.509 Public Key Infrastructure
+    // Certificate parsing and validation
     const x509_mod = b.addModule("x509", .{
         .root_source_file = b.path("src/x509.zig"),
         .target = target,
@@ -72,6 +96,8 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // RFC 6960: Online Certificate Status Protocol (OCSP)
+    // Certificate revocation checking
     const ocsp_mod = b.addModule("ocsp", .{
         .root_source_file = b.path("src/ocsp.zig"),
         .target = target,
@@ -81,6 +107,8 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // RFC 8446 §5: Record Protocol
+    // TLSPlaintext/TLSCiphertext, AEAD operations
     const record_mod = b.addModule("record", .{
         .root_source_file = b.path("src/record.zig"),
         .target = target,
@@ -89,6 +117,8 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // RFC 8446 §8: 0-RTT and Anti-Replay
+    // Early data and replay prevention
     const zero_rtt_mod = b.addModule("zero_rtt", .{
         .root_source_file = b.path("src/zero_rtt.zig"),
         .target = target,
@@ -97,11 +127,18 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // RFC 8446 §4: Handshake Protocol (Message Parsing)
+    // ClientHello, ServerHello, extensions, message building
+    // Modularized in Phase 2: src/tls13/messages/
     const tls13_full_mod = b.addModule("tls13_full", .{
         .root_source_file = b.path("src/tls13_full.zig"),
         .target = target,
     });
 
+    // RFC 8446: TLS 1.3 Core Protocol
+    // RFC 9001: QUIC-TLS Integration
+    // Main handshake state machine and context
+    // Modularized in Phase 1: src/tls13/
     const tls13_mod = b.addModule("tls13", .{
         .root_source_file = b.path("src/tls13.zig"),
         .target = target,
@@ -119,7 +156,18 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Main library module that re-exports everything
+    // ========================================================================
+    // Public API Module - Main Entry Point
+    // ========================================================================
+    //
+    // The "ztls" module provides the stable public API surface.
+    // All other modules are re-exported through src/lib.zig for
+    // backward compatibility and ease of use.
+    //
+    // Usage: const ztls = @import("ztls");
+    //        const tls13 = ztls.tls13;
+    //        const Context = ztls.tls13.Context;
+
     const zig_tls_mod = b.addModule("ztls", .{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
