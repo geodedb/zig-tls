@@ -619,6 +619,67 @@ pub fn build(b: *std.Build) void {
     const run_handshake_conformance_test = b.addRunArtifact(handshake_conformance_test);
     conformance_step.dependOn(&run_handshake_conformance_test.step);
 
+    // HelloRetryRequest conformance tests (Phase 1, Task 13)
+    const hrr_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/hello_retry_request.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        }),
+    });
+    const run_hrr_conformance_test = b.addRunArtifact(hrr_conformance_test);
+    conformance_step.dependOn(&run_hrr_conformance_test.step);
+
+    // Chain Validation conformance tests (Phase 1, Task 14)
+    const chain_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/openssl/chain_validation.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+            },
+        }),
+    });
+    const run_chain_conformance_test = b.addRunArtifact(chain_conformance_test);
+    conformance_step.dependOn(&run_chain_conformance_test.step);
+
+    // Key Update conformance tests (Phase 1, Task 15)
+    const key_update_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/key_update.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+            },
+        }),
+    });
+    const run_key_update_conformance_test = b.addRunArtifact(key_update_conformance_test);
+    conformance_step.dependOn(&run_key_update_conformance_test.step);
+
+    // Security Test Suite (Phase 1, Task 16)
+    const security_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/security/phase1_security.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "alert", .module = alert_mod },
+            },
+        }),
+    });
+    const run_security_test = b.addRunArtifact(security_test);
+    conformance_step.dependOn(&run_security_test.step);
+
     // Note: conformance tests require OpenSSL/BoringSSL development libraries
     // They are not included in the default test step
 }

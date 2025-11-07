@@ -171,6 +171,15 @@ pub const HsType = messages.HsType;
 /// Parsed handshake message.
 pub const HandshakeMessage = messages.HandshakeMessage;
 
+/// KeyUpdate request type (RFC 8446 §4.6.3).
+pub const KeyUpdateRequest = messages.KeyUpdateRequest;
+
+/// Build a KeyUpdate message (RFC 8446 §4.6.3).
+pub const buildKeyUpdate = messages.buildKeyUpdate;
+
+/// Parse a KeyUpdate message body (RFC 8446 §4.6.3).
+pub const parseKeyUpdate = messages.parseKeyUpdate;
+
 /// Encode handshake message with framing.
 pub const encodeHandshake = messages.encodeHandshake;
 

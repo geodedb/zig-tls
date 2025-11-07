@@ -125,11 +125,12 @@ pub const PskIdentity = client_hello_mod.PskIdentity;
 pub const PreSharedKey = client_hello_mod.PreSharedKey;
 pub const parseClientHello = client_hello_mod.parseClientHello;
 
-// Re-export ServerHello functions for backward compatibility
+// Re-export ServerHello functions and constants for backward compatibility
 pub const buildServerHello = server_hello_mod.buildServerHello;
 pub const buildHelloRetryRequest = server_hello_mod.buildHelloRetryRequest;
 pub const isHelloRetryRequest = server_hello_mod.isHelloRetryRequest;
 pub const containsDowngradeSentinel = server_hello_mod.containsDowngradeSentinel;
+pub const HELLO_RETRY_REQUEST_RANDOM = server_hello_mod.HELLO_RETRY_REQUEST_RANDOM;
 
 // Re-export EncryptedExtensions functions for backward compatibility
 pub const buildEncryptedExtensions = encrypted_extensions_mod.buildEncryptedExtensions;

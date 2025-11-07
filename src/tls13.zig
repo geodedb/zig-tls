@@ -46,6 +46,9 @@ const std = @import("std");
 // Import all modularized tls13 modules
 const mod = @import("tls13/mod.zig");
 
+// Import cookie module (not in mod.zig yet)
+pub const cookie_mod = @import("tls13/messages/extensions/cookie.zig");
+
 // ============================================================================
 // Core Types and Errors
 // ============================================================================
@@ -196,6 +199,15 @@ pub const HsType = mod.HsType;
 
 /// Parsed handshake message.
 pub const HandshakeMessage = mod.HandshakeMessage;
+
+/// KeyUpdate request type (RFC 8446 §4.6.3).
+pub const KeyUpdateRequest = mod.KeyUpdateRequest;
+
+/// Build a KeyUpdate message (RFC 8446 §4.6.3).
+pub const buildKeyUpdate = mod.buildKeyUpdate;
+
+/// Parse a KeyUpdate message body (RFC 8446 §4.6.3).
+pub const parseKeyUpdate = mod.parseKeyUpdate;
 
 /// Encode handshake message with framing.
 pub const encodeHandshake = mod.encodeHandshake;

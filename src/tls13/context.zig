@@ -2133,6 +2133,98 @@ pub const Context = struct {
         traceHandshake("TLS: Sent KeyUpdate (request_update={})\n", .{request_peer_update});
     }
 
+    /// Check AEAD usage and automatically trigger key update if nearing limit.
+    ///
+    /// This method integrates AEAD limit tracking (RFC 8446 §5.5) with the key update
+    /// mechanism (RFC 8446 §4.6.3) to provide automatic key rotation when approaching
+    /// confidentiality limits. This prevents connection failures from hitting hard limits.
+    ///
+    /// ## RFC 8446 §5.5: Limits on Key Usage
+    /// AEAD ciphers have confidentiality limits to prevent security degradation:
+    /// - AES-128-GCM: 2^24 records
+    /// - AES-256-GCM: 2^24 records
+    /// - ChaCha20-Poly1305: 2^32 records
+    ///
+    /// ## RFC 9001 §6: QUIC Key Update
+    /// QUIC implementations should proactively update keys before hitting limits
+    /// to maintain forward secrecy and avoid connection errors.
+    ///
+    /// ## Parameters
+    /// - `encrypted_count`: Number of records encrypted with current send key
+    /// - `confidentiality_limit`: Maximum records allowed (from AEAD suite)
+    /// - `threshold_percent`: Percentage of limit at which to trigger (default: 90)
+    ///   - 90 = Trigger at 90% of limit (recommended for proactive updates)
+    ///   - 100 = Trigger only at hard limit (not recommended)
+    ///
+    /// ## Returns
+    /// `true` if key update was triggered, `false` otherwise
+    ///
+    /// ## Errors
+    /// - HandshakeError.UnexpectedMessage: Handshake not complete
+    /// - OutOfMemory: Failed to allocate KeyUpdate message
+    ///
+    /// ## Usage Pattern
+    /// QUIC layer should call this periodically during packet encryption:
+    ///
+    /// ```zig
+    /// // After encrypting a packet
+    /// const stats = aead_cipher.getUsageStats();
+    /// const triggered = try tls_ctx.checkAndTriggerKeyUpdate(
+    ///     stats.encrypted,
+    ///     stats.confidentiality_limit,
+    ///     90, // Trigger at 90% of limit
+    /// );
+    /// if (triggered) {
+    ///     // Key update in progress, continue encrypting with new keys
+    /// }
+    /// ```
+    ///
+    /// ## Design Rationale
+    /// - Proactive updates at 90% prevent connection failures
+    /// - Gives time for KeyUpdate handshake before limit reached
+    /// - Separates limit tracking (QUIC) from update decision (TLS)
+    /// - Non-blocking: Returns immediately after queuing KeyUpdate
+    ///
+    /// ## RFC References
+    /// - RFC 8446 §4.6.3 - KeyUpdate message format and processing
+    /// - RFC 8446 §5.5 - AEAD usage limits and requirements
+    /// - RFC 9001 §6 - QUIC Key Update considerations
+    pub fn checkAndTriggerKeyUpdate(
+        self: *Context,
+        encrypted_count: u64,
+        confidentiality_limit: u64,
+        threshold_percent: u8,
+    ) !bool {
+        // Validate threshold percentage
+        if (threshold_percent == 0 or threshold_percent > 100) return false;
+
+        // Check if limit is configured
+        if (confidentiality_limit == 0) return false; // No limit = no update needed
+
+        // Calculate threshold: (limit * threshold_percent) / 100
+        // Use u128 to prevent overflow during multiplication
+        const limit_u128: u128 = confidentiality_limit;
+        const threshold_u128: u128 = @as(u128, threshold_percent);
+        const threshold_count: u64 = @intCast((limit_u128 * threshold_u128) / 100);
+
+        // Check if we've reached the threshold
+        if (encrypted_count < threshold_count) {
+            return false; // Not at threshold yet
+        }
+
+        // RFC 8446 §4.6.3 + §5.5: Trigger key update to refresh keys
+        // Send KeyUpdate with update_not_requested (one-way update)
+        // Peer will respond with their own KeyUpdate if they also need to update
+        try self.sendKeyUpdate(false);
+
+        traceHandshake(
+            "TLS: Automatic key update triggered (encrypted={d}, limit={d}, threshold={d}%)\n",
+            .{ encrypted_count, confidentiality_limit, threshold_percent },
+        );
+
+        return true; // Key update was triggered
+    }
+
     /// Handle received KeyUpdate message (RFC 8446 §4.6.3).
     ///
     /// Updates the local receiving traffic secret and optionally sends a
