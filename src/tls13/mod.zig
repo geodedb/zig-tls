@@ -51,12 +51,6 @@ pub const HandshakeMetadata = types.HandshakeMetadata;
 /// TLS 1.3 signature scheme (RFC 8446 §4.2.3).
 pub const SignatureScheme = types.SignatureScheme;
 
-/// API operation errors.
-pub const ApiError = types.ApiError;
-
-/// Handshake parsing and validation errors.
-pub const HandshakeError = types.HandshakeError;
-
 // ============================================================================
 // Transcript Management
 // ============================================================================
@@ -193,25 +187,50 @@ pub const encodeMinimalServerHello = messages.encodeMinimalServerHello;
 pub const parseMinimalHelloPub = messages.parseMinimalHelloPub;
 
 // ============================================================================
-// Context and Engine (Still in tls13.zig)
+// Configuration
 // ============================================================================
-//
-// NOTE: The following types remain in src/tls13.zig for now due to their
-// size and complexity. Future work will extract them into separate modules.
-//
-// - Config: TLS configuration parameters
-// - Callbacks: QUIC integration callback hooks
-// - Context: Main TLS 1.3 driver for production use
-// - Engine: Legacy minimal driver for tests
-//
-// To use these types, import from the parent tls13 module:
-//
-// ```zig
-// const tls13 = @import("tls13");
-// const Config = tls13.Config;
-// const Context = tls13.Context;
-// ```
-//
+
+const config = @import("config.zig");
+
+/// TLS 1.3 configuration parameters.
+pub const Config = config.Config;
+
+// ============================================================================
+// Context and Callbacks
+// ============================================================================
+
+const context = @import("context.zig");
+
+/// QUIC integration callback hooks.
+pub const Callbacks = context.Callbacks;
+
+/// Main TLS 1.3 driver for production use.
+pub const Context = context.Context;
+
+/// API operation errors.
+pub const ApiError = context.ApiError;
+
+/// Handshake protocol errors.
+pub const HandshakeError = context.HandshakeError;
+
+// ============================================================================
+// Engine (Legacy)
+// ============================================================================
+
+const engine = @import("engine.zig");
+
+/// Legacy minimal driver for tests (being phased out).
+pub const Engine = engine.Engine;
+
+/// Session ticket store.
+pub const TicketStore = engine.TicketStore;
+
+/// Session ticket entry.
+pub const TicketEntry = engine.TicketEntry;
+
+/// Session ticket entry view.
+pub const TicketEntryView = engine.TicketEntryView;
+
 // ============================================================================
 
 // Re-export test helpers for testing
