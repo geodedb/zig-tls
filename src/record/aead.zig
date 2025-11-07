@@ -488,6 +488,152 @@ pub const AeadCipher = struct {
             return RecordError.AeadLimitExceeded;
         return RecordError.AuthenticationFailed;
     }
+
+    /// Check if confidentiality limit is approaching and key update should be triggered.
+    ///
+    /// Returns true when the number of encrypted records reaches a configurable
+    /// threshold (default 90%) of the confidentiality limit. This allows proactive
+    /// key updates before hitting hard limits that would cause connection errors.
+    ///
+    /// ## Parameters
+    /// - `threshold_percent`: Percentage of limit at which to trigger (0-100)
+    ///   Typical values: 90 for proactive update, 100 for hard limit check
+    ///
+    /// ## Returns
+    /// `true` if encrypted records >= (limit * threshold_percent / 100)
+    ///
+    /// ## RFC References
+    /// - RFC 8446 §4.6.3 - KeyUpdate message for refreshing keys
+    /// - RFC 8446 §5.5 - Limits on Key Usage (confidentiality limit)
+    /// - RFC 9001 §6 - QUIC Key Update (recommends proactive updates)
+    ///
+    /// ## Usage Example
+    /// ```zig
+    /// // Check if we should trigger key update at 90% of limit
+    /// if (cipher.nearingConfidentialityLimit(90)) {
+    ///     try context.initiateKeyUpdate();
+    /// }
+    /// ```
+    ///
+    /// ## Design Rationale
+    /// Proactive key updates at 90% prevent connection failures from hitting
+    /// hard limits. This gives time for the KeyUpdate handshake to complete
+    /// before the limit is reached.
+    pub fn nearingConfidentialityLimit(self: *const AeadCipher, threshold_percent: u8) bool {
+        if (self.usage.limits.confidentiality == 0) return false; // No limit configured
+        if (threshold_percent == 0 or threshold_percent > 100) return false;
+
+        // Calculate threshold: (limit * threshold_percent) / 100
+        // Use u128 to prevent overflow during multiplication
+        const limit_u128: u128 = self.usage.limits.confidentiality;
+        const threshold_u128: u128 = @as(u128, threshold_percent);
+        const threshold_count: u64 = @intCast((limit_u128 * threshold_u128) / 100);
+
+        return self.usage.encrypted >= threshold_count;
+    }
+
+    /// Check if integrity limit is approaching due to authentication failures.
+    ///
+    /// Returns true when the number of authentication failures reaches a
+    /// configurable threshold of the integrity limit. High failure rates
+    /// indicate potential attacks or implementation bugs.
+    ///
+    /// ## Parameters
+    /// - `threshold_percent`: Percentage of limit at which to trigger (0-100)
+    ///
+    /// ## Returns
+    /// `true` if auth failures >= (limit * threshold_percent / 100)
+    ///
+    /// ## RFC References
+    /// - RFC 8446 §5.5 - Integrity limits on authentication failures
+    ///
+    /// ## Security Considerations
+    /// High authentication failure rates may indicate:
+    /// - Active tampering attempts
+    /// - Broken encryption/decryption implementation
+    /// - Network corruption
+    ///
+    /// Connections with high failure rates should be terminated proactively.
+    pub fn nearingIntegrityLimit(self: *const AeadCipher, threshold_percent: u8) bool {
+        if (self.usage.limits.integrity == 0) return false;
+        if (threshold_percent == 0 or threshold_percent > 100) return false;
+
+        const limit_u128: u128 = self.usage.limits.integrity;
+        const threshold_u128: u128 = @as(u128, threshold_percent);
+        const threshold_count: u64 = @intCast((limit_u128 * threshold_u128) / 100);
+
+        return self.usage.auth_failures >= threshold_count;
+    }
+
+    /// Get current usage statistics for monitoring and telemetry.
+    ///
+    /// Returns a snapshot of current AEAD usage counters and limits. Useful for:
+    /// - Logging and metrics
+    /// - Determining when to perform key updates
+    /// - Debugging encryption issues
+    ///
+    /// ## Returns
+    /// UsageStats struct containing:
+    /// - `encrypted`: Number of records encrypted with this key
+    /// - `auth_failures`: Number of authentication failures
+    /// - `confidentiality_limit`: Maximum allowed encrypted records
+    /// - `integrity_limit`: Maximum allowed authentication failures
+    /// - `confidentiality_percent`: Percentage of confidentiality limit used (0-100)
+    /// - `integrity_percent`: Percentage of integrity limit used (0-100)
+    ///
+    /// ## RFC References
+    /// - RFC 8446 §5.5 - Limits on Key Usage
+    ///
+    /// ## Usage Example
+    /// ```zig
+    /// const stats = cipher.getUsageStats();
+    /// logger.info("AEAD usage: {}/{} encrypted ({d}%)", .{
+    ///     stats.encrypted,
+    ///     stats.confidentiality_limit,
+    ///     stats.confidentiality_percent,
+    /// });
+    /// ```
+    pub fn getUsageStats(self: *const AeadCipher) UsageStats {
+        const conf_percent = if (self.usage.limits.confidentiality > 0)
+            @min(100, (self.usage.encrypted * 100) / self.usage.limits.confidentiality)
+        else
+            0;
+
+        const integ_percent = if (self.usage.limits.integrity > 0)
+            @min(100, (self.usage.auth_failures * 100) / self.usage.limits.integrity)
+        else
+            0;
+
+        return UsageStats{
+            .encrypted = self.usage.encrypted,
+            .auth_failures = self.usage.auth_failures,
+            .confidentiality_limit = self.usage.limits.confidentiality,
+            .integrity_limit = self.usage.limits.integrity,
+            .confidentiality_percent = @intCast(conf_percent),
+            .integrity_percent = @intCast(integ_percent),
+        };
+    }
+};
+
+/// AEAD usage statistics for monitoring and telemetry.
+///
+/// Provides a snapshot of AEAD cipher usage including counters, limits,
+/// and calculated percentages. Returned by `AeadCipher.getUsageStats()`.
+///
+/// ## Fields
+/// - `encrypted`: Records encrypted so far
+/// - `auth_failures`: Authentication failures so far
+/// - `confidentiality_limit`: Maximum records before key update required
+/// - `integrity_limit`: Maximum auth failures before connection close
+/// - `confidentiality_percent`: Usage as percentage (0-100)
+/// - `integrity_percent`: Failures as percentage (0-100)
+pub const UsageStats = struct {
+    encrypted: u64,
+    auth_failures: u64,
+    confidentiality_limit: u64,
+    integrity_limit: u64,
+    confidentiality_percent: u8,
+    integrity_percent: u8,
 };
 
 fn suiteSpec(suite: CipherSuite) SuiteSpec {
@@ -578,4 +724,241 @@ pub fn xorNonce(out: []u8, base_iv: []const u8, seq: u64) RecordError!void {
     for (seq_bytes, 0..) |byte, idx| {
         out[offset + idx] ^= byte;
     }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "nearingConfidentialityLimit - at various thresholds" {
+    // Create cipher with known limit
+    const key = [_]u8{0x01} ** 16;
+    const iv = [_]u8{0x02} ** 12;
+    var cipher = try AeadCipher.init(
+        .TLS_AES_128_GCM_SHA256,
+        &key,
+        &iv,
+        .{ .confidentiality = 1000, .integrity = 1000 },
+    );
+    defer cipher.wipe();
+
+    // At 0 records, not nearing any threshold
+    try testing.expect(!cipher.nearingConfidentialityLimit(90));
+    try testing.expect(!cipher.nearingConfidentialityLimit(50));
+    try testing.expect(!cipher.nearingConfidentialityLimit(10));
+
+    // Simulate encrypting 500 records (50% of limit)
+    cipher.usage.encrypted = 500;
+    try testing.expect(!cipher.nearingConfidentialityLimit(90)); // Not at 90%
+    try testing.expect(cipher.nearingConfidentialityLimit(50)); // At 50%
+    try testing.expect(cipher.nearingConfidentialityLimit(10)); // Above 10%
+
+    // Simulate encrypting 900 records (90% of limit)
+    cipher.usage.encrypted = 900;
+    try testing.expect(cipher.nearingConfidentialityLimit(90)); // At 90%
+    try testing.expect(cipher.nearingConfidentialityLimit(50)); // Above 50%
+
+    // At limit (100%)
+    cipher.usage.encrypted = 1000;
+    try testing.expect(cipher.nearingConfidentialityLimit(100)); // At 100%
+    try testing.expect(cipher.nearingConfidentialityLimit(90)); // Above 90%
+}
+
+test "nearingConfidentialityLimit - edge cases" {
+    const key = [_]u8{0x01} ** 16;
+    const iv = [_]u8{0x02} ** 12;
+    var cipher = try AeadCipher.init(
+        .TLS_AES_128_GCM_SHA256,
+        &key,
+        &iv,
+        .{ .confidentiality = 100, .integrity = 100 },
+    );
+    defer cipher.wipe();
+
+    // Invalid thresholds
+    try testing.expect(!cipher.nearingConfidentialityLimit(0)); // 0% invalid
+    try testing.expect(!cipher.nearingConfidentialityLimit(101)); // >100% invalid
+
+    // Zero limit (no limit configured)
+    cipher.usage.limits.confidentiality = 0;
+    cipher.usage.encrypted = 1000000;
+    try testing.expect(!cipher.nearingConfidentialityLimit(90)); // No limit = never nearing
+}
+
+test "nearingIntegrityLimit - at various thresholds" {
+    const key = [_]u8{0x01} ** 16;
+    const iv = [_]u8{0x02} ** 12;
+    var cipher = try AeadCipher.init(
+        .TLS_AES_128_GCM_SHA256,
+        &key,
+        &iv,
+        .{ .confidentiality = 1000, .integrity = 1000 },
+    );
+    defer cipher.wipe();
+
+    // At 0 failures, not nearing any threshold
+    try testing.expect(!cipher.nearingIntegrityLimit(90));
+    try testing.expect(!cipher.nearingIntegrityLimit(50));
+
+    // Simulate 500 auth failures (50% of limit)
+    cipher.usage.auth_failures = 500;
+    try testing.expect(!cipher.nearingIntegrityLimit(90)); // Not at 90%
+    try testing.expect(cipher.nearingIntegrityLimit(50)); // At 50%
+
+    // Simulate 900 failures (90% of limit)
+    cipher.usage.auth_failures = 900;
+    try testing.expect(cipher.nearingIntegrityLimit(90)); // At 90%
+    try testing.expect(cipher.nearingIntegrityLimit(50)); // Above 50%
+}
+
+test "getUsageStats - percentage calculations" {
+    const key = [_]u8{0x01} ** 16;
+    const iv = [_]u8{0x02} ** 12;
+    var cipher = try AeadCipher.init(
+        .TLS_AES_128_GCM_SHA256,
+        &key,
+        &iv,
+        .{ .confidentiality = 1000, .integrity = 2000 },
+    );
+    defer cipher.wipe();
+
+    // Initial state: 0% usage
+    var stats = cipher.getUsageStats();
+    try testing.expectEqual(@as(u64, 0), stats.encrypted);
+    try testing.expectEqual(@as(u64, 0), stats.auth_failures);
+    try testing.expectEqual(@as(u64, 1000), stats.confidentiality_limit);
+    try testing.expectEqual(@as(u64, 2000), stats.integrity_limit);
+    try testing.expectEqual(@as(u8, 0), stats.confidentiality_percent);
+    try testing.expectEqual(@as(u8, 0), stats.integrity_percent);
+
+    // Simulate 500 encrypted (50% of confidentiality limit)
+    cipher.usage.encrypted = 500;
+    stats = cipher.getUsageStats();
+    try testing.expectEqual(@as(u64, 500), stats.encrypted);
+    try testing.expectEqual(@as(u8, 50), stats.confidentiality_percent);
+
+    // Simulate 1000 auth failures (50% of integrity limit)
+    cipher.usage.auth_failures = 1000;
+    stats = cipher.getUsageStats();
+    try testing.expectEqual(@as(u64, 1000), stats.auth_failures);
+    try testing.expectEqual(@as(u8, 50), stats.integrity_percent);
+
+    // At limits (100%)
+    cipher.usage.encrypted = 1000;
+    cipher.usage.auth_failures = 2000;
+    stats = cipher.getUsageStats();
+    try testing.expectEqual(@as(u8, 100), stats.confidentiality_percent);
+    try testing.expectEqual(@as(u8, 100), stats.integrity_percent);
+
+    // Over limits (capped at 100%)
+    cipher.usage.encrypted = 1500;
+    cipher.usage.auth_failures = 3000;
+    stats = cipher.getUsageStats();
+    try testing.expectEqual(@as(u8, 100), stats.confidentiality_percent); // Capped
+    try testing.expectEqual(@as(u8, 100), stats.integrity_percent); // Capped
+}
+
+test "getUsageStats - zero limits" {
+    const key = [_]u8{0x01} ** 16;
+    const iv = [_]u8{0x02} ** 12;
+    var cipher = try AeadCipher.init(
+        .TLS_AES_128_GCM_SHA256,
+        &key,
+        &iv,
+        .{ .confidentiality = 0, .integrity = 0 }, // No limits
+    );
+    defer cipher.wipe();
+
+    cipher.usage.encrypted = 1000000;
+    cipher.usage.auth_failures = 500000;
+
+    const stats = cipher.getUsageStats();
+    try testing.expectEqual(@as(u8, 0), stats.confidentiality_percent); // No limit = 0%
+    try testing.expectEqual(@as(u8, 0), stats.integrity_percent); // No limit = 0%
+}
+
+test "wipe - resets usage counters" {
+    const key = [_]u8{0x01} ** 16;
+    const iv = [_]u8{0x02} ** 12;
+    var cipher = try AeadCipher.init(
+        .TLS_AES_128_GCM_SHA256,
+        &key,
+        &iv,
+        .{ .confidentiality = 1000, .integrity = 2000 },
+    );
+
+    // Simulate usage
+    cipher.usage.encrypted = 500;
+    cipher.usage.auth_failures = 100;
+
+    // Wipe should reset counters but preserve limits
+    cipher.wipe();
+
+    try testing.expectEqual(@as(u64, 0), cipher.usage.encrypted);
+    try testing.expectEqual(@as(u64, 0), cipher.usage.auth_failures);
+    try testing.expectEqual(@as(u64, 1000), cipher.usage.limits.confidentiality);
+    try testing.expectEqual(@as(u64, 2000), cipher.usage.limits.integrity);
+}
+
+test "default limits from RFC 8446" {
+    const key = [_]u8{0x01} ** 16;
+    const iv = [_]u8{0x02} ** 12;
+
+    // AES-128-GCM: 2^24 confidentiality, 2^36 integrity
+    var aes128 = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer aes128.wipe();
+    try testing.expectEqual(@as(u64, 1) << 24, aes128.usage.limits.confidentiality);
+    try testing.expectEqual(@as(u64, 1) << 36, aes128.usage.limits.integrity);
+
+    // AES-256-GCM: 2^24 confidentiality, 2^36 integrity
+    const key32 = [_]u8{0x01} ** 32;
+    var aes256 = try AeadCipher.init(.TLS_AES_256_GCM_SHA384, &key32, &iv, null);
+    defer aes256.wipe();
+    try testing.expectEqual(@as(u64, 1) << 24, aes256.usage.limits.confidentiality);
+    try testing.expectEqual(@as(u64, 1) << 36, aes256.usage.limits.integrity);
+
+    // ChaCha20-Poly1305: 2^32 confidentiality, 2^36 integrity
+    var chacha = try AeadCipher.init(.TLS_CHACHA20_POLY1305_SHA256, &key32, &iv, null);
+    defer chacha.wipe();
+    try testing.expectEqual(@as(u64, 1) << 32, chacha.usage.limits.confidentiality);
+    try testing.expectEqual(@as(u64, 1) << 36, chacha.usage.limits.integrity);
+}
+
+test "integration - limit tracking through seal operations" {
+    const key = [_]u8{0x42} ** 16;
+    const iv = [_]u8{0x13} ** 12;
+    var cipher = try AeadCipher.init(
+        .TLS_AES_128_GCM_SHA256,
+        &key,
+        &iv,
+        .{ .confidentiality = 10, .integrity = 100 }, // Small limits for testing
+    );
+    defer cipher.wipe();
+
+    const plaintext = "Hello, World!";
+    const aad = "additional data";
+
+    // Encrypt 9 records (90% of limit)
+    var i: u64 = 0;
+    while (i < 9) : (i += 1) {
+        const ct = try cipher.seal(testing.allocator, i, aad, plaintext);
+        defer testing.allocator.free(ct);
+        try testing.expect(!cipher.nearingConfidentialityLimit(100)); // Not at hard limit
+    }
+
+    // Should be nearing limit at 90%
+    try testing.expect(cipher.nearingConfidentialityLimit(90));
+
+    // 10th encryption should succeed (at limit)
+    const ct10 = try cipher.seal(testing.allocator, 9, aad, plaintext);
+    defer testing.allocator.free(ct10);
+    try testing.expectEqual(@as(u64, 10), cipher.usage.encrypted);
+
+    // 11th encryption should fail (over limit)
+    try testing.expectError(
+        RecordError.AeadLimitExceeded,
+        cipher.seal(testing.allocator, 10, aad, plaintext),
+    );
 }

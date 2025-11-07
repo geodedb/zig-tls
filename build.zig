@@ -468,6 +468,21 @@ pub fn build(b: *std.Build) void {
     const run_tls13_handshake_test = b.addRunArtifact(tls13_handshake_test);
     test_step.dependOn(&run_tls13_handshake_test.step);
 
+    // TLS 1.3 Key Update Tests
+    const key_update_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/key_update_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+            },
+        }),
+    });
+    const run_key_update_test = b.addRunArtifact(key_update_test);
+    test_step.dependOn(&run_key_update_test.step);
+
     // ========================================================================
     // Conformance Tests - Interoperability with BoringSSL and OpenSSL
     // ========================================================================

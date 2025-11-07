@@ -32,6 +32,18 @@ pub const HsType = enum(u8) {
     certificate_verify = 15,
     /// Finished message (RFC 8446 §4.4.4).
     finished = 20,
+    /// KeyUpdate message for refreshing traffic keys (RFC 8446 §4.6.3).
+    key_update = 24,
+};
+
+/// KeyUpdate request type (RFC 8446 §4.6.3).
+///
+/// Indicates whether the peer should also update its keys in response.
+pub const KeyUpdateRequest = enum(u8) {
+    /// Sender has updated its keys, peer should NOT respond with KeyUpdate.
+    update_not_requested = 0,
+    /// Sender has updated its keys AND requests peer to also update.
+    update_requested = 1,
 };
 
 /// Parsed handshake message with type and body reference.
@@ -228,4 +240,183 @@ pub fn parseMinimalHelloPub(typ: HsType, body: []const u8) ?[32]u8 {
         return pk;
     }
     return null;
+}
+
+/// Build a KeyUpdate message (RFC 8446 §4.6.3).
+///
+/// RFC 8446 §4.6.3:
+/// ```
+/// struct {
+///     KeyUpdateRequest request_update;
+/// } KeyUpdate;
+///
+/// enum { update_not_requested(0), update_requested(1) } KeyUpdateRequest;
+/// ```
+///
+/// # Parameters
+/// - alloc: Allocator for the returned buffer
+/// - request_update: If true, requests peer to also update keys
+///
+/// # Returns
+/// Allocated buffer containing complete KeyUpdate handshake message.
+/// Caller owns returned slice and must free it.
+///
+/// # Example
+/// ```zig
+/// // Update our keys without requesting peer update
+/// const ku_msg = try buildKeyUpdate(allocator, false);
+/// defer allocator.free(ku_msg);
+///
+/// // Update our keys AND request peer to update
+/// const ku_msg2 = try buildKeyUpdate(allocator, true);
+/// defer allocator.free(ku_msg2);
+/// ```
+pub fn buildKeyUpdate(alloc: std.mem.Allocator, request_update: bool) ![]u8 {
+    const request: KeyUpdateRequest = if (request_update) .update_requested else .update_not_requested;
+    const body = [_]u8{@intFromEnum(request)};
+    return encodeHandshake(alloc, .key_update, &body);
+}
+
+/// Parse a KeyUpdate message body (RFC 8446 §4.6.3).
+///
+/// Extracts the KeyUpdateRequest field from the message body.
+///
+/// # Parameters
+/// - body: Message body bytes (should be exactly 1 byte)
+///
+/// # Returns
+/// - `KeyUpdateRequest`: The parsed request type
+/// - `error.InvalidKeyUpdateLength`: Body is not exactly 1 byte
+/// - `error.InvalidKeyUpdateRequest`: Body contains invalid enum value (not 0 or 1)
+///
+/// # Example
+/// ```zig
+/// const msg = try parseHandshakeOne(buffer) orelse return;
+/// if (msg.typ == .key_update) {
+///     const request = try parseKeyUpdate(msg.body);
+///     if (request == .update_requested) {
+///         // Peer wants us to update keys too
+///     }
+/// }
+/// ```
+pub fn parseKeyUpdate(body: []const u8) !KeyUpdateRequest {
+    if (body.len != 1) return error.InvalidKeyUpdateLength;
+    return std.meta.intToEnum(KeyUpdateRequest, body[0]) catch return error.InvalidKeyUpdateRequest;
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+test "KeyUpdate: buildKeyUpdate - update_not_requested" {
+    const alloc = std.testing.allocator;
+
+    const msg = try buildKeyUpdate(alloc, false);
+    defer alloc.free(msg);
+
+    // Verify message structure: [type:1][length:3][body:1]
+    try std.testing.expectEqual(@as(usize, 5), msg.len);
+    try std.testing.expectEqual(@as(u8, 24), msg[0]); // type = key_update
+    try std.testing.expectEqual(@as(u8, 0), msg[1]); // length high byte
+    try std.testing.expectEqual(@as(u8, 0), msg[2]); // length mid byte
+    try std.testing.expectEqual(@as(u8, 1), msg[3]); // length low byte (1 byte body)
+    try std.testing.expectEqual(@as(u8, 0), msg[4]); // body: update_not_requested
+}
+
+test "KeyUpdate: buildKeyUpdate - update_requested" {
+    const alloc = std.testing.allocator;
+
+    const msg = try buildKeyUpdate(alloc, true);
+    defer alloc.free(msg);
+
+    // Verify message structure
+    try std.testing.expectEqual(@as(usize, 5), msg.len);
+    try std.testing.expectEqual(@as(u8, 24), msg[0]); // type = key_update
+    try std.testing.expectEqual(@as(u8, 0), msg[1]);
+    try std.testing.expectEqual(@as(u8, 0), msg[2]);
+    try std.testing.expectEqual(@as(u8, 1), msg[3]);
+    try std.testing.expectEqual(@as(u8, 1), msg[4]); // body: update_requested
+}
+
+test "KeyUpdate: parseKeyUpdate - update_not_requested" {
+    const body = [_]u8{0}; // update_not_requested
+    const request = try parseKeyUpdate(&body);
+    try std.testing.expectEqual(KeyUpdateRequest.update_not_requested, request);
+}
+
+test "KeyUpdate: parseKeyUpdate - update_requested" {
+    const body = [_]u8{1}; // update_requested
+    const request = try parseKeyUpdate(&body);
+    try std.testing.expectEqual(KeyUpdateRequest.update_requested, request);
+}
+
+test "KeyUpdate: parseKeyUpdate - invalid length (empty)" {
+    const body = [_]u8{};
+    const result = parseKeyUpdate(&body);
+    try std.testing.expectError(error.InvalidKeyUpdateLength, result);
+}
+
+test "KeyUpdate: parseKeyUpdate - invalid length (too long)" {
+    const body = [_]u8{ 0, 0 };
+    const result = parseKeyUpdate(&body);
+    try std.testing.expectError(error.InvalidKeyUpdateLength, result);
+}
+
+test "KeyUpdate: parseKeyUpdate - invalid enum value" {
+    const body = [_]u8{2}; // Invalid: only 0 and 1 are valid
+    const result = parseKeyUpdate(&body);
+    try std.testing.expectError(error.InvalidKeyUpdateRequest, result);
+}
+
+test "KeyUpdate: parseKeyUpdate - invalid enum value (255)" {
+    const body = [_]u8{255};
+    const result = parseKeyUpdate(&body);
+    try std.testing.expectError(error.InvalidKeyUpdateRequest, result);
+}
+
+test "KeyUpdate: roundtrip - update_not_requested" {
+    const alloc = std.testing.allocator;
+
+    // Build message
+    const msg = try buildKeyUpdate(alloc, false);
+    defer alloc.free(msg);
+
+    // Parse complete message
+    const parsed = try parseHandshakeOne(msg);
+    try std.testing.expect(parsed != null);
+    try std.testing.expectEqual(HsType.key_update, parsed.?.typ);
+    try std.testing.expectEqual(@as(usize, 1), parsed.?.body.len);
+
+    // Parse KeyUpdate body
+    const request = try parseKeyUpdate(parsed.?.body);
+    try std.testing.expectEqual(KeyUpdateRequest.update_not_requested, request);
+}
+
+test "KeyUpdate: roundtrip - update_requested" {
+    const alloc = std.testing.allocator;
+
+    // Build message
+    const msg = try buildKeyUpdate(alloc, true);
+    defer alloc.free(msg);
+
+    // Parse complete message
+    const parsed = try parseHandshakeOne(msg);
+    try std.testing.expect(parsed != null);
+    try std.testing.expectEqual(HsType.key_update, parsed.?.typ);
+    try std.testing.expectEqual(@as(usize, 1), parsed.?.body.len);
+
+    // Parse KeyUpdate body
+    const request = try parseKeyUpdate(parsed.?.body);
+    try std.testing.expectEqual(KeyUpdateRequest.update_requested, request);
+}
+
+test "KeyUpdate: enum values match RFC 8446" {
+    // RFC 8446 §4.6.3: update_not_requested(0), update_requested(1)
+    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(KeyUpdateRequest.update_not_requested));
+    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(KeyUpdateRequest.update_requested));
+}
+
+test "KeyUpdate: HsType enum value matches RFC 8446" {
+    // RFC 8446 §4: key_update message type is 24
+    try std.testing.expectEqual(@as(u8, 24), @intFromEnum(HsType.key_update));
 }

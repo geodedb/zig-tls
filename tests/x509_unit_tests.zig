@@ -499,3 +499,106 @@ test "validateChain - allow_insecure bypass" {
         true, // allow_insecure
     );
 }
+
+// ============================================================================
+// Name Constraints Tests
+// ============================================================================
+
+test "matchesNameConstraint - subdomain constraint with leading dot" {
+    // Constraint ".example.com" matches any subdomain
+    try testing.expect(x509.matchesNameConstraint("www.example.com", ".example.com"));
+    try testing.expect(x509.matchesNameConstraint("api.example.com", ".example.com"));
+    try testing.expect(x509.matchesNameConstraint("sub.domain.example.com", ".example.com"));
+
+    // Does NOT match the domain itself (no subdomain)
+    try testing.expect(!x509.matchesNameConstraint("example.com", ".example.com"));
+
+    // Does NOT match different domains
+    try testing.expect(!x509.matchesNameConstraint("example.org", ".example.com"));
+    try testing.expect(!x509.matchesNameConstraint("www.example.org", ".example.com"));
+}
+
+test "matchesNameConstraint - exact match constraint" {
+    // Constraint "example.com" requires exact match
+    try testing.expect(x509.matchesNameConstraint("example.com", "example.com"));
+
+    // Does NOT match subdomains
+    try testing.expect(!x509.matchesNameConstraint("www.example.com", "example.com"));
+    try testing.expect(!x509.matchesNameConstraint("api.example.com", "example.com"));
+
+    // Does NOT match different domains
+    try testing.expect(!x509.matchesNameConstraint("example.org", "example.com"));
+}
+
+test "checkNameConstraints - permitted subtrees only" {
+    const constraints = x509.NameConstraints{
+        .permitted_dns = &.{ ".example.com", ".test.org" },
+        .excluded_dns = &.{},
+    };
+
+    // Names within permitted subtrees should pass
+    try testing.expect(x509.checkNameConstraints("www.example.com", constraints));
+    try testing.expect(x509.checkNameConstraints("api.example.com", constraints));
+    try testing.expect(x509.checkNameConstraints("foo.test.org", constraints));
+
+    // Names outside permitted subtrees should fail
+    try testing.expect(!x509.checkNameConstraints("www.other.com", constraints));
+    try testing.expect(!x509.checkNameConstraints("example.com", constraints)); // No subdomain
+}
+
+test "checkNameConstraints - excluded subtrees only" {
+    const constraints = x509.NameConstraints{
+        .permitted_dns = &.{}, // No permitted constraints
+        .excluded_dns = &.{".forbidden.example.com"},
+    };
+
+    // Names in excluded subtrees should fail
+    try testing.expect(!x509.checkNameConstraints("www.forbidden.example.com", constraints));
+    try testing.expect(!x509.checkNameConstraints("api.forbidden.example.com", constraints));
+
+    // Names outside excluded subtrees should pass
+    try testing.expect(x509.checkNameConstraints("www.example.com", constraints));
+    try testing.expect(x509.checkNameConstraints("other.com", constraints));
+}
+
+test "checkNameConstraints - permitted and excluded (exclusion takes precedence)" {
+    const constraints = x509.NameConstraints{
+        .permitted_dns = &.{".example.com"},
+        .excluded_dns = &.{".forbidden.example.com"},
+    };
+
+    // Names in permitted but not excluded should pass
+    try testing.expect(x509.checkNameConstraints("www.example.com", constraints));
+    try testing.expect(x509.checkNameConstraints("api.example.com", constraints));
+
+    // Names in excluded subtree should fail (even if permitted)
+    try testing.expect(!x509.checkNameConstraints("www.forbidden.example.com", constraints));
+
+    // Names outside permitted should fail
+    try testing.expect(!x509.checkNameConstraints("www.other.com", constraints));
+}
+
+test "checkNameConstraints - no constraints (everything allowed)" {
+    const constraints = x509.NameConstraints{
+        .permitted_dns = &.{},
+        .excluded_dns = &.{},
+    };
+
+    // All names should pass when no constraints present
+    try testing.expect(x509.checkNameConstraints("www.example.com", constraints));
+    try testing.expect(x509.checkNameConstraints("anything.com", constraints));
+    try testing.expect(x509.checkNameConstraints("foo.bar.baz", constraints));
+}
+
+test "checkNameConstraints - exact match in permitted" {
+    const constraints = x509.NameConstraints{
+        .permitted_dns = &.{"example.com"}, // No leading dot = exact match
+        .excluded_dns = &.{},
+    };
+
+    // Exact match should pass
+    try testing.expect(x509.checkNameConstraints("example.com", constraints));
+
+    // Subdomains should fail
+    try testing.expect(!x509.checkNameConstraints("www.example.com", constraints));
+}

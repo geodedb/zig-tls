@@ -81,6 +81,9 @@ const deriveApplicationTraffic = key_derivation_mod.deriveApplicationTraffic;
 const encodeHandshake = messages_mod.encodeHandshake;
 const HsType = messages_mod.HsType;
 const deriveHandshakeTraffic = key_derivation_mod.deriveHandshakeTraffic;
+const buildKeyUpdate = messages_mod.buildKeyUpdate;
+const parseKeyUpdate = messages_mod.parseKeyUpdate;
+const KeyUpdateRequest = messages_mod.KeyUpdateRequest;
 // Note: TrafficDirection, SecretSlot, BidirSecrets, CryptoBuffer are defined in the extracted code below
 
 // Local type aliases
@@ -1139,6 +1142,16 @@ pub const Context = struct {
                 // Must verify BEFORE adding to transcript
                 try self.handlePeerFinished(level, parsed.body, raw);
             },
+            .key_update => {
+                // RFC 8446 §4.6.3: KeyUpdate can only occur at Application level
+                if (level != .Application) return HandshakeError.UnexpectedMessage;
+
+                // Parse KeyUpdate message body
+                const request = try parseKeyUpdate(parsed.body);
+
+                // Handle the key update
+                try self.handleKeyUpdateMessage(request);
+            },
             else => {
                 // Other messages (EncryptedExtensions, Certificate, CertificateVerify)
                 // processed implicitly via transcript updates
@@ -1962,6 +1975,106 @@ pub const Context = struct {
         const n = @min(out.len, derived_slice.len);
         @memcpy(out[0..n], derived_slice[0..n]);
         if (n < out.len) @memset(out[n..], 0);
+    }
+
+    /// Initiate a key update (RFC 8446 §4.6.3).
+    ///
+    /// This method updates the local sending traffic secret and sends a KeyUpdate
+    /// message to the peer. Optionally requests the peer to also update their keys.
+    ///
+    /// # RFC 8446 §4.6.3: KeyUpdate Message
+    /// The KeyUpdate handshake message is used to indicate that the sender is
+    /// updating its sending cryptographic keys. This provides forward secrecy
+    /// for long-lived connections and allows recovery from AEAD usage limits.
+    ///
+    /// # RFC 9001 §6: QUIC Key Update
+    /// QUIC implementations must ensure that key updates are coordinated with
+    /// the QUIC packet number space to avoid decryption failures.
+    ///
+    /// # Parameters
+    /// - request_peer_update: If true, requests peer to also perform key update
+    ///
+    /// # Flow
+    /// 1. Update local sending traffic secret (derive next generation)
+    /// 2. Install new sending secret via on_secret_available callback
+    /// 3. Build and send KeyUpdate message
+    /// 4. Queue message in Application-level CRYPTO stream
+    ///
+    /// # Errors
+    /// - HandshakeError.UnexpectedMessage: Called before handshake complete
+    /// - OutOfMemory: Failed to allocate KeyUpdate message
+    ///
+    /// # Example
+    /// ```zig
+    /// // Update keys without requesting peer update (one-way)
+    /// try ctx.sendKeyUpdate(false);
+    ///
+    /// // Update keys and request peer to also update (bidirectional)
+    /// try ctx.sendKeyUpdate(true);
+    /// ```
+    ///
+    /// # Notes
+    /// - Can only be called after handshake complete (Application secrets installed)
+    /// - QUIC layer must handle packet number coordination
+    /// - New keys take effect immediately for outgoing packets
+    pub fn sendKeyUpdate(self: *Context, request_peer_update: bool) !void {
+        // RFC 8446 §4.6.3: KeyUpdate only valid at Application encryption level
+        // Handshake must be complete and application secrets must be installed
+        const send_slot = self.secrets.slot(.Application, .send);
+        if (!send_slot.valid) return HandshakeError.UnexpectedMessage;
+
+        // RFC 8446 §7.2: Derive next generation traffic secret
+        // application_traffic_secret_N+1 = HKDF-Expand-Label(
+        //     application_traffic_secret_N, "traffic upd", "", Hash.length)
+        const next_secret = ks.updateTrafficSecretHash(send_slot.hash, &send_slot.value);
+
+        // Install new sending secret via callback (QUIC layer updates packet protection)
+        try self.installTrafficSecret(.Application, .send, next_secret);
+
+        // Build KeyUpdate message
+        const key_update_msg = try buildKeyUpdate(self.allocator, request_peer_update);
+        defer self.allocator.free(key_update_msg);
+
+        // Queue KeyUpdate message in Application-level CRYPTO stream
+        var stream = self.streams.buffer(.Application);
+        try stream.outbound.appendSlice(self.allocator, key_update_msg);
+
+        traceHandshake("TLS: Sent KeyUpdate (request_update={})\n", .{request_peer_update});
+    }
+
+    /// Handle received KeyUpdate message (RFC 8446 §4.6.3).
+    ///
+    /// Updates the local receiving traffic secret and optionally sends a
+    /// KeyUpdate in response if the peer requested it.
+    ///
+    /// # Parameters
+    /// - request: The KeyUpdateRequest from peer (update_not_requested or update_requested)
+    ///
+    /// # Flow
+    /// 1. Update local receiving traffic secret
+    /// 2. Install new receiving secret via callback
+    /// 3. If peer requested update, send our own KeyUpdate
+    ///
+    /// # Notes
+    /// - Automatically called when KeyUpdate message is received
+    /// - Private method, not intended for direct use by application
+    fn handleKeyUpdateMessage(self: *Context, request: KeyUpdateRequest) !void {
+        // RFC 8446 §7.2: Update receiving traffic secret
+        const recv_slot = self.secrets.slot(.Application, .recv);
+        if (!recv_slot.valid) return HandshakeError.UnexpectedMessage;
+
+        const next_secret = ks.updateTrafficSecretHash(recv_slot.hash, &recv_slot.value);
+
+        // Install new receiving secret
+        try self.installTrafficSecret(.Application, .recv, next_secret);
+
+        traceHandshake("TLS: Received KeyUpdate (request_update={})\n", .{request == .update_requested});
+
+        // RFC 8446 §4.6.3: If peer requested update, send our own KeyUpdate
+        // Send with update_not_requested to avoid infinite ping-pong
+        if (request == .update_requested) {
+            try self.sendKeyUpdate(false); // Don't request peer to update again
+        }
     }
 
     /// Rotate the local application traffic secret and install fresh send keys (RFC 8446 §7.2).

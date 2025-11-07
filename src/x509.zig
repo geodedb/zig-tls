@@ -1003,6 +1003,98 @@ fn wildcardMatch(host: []const u8, pattern: []const u8) bool {
     return true;
 }
 
+/// Check if a DNS name matches a name constraint pattern.
+///
+/// Name constraints use a subdomain matching algorithm per RFC 5280 §4.2.1.10:
+/// - Constraint ".example.com" matches "www.example.com", "api.example.com", etc.
+/// - Constraint "example.com" matches ONLY "example.com" exactly
+/// - Leading dot indicates subdomain constraint
+///
+/// ## Parameters
+/// - `name`: DNS name to check (e.g., "www.example.com")
+/// - `constraint`: Name constraint pattern (e.g., ".example.com" or "example.com")
+///
+/// ## Returns
+/// `true` if `name` is within the namespace defined by `constraint`
+///
+/// ## RFC References
+/// - RFC 5280 §4.2.1.10 - Name Constraints extension semantics
+///
+/// ## Examples
+/// ```zig
+/// matchesNameConstraint("www.example.com", ".example.com") // true
+/// matchesNameConstraint("example.com", ".example.com")     // false (no subdomain)
+/// matchesNameConstraint("example.com", "example.com")      // true (exact match)
+/// matchesNameConstraint("sub.example.com", "example.com")  // false (exact match required)
+/// ```
+pub fn matchesNameConstraint(name: []const u8, constraint: []const u8) bool {
+    // Constraint with leading dot: subdomain matching
+    if (constraint.len > 0 and constraint[0] == '.') {
+        // name must end with constraint
+        // e.g., "www.example.com" ends with ".example.com"
+        if (name.len < constraint.len) return false;
+        const suffix = name[name.len - constraint.len ..];
+        return std.mem.eql(u8, suffix, constraint);
+    } else {
+        // Constraint without leading dot: exact match required
+        return std.mem.eql(u8, name, constraint);
+    }
+}
+
+/// Check if a DNS name satisfies name constraints.
+///
+/// Validates a DNS name against permitted and excluded name constraints per
+/// RFC 5280 §4.2.1.10. Exclusions take precedence over permissions.
+///
+/// ## Validation Rules
+/// 1. If excluded subtrees exist: name MUST NOT match any excluded constraint
+/// 2. If permitted subtrees exist: name MUST match at least one permitted constraint
+/// 3. If both exist: exclusion check happens first (exclusions take precedence)
+///
+/// ## Parameters
+/// - `name`: DNS name to validate
+/// - `constraints`: NameConstraints with permitted/excluded DNS subtrees
+///
+/// ## Returns
+/// `true` if the name satisfies the constraints, `false` otherwise
+///
+/// ## RFC References
+/// - RFC 5280 §4.2.1.10 - Name Constraints extension
+/// - RFC 5280 §6.1.4(g) - Name constraints processing
+///
+/// ## Examples
+/// ```zig
+/// const nc = NameConstraints{
+///     .permitted_dns = &.{".example.com"},
+///     .excluded_dns = &.{".forbidden.example.com"},
+/// };
+/// checkNameConstraints("www.example.com", nc)              // true
+/// checkNameConstraints("test.forbidden.example.com", nc)   // false (excluded)
+/// checkNameConstraints("www.other.com", nc)                // false (not permitted)
+/// ```
+pub fn checkNameConstraints(name: []const u8, constraints: NameConstraints) bool {
+    // RFC 5280 §4.2.1.10: Check exclusions first (they take precedence)
+    for (constraints.excluded_dns) |excluded| {
+        if (matchesNameConstraint(name, excluded)) {
+            return false; // Name is explicitly excluded
+        }
+    }
+
+    // If permitted subtrees exist, name MUST be in at least one
+    if (constraints.permitted_dns.len > 0) {
+        var found_match = false;
+        for (constraints.permitted_dns) |permitted| {
+            if (matchesNameConstraint(name, permitted)) {
+                found_match = true;
+                break;
+            }
+        }
+        if (!found_match) return false; // Name not in any permitted subtree
+    }
+
+    return true; // Name satisfies constraints (or no constraints present)
+}
+
 /// Match a server name against certificate identity (SAN or CN with wildcard support).
 ///
 /// Validates that a DNS hostname matches the certificate's identity by checking:
@@ -1231,7 +1323,7 @@ pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oi
 /// - Currently validates only the leaf certificate in detail; partial intermediate validation
 /// - Self-signed roots are accepted (last cert signs itself)
 /// - OCSP/CRL checking not implemented (revocation checking omitted)
-/// - Name constraints not enforced (RFC 5280 §4.2.1.10)
+/// - Name constraints enforced per RFC 5280 §4.2.1.10
 /// - Policy mapping not supported (RFC 5280 §4.2.1.5)
 pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, allow_insecure: bool) !void {
     if (allow_insecure) return;
@@ -1287,6 +1379,59 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
             if (!keyUsageHas(ku, key_usage_key_cert_sign)) return error.KuNotAllowed;
         }
         try checkValidity(now_unix, &c);
+    }
+
+    // Name Constraints Enforcement (RFC 5280 §4.2.1.10, §6.1.4)
+    // For each certificate, validate its SAN names against name constraints from issuers above it
+    if (!is_single_self_signed) {
+        i = 0;
+        while (i < certs.len) : (i += 1) {
+            const cert = &certs[i];
+
+            // Collect name constraints from all issuers (certificates above this one)
+            var accumulated_permitted = try std.ArrayList([]const u8).initCapacity(alloc, 0);
+            defer accumulated_permitted.deinit(alloc);
+            var accumulated_excluded = try std.ArrayList([]const u8).initCapacity(alloc, 0);
+            defer accumulated_excluded.deinit(alloc);
+
+            var issuer_idx = i + 1;
+            while (issuer_idx < certs.len) : (issuer_idx += 1) {
+                if (certs[issuer_idx].name_constraints) |nc| {
+                    // Accumulate permitted constraints
+                    for (nc.permitted_dns) |p| {
+                        try accumulated_permitted.append(alloc, p);
+                    }
+                    // Accumulate excluded constraints
+                    for (nc.excluded_dns) |e| {
+                        try accumulated_excluded.append(alloc, e);
+                    }
+                }
+            }
+
+            // If there are any name constraints, validate this cert's SAN names
+            if (accumulated_permitted.items.len > 0 or accumulated_excluded.items.len > 0) {
+                const constraints = NameConstraints{
+                    .permitted_dns = accumulated_permitted.items,
+                    .excluded_dns = accumulated_excluded.items,
+                };
+
+                // Check SAN DNS names (leaf) or subject DN (intermediates)
+                // For simplicity, we only check SAN DNS names if present
+                if (cert.san) |san| {
+                    for (san.dns) |dns_name| {
+                        if (!checkNameConstraints(dns_name, constraints)) {
+                            return error.NameConstraintsViolation;
+                        }
+                    }
+                }
+                // If no SAN but there's a CN, check it (for backwards compatibility)
+                else if (cert.subject.cn) |cn| {
+                    if (!checkNameConstraints(cn, constraints)) {
+                        return error.NameConstraintsViolation;
+                    }
+                }
+            }
+        }
     }
 
     // Verify signatures along the chain
