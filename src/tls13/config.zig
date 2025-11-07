@@ -155,6 +155,22 @@ pub const Config = struct {
     /// null = No private key (client role or testing).
     server_key_der: ?[]const u8 = null,
 
+    /// Server secret for HelloRetryRequest cookie generation (Server role only).
+    /// RFC 8446 §4.1.4: Used to create HMAC-authenticated cookies for stateless HRR.
+    ///
+    /// The cookie is generated as: HMAC-SHA256(server_secret, client_random || transcript_hash || timestamp)
+    ///
+    /// Security properties:
+    /// - Should be randomly generated at server startup (32+ bytes recommended)
+    /// - Must be kept secret (compromise allows cookie forgery)
+    /// - Can be rotated periodically for key hygiene
+    /// - Same secret can be shared across server instances for load balancing
+    ///
+    /// If null, a random secret will be generated on first HRR (less secure for multi-server).
+    ///
+    /// Default: null (auto-generated)
+    server_secret: ?[]const u8 = null,
+
     /// Require the peer to present a stapled OCSP response. When true, the
     /// handshake aborts if the Certificate message omits OCSP data or if
     /// validation fails.

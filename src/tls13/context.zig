@@ -63,6 +63,7 @@ const transcript_mod = @import("transcript.zig");
 const key_derivation_mod = @import("key_derivation.zig");
 const messages_mod = @import("messages.zig");
 const finished_mod = @import("finished.zig");
+const cookie_mod = @import("messages/extensions/cookie.zig");
 
 // Note: The extracted code below contains its own type definitions
 // (ApiError, HandshakeError, TrafficDirection, SecretSlot, etc.)
@@ -832,6 +833,8 @@ pub const Context = struct {
     handshake_secret: ?Secret = null,
     client_priv: ?[32]u8 = null,
     client_pub: ?[32]u8 = null,
+    hrr_sent: bool = false, // Track if we already sent HelloRetryRequest
+    server_secret_generated: ?[32]u8 = null, // Generated server secret for HRR cookies
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) Context {
@@ -1325,6 +1328,75 @@ pub const Context = struct {
         return copy;
     }
 
+    /// Get or generate server secret for HRR cookie generation.
+    /// RFC 8446 §4.2.2: Server uses a secret to generate HMAC-authenticated cookies.
+    fn ensureServerSecret(self: *Context) ![]const u8 {
+        // Use configured server_secret if available
+        if (self.config.server_secret) |secret| {
+            return secret;
+        }
+
+        // Otherwise, generate a random secret (stored in context for session lifetime)
+        if (self.server_secret_generated) |*secret| {
+            return secret;
+        }
+
+        // Generate new random secret (32 bytes for HMAC-SHA256)
+        var secret: [32]u8 = undefined;
+        std.crypto.random.bytes(&secret);
+        self.server_secret_generated = secret;
+        return &self.server_secret_generated.?;
+    }
+
+    /// Send HelloRetryRequest to client requesting a different key share group.
+    /// RFC 8446 §4.1.4: HelloRetryRequest is a ServerHello with special random value.
+    fn sendHelloRetryRequest(self: *Context, ch_view: ClientHelloView, selected_group: tls13_full.NamedGroup) !void {
+        traceHandshake("Server: Sending HelloRetryRequest (requesting group: {s})\n", .{@tagName(selected_group)});
+
+        // RFC 8446 §4.2.2: Generate cookie binding this HRR to the client's first ClientHello
+        const server_secret = try self.ensureServerSecret();
+
+        // Compute transcript hash of first ClientHello
+        const ch1_hash = self.transcripts.handshake.finalize(self.hash_kind);
+
+        // Generate HMAC-authenticated cookie
+        const cookie = try cookie_mod.generateCookie(
+            self.allocator,
+            server_secret,
+            ch_view.random,
+            ch1_hash.slice(),
+        );
+        defer self.allocator.free(cookie);
+
+        // Build HelloRetryRequest message
+        const hrr_body = try tls13_full.buildHelloRetryRequest(
+            self.allocator,
+            selected_group,
+            cookie,
+            if (ch_view.session_id.len > 0) ch_view.session_id else null,
+        );
+        defer self.allocator.free(hrr_body);
+
+        // Encode as ServerHello handshake message
+        const hrr_msg = try encodeHandshake(self.allocator, .server_hello, hrr_body);
+        defer self.allocator.free(hrr_msg);
+
+        // RFC 8446 §4.4.1: Update transcript hash for HelloRetryRequest
+        // Replace transcript with: message_hash(ClientHello1) || HelloRetryRequest
+        self.transcripts.handshake.handleHelloRetryRequest(ch_view.raw, self.hash_kind);
+
+        // Now add HRR to the modified transcript
+        self.transcripts.handshake.update(hrr_msg);
+
+        // Queue HRR for transmission at Initial encryption level
+        try self.appendOutbound(.Initial, hrr_msg, false); // Already updated transcript above
+
+        // Mark that we sent HRR
+        self.hrr_sent = true;
+
+        traceHandshake("Server: HelloRetryRequest sent successfully\n", .{});
+    }
+
     fn driveServerHandshakeFlight(self: *Context) !void {
         if (self.config.role != .Server) return;
         if (self.flags.local_finished_sent) return;
@@ -1335,6 +1407,20 @@ pub const Context = struct {
         self.hash_kind = cipherSuiteHash(cipher_suite);
         self.negotiated_cipher_suite = cipher_suite;
         _ = try self.selectServerSignatureScheme(ch_view);
+
+        // RFC 8446 §4.1.4: Check if client's key_share group is supported
+        // If not supported and we haven't sent HRR yet, send HelloRetryRequest
+        if (ch_view.key_share.group != .x25519) {
+            if (self.hrr_sent) {
+                // Client already received HRR but still sent wrong group
+                return HandshakeError.UnsupportedKeyShareGroup;
+            }
+
+            // Send HelloRetryRequest requesting x25519
+            try self.sendHelloRetryRequest(ch_view, .x25519);
+            return; // Don't continue with normal handshake
+        }
+
         if (ch_view.key_share.key.len != 32) return HandshakeError.UnsupportedKeyShareGroup;
 
         var server_random: [32]u8 = undefined;

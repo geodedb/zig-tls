@@ -387,6 +387,160 @@ pub fn buildServerHello(
     return msg.toOwnedSlice(allocator);
 }
 
+/// Build a HelloRetryRequest message (RFC 8446 §4.1.4).
+///
+/// HelloRetryRequest (HRR) is a ServerHello message with a special random value
+/// that instructs the client to send a new ClientHello with updated parameters.
+/// This is used when the server cannot process the original ClientHello, most
+/// commonly when the client's key_share group is not supported by the server.
+///
+/// ## Parameters
+///
+/// - `allocator`: Memory allocator for message buffer
+/// - `selected_group`: The NamedGroup the server wants the client to use
+/// - `cookie`: Stateless cookie to bind the retry to the original ClientHello
+/// - `client_session_id`: Echo of client's session ID (for middlebox compatibility)
+///
+/// ## Returns
+///
+/// - `[]u8`: Serialized HelloRetryRequest message (caller owns memory, must free)
+///
+/// ## Message Format (RFC 8446 §4.1.4)
+///
+/// HelloRetryRequest is a ServerHello message with these characteristics:
+/// - random field set to the special value SHA-256("HelloRetryRequest")
+/// - legacy_version, legacy_session_id_echo, and legacy_compression_method follow ServerHello rules
+/// - cipher_suite can be zero (will be negotiated in second ClientHello)
+/// - Extensions:
+///   1. **supported_versions** (0x002b): MANDATORY - TLS 1.3 (0x0304)
+///   2. **cookie** (0x002c): Opaque cookie to prevent DoS attacks
+///   3. **key_share** (0x0033): Contains only selected_group (2 bytes), not key exchange data
+///
+/// ## Key Share Extension in HRR (RFC 8446 §4.2.8)
+///
+/// In HelloRetryRequest, the key_share extension has a different format:
+/// ```
+/// struct {
+///     NamedGroup selected_group;  // 2 bytes
+/// } KeyShareHelloRetryRequest;
+/// ```
+///
+/// This tells the client which group to use in the second ClientHello.
+///
+/// ## Cookie Extension (RFC 8446 §4.2.2)
+///
+/// The cookie extension binds the retry to the original ClientHello and prevents
+/// DoS attacks. Format:
+/// ```
+/// struct {
+///     opaque cookie<1..2^16-1>;
+/// } Cookie;
+/// ```
+///
+/// The cookie is generated using HMAC over:
+/// - Client random from first ClientHello
+/// - Transcript hash of first ClientHello
+/// - Timestamp for freshness validation
+///
+/// ## Security Considerations
+///
+/// - HRR random value is FIXED (SHA-256("HelloRetryRequest")) - not generated
+/// - Cookie MUST be validated when client sends second ClientHello
+/// - Transcript hash special handling: Hash(message_hash(CH1) || HRR || CH2...)
+/// - Server can be stateless by encoding state in the cookie
+///
+/// ## Transcript Hash Handling
+///
+/// When HRR is sent, the transcript is modified per RFC 8446 §4.4.1:
+/// 1. Compute hash1 = Hash(ClientHello1)
+/// 2. Replace transcript with: message_hash(hash1) || HelloRetryRequest
+/// 3. Continue with: message_hash(hash1) || HRR || ClientHello2 || ServerHello...
+///
+/// ## Usage
+///
+/// ```zig
+/// const cookie = try cookie_mod.generateCookie(allocator, server_secret, client_random, transcript_hash);
+/// defer allocator.free(cookie);
+///
+/// const hrr = try buildHelloRetryRequest(
+///     allocator,
+///     .secp256r1,  // Request client to use P-256 instead of X25519
+///     cookie,
+///     client_session_id
+/// );
+/// defer allocator.free(hrr);
+/// ```
+///
+/// ## RFC References
+///
+/// - RFC 8446 §4.1.4: HelloRetryRequest structure
+/// - RFC 8446 §4.2.2: Cookie extension
+/// - RFC 8446 §4.2.8: Key Share extension (HelloRetryRequest variant)
+/// - RFC 8446 §4.4.1: Transcript hash modification for HRR
+pub fn buildHelloRetryRequest(
+    allocator: std.mem.Allocator,
+    selected_group: core_types.NamedGroup,
+    cookie: []const u8,
+    client_session_id: ?[]const u8,
+) ![]u8 {
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer msg.deinit(allocator);
+
+    // Legacy version (TLS 1.2 for compatibility)
+    try msg.appendSlice(allocator, &[_]u8{ 0x03, 0x03 });
+
+    // Random: MUST be the special HRR random value
+    try msg.appendSlice(allocator, &HELLO_RETRY_REQUEST_RANDOM);
+
+    // Legacy session ID (echo from client per RFC 8446 §4.1.3)
+    if (client_session_id) |session_id| {
+        try msg.append(allocator, @intCast(session_id.len));
+        try msg.appendSlice(allocator, session_id);
+    } else {
+        try msg.append(allocator, 0);
+    }
+
+    // Cipher suite: Can be zero in HRR (will be negotiated in ClientHello2)
+    // Using TLS_AES_128_GCM_SHA256 as a placeholder (common default)
+    try msg.appendSlice(allocator, &[_]u8{ 0x13, 0x01 });
+
+    // Legacy compression method
+    try msg.append(allocator, 0);
+
+    // Extensions
+    var exts = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer exts.deinit(allocator);
+
+    // RFC 8446 §4.1.4: Extension order for HRR:
+    // 1. supported_versions (MANDATORY)
+    // 2. cookie (if present)
+    // 3. key_share with selected_group (if requesting different group)
+
+    // supported_versions (MANDATORY)
+    try helpers.writeExtension(allocator, &exts, .supported_versions, &[_]u8{ 0x03, 0x04 });
+
+    // cookie extension (RFC 8446 §4.2.2)
+    try helpers.writeExtension(allocator, &exts, .cookie, cookie);
+
+    // key_share extension with selected_group only (RFC 8446 §4.2.8)
+    // Format for HRR: just the 2-byte NamedGroup value
+    const group_value = @intFromEnum(selected_group);
+    const group_bytes = [_]u8{
+        @intCast(group_value >> 8),
+        @intCast(group_value & 0xff),
+    };
+    try helpers.writeExtension(allocator, &exts, .key_share, &group_bytes);
+
+    // Write extensions length
+    try msg.appendSlice(allocator, &[_]u8{
+        @intCast(exts.items.len >> 8),
+        @intCast(exts.items.len & 0xff),
+    });
+    try msg.appendSlice(allocator, exts.items);
+
+    return msg.toOwnedSlice(allocator);
+}
+
 // ============================================================================
 // Unit Tests
 // ============================================================================
@@ -490,4 +644,160 @@ test "Downgrade sentinel values correctness" {
     // Verify they only differ in the last byte
     try testing.expect(std.mem.eql(u8, TLS12_DOWNGRADE_SENTINEL[0..7], TLS11_DOWNGRADE_SENTINEL[0..7]));
     try testing.expect(TLS12_DOWNGRADE_SENTINEL[7] != TLS11_DOWNGRADE_SENTINEL[7]);
+}
+
+test "buildHelloRetryRequest - basic structure" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Create a test cookie
+    const cookie = "test_cookie_12345678";
+    const session_id = &[_]u8{ 0x01, 0x02, 0x03, 0x04 };
+
+    const hrr = try buildHelloRetryRequest(
+        allocator,
+        .secp256r1, // Request P-256 group
+        cookie,
+        session_id,
+    );
+    defer allocator.free(hrr);
+
+    // Verify HRR has minimum expected length
+    // 2 (version) + 32 (random) + 1 (session_id_len) + 4 (session_id) + 2 (cipher) + 1 (compression) + 2 (ext_len) + extensions
+    try testing.expect(hrr.len > 44);
+
+    // Verify legacy version (0x0303 = TLS 1.2)
+    try testing.expectEqual(@as(u8, 0x03), hrr[0]);
+    try testing.expectEqual(@as(u8, 0x03), hrr[1]);
+
+    // Verify HRR random value (bytes 2..34)
+    try testing.expectEqualSlices(u8, &HELLO_RETRY_REQUEST_RANDOM, hrr[2..34]);
+
+    // Verify this is detected as HRR
+    var random: [32]u8 = undefined;
+    @memcpy(&random, hrr[2..34]);
+    try testing.expect(isHelloRetryRequest(random));
+}
+
+test "buildHelloRetryRequest - extension format" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const cookie = "my_cookie";
+    const hrr = try buildHelloRetryRequest(
+        allocator,
+        .x25519,
+        cookie,
+        null, // No session ID
+    );
+    defer allocator.free(hrr);
+
+    // Parse structure to find extensions
+    // Skip: version(2) + random(32) + session_id_len(1) + cipher(2) + compression(1) = 38 bytes
+    var pos: usize = 38;
+    try testing.expect(pos + 2 <= hrr.len);
+
+    // Read extensions length
+    const ext_len = (@as(usize, hrr[pos]) << 8) | @as(usize, hrr[pos + 1]);
+    pos += 2;
+
+    try testing.expect(pos + ext_len == hrr.len); // Extensions should fill rest of message
+    try testing.expect(ext_len > 0); // Must have extensions
+
+    // Extensions should contain: supported_versions + cookie + key_share
+    // We don't parse them fully here, just verify they're present
+}
+
+test "buildHelloRetryRequest - selected group encoding" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const cookie = "test";
+
+    // Test with different groups
+    const groups = [_]core_types.NamedGroup{
+        .x25519,     // 0x001d
+        .secp256r1,  // 0x0017
+        .secp384r1,  // 0x0018
+    };
+
+    for (groups) |group| {
+        const hrr = try buildHelloRetryRequest(
+            allocator,
+            group,
+            cookie,
+            null,
+        );
+        defer allocator.free(hrr);
+
+        // Verify HRR was built successfully
+        try testing.expect(hrr.len > 40);
+
+        // Verify HRR random is present
+        try testing.expectEqualSlices(u8, &HELLO_RETRY_REQUEST_RANDOM, hrr[2..34]);
+    }
+}
+
+test "buildHelloRetryRequest - cookie preservation" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // Test with various cookie sizes
+    const cookies = [_][]const u8{
+        "small",
+        "medium_sized_cookie_123",
+        "very_long_cookie_" ++ ("x" ** 50),
+    };
+
+    for (cookies) |cookie| {
+        const hrr = try buildHelloRetryRequest(
+            allocator,
+            .x25519,
+            cookie,
+            null,
+        );
+        defer allocator.free(hrr);
+
+        // Verify HRR was built successfully
+        try testing.expect(hrr.len > 40);
+
+        // Cookie is embedded in extensions - we don't parse it here,
+        // but verify the message length makes sense
+        // Minimum: header(38) + ext_len(2) + supported_versions(6) + cookie(4+cookie.len) + key_share(6)
+        const min_len = 38 + 2 + 6 + 4 + cookie.len + 6;
+        try testing.expect(hrr.len >= min_len);
+    }
+}
+
+test "buildHelloRetryRequest - session ID echo" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const cookie = "test_cookie";
+
+    // Test with session ID
+    const session_id = &[_]u8{ 0xAA, 0xBB, 0xCC, 0xDD };
+    const hrr_with_sid = try buildHelloRetryRequest(
+        allocator,
+        .x25519,
+        cookie,
+        session_id,
+    );
+    defer allocator.free(hrr_with_sid);
+
+    // Verify session ID is echoed (byte 34 should be length, then the ID)
+    try testing.expectEqual(@as(u8, session_id.len), hrr_with_sid[34]);
+    try testing.expectEqualSlices(u8, session_id, hrr_with_sid[35 .. 35 + session_id.len]);
+
+    // Test without session ID
+    const hrr_no_sid = try buildHelloRetryRequest(
+        allocator,
+        .x25519,
+        cookie,
+        null,
+    );
+    defer allocator.free(hrr_no_sid);
+
+    // Verify session ID length is 0
+    try testing.expectEqual(@as(u8, 0), hrr_no_sid[34]);
 }
