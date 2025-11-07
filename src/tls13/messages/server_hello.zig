@@ -4,9 +4,15 @@
 //! ServerHello is the server's response to ClientHello, containing the
 //! selected cipher suite, key share, and supported version.
 //!
+//! HelloRetryRequest (RFC 8446 §4.1.4) is a special case of ServerHello
+//! with a specific random value, used when the server needs the client
+//! to retry with different parameters (e.g., a different named group).
+//!
 //! ## RFC Coverage
 //!
 //! - RFC 8446 §4.1.3: ServerHello structure
+//! - RFC 8446 §4.1.4: HelloRetryRequest (special ServerHello)
+//! - RFC 8446 §4.2.2: Cookie extension (for HelloRetryRequest)
 //! - RFC 8446 §4.2.8: key_share extension (MANDATORY for ECDHE)
 //! - RFC 8446 §4.2.1: supported_versions extension (MANDATORY for TLS 1.3)
 //! - RFC 9001 §8.2: QUIC transport parameters MUST NOT appear in ServerHello
@@ -34,6 +40,173 @@
 const std = @import("std");
 const core_types = @import("core_types.zig");
 const helpers = @import("helpers.zig");
+
+// ============================================================================
+// HelloRetryRequest and Downgrade Protection Constants (RFC 8446)
+// ============================================================================
+
+/// RFC 8446 §4.1.3: Special random value identifying HelloRetryRequest.
+///
+/// HelloRetryRequest is not a separate message type - it's a ServerHello with
+/// this specific random value. The value is the SHA-256 hash of the string
+/// "HelloRetryRequest":
+///
+/// ```
+/// SHA-256("HelloRetryRequest") =
+///   CF 21 AD 74 E5 9A 61 11 BE 1D 8C 02 1E 65 B8 91
+///   C2 A2 11 16 7A BB 8C 5E 07 9E 09 E2 C8 A8 33 9C
+/// ```
+///
+/// When a client receives a ServerHello with this random value, it must:
+/// 1. Recognize it as HelloRetryRequest
+/// 2. Update the transcript hash with a synthetic "message_hash" message
+/// 3. Retry the handshake with the server's requested parameters (e.g., new key_share group)
+/// 4. Include the cookie extension (if server sent one) in the retry ClientHello
+///
+/// ## Security Note
+///
+/// Using a fixed value instead of actual randomness is safe because:
+/// - HelloRetryRequest is authenticated via the Finished message's transcript hash
+/// - The cookie extension provides replay protection if needed
+/// - The synthetic message in the transcript binds the retry to the original ClientHello
+pub const HELLO_RETRY_REQUEST_RANDOM: [32]u8 = .{
+    0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11,
+    0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
+    0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E,
+    0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C,
+};
+
+/// RFC 8446 §4.1.3: Downgrade protection sentinel for TLS 1.2.
+///
+/// If a server supports TLS 1.3 but negotiates TLS 1.2 or below (due to client
+/// limitations), it MUST set the last 8 bytes of ServerHello.random to this value.
+/// A TLS 1.3 client that receives a TLS 1.2 ServerHello MUST check for this
+/// sentinel and abort with illegal_parameter alert if detected.
+///
+/// This prevents downgrade attacks where a MITM forces a TLS 1.2 connection
+/// even though both endpoints support TLS 1.3.
+///
+/// The value spells "DOWNGRD\x01" in ASCII (0x44 0x4F 0x57 0x4E = "DOWN",
+/// 0x47 0x52 0x44 = "GRD", 0x01 = version indicator for TLS 1.2).
+///
+/// ## QUIC Note
+///
+/// QUIC mandates TLS 1.3, so this downgrade scenario cannot occur in QUIC.
+/// However, the client-side check is still implemented for defense-in-depth.
+pub const TLS12_DOWNGRADE_SENTINEL: [8]u8 = .{
+    0x44, 0x4F, 0x57, 0x4E, // "DOWN"
+    0x47, 0x52, 0x44, 0x01, // "GRD" + 0x01
+};
+
+/// RFC 8446 §4.1.3: Downgrade protection sentinel for TLS 1.1 and below.
+///
+/// Similar to TLS12_DOWNGRADE_SENTINEL, but indicates negotiation of TLS 1.1
+/// or earlier. The last byte is 0x00 instead of 0x01.
+///
+/// The value spells "DOWNGRD\x00" in ASCII.
+///
+/// ## QUIC Note
+///
+/// QUIC mandates TLS 1.3, so this cannot occur. Included for completeness.
+pub const TLS11_DOWNGRADE_SENTINEL: [8]u8 = .{
+    0x44, 0x4F, 0x57, 0x4E, // "DOWN"
+    0x47, 0x52, 0x44, 0x00, // "GRD" + 0x00
+};
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Check if a ServerHello is actually a HelloRetryRequest.
+///
+/// RFC 8446 §4.1.4: HelloRetryRequest is distinguished by the special random value.
+///
+/// # Parameters
+/// - `random`: The 32-byte random field from ServerHello
+///
+/// # Returns
+/// - `true`: This is a HelloRetryRequest (client must retry with new parameters)
+/// - `false`: This is a normal ServerHello (proceed with handshake)
+///
+/// # Usage
+/// ```zig
+/// if (isHelloRetryRequest(server_hello.random)) {
+///     // Handle HelloRetryRequest flow
+///     try handleHelloRetryRequest(ctx, server_hello);
+/// } else {
+///     // Handle normal ServerHello
+///     try handleServerHello(ctx, server_hello);
+/// }
+/// ```
+pub fn isHelloRetryRequest(random: [32]u8) bool {
+    return std.mem.eql(u8, &random, &HELLO_RETRY_REQUEST_RANDOM);
+}
+
+/// Check if ServerHello random contains a TLS 1.2 downgrade sentinel.
+///
+/// RFC 8446 §4.1.3: Client MUST abort if it detects a downgrade attack.
+///
+/// # Parameters
+/// - `random`: The 32-byte random field from ServerHello
+///
+/// # Returns
+/// - `true`: Downgrade to TLS 1.2 detected (client MUST abort with illegal_parameter)
+/// - `false`: No downgrade sentinel detected
+///
+/// # Usage
+/// ```zig
+/// if (containsTls12DowngradeSentinel(server_hello.random)) {
+///     return error.Tls12DowngradeDetected; // Maps to illegal_parameter alert
+/// }
+/// ```
+pub fn containsTls12DowngradeSentinel(random: [32]u8) bool {
+    const last_8 = random[24..32];
+    return std.mem.eql(u8, last_8, &TLS12_DOWNGRADE_SENTINEL);
+}
+
+/// Check if ServerHello random contains a TLS 1.1 or below downgrade sentinel.
+///
+/// RFC 8446 §4.1.3: Client MUST abort if it detects a downgrade attack.
+///
+/// # Parameters
+/// - `random`: The 32-byte random field from ServerHello
+///
+/// # Returns
+/// - `true`: Downgrade to TLS 1.1 or below detected (client MUST abort)
+/// - `false`: No downgrade sentinel detected
+///
+/// # Usage
+/// ```zig
+/// if (containsTls11DowngradeSentinel(server_hello.random)) {
+///     return error.Tls11DowngradeDetected; // Maps to illegal_parameter alert
+/// }
+/// ```
+pub fn containsTls11DowngradeSentinel(random: [32]u8) bool {
+    const last_8 = random[24..32];
+    return std.mem.eql(u8, last_8, &TLS11_DOWNGRADE_SENTINEL);
+}
+
+/// Check for any downgrade attack (TLS 1.2 or TLS 1.1).
+///
+/// Convenience function that checks both downgrade sentinels.
+///
+/// # Parameters
+/// - `random`: The 32-byte random field from ServerHello
+///
+/// # Returns
+/// - `true`: Any downgrade detected (client MUST abort)
+/// - `false`: No downgrade detected
+///
+/// # Usage
+/// ```zig
+/// if (containsDowngradeSentinel(server_hello.random)) {
+///     return error.DowngradeDetected; // Maps to illegal_parameter alert
+/// }
+/// ```
+pub fn containsDowngradeSentinel(random: [32]u8) bool {
+    return containsTls12DowngradeSentinel(random) or
+        containsTls11DowngradeSentinel(random);
+}
 
 /// Build a TLS 1.3 ServerHello message (RFC 8446 §4.1.3).
 ///
@@ -212,4 +385,109 @@ pub fn buildServerHello(
     try msg.appendSlice(allocator, exts.items);
 
     return msg.toOwnedSlice(allocator);
+}
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+test "HelloRetryRequest detection" {
+    const testing = std.testing;
+
+    // Test HRR random detection
+    var hrr_random: [32]u8 = HELLO_RETRY_REQUEST_RANDOM;
+    try testing.expect(isHelloRetryRequest(hrr_random));
+
+    // Test normal random is not HRR
+    var normal_random: [32]u8 = undefined;
+    std.crypto.random.bytes(&normal_random);
+    try testing.expect(!isHelloRetryRequest(normal_random));
+
+    // Test first byte different
+    hrr_random[0] = 0x00;
+    try testing.expect(!isHelloRetryRequest(hrr_random));
+
+    // Test last byte different
+    hrr_random = HELLO_RETRY_REQUEST_RANDOM;
+    hrr_random[31] = 0x00;
+    try testing.expect(!isHelloRetryRequest(hrr_random));
+}
+
+test "Downgrade protection - TLS 1.2 sentinel" {
+    const testing = std.testing;
+
+    // Random with TLS 1.2 downgrade sentinel in last 8 bytes
+    var random_with_sentinel: [32]u8 = undefined;
+    std.crypto.random.bytes(&random_with_sentinel);
+    @memcpy(random_with_sentinel[24..32], &TLS12_DOWNGRADE_SENTINEL);
+
+    try testing.expect(containsTls12DowngradeSentinel(random_with_sentinel));
+    try testing.expect(!containsTls11DowngradeSentinel(random_with_sentinel));
+    try testing.expect(containsDowngradeSentinel(random_with_sentinel));
+
+    // Random without sentinel
+    var normal_random: [32]u8 = undefined;
+    std.crypto.random.bytes(&normal_random);
+    try testing.expect(!containsTls12DowngradeSentinel(normal_random));
+    try testing.expect(!containsDowngradeSentinel(normal_random));
+}
+
+test "Downgrade protection - TLS 1.1 sentinel" {
+    const testing = std.testing;
+
+    // Random with TLS 1.1 downgrade sentinel in last 8 bytes
+    var random_with_sentinel: [32]u8 = undefined;
+    std.crypto.random.bytes(&random_with_sentinel);
+    @memcpy(random_with_sentinel[24..32], &TLS11_DOWNGRADE_SENTINEL);
+
+    try testing.expect(!containsTls12DowngradeSentinel(random_with_sentinel));
+    try testing.expect(containsTls11DowngradeSentinel(random_with_sentinel));
+    try testing.expect(containsDowngradeSentinel(random_with_sentinel));
+}
+
+test "Downgrade protection - HRR is not a downgrade" {
+    const testing = std.testing;
+
+    // HelloRetryRequest random should not be detected as downgrade
+    const hrr_random = HELLO_RETRY_REQUEST_RANDOM;
+    try testing.expect(!containsDowngradeSentinel(hrr_random));
+}
+
+test "HRR random value correctness" {
+    const testing = std.testing;
+
+    // Verify the HRR random is exactly SHA-256("HelloRetryRequest")
+    // Expected value from RFC 8446 §4.1.3
+    const expected = [32]u8{
+        0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11,
+        0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
+        0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E,
+        0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C,
+    };
+
+    try testing.expectEqualSlices(u8, &expected, &HELLO_RETRY_REQUEST_RANDOM);
+
+    // Verify it's actually SHA-256 of "HelloRetryRequest"
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update("HelloRetryRequest");
+    var actual: [32]u8 = undefined;
+    hasher.final(&actual);
+
+    try testing.expectEqualSlices(u8, &actual, &HELLO_RETRY_REQUEST_RANDOM);
+}
+
+test "Downgrade sentinel values correctness" {
+    const testing = std.testing;
+
+    // Verify TLS 1.2 sentinel spells "DOWNGRD\x01"
+    const tls12_expected = [8]u8{ 0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44, 0x01 };
+    try testing.expectEqualSlices(u8, &tls12_expected, &TLS12_DOWNGRADE_SENTINEL);
+
+    // Verify TLS 1.1 sentinel spells "DOWNGRD\x00"
+    const tls11_expected = [8]u8{ 0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44, 0x00 };
+    try testing.expectEqualSlices(u8, &tls11_expected, &TLS11_DOWNGRADE_SENTINEL);
+
+    // Verify they only differ in the last byte
+    try testing.expect(std.mem.eql(u8, TLS12_DOWNGRADE_SENTINEL[0..7], TLS11_DOWNGRADE_SENTINEL[0..7]));
+    try testing.expect(TLS12_DOWNGRADE_SENTINEL[7] != TLS11_DOWNGRADE_SENTINEL[7]);
 }
