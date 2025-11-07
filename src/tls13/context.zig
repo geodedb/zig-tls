@@ -833,7 +833,9 @@ pub const Context = struct {
     handshake_secret: ?Secret = null,
     client_priv: ?[32]u8 = null,
     client_pub: ?[32]u8 = null,
-    hrr_sent: bool = false, // Track if we already sent HelloRetryRequest
+    client_random: ?[32]u8 = null, // Client random from first ClientHello (for HRR)
+    hrr_sent: bool = false, // Track if we already sent HelloRetryRequest (server)
+    hrr_received: bool = false, // Track if we received HelloRetryRequest (client)
     server_secret_generated: ?[32]u8 = null, // Generated server secret for HRR cookies
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
@@ -1328,6 +1330,223 @@ pub const Context = struct {
         return copy;
     }
 
+    /// Handle HelloRetryRequest from server (client-side).
+    /// RFC 8446 §4.1.4: Parse HRR, extract cookie and selected_group, send ClientHello2.
+    fn handleHelloRetryRequest(self: *Context, body: []const u8) !void {
+        if (self.hrr_received) {
+            // Already received HRR once - server sent HRR twice
+            return HandshakeError.UnexpectedMessage;
+        }
+
+        traceHandshake("Client: Received HelloRetryRequest\n", .{});
+
+        // Parse extensions to extract cookie and selected_group
+        if (body.len < 2 + 32 + 1) return HandshakeError.UnexpectedMessage;
+        var pos: usize = 2 + 32; // skip legacy_version + random
+
+        // Skip session_id
+        if (pos >= body.len) return HandshakeError.UnexpectedMessage;
+        const sid_len: usize = body[pos];
+        pos += 1 + sid_len;
+
+        // Skip cipher_suite + compression
+        if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
+        pos += 2 + 1;
+
+        // Parse extensions
+        if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
+        const exts_len: usize = (@as(usize, body[pos]) << 8) | @as(usize, body[pos + 1]);
+        pos += 2;
+        if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
+
+        const exts_end = pos + exts_len;
+        var cookie: ?[]const u8 = null;
+        var selected_group: ?tls13_full.NamedGroup = null;
+
+        while (pos + 4 <= exts_end) {
+            const etype = (@as(u16, body[pos]) << 8) | body[pos + 1];
+            const elen = (@as(usize, body[pos + 2]) << 8) | body[pos + 3];
+            pos += 4;
+            if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
+
+            // RFC 8446 §4.2.2: cookie extension (0x002c)
+            if (etype == 0x002c) {
+                cookie = body[pos .. pos + elen];
+            }
+            // RFC 8446 §4.2.8: key_share extension with selected_group (2 bytes)
+            else if (etype == 0x0033) {
+                if (elen == 2) {
+                    const group_val = (@as(u16, body[pos]) << 8) | body[pos + 1];
+                    selected_group = std.meta.intToEnum(tls13_full.NamedGroup, group_val) catch null;
+                }
+            }
+
+            pos += elen;
+        }
+
+        // Cookie is optional in HRR, but selected_group is required
+        if (selected_group == null) {
+            return HandshakeError.MissingKeyShare;
+        }
+
+        traceHandshake("Client: HRR requests group: {s}\n", .{@tagName(selected_group.?)});
+
+        // RFC 8446 §4.4.1: Update transcript for HelloRetryRequest
+        // Get the first ClientHello from the buffer we need to re-send
+        const ch1_raw = self.streams.getEncryptionLevel(.Initial).sent_buffer.items;
+
+        // Update transcript: replace with message_hash(CH1) || HRR
+        self.transcripts.handshake.handleHelloRetryRequest(ch1_raw, self.hash_kind);
+
+        // Now add HRR to transcript
+        // Need to get the full HRR message (with handshake framing)
+        // We're currently in the ServerHello handler, so the transcript already has it
+        // But handleHelloRetryRequest reset the transcript, so we need to add HRR manually
+        const hrr_msg = try encodeHandshake(self.allocator, .server_hello, body);
+        defer self.allocator.free(hrr_msg);
+        self.transcripts.handshake.update(hrr_msg);
+
+        // Mark that we received HRR
+        self.hrr_received = true;
+
+        // Send ClientHello2 with new key_share and cookie
+        try self.sendClientHello2(selected_group.?, cookie);
+
+        traceHandshake("Client: Sent ClientHello2 with group {s}\n", .{@tagName(selected_group.?)});
+    }
+
+    /// Send ClientHello2 after receiving HelloRetryRequest.
+    /// RFC 8446 §4.1.4: Second ClientHello includes cookie and new key_share.
+    fn sendClientHello2(self: *Context, selected_group: tls13_full.NamedGroup, cookie: ?[]const u8) !void {
+        // Generate new key pair for the requested group
+        // Currently only X25519 is supported
+        if (selected_group != .x25519) {
+            return HandshakeError.UnsupportedKeyShareGroup;
+        }
+
+        var priv: [32]u8 = undefined;
+        std.crypto.random.bytes(&priv);
+        const pub_key = std.crypto.dh.X25519.recoverPublicKey(priv) catch {
+            return HandshakeError.UnsupportedKeyShareGroup;
+        };
+
+        self.client_priv = priv;
+        self.client_pub = pub_key;
+
+        // Build ClientHello2 (similar to initial ClientHello but with cookie)
+        var body = std.ArrayList(u8){};
+        defer body.deinit(self.allocator);
+
+        // legacy_version
+        try body.appendSlice(self.allocator, &.{ 0x03, 0x03 });
+
+        // RFC 8446 §4.1.4: MUST use same random as ClientHello1
+        const rnd = self.client_random orelse return HandshakeError.UnexpectedMessage;
+        try body.appendSlice(self.allocator, &rnd);
+
+        // empty session id
+        try body.append(self.allocator, 0);
+
+        // cipher_suites
+        try body.appendSlice(self.allocator, &.{ 0x00, 0x06, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03 });
+
+        // compression methods
+        try body.appendSlice(self.allocator, &.{ 0x01, 0x00 });
+
+        // Build extensions
+        var ext_buf = std.ArrayList(u8){};
+        defer ext_buf.deinit(self.allocator);
+
+        // supported_versions (REQUIRED)
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
+
+        // supported_groups
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
+
+        // signature_algorithms
+        const sigs = self.config.supported_signature_schemes;
+        if (sigs.len != 0) {
+            const list_len: u16 = @intCast(sigs.len * 2);
+            const ext_len: u16 = list_len + 2;
+            try ext_buf.appendSlice(self.allocator, &.{
+                0x00,
+                0x0d,
+                @intCast(ext_len >> 8),
+                @intCast(ext_len & 0xff),
+                @intCast(list_len >> 8),
+                @intCast(list_len & 0xff),
+            });
+            for (sigs) |scheme| {
+                const val: u16 = @intFromEnum(scheme);
+                try ext_buf.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
+            }
+        }
+
+        // key_share with the requested group
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x33 });
+        const key_share_len: u16 = 2 + 2 + 32;
+        const total_len: u16 = key_share_len + 2;
+        try ext_buf.appendSlice(self.allocator, &.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
+        try ext_buf.appendSlice(self.allocator, &.{ @intCast(key_share_len >> 8), @intCast(key_share_len & 0xff) });
+        const group_val = @intFromEnum(selected_group);
+        try ext_buf.appendSlice(self.allocator, &.{ @intCast(group_val >> 8), @intCast(group_val & 0xff) });
+        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 32 });
+        try ext_buf.appendSlice(self.allocator, &pub_key);
+
+        // cookie extension (if present in HRR)
+        if (cookie) |ck| {
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2c }); // cookie extension type
+            const ck_len: u16 = @intCast(ck.len);
+            try ext_buf.appendSlice(self.allocator, &.{ @intCast(ck_len >> 8), @intCast(ck_len & 0xff) });
+            try ext_buf.appendSlice(self.allocator, ck);
+        }
+
+        // ALPN
+        if (self.config.alpn_protocols) |alpn_list| if (alpn_list.len != 0) {
+            var names_len: usize = 0;
+            for (alpn_list) |p| names_len += 1 + p.len;
+            const list_len: u16 = @intCast(names_len);
+            const ext_len: u16 = list_len + 2;
+            try ext_buf.appendSlice(self.allocator, &.{
+                0x00,
+                0x10,
+                @intCast(ext_len >> 8),
+                @intCast(ext_len & 0xff),
+                @intCast(list_len >> 8),
+                @intCast(list_len & 0xff),
+            });
+            for (alpn_list) |p| {
+                try ext_buf.append(self.allocator, @intCast(p.len));
+                try ext_buf.appendSlice(self.allocator, p);
+            }
+        };
+
+        // QUIC transport parameters
+        if (self.config.quic_transport_parameters) |tp| {
+            const tp_len: u16 = @intCast(tp.len);
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
+            try ext_buf.appendSlice(self.allocator, tp);
+        }
+
+        // Finalize extensions
+        const exts_len: u16 = @intCast(ext_buf.items.len);
+        try body.appendSlice(self.allocator, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
+        try body.appendSlice(self.allocator, ext_buf.items);
+
+        // Encode as handshake message
+        const body_len: u32 = @intCast(body.items.len);
+        const msg = try self.allocator.alloc(u8, 4 + body.items.len);
+        msg[0] = @intFromEnum(HsType.client_hello);
+        msg[1] = @intCast((body_len >> 16) & 0xff);
+        msg[2] = @intCast((body_len >> 8) & 0xff);
+        msg[3] = @intCast(body_len & 0xff);
+        @memcpy(msg[4..], body.items);
+        defer self.allocator.free(msg);
+
+        // Send ClientHello2 at Initial encryption level
+        try self.appendOutbound(.Initial, msg, true);
+    }
+
     /// Get or generate server secret for HRR cookie generation.
     /// RFC 8446 §4.2.2: Server uses a secret to generate HMAC-authenticated cookies.
     fn ensureServerSecret(self: *Context) ![]const u8 {
@@ -1580,6 +1799,7 @@ pub const Context = struct {
         try body.appendSlice(self.allocator, &.{ 0x03, 0x03 }); // legacy_version
         var rnd: [32]u8 = undefined;
         std.crypto.random.bytes(&rnd);
+        self.client_random = rnd; // Save for potential HRR handling
         try body.appendSlice(self.allocator, &rnd);
         try body.append(self.allocator, 0); // empty session id
         try body.appendSlice(self.allocator, &.{ 0x00, 0x06, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03 });
@@ -1649,13 +1869,20 @@ pub const Context = struct {
     fn handleServerHello(self: *Context, body: []const u8) !void {
         // Minimal parse: skip legacy_version(2) + random(32) + session_id
         if (body.len < 2 + 32 + 1) return HandshakeError.UnexpectedMessage;
-        const random = body[2..34];
-        // Downgrade sentinel check (RFC 8446 4.1.3)
-        if (random.len >= 32) {
-            const last8 = random[24..32];
-            if (std.mem.eql(u8, last8, "DOWNGRD\x00") or std.mem.eql(u8, last8, "DOWNGRD\x01")) {
-                return HandshakeError.DowngradeAttempt;
-            }
+
+        var random: [32]u8 = undefined;
+        @memcpy(&random, body[2..34]);
+
+        // RFC 8446 §4.1.4: Check if this is a HelloRetryRequest
+        if (tls13_full.isHelloRetryRequest(random)) {
+            // Handle HelloRetryRequest
+            try self.handleHelloRetryRequest(body);
+            return;
+        }
+
+        // Downgrade sentinel check (RFC 8446 §4.1.3)
+        if (tls13_full.containsDowngradeSentinel(random)) {
+            return HandshakeError.DowngradeAttempt;
         }
         var pos: usize = 2 + 32; // after legacy_version+random
         if (pos >= body.len) return HandshakeError.UnexpectedMessage;
