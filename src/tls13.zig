@@ -2547,11 +2547,21 @@ pub const Engine = struct {
         if (self.my_priv == null or self.my_pub == null) {
             var sk: [32]u8 = undefined;
             std.crypto.random.bytes(&sk);
+            // Clamp the private key per RFC 7748 §5 to ensure interoperability
+            sk[0] &= 248;
+            sk[31] &= 127;
+            sk[31] |= 64;
             // Derive public key from private key using Zig 0.15.1 X25519 API
             const pk = std.crypto.dh.X25519.recoverPublicKey(sk) catch unreachable;
             self.my_priv = sk;
             self.my_pub = pk;
             std.debug.print("{s}: Generated X25519 keypair\n", .{if (self.role == .Server) "Server" else "Client"});
+            std.debug.print("    priv: ", .{});
+            for (sk) |b| std.debug.print("{X:0>2}", .{b});
+            std.debug.print("\n", .{});
+            std.debug.print("    pub: ", .{});
+            for (pk) |b| std.debug.print("{X:0>2}", .{b});
+            std.debug.print("\n", .{});
         }
     }
 
