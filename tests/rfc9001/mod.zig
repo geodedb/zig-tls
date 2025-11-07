@@ -41,13 +41,10 @@ const std = @import("std");
 
 // Re-export test modules for discovery
 pub const appendix_a_initial_secrets = @import("appendix_a_initial_secrets.zig");
+pub const section_5_packet_protection = @import("section_5_packet_protection.zig");
 
 // TODO: Add more section tests as they are created
 // pub const section_4_crypto_frames = @import("section_4_crypto_frames.zig");
-// pub const section_5_1_packet_protection_keys = @import("section_5_1_packet_protection_keys.zig");
-// pub const section_5_2_initial_secrets = @import("section_5_2_initial_secrets.zig");
-// pub const section_5_3_aead_usage = @import("section_5_3_aead_usage.zig");
-// pub const section_5_4_header_protection = @import("section_5_4_header_protection.zig");
 // pub const section_8_2_transport_params = @import("section_8_2_transport_params.zig");
 
 test {
