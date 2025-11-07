@@ -265,6 +265,75 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(test_vectors_step);
 
     // ========================================================================
+    // RFC-Specific Test Suites - Organized by RFC section
+    // ========================================================================
+
+    // RFC 8446: TLS 1.3 Core Protocol Tests
+    const test_rfc8446_step = b.step("test-rfc8446", "Run RFC 8446 (TLS 1.3) test suite");
+
+    const rfc8446_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rfc8446/mod.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+                .{ .name = "record", .module = record_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        }),
+    });
+
+    const run_rfc8446_test = b.addRunArtifact(rfc8446_test);
+    test_rfc8446_step.dependOn(&run_rfc8446_test.step);
+
+    // Add RFC 8446 tests to main test suite
+    test_step.dependOn(test_rfc8446_step);
+
+    // RFC 9001: QUIC-TLS Tests
+    const test_rfc9001_step = b.step("test-rfc9001", "Run RFC 9001 (QUIC-TLS) test suite");
+
+    const rfc9001_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rfc9001/mod.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+                .{ .name = "record", .module = record_mod },
+            },
+        }),
+    });
+
+    const run_rfc9001_test = b.addRunArtifact(rfc9001_test);
+    test_rfc9001_step.dependOn(&run_rfc9001_test.step);
+
+    // Add RFC 9001 tests to main test suite
+    test_step.dependOn(test_rfc9001_step);
+
+    // RFC 5280: X.509 Certificate Tests
+    const test_rfc5280_step = b.step("test-rfc5280", "Run RFC 5280 (X.509) test suite");
+
+    const rfc5280_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rfc5280/mod.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "asn1", .module = asn1_mod },
+                .{ .name = "sig", .module = sig_mod },
+            },
+        }),
+    });
+
+    const run_rfc5280_test = b.addRunArtifact(rfc5280_test);
+    test_rfc5280_step.dependOn(&run_rfc5280_test.step);
+
+    // Add RFC 5280 tests to main test suite (when tests are added)
+    // test_step.dependOn(test_rfc5280_step);
+
+    // ========================================================================
     // Extended Unit Tests - Comprehensive module-specific tests
     // ========================================================================
 
