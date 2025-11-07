@@ -435,6 +435,53 @@ pub const SecretSchedule = struct {
     pub fn slot(self: *SecretSchedule, level: EncryptionLevel, dir: TrafficDirection) *SecretSlot {
         return self.pairForLevel(level).slot(dir);
     }
+
+    /// Get current generation number for a specific encryption level and direction.
+    ///
+    /// RFC 8446 §4.6.3: Each KeyUpdate increments the generation counter,
+    /// allowing tracking of how many key updates have occurred.
+    ///
+    /// # Returns
+    /// - Generation number (0 = initial, 1+ = after updates)
+    /// - 0 if secret not yet installed
+    ///
+    /// # Example
+    /// ```zig
+    /// const gen = ctx.secrets.getGeneration(.Application, .send);
+    /// // gen == 0: Initial application secret
+    /// // gen == 1: After first key update
+    /// // gen == 2: After second key update
+    /// ```
+    pub fn getGeneration(self: *const SecretSchedule, level: EncryptionLevel, dir: TrafficDirection) u32 {
+        const s = switch (level) {
+            .Initial => switch (dir) {
+                .send => &self.initial.send,
+                .recv => &self.initial.recv,
+            },
+            .Handshake => switch (dir) {
+                .send => &self.handshake.send,
+                .recv => &self.handshake.recv,
+            },
+            .Application => switch (dir) {
+                .send => &self.application.send,
+                .recv => &self.application.recv,
+            },
+        };
+        return if (s.valid) s.generation else 0;
+    }
+
+    /// Get generation numbers for both send and receive directions.
+    ///
+    /// Useful for logging, debugging, and verifying bidirectional key updates.
+    ///
+    /// # Returns
+    /// BidirKeyGenerations struct with send and recv generation numbers
+    pub fn getBidirGenerations(self: *const SecretSchedule, level: EncryptionLevel) secrets_mod.BidirKeyGenerations {
+        return .{
+            .send = self.getGeneration(level, .send),
+            .recv = self.getGeneration(level, .recv),
+        };
+    }
 };
 
 const HashDigestCache = struct {
@@ -1080,6 +1127,50 @@ pub const Context = struct {
             cb(self) catch {};
         }
         self.bumpPhaseAfterFinished();
+    }
+
+    /// Get current key generation number for a traffic direction (RFC 8446 §4.6.3).
+    ///
+    /// The generation counter tracks how many times keys have been updated:
+    /// - Generation 0: Secret not yet installed
+    /// - Generation 1: Initial secret installed (handshake complete)
+    /// - Generation 2+: After key updates
+    ///
+    /// # Parameters
+    /// - level: Encryption level (.Initial, .Handshake, or .Application)
+    /// - dir: Traffic direction (.send or .recv)
+    ///
+    /// # Returns
+    /// Current generation number (0 if secret not installed)
+    ///
+    /// # Example
+    /// ```zig
+    /// const send_gen = ctx.getKeyGeneration(.Application, .send);
+    /// if (send_gen >= 100) {
+    ///     // Many key updates have occurred
+    /// }
+    /// ```
+    pub fn getKeyGeneration(self: *const Context, level: EncryptionLevel, dir: TrafficDirection) u32 {
+        return self.secrets.getGeneration(level, dir);
+    }
+
+    /// Get generation numbers for both send and receive directions.
+    ///
+    /// Useful for verifying bidirectional key updates and debugging.
+    ///
+    /// # Parameters
+    /// - level: Encryption level to query
+    ///
+    /// # Returns
+    /// BidirKeyGenerations struct with .send and .recv generation numbers
+    ///
+    /// # Example
+    /// ```zig
+    /// const gens = ctx.getBidirKeyGenerations(.Application);
+    /// std.debug.print("Send gen: {}, Recv gen: {}\n", .{gens.send, gens.recv});
+    /// ```
+    pub fn getBidirKeyGenerations(self: *const Context, level: EncryptionLevel) secrets_mod.BidirKeyGenerations {
+        return self.secrets.getBidirGenerations(level);
     }
 
     fn bumpPhaseAfterFinished(self: *Context) void {

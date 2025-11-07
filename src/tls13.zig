@@ -133,6 +133,9 @@ pub const HandshakeState = mod.HandshakeState;
 /// Traffic direction (send/recv).
 pub const TrafficDirection = mod.TrafficDirection;
 
+/// Bidirectional key generation numbers (send/recv).
+pub const BidirKeyGenerations = mod.BidirKeyGenerations;
+
 /// Individual traffic secret slot.
 pub const SecretSlot = mod.SecretSlot;
 

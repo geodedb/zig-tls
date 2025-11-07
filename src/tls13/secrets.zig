@@ -38,6 +38,20 @@ pub const TrafficDirection = enum {
     recv,
 };
 
+/// Bidirectional key generation numbers for send and receive directions.
+///
+/// Used to track the current generation of traffic secrets in both directions,
+/// which is critical for:
+/// - Key update synchronization (RFC 8446 §4.6.3)
+/// - AEAD usage limit tracking (RFC 8446 §5.5)
+/// - Debugging and logging key rotation events
+pub const BidirKeyGenerations = struct {
+    /// Send direction generation number (starts at 0, increments on each key update)
+    send: u32,
+    /// Receive direction generation number (starts at 0, increments on each key update)
+    recv: u32,
+};
+
 /// RFC 8446 §7.1–§7.5: individual traffic secret slot with epoch tracking for key updates.
 ///
 /// Each SecretSlot stores a single traffic secret with metadata:

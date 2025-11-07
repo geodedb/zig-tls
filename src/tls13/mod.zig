@@ -114,6 +114,9 @@ const secrets = @import("secrets.zig");
 /// Traffic direction (send/recv).
 pub const TrafficDirection = secrets.TrafficDirection;
 
+/// Bidirectional key generation numbers (send/recv).
+pub const BidirKeyGenerations = secrets.BidirKeyGenerations;
+
 /// Individual traffic secret slot.
 pub const SecretSlot = secrets.SecretSlot;
 
