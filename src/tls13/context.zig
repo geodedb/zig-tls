@@ -1299,8 +1299,21 @@ pub const Context = struct {
         const transcript_hash = transcript_snapshot.finalize(slot.hash);
         const expected = deriveFinishedVerifyData(slot.hash, &slot.value, transcript_hash);
 
-        // Constant-time comparison to prevent timing attacks
-        if (!std.mem.eql(u8, expected.slice(), verify_data)) return HandshakeError.FinishedVerifyFailed;
+        // Constant-time comparison to prevent timing attacks (RFC 8446 §4.4.4)
+        // CRITICAL: Must use timing_safe.eql to prevent timing side-channel attacks
+        const verified = switch (slot.hash) {
+            .sha256 => blk: {
+                const expected_bytes: *const [32]u8 = expected.slice()[0..32];
+                const verify_bytes: *const [32]u8 = verify_data[0..32];
+                break :blk std.crypto.timing_safe.eql([32]u8, expected_bytes.*, verify_bytes.*);
+            },
+            .sha384 => blk: {
+                const expected_bytes: *const [48]u8 = expected.slice()[0..48];
+                const verify_bytes: *const [48]u8 = verify_data[0..48];
+                break :blk std.crypto.timing_safe.eql([48]u8, expected_bytes.*, verify_bytes.*);
+            },
+        };
+        if (!verified) return HandshakeError.FinishedVerifyFailed;
 
         // Store transcript hash at Finished point (used for key derivation)
         self.transcripts.finished_hash.set(slot.hash, transcript_hash);

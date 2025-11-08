@@ -314,7 +314,7 @@ pub const Engine = struct {
             self.my_priv = sk;
             self.my_pub = pk;
             if (secret_trace_enabled) {
-                traceSecrets("{s}: Generated X25519 keypair\n", .{ if (self.role == .Server) "Server" else "Client" });
+                traceSecrets("{s}: Generated X25519 keypair\n", .{if (self.role == .Server) "Server" else "Client"});
                 traceSecrets("    priv: ", .{});
                 for (sk) |b| traceSecrets("{X:0>2}", .{b});
                 traceSecrets("\n", .{});
@@ -689,7 +689,7 @@ pub const Engine = struct {
                         };
                         traceHandshake("TLS: Using stored handshake secrets for verification\n", .{});
                     }
-                      const ok = if (peer_secret_opt) |ps| self.verifyPeerFinished(ps, p.body) else blk: {
+                    const ok = if (peer_secret_opt) |ps| self.verifyPeerFinished(ps, p.body) else blk: {
                         traceHandshake("TLS: Using fallback for Finished verification\n", .{});
                         // Fallback (should not happen in real mode past this point)
                         const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_before);
@@ -1037,12 +1037,29 @@ pub const Engine = struct {
         }
         const expect = deriveFinishedVerifyData(self.hash_kind, &peer_secret, th);
         const expect_slice = expect.slice();
-        const match = finished_body.len == expect_slice.len and std.mem.eql(u8, finished_body, expect_slice);
-        if (!match) {
+
+        // Length check first (not timing-sensitive)
+        if (finished_body.len != expect_slice.len) {
             std.debug.print("TLS: Finished verification failed. Expected len={}, got len={}\n", .{ expect_slice.len, finished_body.len });
-            if (finished_body.len == expect_slice.len) {
-                std.debug.print("TLS: MAC mismatch\n", .{});
-            }
+            return false;
+        }
+
+        // Constant-time comparison to prevent timing attacks (RFC 8446 §4.4.4)
+        const match = switch (self.hash_kind) {
+            .sha256 => blk: {
+                const expected_bytes: *const [32]u8 = expect_slice[0..32];
+                const verify_bytes: *const [32]u8 = finished_body[0..32];
+                break :blk std.crypto.timing_safe.eql([32]u8, expected_bytes.*, verify_bytes.*);
+            },
+            .sha384 => blk: {
+                const expected_bytes: *const [48]u8 = expect_slice[0..48];
+                const verify_bytes: *const [48]u8 = finished_body[0..48];
+                break :blk std.crypto.timing_safe.eql([48]u8, expected_bytes.*, verify_bytes.*);
+            },
+        };
+
+        if (!match) {
+            std.debug.print("TLS: MAC mismatch\n", .{});
         }
         return match;
     }

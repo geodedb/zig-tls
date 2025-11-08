@@ -189,13 +189,13 @@
 //!
 //! ## Security Considerations
 //!
-//! - **Constant-time operations**: Secret comparisons use `std.crypto.utils.timingSafeEql`
-//! - **AEAD usage limits**: Enforced per RFC 8446 §5.5 (2^23 messages for AES-GCM)
+//! - **Constant-time operations**: Secret comparisons use `std.crypto.timing_safe.eql()`
+//! - **AEAD usage limits**: Enforced per RFC 8446 §5.5 (2^24 messages for AES-GCM)
 //! - **Transcript integrity**: Tampering causes handshake failure (Finished verification)
 //! - **Certificate validation**: Includes validity period, EKU, SNI matching
 //! - **Anti-replay**: 0-RTT protected by sliding window (RFC 8446 §8.1)
 //! - **Downgrade protection**: ServerHello.random sentinel detection
-//! - **Secret zeroization**: Keys cleared from memory after use
+//! - **Secret zeroization**: Keys cleared from memory via `std.crypto.secureZero()`
 //!
 //! ## Performance Notes
 //!

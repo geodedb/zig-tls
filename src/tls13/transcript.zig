@@ -386,11 +386,7 @@ pub const TranscriptSet = struct {
 
     /// Creates a new transcript set with empty transcripts.
     pub fn init() TranscriptSet {
-        return .{
-            .handshake = Transcript.init(),
-            .client_hello_hash = .{},
-            .finished_hash = .{}
-        };
+        return .{ .handshake = Transcript.init(), .client_hello_hash = .{}, .finished_hash = .{} };
     }
 
     /// Resets all transcripts to their initial empty state.

@@ -109,7 +109,7 @@ test "RFC 8446 §4.1.3: TLS 1.1 downgrade protection sentinel" {
 // The legacy_session_id_echo field MUST echo the value of
 // legacy_session_id from the ClientHello.
 test "RFC 8446 §4.1.3: ServerHello echoes ClientHello session ID" {
-    const client_session_id = [_]u8{0x01, 0x02, 0x03, 0x04};
+    const client_session_id = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
     const server_session_id_echo = client_session_id;
 
     try testing.expectEqualSlices(u8, &client_session_id, &server_session_id_echo);

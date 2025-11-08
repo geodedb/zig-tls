@@ -87,8 +87,8 @@ test "Fuzzing: truncated ClientHello does not crash" {
         if (tc.expected_error) {
             // Expect one of several possible errors
             try testing.expect(result == error.MessageTooShort or
-                             result == error.MessageTruncated or
-                             result == error.InvalidMessageType);
+                result == error.MessageTruncated or
+                result == error.InvalidMessageType);
         } else {
             try result;
         }
@@ -145,7 +145,8 @@ test "Fuzzing: oversized extension length rejected" {
     const huge_ext = [_]u8{
         0x00, 0x0a, // supported_groups
         0xFF, 0xFF, // length = 65535 bytes (but only 4 bytes follow)
-        0x00, 0x1d, 0x00, 0x17,
+        0x00, 0x1d,
+        0x00, 0x17,
     };
 
     // Normal case succeeds
@@ -452,7 +453,7 @@ test "Fuzzing: corrupted AEAD tag rejected" {
     };
 
     const ciphertext = [_]u8{0xAA} ** 32;
-    const correct_tag = [_]u8{0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0};
+    const correct_tag = [_]u8{ 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0 };
     var corrupted_tag = correct_tag;
 
     // Valid tag
@@ -463,7 +464,7 @@ test "Fuzzing: corrupted AEAD tag rejected" {
     try testing.expectError(error.AuthenticationFailed, AeadVerifier.verify(&ciphertext, &corrupted_tag, &correct_tag));
 
     // Truncated tag
-    const truncated_tag = [_]u8{0x12, 0x34};
+    const truncated_tag = [_]u8{ 0x12, 0x34 };
     try testing.expectError(error.TagLengthMismatch, AeadVerifier.verify(&ciphertext, &truncated_tag, &correct_tag));
 
     // All-zero tag
@@ -845,8 +846,13 @@ test "Fuzzing: unknown alert codes handled gracefully" {
 
             // Handle known descriptions
             switch (alert_desc) {
-                .close_notify, .unexpected_message, .bad_record_mac,
-                .handshake_failure, .illegal_parameter, .decode_error, .internal_error,
+                .close_notify,
+                .unexpected_message,
+                .bad_record_mac,
+                .handshake_failure,
+                .illegal_parameter,
+                .decode_error,
+                .internal_error,
                 => {},
                 _ => {
                     // Unknown alert description - log and treat as fatal

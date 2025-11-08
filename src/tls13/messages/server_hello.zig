@@ -716,9 +716,9 @@ test "buildHelloRetryRequest - selected group encoding" {
 
     // Test with different groups
     const groups = [_]core_types.NamedGroup{
-        .x25519,     // 0x001d
-        .secp256r1,  // 0x0017
-        .secp384r1,  // 0x0018
+        .x25519, // 0x001d
+        .secp256r1, // 0x0017
+        .secp384r1, // 0x0018
     };
 
     for (groups) |group| {

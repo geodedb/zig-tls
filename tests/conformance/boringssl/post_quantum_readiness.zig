@@ -270,7 +270,12 @@ test "PQ: certificate with ML-DSA public key in SubjectPublicKeyInfo" {
     // Hypothetical OID for ML-DSA-65 (not yet assigned by NIST)
     const ml_dsa_65_oid = [_]u8{
         0x06, 0x0B, // OID tag and length
-        0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x11, 0x02, 0x01,
+        0x60, 0x86,
+        0x48, 0x01,
+        0x65, 0x03,
+        0x04, 0x03,
+        0x11, 0x02,
+        0x01,
         // 2.16.840.1.101.3.4.3.17.2.1 (hypothetical)
     };
 
@@ -333,10 +338,14 @@ test "PQ: gracefully ignore unknown algorithm identifiers" {
         fn isKnown(code_point: u16) bool {
             // Only recognize standard classical algorithms
             return switch (code_point) {
-                0x001d, 0x001e, // X25519, X448
-                0x0017, 0x0018, // secp256r1, secp384r1
-                0x0403, 0x0503, // ECDSA schemes
-                0x0807, 0x0808, // Ed25519, Ed448
+                0x001d,
+                0x001e, // X25519, X448
+                0x0017,
+                0x0018, // secp256r1, secp384r1
+                0x0403,
+                0x0503, // ECDSA schemes
+                0x0807,
+                0x0808, // Ed25519, Ed448
                 => true,
                 else => false,
             };
@@ -394,7 +403,7 @@ test "PQ: client preference order (PQ-first vs classical-first)" {
                 .HYBRID_ONLY => &[_]u16{
                     PQCodePoint.X25519_ML_KEM_768,
                     PQCodePoint.SECP256R1_ML_KEM_768,
-                    // No classical-only options
+                        // No classical-only options
                 },
             };
         }

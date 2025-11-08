@@ -50,9 +50,11 @@ const Secret = ks.Secret;
 /// ```
 ///
 /// ```zig
-/// // Verify received Finished
+/// // Verify received Finished (MUST use constant-time comparison)
 /// const expected = deriveFinishedVerifyData(.sha256, &peer_hs_secret, transcript_hash);
-/// if (!std.mem.eql(u8, expected.slice(), received_verify_data)) {
+/// const expected_bytes: *const [32]u8 = expected.slice()[0..32];
+/// const received_bytes: *const [32]u8 = received_verify_data[0..32];
+/// if (!std.crypto.timing_safe.eql([32]u8, expected_bytes.*, received_bytes.*)) {
 ///     return HandshakeError.FinishedVerifyFailed;
 /// }
 /// ```

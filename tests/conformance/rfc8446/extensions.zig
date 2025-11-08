@@ -66,7 +66,7 @@ test "Extensions: client ignores unknown extension" {
 
     const extensions = [_]Extension{
         .{ .extension_type = 0x0000, .extension_data = &[_]u8{0x00} }, // server_name (known)
-        .{ .extension_type = 0xFFFF, .extension_data = &[_]u8{0xAB, 0xCD} }, // Unknown extension
+        .{ .extension_type = 0xFFFF, .extension_data = &[_]u8{ 0xAB, 0xCD } }, // Unknown extension
         .{ .extension_type = 0x000a, .extension_data = &[_]u8{0x00} }, // supported_groups (known)
     };
 

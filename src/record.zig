@@ -76,7 +76,6 @@ pub const parseLegacyVersion = record_mod.parseLegacyVersion;
 // for better modularity. See src/record/plaintext.zig and src/record/aead.zig for
 // implementation details. This file now re-exports for backward compatibility.
 
-
 // ============================================================================
 // TESTS - RFC 8446 §5 Record Layer
 // ============================================================================

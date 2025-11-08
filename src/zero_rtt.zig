@@ -240,15 +240,21 @@ pub const AntiReplayWindow = struct {
     /// ## RFC Compliance
     ///
     /// - RFC 8446 §8.1: Anti-replay mechanism based on ClientHello recording
+    ///
+    /// ## Security Note
+    ///
+    /// Uses constant-time comparison to prevent timing side-channels from
+    /// leaking information about which randoms are in the anti-replay window.
     pub fn contains(self: *const Self, random: [32]u8) bool {
         const limit = @min(self.count, window_size);
+        var found: bool = false;
         var i: usize = 0;
         while (i < limit) : (i += 1) {
-            if (std.mem.eql(u8, &self.randoms[i], &random)) {
-                return true; // Replay detected!
-            }
+            // Constant-time comparison - always check all entries to avoid timing leak
+            const match = std.crypto.timing_safe.eql([32]u8, self.randoms[i], random);
+            found = found or match;
         }
-        return false;
+        return found;
     }
 
     /// Add a new ClientHello random to the anti-replay window.

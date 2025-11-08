@@ -182,7 +182,7 @@ test "Name Constraints: excluded takes precedence over permitted" {
         const is_permitted = blk: {
             if (std.mem.eql(u8, tc.dns_name, permitted_constraint) or
                 (std.mem.endsWith(u8, tc.dns_name, permitted_constraint) and
-                tc.dns_name[tc.dns_name.len - permitted_constraint.len - 1] == '.'))
+                    tc.dns_name[tc.dns_name.len - permitted_constraint.len - 1] == '.'))
             {
                 break :blk true;
             }
@@ -193,7 +193,7 @@ test "Name Constraints: excluded takes precedence over permitted" {
         const is_excluded = blk: {
             if (std.mem.eql(u8, tc.dns_name, excluded_constraint) or
                 (std.mem.endsWith(u8, tc.dns_name, excluded_constraint) and
-                tc.dns_name[tc.dns_name.len - excluded_constraint.len - 1] == '.'))
+                    tc.dns_name[tc.dns_name.len - excluded_constraint.len - 1] == '.'))
             {
                 break :blk true;
             }
@@ -422,8 +422,8 @@ test "Name Constraints: constraint accumulation in certificate chains" {
         if (root_cert.permitted_dns) |constraint| {
             if (std.mem.eql(u8, leaf_dns_name, constraint) or
                 (std.mem.endsWith(u8, leaf_dns_name, constraint) and
-                leaf_dns_name.len > constraint.len and
-                leaf_dns_name[leaf_dns_name.len - constraint.len - 1] == '.'))
+                    leaf_dns_name.len > constraint.len and
+                    leaf_dns_name[leaf_dns_name.len - constraint.len - 1] == '.'))
             {
                 break :blk true;
             }
@@ -436,8 +436,8 @@ test "Name Constraints: constraint accumulation in certificate chains" {
         if (intermediate_cert.excluded_dns) |constraint| {
             if (std.mem.eql(u8, leaf_dns_name, constraint) or
                 (std.mem.endsWith(u8, leaf_dns_name, constraint) and
-                leaf_dns_name.len > constraint.len and
-                leaf_dns_name[leaf_dns_name.len - constraint.len - 1] == '.'))
+                    leaf_dns_name.len > constraint.len and
+                    leaf_dns_name[leaf_dns_name.len - constraint.len - 1] == '.'))
             {
                 break :blk true;
             }
