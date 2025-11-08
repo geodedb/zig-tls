@@ -137,28 +137,18 @@ jobs:
 
   # Cross-compilation checks
   cross-compile:
-    name: Cross-compile (${{ matrix.archive_os }}-${{ matrix.archive_arch }})
-    runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
+    name: Cross-compile (Linux-${{ matrix.archive_arch }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: runner=2cpu-linux-x64
-            target: arm-linux-gnueabihf
-            archive_os: linux
+          - target: arm-linux-gnueabihf
             archive_arch: arm
-          - runner: runner=2cpu-linux-x64
-            target: aarch64-linux-gnu
-            archive_os: linux
+          - target: aarch64-linux-gnu
             archive_arch: arm64
-          - runner: runner=2cpu-linux-x64
-            target: riscv64-linux-gnu
-            archive_os: linux
+          - target: riscv64-linux-gnu
             archive_arch: riscv64
-          - runner: image=windows22-full-x64
-            target: aarch64-windows-msvc
-            archive_os: windows
-            archive_arch: arm64
         zig: ['0.15.1']
 
     steps:
@@ -182,7 +172,43 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ztls-${{ matrix.archive_os }}-${{ matrix.archive_arch }}-zig-${{ matrix.zig }}
+          name: ztls-linux-${{ matrix.archive_arch }}-zig-${{ matrix.zig }}
+          path: |
+            zig-out/bin/
+            zig-out/lib/
+          retention-days: 7
+
+  # Windows cross-compilation
+  cross-compile-windows:
+    name: Cross-compile (Windows-arm64)
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        zig: ['0.15.1']
+
+    steps:
+      - uses: spyderorg/workflows/.github/actions/nix-setup@main
+        with:
+          git-credentials: ${{ secrets.GIT_CREDENTIALS }}
+          gh-access-token: ${{ secrets.GH_ACCESS_TOKEN }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Setup Zig 0.15.1
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Zig version
+        run: zig version
+
+      - name: Cross-compile for aarch64-windows-msvc
+        run: zig build -Dtarget=aarch64-windows-msvc
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ztls-windows-arm64-zig-${{ matrix.zig }}
           path: |
             zig-out/bin/
             zig-out/lib/
@@ -284,8 +310,8 @@ jobs:
   # Summary job that depends on all others
   ci-success:
     name: CI Success
-    needs: [test, test-windows, test-macos, cross-compile, cross-compile-macos, quality, optimization-tests]
-    runs-on: runs-on=${{ github.run_id }}/runner=2cpu-linux-x64
+    needs: [test, test-windows, test-macos, cross-compile, cross-compile-windows, cross-compile-macos, quality, optimization-tests]
+    runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check all jobs
@@ -294,6 +320,7 @@ jobs:
              [[ "${{ needs.test-windows.result }}" == "success" ]] && \
              [[ "${{ needs.test-macos.result }}" == "success" ]] && \
              [[ "${{ needs.cross-compile.result }}" == "success" ]] && \
+             [[ "${{ needs.cross-compile-windows.result }}" == "success" ]] && \
              [[ "${{ needs.cross-compile-macos.result }}" == "success" ]] && \
              [[ "${{ needs.quality.result }}" == "success" ]] && \
              [[ "${{ needs.optimization-tests.result }}" == "success" ]]; then
@@ -305,6 +332,7 @@ jobs:
             echo "test-windows: ${{ needs.test-windows.result }}"
             echo "test-macos: ${{ needs.test-macos.result }}"
             echo "cross-compile: ${{ needs.cross-compile.result }}"
+            echo "cross-compile-windows: ${{ needs.cross-compile-windows.result }}"
             echo "cross-compile-macos: ${{ needs.cross-compile-macos.result }}"
             echo "quality: ${{ needs.quality.result }}"
             echo "optimization-tests: ${{ needs.optimization-tests.result }}"
