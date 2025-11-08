@@ -1510,7 +1510,7 @@ pub const Context = struct {
 
         // RFC 8446 §4.4.1: Update transcript for HelloRetryRequest
         // Get the first ClientHello from the buffer we need to re-send
-        const ch1_raw = self.streams.getEncryptionLevel(.Initial).sent_buffer.items;
+        const ch1_raw = self.streams.buffer(.Initial).outbound.items;
 
         // Update transcript: replace with message_hash(CH1) || HRR
         self.transcripts.handshake.handleHelloRetryRequest(ch1_raw, self.hash_kind);
