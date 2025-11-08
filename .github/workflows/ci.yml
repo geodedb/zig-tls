@@ -64,15 +64,11 @@ jobs:
 
   # Windows test job
   test-windows:
-    name: Test (${{ matrix.os }}-${{ matrix.arch }}, Zig ${{ matrix.zig }})
-    runs-on: runs-on=${{ github.run_id }}/${{ matrix.runner }}
+    name: Test (Windows-latest, Zig ${{ matrix.zig }})
+    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows22-full
-            arch: x64
-            runner: image=windows22-full-x64
         zig: ['0.15.1']
 
     steps:
