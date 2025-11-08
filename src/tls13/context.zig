@@ -511,8 +511,8 @@ const HashDigestCache = struct {
 /// RFC 8446 §4.4.1: transcripts and cached hashes used across handshake flights.
 pub const TranscriptSet = struct {
     handshake: Transcript,
-    client_hello_hash: HashDigestCache = .{},
-    finished_hash: HashDigestCache = .{},
+    client_hello_hash: transcript_mod.HashDigestCache = .{},
+    finished_hash: transcript_mod.HashDigestCache = .{},
 
     /// Creates a new transcript set with empty transcripts.
     pub fn init() TranscriptSet {
