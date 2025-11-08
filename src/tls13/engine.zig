@@ -222,7 +222,7 @@ pub const Engine = struct {
         if (self.server_name) |s| self.allocator.free(s);
         if (self.server_cert_der) |c| self.allocator.free(c);
         if (self.server_priv_key) |k| self.allocator.free(k);
-        self.tickets.deinit(self.allocator);
+        self.tickets.deinit();
         self.outbox.deinit(self.allocator);
         self.inbox.deinit(self.allocator);
     }
@@ -778,7 +778,7 @@ pub const Engine = struct {
                             const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
                             var master_local = ms;
                             const res_secret = ks.deriveSecretHash(self.hash_kind, &master_local, "res master", transcript_hash.slice());
-                            self.tickets.add(self.allocator, ticket_bytes, res_secret, lifetime) catch {};
+                            self.tickets.store(ticket_bytes, res_secret, lifetime) catch {};
                             traceHandshake("TLS: Stored session ticket (len={}, lifetime={})\n", .{ ticket_bytes.len, lifetime });
                         } else {
                             traceHandshake("TLS: Received ticket before master_secret ready; ignoring\n", .{});
