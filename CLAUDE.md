@@ -214,7 +214,7 @@ Key RFCs implemented (cited throughout code):
 
 The project has comprehensive test coverage across multiple levels:
 
-- **Unit tests** (344 tests): Per-module tests with RFC subsection references (embedded in source files)
+- **Unit tests** (262 tests): Per-module tests with RFC subsection references (embedded in source files)
   - Run with: `make test-unit` or `zig build test`
   - Each module includes its own test suite
   - Covers all 21+ modules in the modular architecture
@@ -239,14 +239,38 @@ The project has comprehensive test coverage across multiple levels:
   - Located in: `tests/rfc8446_vectors.zig`
   - Tests HKDF key derivation, QUIC initial secrets, traffic secret expansion
 
-- **Conformance tests** (124 tests): BoringSSL and OpenSSL parity testing
+- **Conformance tests** (430 tests): BoringSSL and OpenSSL parity testing
   - Run with: `make test-conformance` or `zig build test-conformance`
   - Requires OpenSSL development libraries (`libssl-dev`)
-  - **BoringSSL conformance** (34 tests): `tests/boringssl_conformance.zig`
-  - **OpenSSL conformance** (90 tests): `tests/openssl_conformance.zig`
-  - Tests AEAD operations, HKDF compatibility, alert code mapping, transport parameters
+  - **BoringSSL conformance** (123 tests):
+    - Core: `tests/conformance/boringssl.zig` (34 tests)
+    - Performance: `tests/conformance/boringssl/performance.zig` (12 tests)
+    - Memory: `tests/conformance/boringssl/memory_optimization.zig` (15 tests)
+    - Post-Quantum: `tests/conformance/boringssl/post_quantum_readiness.zig` (12 tests)
+    - Fuzzing: `tests/conformance/boringssl/fuzzing.zig` (20 tests)
+    - Key Update: `tests/conformance/boringssl/key_update.zig` (8 tests)
+    - Client Auth: `tests/conformance/boringssl/client_auth.zig` (10 tests)
+    - P-256/P-384: `tests/conformance/boringssl/p256_ecdhe.zig` (12 tests)
+  - **OpenSSL conformance** (279 tests):
+    - Core: `tests/conformance/openssl.zig` (90 tests)
+    - Chain Validation: `tests/conformance/openssl/chain_validation.zig` (26 tests)
+    - OCSP: `tests/conformance/openssl/ocsp_validation.zig` (13 tests)
+    - CRL: `tests/conformance/openssl/crl_validation.zig` (31 tests)
+    - AIA: `tests/conformance/openssl/aia_validation.zig` (34 tests)
+    - Advanced X.509: `tests/conformance/openssl/advanced_x509.zig` (13 tests)
+    - Name Constraints: `tests/conformance/openssl/name_constraints.zig` (10 tests)
+    - Policy Validation: `tests/conformance/openssl/policy_validation.zig` (12 tests)
+    - Crypto Suites: `tests/conformance/openssl/cipher_suites.zig` (16 tests)
+    - FFDHE: `tests/conformance/openssl/ffdhe.zig` (8 tests)
+    - SCT/CT: `tests/conformance/openssl/sct_validation.zig` (8 tests)
+    - Hello Retry Request: `tests/conformance/openssl/hello_retry_request.zig` (8 tests)
+    - Zero-RTT: `tests/conformance/openssl/zero_rtt.zig` (10 tests)
+  - **RFC 8446 conformance** (28 tests):
+    - Extensions: `tests/conformance/rfc8446/extensions.zig` (15 tests)
+    - PSK Modes: `tests/conformance/rfc8446/psk_modes.zig` (13 tests)
+  - Tests AEAD operations, HKDF compatibility, alert code mapping, transport parameters, X.509 validation, cryptographic algorithm parity, performance characteristics, memory safety, fuzzing robustness, and post-quantum readiness
 
-**Total test count**: 629 tests across all suites
+**Total test count**: 853 tests across all suites (262 unit + 148 RFC compliance + 13 vectors + 430 conformance)
 
 All tests include RFC section citations for traceability and are organized to match the specification structure.
 
@@ -346,7 +370,19 @@ All tests include RFC section citations for traceability and are organized to ma
 - If tests fail, check hex string lengths match buffer sizes (common issue)
 - Use `hexToBytes()` utility function for test data conversion
 - Conformance tests validate that ztls produces identical outputs to industry-standard implementations
-- Module-specific conformance tests:
-  - HKDF/key schedule: `src/key_schedule.zig`
-  - AEAD operations: `src/record/protection.zig`
-  - Transport parameters: `src/quic_transport_params.zig`
+- Test categories organized by verification focus:
+  - **Cryptographic parity**: HKDF, AEAD, signatures, key exchange (BoringSSL/OpenSSL)
+  - **X.509 validation**: Certificate parsing, chain validation, extensions, revocation (OpenSSL)
+  - **Protocol compliance**: TLS 1.3 extensions, handshake flows, state machine (RFC 8446)
+  - **Performance**: Handshake latency, memory usage, hot path optimization (BoringSSL)
+  - **Security**: Fuzzing robustness, input validation, error handling (BoringSSL)
+  - **Future compatibility**: Post-quantum algorithm parsing (BoringSSL)
+- Module-specific conformance coverage:
+  - HKDF/key schedule: `src/key_schedule.zig` (BoringSSL vectors)
+  - AEAD operations: `src/record/protection.zig` (BoringSSL/OpenSSL parity)
+  - Transport parameters: `src/quic_transport_params.zig` (BoringSSL/OpenSSL)
+  - X.509 parsing: `src/x509.zig` (OpenSSL parity + advanced extensions)
+  - Certificate chain validation: `src/x509.zig` (OpenSSL multi-level chains)
+  - OCSP/CRL: `src/ocsp.zig`, `src/crl.zig` (OpenSSL validation)
+  - Signature verification: `src/sig.zig` (BoringSSL/OpenSSL schemes)
+  - State machine: `src/tls13/state.zig` (RFC 8446 transitions)

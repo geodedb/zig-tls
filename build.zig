@@ -680,6 +680,240 @@ pub fn build(b: *std.Build) void {
     const run_security_test = b.addRunArtifact(security_test);
     conformance_step.dependOn(&run_security_test.step);
 
+    // PSK Handshake conformance tests (Phase 2, Task 1)
+    const psk_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/psk_handshake.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+            },
+        }),
+    });
+    const run_psk_conformance_test = b.addRunArtifact(psk_conformance_test);
+    conformance_step.dependOn(&run_psk_conformance_test.step);
+
+    // 0-RTT conformance tests (Phase 2, Task 2)
+    const zero_rtt_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/zero_rtt.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+                .{ .name = "zero_rtt", .module = zero_rtt_mod },
+            },
+        }),
+    });
+    const run_zero_rtt_conformance_test = b.addRunArtifact(zero_rtt_conformance_test);
+    conformance_step.dependOn(&run_zero_rtt_conformance_test.step);
+
+    // Session Ticket conformance tests (Phase 2, Task 3)
+    const session_ticket_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/session_ticket.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+            },
+        }),
+    });
+    const run_session_ticket_conformance_test = b.addRunArtifact(session_ticket_conformance_test);
+    conformance_step.dependOn(&run_session_ticket_conformance_test.step);
+
+    // Replay Attack Prevention conformance tests (Phase 2, Task 4)
+    const replay_prevention_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/replay_prevention.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zero_rtt", .module = zero_rtt_mod },
+            },
+        }),
+    });
+    const run_replay_prevention_conformance_test = b.addRunArtifact(replay_prevention_conformance_test);
+    conformance_step.dependOn(&run_replay_prevention_conformance_test.step);
+
+    // Client Authentication conformance tests (Phase 3, Task 1)
+    const client_auth_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/openssl/client_auth.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_client_auth_conformance_test = b.addRunArtifact(client_auth_conformance_test);
+    conformance_step.dependOn(&run_client_auth_conformance_test.step);
+
+    // Trust Store conformance tests (Phase 3, Task 2)
+    const trust_store_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/openssl/trust_store.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_trust_store_conformance_test = b.addRunArtifact(trust_store_conformance_test);
+    conformance_step.dependOn(&run_trust_store_conformance_test.step);
+
+    // Mutual TLS integration conformance tests (Phase 3, Task 3)
+    const mutual_tls_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/openssl/mutual_tls.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_mutual_tls_conformance_test = b.addRunArtifact(mutual_tls_conformance_test);
+    conformance_step.dependOn(&run_mutual_tls_conformance_test.step);
+
+    // P-256/P-384 ECDHE conformance tests (Phase 4, Task 1)
+    const p256_ecdhe_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/p256_ecdhe.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_p256_ecdhe_conformance_test = b.addRunArtifact(p256_ecdhe_conformance_test);
+    conformance_step.dependOn(&run_p256_ecdhe_conformance_test.step);
+
+    // FFDHE conformance tests (Phase 4, Task 2)
+    const ffdhe_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/openssl/ffdhe.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_ffdhe_conformance_test = b.addRunArtifact(ffdhe_conformance_test);
+    conformance_step.dependOn(&run_ffdhe_conformance_test.step);
+
+    // Cross-suite interoperability conformance tests (Phase 4, Task 3)
+    const cross_suite_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/cross_suite_interop.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_cross_suite_conformance_test = b.addRunArtifact(cross_suite_conformance_test);
+    conformance_step.dependOn(&run_cross_suite_conformance_test.step);
+
+    // OCSP validation conformance tests (Phase 5, Task 1)
+    const ocsp_validation_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/openssl/ocsp_validation.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_ocsp_validation_conformance_test = b.addRunArtifact(ocsp_validation_conformance_test);
+    conformance_step.dependOn(&run_ocsp_validation_conformance_test.step);
+
+    // CRL validation conformance tests (Phase 5, Task 2)
+    const crl_validation_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/openssl/crl_validation.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_crl_validation_conformance_test = b.addRunArtifact(crl_validation_conformance_test);
+    conformance_step.dependOn(&run_crl_validation_conformance_test.step);
+
+    // AIA validation conformance tests (Phase 5, Task 3)
+    const aia_validation_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/openssl/aia_validation.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_aia_validation_conformance_test = b.addRunArtifact(aia_validation_conformance_test);
+    conformance_step.dependOn(&run_aia_validation_conformance_test.step);
+
+    // Certificate policy validation conformance tests (Phase 5, Task 4)
+    const policy_validation_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/openssl/policy_validation.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_policy_validation_conformance_test = b.addRunArtifact(policy_validation_conformance_test);
+    conformance_step.dependOn(&run_policy_validation_conformance_test.step);
+
+    // Name constraints enforcement conformance tests (Phase 5, Task 5)
+    const name_constraints_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/openssl/name_constraints.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_name_constraints_conformance_test = b.addRunArtifact(name_constraints_conformance_test);
+    conformance_step.dependOn(&run_name_constraints_conformance_test.step);
+
+    // TLS 1.3 extensions conformance tests (Phase 6, Task 1)
+    const extensions_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/rfc8446/extensions.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_extensions_conformance_test = b.addRunArtifact(extensions_conformance_test);
+    conformance_step.dependOn(&run_extensions_conformance_test.step);
+
+    // Performance benchmarking conformance tests (Phase 6, Task 2)
+    const performance_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/performance.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_performance_conformance_test = b.addRunArtifact(performance_conformance_test);
+    conformance_step.dependOn(&run_performance_conformance_test.step);
+
+    // Memory usage optimization conformance tests (Phase 6, Task 3)
+    const memory_optimization_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/memory_optimization.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_memory_optimization_conformance_test = b.addRunArtifact(memory_optimization_conformance_test);
+    conformance_step.dependOn(&run_memory_optimization_conformance_test.step);
+
+    // Post-quantum cryptography readiness conformance tests (Phase 6, Task 4)
+    const post_quantum_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/post_quantum_readiness.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_post_quantum_conformance_test = b.addRunArtifact(post_quantum_conformance_test);
+    conformance_step.dependOn(&run_post_quantum_conformance_test.step);
+
+    // Comprehensive fuzzing conformance tests (Phase 6, Task 5)
+    const fuzzing_conformance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/fuzzing.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_fuzzing_conformance_test = b.addRunArtifact(fuzzing_conformance_test);
+    conformance_step.dependOn(&run_fuzzing_conformance_test.step);
+
     // Note: conformance tests require OpenSSL/BoringSSL development libraries
     // They are not included in the default test step
 }

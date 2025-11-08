@@ -15,7 +15,7 @@ This document provides a comprehensive analysis of implementation gaps in ztls a
 - ⚠️ **Partial:** PSK infrastructure, 0-RTT framework, client authentication hooks
 - ❌ **Missing:** PSK handshake flow, HelloRetryRequest, FFDHE groups, full chain validation, key updates
 
-**Test Coverage:** 629 tests (344 unit + 148 RFC compliance + 13 vectors + 124 conformance)
+**Test Coverage:** 853 tests (262 unit + 148 RFC compliance + 13 vectors + 430 conformance)
 
 ---
 
