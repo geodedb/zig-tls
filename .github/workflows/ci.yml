@@ -103,7 +103,9 @@ jobs:
       - name: Run conformance tests
         run: zig build test-conformance --summary all
         env:
-          PKG_CONFIG_PATH: ${{ env.VCPKG_ROOT }}\installed\x64-windows\lib\pkgconfig
+          PKG_CONFIG_PATH: ${{ env.VCPKG_ROOT }}/installed/x64-windows/lib/pkgconfig
+          CFLAGS: -I${{ env.VCPKG_ROOT }}/installed/x64-windows/include
+          LDFLAGS: -L${{ env.VCPKG_ROOT }}/installed/x64-windows/lib
 
   # macOS test job
   test-macos:
