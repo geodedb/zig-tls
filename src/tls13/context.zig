@@ -528,13 +528,7 @@ pub const TranscriptSet = struct {
 };
 
 /// High-level handshake lifecycle position for progress tracking (RFC 8446 §4).
-pub const HandshakePhase = enum {
-    initial,
-    negotiating,
-    keys_installed,
-    application_ready,
-    post_handshake,
-};
+pub const HandshakePhase = handshake_state_mod.HandshakePhase;
 
 /// View into the stored ClientHello key share for downstream consumers.
 pub const ClientHelloKeyShareView = struct {
