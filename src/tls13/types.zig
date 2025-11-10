@@ -30,6 +30,12 @@ pub const HandshakeMetadata = struct {
     /// Local QUIC transport parameters advertised in handshake
     /// Available immediately after configuration
     local_transport_parameters: ?[]const u8 = null,
+
+    /// Peer QUIC transport parameters received in handshake
+    /// - Client: Received in EncryptedExtensions from server
+    /// - Server: Received in ClientHello from client
+    /// Available after EncryptedExtensions processed
+    peer_transport_parameters: ?[]const u8 = null,
 };
 
 /// Mirror of the TLS 1.3 signature scheme enumeration (RFC 8446 §4.2.3).

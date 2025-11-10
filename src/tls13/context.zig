@@ -871,6 +871,7 @@ pub const Context = struct {
     flags: HandshakeFlags = .{},
     hash_kind: Hash = .sha256,
     local_transport_parameters: ?[]u8 = null,
+    peer_quic_transport_parameters: ?[]u8 = null,
     negotiated_alpn: ?[]u8 = null,
     negotiated_signature: ?tls13_full.SignatureScheme = null,
     negotiated_cipher_suite: ?tls13_full.CipherSuite = null,
@@ -1053,6 +1054,7 @@ pub const Context = struct {
         return .{
             .alpn = self.negotiated_alpn,
             .local_transport_parameters = self.local_transport_parameters,
+            .peer_transport_parameters = self.peer_quic_transport_parameters,
         };
     }
 
