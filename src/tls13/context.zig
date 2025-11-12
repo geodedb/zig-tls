@@ -884,8 +884,8 @@ pub const Context = struct {
     server_secret_generated: ?[32]u8 = null, // Generated server secret for HRR cookies
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
-    pub fn init(config: Config, callbacks: Callbacks) Context {
-        return .{
+    pub fn init(config: Config, callbacks: Callbacks) !Context {
+        const ctx = Context{
             .config = config,
             .callbacks = callbacks,
             .allocator = config.allocator,
@@ -904,6 +904,13 @@ pub const Context = struct {
             .client_priv = null,
             .client_pub = null,
         };
+
+        // NOTE: For clients, DO NOT automatically call startClientHandshake() here!
+        // The QUIC layer needs to set transport parameters FIRST via setTransportParameters(),
+        // then explicitly call startClientHandshake(). If we call it here, the ClientHello
+        // will be generated without transport parameters.
+
+        return ctx;
     }
 
     /// Cleans up the context, freeing resources and resetting state.
@@ -926,6 +933,27 @@ pub const Context = struct {
         self.handshake_secret = null;
         self.hash_kind = .sha256;
         self.phase = .initial;
+    }
+
+    /// Update transport parameters for this Context.
+    /// This allows setting transport parameters after Context creation (e.g., when
+    /// they're computed lazily after connection establishment).
+    ///
+    /// Parameters:
+    /// - tp_bytes: Encoded transport parameters (TLV format from quic_transport_params.zig)
+    ///
+    /// Note: This updates the config's quic_transport_parameters pointer to reference
+    /// the provided bytes. Caller must ensure the bytes remain valid for the Context's lifetime.
+    pub fn setTransportParameters(self: *Context, tp_bytes: []const u8) void {
+        // Store in the mutable local_transport_parameters field instead of trying to modify the immutable config
+        // The config's quic_transport_parameters is set at Context creation time; this allows updating it later
+        // We need to make a mutable copy since local_transport_parameters is ?[]u8, not ?[]const u8
+        const mutable_copy = self.allocator.dupe(u8, tp_bytes) catch return;
+        // Free any existing allocation
+        if (self.local_transport_parameters) |old| {
+            self.allocator.free(old);
+        }
+        self.local_transport_parameters = mutable_copy;
     }
 
     /// Process inbound CRYPTO data received from peer at specified encryption level.
@@ -1635,7 +1663,9 @@ pub const Context = struct {
         };
 
         // QUIC transport parameters
-        if (self.config.quic_transport_parameters) |tp| {
+        // Check local_transport_parameters first (set via setTransportParameters), then fall back to config
+        const tp_bytes_hrr = self.local_transport_parameters orelse self.config.quic_transport_parameters;
+        if (tp_bytes_hrr) |tp| {
             const tp_len: u16 = @intCast(tp.len);
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
             try ext_buf.appendSlice(self.allocator, tp);
@@ -1897,7 +1927,8 @@ pub const Context = struct {
     }
 
     /// Construct and queue a ClientHello with QUIC extensions when acting as the client.
-    fn startClientHandshake(self: *Context) !void {
+    /// This must be called by the QUIC layer before polling for Initial CRYPTO data.
+    pub fn startClientHandshake(self: *Context) !void {
         if (self.config.role != .Client) return;
         if (self.client_priv != null) return; // already started
         // Generate X25519 key pair
@@ -1957,7 +1988,9 @@ pub const Context = struct {
             }
         };
         // QUIC transport parameters (client sends its TP in CH)
-        if (self.config.quic_transport_parameters) |tp| {
+        // Check local_transport_parameters first (set via setTransportParameters), then fall back to config
+        const tp_bytes = self.local_transport_parameters orelse self.config.quic_transport_parameters;
+        if (tp_bytes) |tp| {
             const tp_len: u16 = @intCast(tp.len);
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
             try ext_buf.appendSlice(self.allocator, tp);
