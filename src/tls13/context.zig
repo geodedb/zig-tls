@@ -954,6 +954,7 @@ pub const Context = struct {
             self.allocator.free(old);
         }
         self.local_transport_parameters = mutable_copy;
+        std.debug.print("Context.setTransportParameters: Set {} bytes of transport params on context={*}\n", .{tp_bytes.len, self});
     }
 
     /// Process inbound CRYPTO data received from peer at specified encryption level.
@@ -1002,6 +1003,9 @@ pub const Context = struct {
     /// - Transcript hash critical: messages added in exact receive order
     /// - State transitions happen in afterHandshakeMessage()
     pub fn processCrypto(self: *Context, level: EncryptionLevel, data: []const u8) !void {
+        std.debug.print("Context.processCrypto: role={s}, level={s}, data_len={}\n", .{
+            if (self.config.role == .Server) "Server" else "Client", @tagName(level), data.len
+        });
         var stream = self.streams.buffer(level);
         try stream.inbound.appendSlice(self.allocator, data);
 
@@ -1013,6 +1017,12 @@ pub const Context = struct {
 
             const parsed = parsed_opt.?;
             const message_bytes = buffer[0..parsed.n];
+
+            std.debug.print("  Parsed handshake message: type={X:0>2} ({s}), len={}\n", .{
+                @intFromEnum(parsed.typ),
+                @tagName(parsed.typ),
+                parsed.body.len
+            });
 
             // Validate and process message type
             try self.handleHandshakeMessage(level, parsed, message_bytes);
@@ -1267,8 +1277,15 @@ pub const Context = struct {
                 // Handle the key update
                 try self.handleKeyUpdateMessage(request);
             },
+            .encrypted_extensions => {
+                // RFC 8446 §4.3.1: EncryptedExtensions only valid for client role
+                if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
+
+                // Parse EncryptedExtensions to extract transport parameters and ALPN
+                try self.handleEncryptedExtensions(parsed.body);
+            },
             else => {
-                // Other messages (EncryptedExtensions, Certificate, CertificateVerify)
+                // Other messages (Certificate, CertificateVerify)
                 // processed implicitly via transcript updates
             },
         }
@@ -1826,8 +1843,26 @@ pub const Context = struct {
         try self.appendOutbound(.Initial, sh_msg, true);
 
         const transcript_after_sh = self.transcripts.handshake.finalize(self.hash_kind);
+
+        // Debug: Print ECDHE and transcript for server
+        std.debug.print("[SERVER] ECDHE shared secret (first 8 bytes): ", .{});
+        for (shared[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        std.debug.print("[SERVER] Transcript hash (first 8 bytes): ", .{});
+        for (transcript_after_sh.bytes[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+
         const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], transcript_after_sh);
         self.handshake_secret = hs.handshake;
+
+        // Debug: Print derived keys for server
+        std.debug.print("[SERVER] Derived client_hs (first 4 bytes): ", .{});
+        for (hs.client_hs[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        std.debug.print("[SERVER] Derived server_hs (first 4 bytes): ", .{});
+        for (hs.server_hs[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+
         try self.installTrafficSecret(.Handshake, .send, hs.server_hs);
         try self.installTrafficSecret(.Handshake, .recv, hs.client_hs);
         if (self.phase == .negotiating) {
@@ -2067,8 +2102,26 @@ pub const Context = struct {
         const priv = self.client_priv orelse return HandshakeError.UnexpectedMessage;
         const shared = std.crypto.dh.X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
         const sh_snapshot = self.transcripts.handshake.finalize(self.hash_kind);
+
+        // Debug: Print ECDHE and transcript for client
+        std.debug.print("[CLIENT] ECDHE shared secret (first 8 bytes): ", .{});
+        for (shared[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        std.debug.print("[CLIENT] Transcript hash (first 8 bytes): ", .{});
+        for (sh_snapshot.bytes[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+
         const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], sh_snapshot);
         self.handshake_secret = hs.handshake;
+
+        // Debug: Print derived keys for client
+        std.debug.print("[CLIENT] Derived client_hs (first 4 bytes): ", .{});
+        for (hs.client_hs.bytes[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+        std.debug.print("[CLIENT] Derived server_hs (first 4 bytes): ", .{});
+        for (hs.server_hs.bytes[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
+        std.debug.print("\n", .{});
+
         // CLIENT uses client_hs for send, server_hs for recv (opposite of server)
         try self.installTrafficSecret(.Handshake, .send, hs.client_hs);
         try self.installTrafficSecret(.Handshake, .recv, hs.server_hs);
@@ -2284,6 +2337,42 @@ pub const Context = struct {
     /// # Notes
     /// - Automatically called when KeyUpdate message is received
     /// - Private method, not intended for direct use by application
+    /// RFC 8446 §4.3.1 + RFC 9001 §8.2: Parse EncryptedExtensions and extract transport parameters.
+    fn handleEncryptedExtensions(self: *Context, body: []const u8) !void {
+        // Parse EncryptedExtensions message
+        const parsed = try tls13_full.parseEncryptedExtensions(body);
+
+        // RFC 9001 §8.2: Extract quic_transport_parameters extension (mandatory for QUIC)
+        if (parsed.quic_transport_parameters) |tp| {
+            // Store peer transport parameters
+            const tp_copy = try self.allocator.dupe(u8, tp);
+            if (self.peer_quic_transport_parameters) |old| {
+                self.allocator.free(old);
+            }
+            self.peer_quic_transport_parameters = tp_copy;
+        } else {
+            // RFC 9001 §8.2: Transport parameters are mandatory for QUIC
+            return HandshakeError.MissingTransportParameters;
+        }
+
+        // RFC 7301: Store negotiated ALPN
+        if (parsed.alpn) |alpn| {
+            const alpn_copy = try self.allocator.dupe(u8, alpn);
+            if (self.negotiated_alpn) |old| {
+                self.allocator.free(old);
+            }
+            self.negotiated_alpn = alpn_copy;
+        }
+
+        // Notify QUIC layer of handshake metadata
+        self.notifyMetadata();
+
+        std.debug.print("handleEncryptedExtensions: Extracted {} bytes of transport params, ALPN={s}\n", .{
+            if (parsed.quic_transport_parameters) |tp| tp.len else 0,
+            if (parsed.alpn) |alpn| alpn else "none"
+        });
+    }
+
     fn handleKeyUpdateMessage(self: *Context, request: KeyUpdateRequest) !void {
         // RFC 8446 §7.2: Update receiving traffic secret
         const recv_slot = self.secrets.slot(.Application, .recv);

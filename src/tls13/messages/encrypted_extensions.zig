@@ -146,3 +146,103 @@ pub fn buildEncryptedExtensions(
 
     return msg.toOwnedSlice(allocator);
 }
+
+/// EncryptedExtensions parsing result.
+///
+/// Contains the parsed ALPN protocol and QUIC transport parameters
+/// extracted from an EncryptedExtensions message.
+pub const EncryptedExtensions = struct {
+    /// Selected ALPN protocol (e.g., "h3")
+    /// This is a view into the input buffer, not owned memory
+    alpn: ?[]const u8 = null,
+
+    /// QUIC transport parameters from extension 0x0039
+    /// This is a view into the input buffer, not owned memory
+    quic_transport_parameters: ?[]const u8 = null,
+};
+
+/// Parse EncryptedExtensions message (RFC 8446 §4.3.1).
+///
+/// Extracts ALPN and QUIC transport parameters from an EncryptedExtensions message.
+/// This function does not allocate memory; all returned slices are views into the input buffer.
+///
+/// ## Parameters
+///
+/// - `body`: The EncryptedExtensions message body (after the handshake message header)
+///
+/// ## Returns
+///
+/// - `EncryptedExtensions`: Parsed extension data (views into input buffer)
+///
+/// ## Errors
+///
+/// - `error.TooShort`: Message too short to contain valid EncryptedExtensions
+/// - `error.MalformedExtensions`: Extension data is corrupted
+///
+/// ## RFC Compliance
+///
+/// - RFC 8446 §4.3.1: EncryptedExtensions structure
+/// - RFC 9001 §8.2: QUIC transport parameters MUST appear in EncryptedExtensions
+/// - RFC 7301: ALPN extension format
+///
+/// ## Message Format
+///
+/// ```
+/// struct {
+///     Extension extensions<0..2^16-1>;
+/// } EncryptedExtensions;
+/// ```
+pub fn parseEncryptedExtensions(body: []const u8) !EncryptedExtensions {
+    var result = EncryptedExtensions{};
+
+    // Minimum size: 2 bytes for extensions length
+    if (body.len < 2) return error.TooShort;
+
+    // Read extensions length
+    const ext_len = helpers.readU16(body[0..2]);
+    if (body.len < 2 + ext_len) return error.TooShort;
+
+    // Parse extensions
+    var offset: usize = 2;
+    const ext_end = 2 + ext_len;
+
+    while (offset < ext_end) {
+        // Need at least 4 bytes for type (2) and length (2)
+        if (offset + 4 > ext_end) return error.MalformedExtensions;
+
+        const ext_type = helpers.readU16(body[offset..offset + 2]);
+        const data_len = helpers.readU16(body[offset + 2..offset + 4]);
+        offset += 4;
+
+        if (offset + data_len > ext_end) return error.MalformedExtensions;
+
+        const ext_data = body[offset..offset + data_len];
+        offset += data_len;
+
+        switch (ext_type) {
+            // ALPN (0x0010) - RFC 7301
+            0x0010 => {
+                // ALPN format: ProtocolNameList with 2-byte length prefix
+                if (ext_data.len < 2) continue;
+                const list_len = helpers.readU16(ext_data[0..2]);
+                if (ext_data.len < 2 + list_len) continue;
+
+                // Parse first protocol in the list (server selects one)
+                if (list_len > 0) {
+                    const proto_len = ext_data[2];
+                    if (2 + 1 + proto_len <= ext_data.len) {
+                        result.alpn = ext_data[3..3 + proto_len];
+                    }
+                }
+            },
+            // QUIC transport parameters (0x0039) - RFC 9001 §8.2
+            0x0039 => {
+                result.quic_transport_parameters = ext_data;
+            },
+            // Skip unknown extensions (forward compatibility)
+            else => {},
+        }
+    }
+
+    return result;
+}

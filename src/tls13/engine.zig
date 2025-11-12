@@ -301,7 +301,7 @@ pub const Engine = struct {
         self.onCryptoRecv(data);
     }
 
-    fn ensureKeypair(self: *Engine) void {
+    pub fn ensureKeypair(self: *Engine) void {
         if (self.my_priv == null or self.my_pub == null) {
             var sk: [32]u8 = undefined;
             std.crypto.random.bytes(&sk);
@@ -404,7 +404,25 @@ pub const Engine = struct {
                         traceSecrets("onCryptoRecv: Transcript hash for handshake: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 of {})\n", .{ th_hash[0], th_hash[1], th_hash[2], th_hash[3], th_hash.len });
                         traceSecrets("onCryptoRecv: ECDHE secret first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3] });
                     }
+
+                    // Debug: Print ECDHE and transcript for client
+                    std.debug.print("[CLIENT-ENGINE] ECDHE shared (first 8): ", .{});
+                    for (self.ecdhe_secret.?[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+                    std.debug.print("\n", .{});
+                    std.debug.print("[CLIENT-ENGINE] Transcript (first 8): ", .{});
+                    for (th_secret.bytes[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+                    std.debug.print("\n", .{});
+
                     const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_secret);
+
+                    // Debug: Print derived secrets for client
+                    std.debug.print("[CLIENT-ENGINE] Derived client_hs (first 4): ", .{});
+                    for (hs.client_hs.bytes[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
+                    std.debug.print("\n", .{});
+                    std.debug.print("[CLIENT-ENGINE] Derived server_hs (first 4): ", .{});
+                    for (hs.server_hs.bytes[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
+                    std.debug.print("\n", .{});
+
                     const client_slice = hs.client_hs.slice();
                     const server_slice = hs.server_hs.slice();
                     if (secret_trace_enabled and client_slice.len >= 4 and server_slice.len >= 4) {
@@ -1367,7 +1385,25 @@ pub const Engine = struct {
             if (th_slice.len >= 8) {
                 std.debug.print("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
             }
+
+            // Debug: Print ECDHE and derived secrets for server
+            std.debug.print("[SERVER-ENGINE] ECDHE shared (first 8): ", .{});
+            for (self.ecdhe_secret.?[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+            std.debug.print("\n", .{});
+            std.debug.print("[SERVER-ENGINE] Transcript (first 8): ", .{});
+            for (th.bytes[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
+            std.debug.print("\n", .{});
+
             const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th);
+
+            // Debug: Print derived secrets
+            std.debug.print("[SERVER-ENGINE] Derived client_hs (first 4): ", .{});
+            for (hs.client_hs.bytes[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
+            std.debug.print("\n", .{});
+            std.debug.print("[SERVER-ENGINE] Derived server_hs (first 4): ", .{});
+            for (hs.server_hs.bytes[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
+            std.debug.print("\n", .{});
+
             self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;
