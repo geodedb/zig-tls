@@ -1024,19 +1024,21 @@ pub const Context = struct {
                 parsed.body.len
             });
 
-            // Validate and process message type
-            try self.handleHandshakeMessage(level, parsed, message_bytes);
-
-            // RFC 8446 §4.4.4: Finished is added to transcript AFTER verification
-            // to ensure verify_data is computed over correct transcript state
+            // RFC 8446 §4.4.4: Update transcript BEFORE processing message
+            // (except Finished which is added AFTER verification)
+            // This ensures that when handlers like onPeerServerHello compute
+            // Handshake secrets, the transcript includes all messages up to
+            // and including the current message (e.g., ClientHello+ServerHello)
             if (parsed.typ != .finished) {
                 self.transcripts.handshake.update(message_bytes);
-                try self.afterHandshakeMessage(level, parsed);
-            } else {
-                // Finished verification happens in handleHandshakeMessage, transcript
-                // updated there after successful verification
-                try self.afterHandshakeMessage(level, parsed);
             }
+
+            // Validate and process message type (now transcript includes this message)
+            try self.handleHandshakeMessage(level, parsed, message_bytes);
+
+            // Finished verification happens in handleHandshakeMessage, transcript
+            // updated there after successful verification
+            try self.afterHandshakeMessage(level, parsed);
 
             stream.consume(parsed.n);
         }
@@ -1843,25 +1845,8 @@ pub const Context = struct {
         try self.appendOutbound(.Initial, sh_msg, true);
 
         const transcript_after_sh = self.transcripts.handshake.finalize(self.hash_kind);
-
-        // Debug: Print ECDHE and transcript for server
-        std.debug.print("[SERVER] ECDHE shared secret (first 8 bytes): ", .{});
-        for (shared[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-        std.debug.print("[SERVER] Transcript hash (first 8 bytes): ", .{});
-        for (transcript_after_sh.bytes[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-
         const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], transcript_after_sh);
         self.handshake_secret = hs.handshake;
-
-        // Debug: Print derived keys for server
-        std.debug.print("[SERVER] Derived client_hs (first 4 bytes): ", .{});
-        for (hs.client_hs[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-        std.debug.print("[SERVER] Derived server_hs (first 4 bytes): ", .{});
-        for (hs.server_hs[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
 
         try self.installTrafficSecret(.Handshake, .send, hs.server_hs);
         try self.installTrafficSecret(.Handshake, .recv, hs.client_hs);
@@ -2100,27 +2085,11 @@ pub const Context = struct {
         }
         if (server_pub == null) return HandshakeError.MissingKeyShare;
         const priv = self.client_priv orelse return HandshakeError.UnexpectedMessage;
+
         const shared = std.crypto.dh.X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
         const sh_snapshot = self.transcripts.handshake.finalize(self.hash_kind);
-
-        // Debug: Print ECDHE and transcript for client
-        std.debug.print("[CLIENT] ECDHE shared secret (first 8 bytes): ", .{});
-        for (shared[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-        std.debug.print("[CLIENT] Transcript hash (first 8 bytes): ", .{});
-        for (sh_snapshot.bytes[0..8]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-
         const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], sh_snapshot);
         self.handshake_secret = hs.handshake;
-
-        // Debug: Print derived keys for client
-        std.debug.print("[CLIENT] Derived client_hs (first 4 bytes): ", .{});
-        for (hs.client_hs.bytes[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
-        std.debug.print("[CLIENT] Derived server_hs (first 4 bytes): ", .{});
-        for (hs.server_hs.bytes[0..4]) |b| std.debug.print("{X:0>2} ", .{b});
-        std.debug.print("\n", .{});
 
         // CLIENT uses client_hs for send, server_hs for recv (opposite of server)
         try self.installTrafficSecret(.Handshake, .send, hs.client_hs);
