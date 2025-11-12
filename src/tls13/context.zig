@@ -2069,8 +2069,9 @@ pub const Context = struct {
         const sh_snapshot = self.transcripts.handshake.finalize(self.hash_kind);
         const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], sh_snapshot);
         self.handshake_secret = hs.handshake;
-        try self.installTrafficSecret(.Handshake, .send, hs.server_hs);
-        try self.installTrafficSecret(.Handshake, .recv, hs.client_hs);
+        // CLIENT uses client_hs for send, server_hs for recv (opposite of server)
+        try self.installTrafficSecret(.Handshake, .send, hs.client_hs);
+        try self.installTrafficSecret(.Handshake, .recv, hs.server_hs);
         self.phase = .keys_installed;
     }
 
