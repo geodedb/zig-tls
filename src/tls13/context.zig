@@ -924,6 +924,10 @@ pub const Context = struct {
             self.allocator.free(buf);
             self.local_transport_parameters = null;
         }
+        if (self.peer_quic_transport_parameters) |buf| {
+            self.allocator.free(buf);
+            self.peer_quic_transport_parameters = null;
+        }
         if (self.negotiated_alpn) |proto| {
             self.allocator.free(proto);
             self.negotiated_alpn = null;
