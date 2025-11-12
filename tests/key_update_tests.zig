@@ -30,7 +30,7 @@ test "Context.sendKeyUpdate - before handshake complete fails" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     // Attempt to send KeyUpdate before handshake complete
@@ -51,7 +51,7 @@ test "Context.sendKeyUpdate - queues message" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     // Simulate handshake complete by installing Application secrets manually
@@ -86,7 +86,7 @@ test "Context.sendKeyUpdate - secret rotation" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     // Install initial Application secret
@@ -125,7 +125,7 @@ test "Context.sendKeyUpdate - both directions" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     // Simulate handshake complete
@@ -162,7 +162,7 @@ test "Context.sendKeyUpdate - RFC 8446 message format" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     // Simulate handshake complete
@@ -205,7 +205,7 @@ test "Context - generation tracking on secret installation" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     // Initial state: generation should be 0 (not installed)
@@ -243,7 +243,7 @@ test "Context - generation tracking with sendKeyUpdate" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     // Install initial application secret (generation 1)
@@ -279,7 +279,7 @@ test "Context - bidirectional generation tracking" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     // Initial state
@@ -327,7 +327,7 @@ test "Context - generation tracking across encryption levels" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     var secret = key_schedule.Secret.initZero(.sha256);
@@ -365,7 +365,7 @@ test "Context - generation tracking prevents overflow" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     var secret = key_schedule.Secret.initZero(.sha256);
@@ -394,7 +394,7 @@ test "Context - generation resets on clear" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     var secret = key_schedule.Secret.initZero(.sha256);
@@ -431,7 +431,7 @@ test "Context.checkAndTriggerKeyUpdate - triggers at 90% threshold" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     // Simulate handshake complete
@@ -480,7 +480,7 @@ test "Context.checkAndTriggerKeyUpdate - triggers at 100% threshold" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     var dummy_secret = key_schedule.Secret.initZero(.sha256);
@@ -511,7 +511,7 @@ test "Context.checkAndTriggerKeyUpdate - multiple thresholds" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     var dummy_secret = key_schedule.Secret.initZero(.sha256);
@@ -554,7 +554,7 @@ test "Context.checkAndTriggerKeyUpdate - edge cases" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     var dummy_secret = key_schedule.Secret.initZero(.sha256);
@@ -587,7 +587,7 @@ test "Context.checkAndTriggerKeyUpdate - before handshake complete fails" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     // Attempt to check and trigger without Application secrets
@@ -608,7 +608,7 @@ test "Context.checkAndTriggerKeyUpdate - realistic AES-GCM limits" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     var dummy_secret = key_schedule.Secret.initZero(.sha256);
@@ -646,7 +646,7 @@ test "Context.checkAndTriggerKeyUpdate - realistic ChaCha20 limits" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var ctx = tls13.Context.init(config, callbacks);
+    var ctx = try tls13.Context.init(config, callbacks);
     defer ctx.deinit();
 
     var dummy_secret = key_schedule.Secret.initZero(.sha256);

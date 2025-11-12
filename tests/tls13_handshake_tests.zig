@@ -35,7 +35,7 @@ test "TLS 1.3 client context initialization" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var client_ctx = tls13.Context.init(client_config, client_callbacks);
+    var client_ctx = try tls13.Context.init(client_config, client_callbacks);
     defer client_ctx.deinit();
 
     // Verify context initialized correctly
@@ -56,7 +56,7 @@ test "TLS 1.3 server context initialization" {
         .quic_transport_parameters = &[_]u8{},
     };
 
-    var server_ctx = tls13.Context.init(server_config, server_callbacks);
+    var server_ctx = try tls13.Context.init(server_config, server_callbacks);
     defer server_ctx.deinit();
 
     // Verify context initialized correctly
@@ -105,7 +105,7 @@ test "TLS 1.3 handshake completion check" {
         .quic_transport_parameters = &[_]u8{ 0x00, 0x01 },
     };
 
-    var client_ctx = tls13.Context.init(client_config, client_callbacks);
+    var client_ctx = try tls13.Context.init(client_config, client_callbacks);
     defer client_ctx.deinit();
 
     // Handshake should not be complete initially
