@@ -1365,8 +1365,17 @@ pub const Context = struct {
         // Store transcript hash at Finished point (used for key derivation)
         self.transcripts.finished_hash.set(slot.hash, transcript_hash);
 
+        // RFC 8446 §7.1: Application secrets derived with transcript up to server Finished ONLY
+        // Server must derive Application secrets BEFORE adding client Finished to transcript
+        if (self.config.role == .Server) {
+            // Server derives Application secrets now (before client Finished added to transcript)
+            // Transcript at this point: CH, SH, EE, Cert, CV, ServerFinished
+            try self.ensureApplicationSecrets();
+        }
+
         // RFC 8446 §4.4.4: NOW add Finished to transcript (after verification)
-        // This ensures application secrets derived with correct transcript
+        // For client: this is server Finished (needed for Application secret derivation)
+        // For server: this is client Finished (NOT used for Application secret derivation - already derived above)
         self.transcripts.handshake.update(raw);
     }
 
@@ -1375,7 +1384,11 @@ pub const Context = struct {
         if (level != .Handshake) return;
 
         // RFC 8446 §7.1: Derive application traffic secrets after Finished verified
-        try self.ensureApplicationSecrets();
+        // Client derives here (after server Finished added to transcript above)
+        // Server already derived above (before client Finished added to transcript)
+        if (self.config.role == .Client) {
+            try self.ensureApplicationSecrets();
+        }
 
         // Mark peer Finished as verified and invoke callback
         self.confirmPeerFinished();
