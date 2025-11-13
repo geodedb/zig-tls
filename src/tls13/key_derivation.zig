@@ -123,12 +123,34 @@ pub fn deriveHandshakeTraffic(hash: Hash, ecdhe_secret: []const u8, transcript_h
         traceSecrets("\n", .{});
     }
 
-    const early_secret = ks.extractHash(hash, null, &[_]u8{});
+    // RFC 8446 §7.1: early_secret = HKDF-Extract(0, 0) when no PSK
+    // Both salt and IKM must be HashLen zero bytes (32 bytes for SHA-256)
+    const zero_ikm: [32]u8 = [_]u8{0} ** 32;
+    const early_secret = ks.extractHash(hash, null, &zero_ikm);
     const empty_hash = ks.hashBytes(hash, &[_]u8{});
     const derived = ks.deriveSecretHash(hash, &early_secret, "derived", empty_hash.slice());
     const handshake_secret = ks.extractHash(hash, derived.slice(), ecdhe_secret);
     const client_hs = ks.deriveSecretHash(hash, &handshake_secret, "c hs traffic", transcript_hash.slice());
     const server_hs = ks.deriveSecretHash(hash, &handshake_secret, "s hs traffic", transcript_hash.slice());
+
+    // DEBUG: Log intermediate key schedule values
+    if (secret_trace_enabled) {
+        traceSecrets("[TLS_KEY_SCHEDULE_DEBUG] Early secret: ", .{});
+        for (early_secret.slice()) |b| traceSecrets("{X:0>2}", .{b});
+        traceSecrets("\n", .{});
+
+        traceSecrets("[TLS_KEY_SCHEDULE_DEBUG] Empty hash: ", .{});
+        for (empty_hash.slice()) |b| traceSecrets("{X:0>2}", .{b});
+        traceSecrets("\n", .{});
+
+        traceSecrets("[TLS_KEY_SCHEDULE_DEBUG] Derived: ", .{});
+        for (derived.slice()) |b| traceSecrets("{X:0>2}", .{b});
+        traceSecrets("\n", .{});
+
+        traceSecrets("[TLS_KEY_SCHEDULE_DEBUG] Handshake secret: ", .{});
+        for (handshake_secret.slice()) |b| traceSecrets("{X:0>2}", .{b});
+        traceSecrets("\n", .{});
+    }
 
     if (secret_trace_enabled) {
         traceSecrets("[TLS_KEY_SCHEDULE] Client HS traffic secret: ", .{});
