@@ -249,7 +249,8 @@ pub fn deriveApplicationTraffic(hash: Hash, handshake_secret: *const Secret, tra
         traceSecrets("\n", .{});
     }
 
-    const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", &[_]u8{});
+    const empty_hash = ks.hashBytes(hash, &[_]u8{});
+    const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", empty_hash.slice());
     const zero_ikm = [_]u8{0} ** 32;
     if (secret_trace_enabled) {
         traceSecrets("[TLS_APP_KEYS] IKM for master secret (should be 32 zeros): len={} first_byte={} last_byte={}\n", .{ zero_ikm.len, zero_ikm[0], zero_ikm[31] });
