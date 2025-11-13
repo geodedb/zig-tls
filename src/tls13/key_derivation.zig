@@ -250,7 +250,11 @@ pub fn deriveApplicationTraffic(hash: Hash, handshake_secret: *const Secret, tra
     }
 
     const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", &[_]u8{});
-    const master = ks.extractHash(hash, derived.slice(), &[_]u8{0} ** 32);
+    const zero_ikm = [_]u8{0} ** 32;
+    if (secret_trace_enabled) {
+        traceSecrets("[TLS_APP_KEYS] IKM for master secret (should be 32 zeros): len={} first_byte={} last_byte={}\n", .{ zero_ikm.len, zero_ikm[0], zero_ikm[31] });
+    }
+    const master = ks.extractHash(hash, derived.slice(), &zero_ikm);
     const client_app = ks.deriveSecretHash(hash, &master, "c ap traffic", transcript_hash.slice());
     const server_app = ks.deriveSecretHash(hash, &master, "s ap traffic", transcript_hash.slice());
     const exporter_master = ks.deriveSecretHash(hash, &master, "exp master", transcript_hash.slice());
