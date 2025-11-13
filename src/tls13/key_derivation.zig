@@ -250,7 +250,7 @@ pub fn deriveApplicationTraffic(hash: Hash, handshake_secret: *const Secret, tra
     }
 
     const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", &[_]u8{});
-    const master = ks.extractHash(hash, derived.slice(), &[_]u8{});
+    const master = ks.extractHash(hash, derived.slice(), &[_]u8{0} ** 32);
     const client_app = ks.deriveSecretHash(hash, &master, "c ap traffic", transcript_hash.slice());
     const server_app = ks.deriveSecretHash(hash, &master, "s ap traffic", transcript_hash.slice());
     const exporter_master = ks.deriveSecretHash(hash, &master, "exp master", transcript_hash.slice());
