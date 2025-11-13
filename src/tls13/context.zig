@@ -1437,7 +1437,11 @@ pub const Context = struct {
 
         // Transcript hash at this point includes all messages (CH...Finished)
         var transcript_snapshot = self.transcripts.handshake;
+        std.debug.print("[ensureApplicationSecrets] About to finalize transcript for role={}\n", .{self.config.role});
         const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
+        std.debug.print("[ensureApplicationSecrets] Finalized transcript hash: ", .{});
+        for (transcript_hash.slice()) |b| std.debug.print("{X:0>2}", .{b});
+        std.debug.print("\n", .{});
 
         // Key schedule: master_secret = Derive-Secret(handshake_secret, "derived", "")
         //               app_secrets = Derive-Secret(master_secret, label, transcript)
