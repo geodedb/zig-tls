@@ -1416,11 +1416,16 @@ pub const Context = struct {
     /// RFC 8446 §7.1: Derive application-level traffic secrets.
     /// Called after both peers' Finished messages are verified.
     fn ensureApplicationSecrets(self: *Context) !void {
+        std.debug.print("[ensureApplicationSecrets] Called for role={}\n", .{self.config.role});
         const send_slot = self.secrets.slot(.Application, .send);
         const recv_slot = self.secrets.slot(.Application, .recv);
+        std.debug.print("[ensureApplicationSecrets] send_slot.valid={} recv_slot.valid={}\n", .{ send_slot.valid, recv_slot.valid });
 
         // Skip if already derived (idempotent)
-        if (send_slot.valid and recv_slot.valid) return;
+        if (send_slot.valid and recv_slot.valid) {
+            std.debug.print("[ensureApplicationSecrets] Skipping - already derived\n", .{});
+            return;
+        }
 
         // RFC 8446 §7.1: Derive from handshake_secret and transcript hash
         // handshake_secret was saved after ServerHello processing

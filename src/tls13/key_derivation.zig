@@ -239,11 +239,37 @@ pub fn deriveApplicationTraffic(hash: Hash, handshake_secret: *const Secret, tra
     server_app: Secret,
     exporter_master: Secret,
 } {
+    if (secret_trace_enabled) {
+        traceSecrets("[TLS_APP_KEYS] Deriving application traffic secrets\n", .{});
+        traceSecrets("[TLS_APP_KEYS] Transcript hash (CH...SF): ", .{});
+        for (transcript_hash.slice()) |b| traceSecrets("{X:0>2}", .{b});
+        traceSecrets("\n", .{});
+        traceSecrets("[TLS_APP_KEYS] Handshake secret: ", .{});
+        for (handshake_secret.slice()) |b| traceSecrets("{X:0>2}", .{b});
+        traceSecrets("\n", .{});
+    }
+
     const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", &[_]u8{});
     const master = ks.extractHash(hash, derived.slice(), &[_]u8{});
     const client_app = ks.deriveSecretHash(hash, &master, "c ap traffic", transcript_hash.slice());
     const server_app = ks.deriveSecretHash(hash, &master, "s ap traffic", transcript_hash.slice());
     const exporter_master = ks.deriveSecretHash(hash, &master, "exp master", transcript_hash.slice());
+
+    if (secret_trace_enabled) {
+        traceSecrets("[TLS_APP_KEYS] Derived (from HS secret): ", .{});
+        for (derived.slice()) |b| traceSecrets("{X:0>2}", .{b});
+        traceSecrets("\n", .{});
+        traceSecrets("[TLS_APP_KEYS] Master secret: ", .{});
+        for (master.slice()) |b| traceSecrets("{X:0>2}", .{b});
+        traceSecrets("\n", .{});
+        traceSecrets("[TLS_APP_KEYS] Client application traffic secret: ", .{});
+        for (client_app.slice()) |b| traceSecrets("{X:0>2}", .{b});
+        traceSecrets("\n", .{});
+        traceSecrets("[TLS_APP_KEYS] Server application traffic secret: ", .{});
+        for (server_app.slice()) |b| traceSecrets("{X:0>2}", .{b});
+        traceSecrets("\n", .{});
+    }
+
     return .{ .client_app = client_app, .server_app = server_app, .exporter_master = exporter_master };
 }
 
