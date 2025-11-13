@@ -1251,6 +1251,20 @@ pub const Context = struct {
                 // Parse and store ClientHello for parameter negotiation
                 try self.state.setClientHello(self.allocator, parsed.body);
 
+                // Phase 36 FIX: Extract peer transport parameters from ClientHello
+                // RFC 9001 §8.2: quic_transport_parameters (0x0039) mandatory for QUIC
+                // Client sends its transport parameters in ClientHello extension
+                if (self.state.clientHello()) |ch| {
+                    if (ch.quic_transport_parameters) |tp| {
+                        // Store peer (client) transport parameters
+                        const tp_copy = try self.allocator.dupe(u8, tp);
+                        if (self.peer_quic_transport_parameters) |old| {
+                            self.allocator.free(old);
+                        }
+                        self.peer_quic_transport_parameters = tp_copy;
+                    }
+                }
+
                 // RFC 8446 §4: Transition from initial to negotiating phase
                 if (self.phase == .initial) {
                     self.phase = .negotiating;
