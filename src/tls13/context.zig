@@ -1147,6 +1147,10 @@ pub const Context = struct {
     /// - Generation counter enables key updates
     /// - Secrets should be zeroized after use (handled by SecretSlot)
     pub fn installTrafficSecret(self: *Context, level: EncryptionLevel, dir: TrafficDirection, secret: Secret) !void {
+        std.debug.print("[installTrafficSecret] level={s} dir={s} secret=", .{ @tagName(level), @tagName(dir) });
+        for (secret.slice()) |b| std.debug.print("{X:0>2}", .{b});
+        std.debug.print("\n", .{});
+
         var slot = self.secrets.slot(level, dir);
         slot.store(level, self.hash_kind, secret);
         if (self.callbacks.on_secret_available) |cb| {
