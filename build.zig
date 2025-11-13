@@ -644,6 +644,28 @@ pub fn build(b: *std.Build) void {
     const run_handshake_conformance_test = b.addRunArtifact(handshake_conformance_test);
     conformance_step.dependOn(&run_handshake_conformance_test.step);
 
+    // Handshake Secret Derivation conformance tests (OpenSSL parity)
+    const handshake_secrets_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/handshake_secrets.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+                .{ .name = "tls13", .module = tls13_mod },
+            },
+        }),
+    });
+    handshake_secrets_test.linkSystemLibrary("ssl");
+    handshake_secrets_test.linkSystemLibrary("crypto");
+    handshake_secrets_test.linkLibC();
+    if (vcpkg_include_path) |path| {
+        handshake_secrets_test.addIncludePath(.{ .cwd_relative = path });
+    }
+
+    const run_handshake_secrets_test = b.addRunArtifact(handshake_secrets_test);
+    conformance_step.dependOn(&run_handshake_secrets_test.step);
+
     // HelloRetryRequest conformance tests (Phase 1, Task 13)
     const hrr_conformance_test = b.addTest(.{
         .root_module = b.createModule(.{

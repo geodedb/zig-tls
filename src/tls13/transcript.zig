@@ -71,8 +71,8 @@ const MESSAGE_HASH_TYPE: u8 = 254;
 
 /// Debug tracing controls.
 /// Set to true locally when diagnosing handshake flows; disabled in production builds.
-const handshake_trace_enabled = false;
-const secret_trace_enabled = false;
+const handshake_trace_enabled = true;
+const secret_trace_enabled = true;
 
 inline fn traceHandshake(comptime fmt: []const u8, args: anytype) void {
     if (handshake_trace_enabled) std.debug.print(fmt, args);

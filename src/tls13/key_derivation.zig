@@ -61,7 +61,7 @@ const Hash = ks.Hash;
 const Secret = ks.Secret;
 
 /// Debug tracing for secrets (disabled in production builds).
-const secret_trace_enabled = false;
+const secret_trace_enabled = true;
 
 inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
     if (secret_trace_enabled) std.debug.print(fmt, args);
