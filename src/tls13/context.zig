@@ -1016,6 +1016,10 @@ pub const Context = struct {
         // Process all complete messages in buffer
         while (true) {
             const buffer = stream.inbound.items;
+            if (self.config.role == .Client and level == .Handshake) {
+                const head_len: usize = if (buffer.len < 8) buffer.len else 8;
+                std.debug.print("[TLS-HS-CLIENT] buffer len={} head={any}\n", .{ buffer.len, buffer[0..head_len] });
+            }
             const parsed_opt = try parseHandshakeOne(buffer);
             if (parsed_opt == null) break; // Need more data for complete message
 
