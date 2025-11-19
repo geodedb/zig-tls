@@ -131,7 +131,11 @@ pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
     }
 
     const typ: HsType = std.meta.intToEnum(HsType, t_byte) catch {
-        std.debug.print("TLS: Unknown handshake type byte=0x{X}\n", .{t_byte});
+        const dump_len: usize = if (data.len < 32) data.len else 32;
+        std.debug.print(
+            "TLS: Unknown handshake type byte=0x{X}, buf_len={}, head={any}\n",
+            .{ t_byte, data.len, data[0..dump_len] },
+        );
         return error.UnknownHandshakeType;
     };
 
