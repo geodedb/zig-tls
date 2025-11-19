@@ -178,6 +178,18 @@ pub fn updateTrafficSecretHash(hash: Hash, current_secret: *const Secret) Secret
     return next;
 }
 
+/// Update a QUIC traffic secret using the "quic ku" label as specified in RFC 9001 §6.
+/// This is used for QUIC key updates which differ from TLS 1.3 key updates.
+///
+/// ## RFC Reference
+/// RFC 9001 §6 - Key Update
+pub fn updateQuicSecretHash(hash: Hash, current_secret: *const Secret) Secret {
+    var next = Secret.empty();
+    next.len = @intCast(digestLength(hash));
+    expandLabelHash(hash, current_secret, "quic ku", &[_]u8{}, next.sliceMut()) catch unreachable;
+    return next;
+}
+
 pub fn deriveKeyIvHpHash(hash: Hash, secret: *const Secret, v2: bool) KeyMaterial {
     var key: [16]u8 = undefined;
     var iv: [12]u8 = undefined;
@@ -558,6 +570,28 @@ pub fn deriveKeyIvHpV2(secret: [Sha256.digest_length]u8) KeyMaterial {
 pub fn updateTrafficSecret(current_secret: [Sha256.digest_length]u8) [Sha256.digest_length]u8 {
     var secret_wrapper = Secret.fromSlice(.sha256, current_secret[0..]);
     const updated = updateTrafficSecretHash(.sha256, &secret_wrapper);
+    var out: [Sha256.digest_length]u8 = undefined;
+    std.mem.copyForwards(u8, out[0..], updated.slice());
+    return out;
+}
+
+/// Update a QUIC traffic secret using the "quic ku" label as specified in RFC 9001 §6.
+///
+/// Unlike TLS 1.3 key updates which use "traffic upd", QUIC uses "quic ku" for
+/// key updates to maintain separation from the TLS protocol.
+///
+/// ## Parameters
+/// - `current_secret`: Current QUIC application traffic secret (32 bytes)
+///
+/// ## Returns
+/// Next-generation QUIC application traffic secret (32 bytes)
+///
+/// ## RFC References
+/// - RFC 9001 §6 - Key Update in QUIC
+/// - RFC 9001 §6.1 - Initiating a Key Update
+pub fn updateQuicSecret(current_secret: [Sha256.digest_length]u8) [Sha256.digest_length]u8 {
+    var secret_wrapper = Secret.fromSlice(.sha256, current_secret[0..]);
+    const updated = updateQuicSecretHash(.sha256, &secret_wrapper);
     var out: [Sha256.digest_length]u8 = undefined;
     std.mem.copyForwards(u8, out[0..], updated.slice());
     return out;
