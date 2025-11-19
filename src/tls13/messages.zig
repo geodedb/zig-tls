@@ -130,7 +130,10 @@ pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
         return error.ProtocolViolation;
     }
 
-    const typ: HsType = std.meta.intToEnum(HsType, t_byte) catch return error.UnknownHandshakeType;
+    const typ: HsType = std.meta.intToEnum(HsType, t_byte) catch {
+        std.debug.print("TLS: Unknown handshake type byte=0x{X}\n", .{t_byte});
+        return error.UnknownHandshakeType;
+    };
 
     // Parse 24-bit big-endian length
     const L: usize = (@as(usize, data[1]) << 16) | (@as(usize, data[2]) << 8) | @as(usize, data[3]);
