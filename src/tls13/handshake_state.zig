@@ -81,7 +81,8 @@ pub const CryptoBuffer = struct {
         std.debug.assert(count <= self.inbound.items.len);
         const remaining = self.inbound.items.len - count;
         if (remaining > 0) {
-            std.mem.copyBackwards(u8, self.inbound.items[0..remaining], self.inbound.items[count .. count + remaining]);
+            // Shift remaining bytes toward the front; use forwards copy to preserve data when overlapping
+            std.mem.copyForwards(u8, self.inbound.items[0..remaining], self.inbound.items[count .. count + remaining]);
         }
         self.inbound.items = self.inbound.items[0..remaining];
     }

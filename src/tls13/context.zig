@@ -828,7 +828,9 @@ const CryptoBuffer = struct {
         std.debug.assert(count <= self.inbound.items.len);
         const remaining = self.inbound.items.len - count;
         if (remaining > 0) {
-            std.mem.copyBackwards(u8, self.inbound.items[0..remaining], self.inbound.items[count .. count + remaining]);
+            // Shift remaining bytes toward the front; use forwards copy to avoid
+            // clobbering source data when regions overlap.
+            std.mem.copyForwards(u8, self.inbound.items[0..remaining], self.inbound.items[count .. count + remaining]);
         }
         self.inbound.items = self.inbound.items[0..remaining];
     }
@@ -958,7 +960,7 @@ pub const Context = struct {
             self.allocator.free(old);
         }
         self.local_transport_parameters = mutable_copy;
-        std.debug.print("Context.setTransportParameters: Set {} bytes of transport params on context={*}\n", .{tp_bytes.len, self});
+        std.debug.print("Context.setTransportParameters: Set {} bytes of transport params on context={*}\n", .{ tp_bytes.len, self });
     }
 
     /// Process inbound CRYPTO data received from peer at specified encryption level.
@@ -1007,9 +1009,7 @@ pub const Context = struct {
     /// - Transcript hash critical: messages added in exact receive order
     /// - State transitions happen in afterHandshakeMessage()
     pub fn processCrypto(self: *Context, level: EncryptionLevel, data: []const u8) !void {
-        std.debug.print("Context.processCrypto: role={s}, level={s}, data_len={}\n", .{
-            if (self.config.role == .Server) "Server" else "Client", @tagName(level), data.len
-        });
+        std.debug.print("Context.processCrypto: role={s}, level={s}, data_len={}\n", .{ if (self.config.role == .Server) "Server" else "Client", @tagName(level), data.len });
         var stream = self.streams.buffer(level);
         try stream.inbound.appendSlice(self.allocator, data);
 
@@ -1026,11 +1026,7 @@ pub const Context = struct {
             const parsed = parsed_opt.?;
             const message_bytes = buffer[0..parsed.n];
 
-            std.debug.print("  Parsed handshake message: type={X:0>2} ({s}), len={}\n", .{
-                @intFromEnum(parsed.typ),
-                @tagName(parsed.typ),
-                parsed.body.len
-            });
+            std.debug.print("  Parsed handshake message: type={X:0>2} ({s}), len={}\n", .{ @intFromEnum(parsed.typ), @tagName(parsed.typ), parsed.body.len });
 
             // RFC 8446 §4.4.4: Update transcript BEFORE processing message
             // (except Finished which is added AFTER verification)
@@ -2384,10 +2380,7 @@ pub const Context = struct {
         // Notify QUIC layer of handshake metadata
         self.notifyMetadata();
 
-        std.debug.print("handleEncryptedExtensions: Extracted {} bytes of transport params, ALPN={s}\n", .{
-            if (parsed.quic_transport_parameters) |tp| tp.len else 0,
-            if (parsed.alpn) |alpn| alpn else "none"
-        });
+        std.debug.print("handleEncryptedExtensions: Extracted {} bytes of transport params, ALPN={s}\n", .{ if (parsed.quic_transport_parameters) |tp| tp.len else 0, if (parsed.alpn) |alpn| alpn else "none" });
     }
 
     fn handleKeyUpdateMessage(self: *Context, request: KeyUpdateRequest) !void {
