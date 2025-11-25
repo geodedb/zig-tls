@@ -1895,7 +1895,7 @@ pub const Context = struct {
 
         // Iterate over identities
         for (psk_ext.identities, 0..) |ident, idx| {
-            if (lookup_cb(self, ident.identity.identity)) |psk_bytes| {
+            if (lookup_cb(self, ident.identity)) |psk_bytes| {
                 // Found a matching PSK. Now verify the binder.
                 // RFC 8446 §4.2.11: Binder validation
 
@@ -2072,8 +2072,8 @@ pub const Context = struct {
 
             // Derive and install 0-RTT client early traffic secret
             // Use transcript hash of ClientHello (before ServerHello)
-            const ch_hash = self.transcripts.handshake.current(self.hash_kind);
-            const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(self.hash_kind, &early_secret, ch_hash);
+            const ch_hash = self.transcripts.handshake.finalize(self.hash_kind);
+            const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(self.hash_kind, &early_secret, ch_hash.slice());
 
             // Install as receiving secret (server receives 0-RTT from client)
             // NOTE: QUIC uses EarlyData encryption level, but we may need to map to Initial
@@ -2362,7 +2362,7 @@ pub const Context = struct {
                 const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(
                     self.hash_kind,
                     &early_secret,
-                    transcript_hash,
+                    transcript_hash.slice(),
                 );
 
                 // Install as sending secret (client sends 0-RTT to server)
@@ -2664,9 +2664,11 @@ pub const Context = struct {
     /// The certificate chain will be validated when CertificateVerify is processed.
     fn handleCertificate(self: *Context, body: []const u8) !void {
         // Parse Certificate message using tls13_full
-        const parsed = try tls13_full.parseCertificate(body);
+        const parsed = try tls13_full.parseCertificate(self.allocator, body);
+        // Free the parsed entries slice when done (the cert data itself points into body, not allocated)
+        defer self.allocator.free(parsed.entries);
 
-        if (parsed.certificate_list.len == 0) {
+        if (parsed.entries.len == 0) {
             return HandshakeError.EmptyCertificateChain;
         }
 
@@ -2679,7 +2681,7 @@ pub const Context = struct {
         }
 
         // Allocate and copy the certificate chain
-        var chain = try self.allocator.alloc([]const u8, parsed.certificate_list.len);
+        var chain = try self.allocator.alloc([]const u8, parsed.entries.len);
         errdefer {
             for (chain[0..]) |cert| {
                 self.allocator.free(cert);
@@ -2687,8 +2689,8 @@ pub const Context = struct {
             self.allocator.free(chain);
         }
 
-        for (parsed.certificate_list, 0..) |cert_entry, i| {
-            chain[i] = try self.allocator.dupe(u8, cert_entry.cert_data);
+        for (parsed.entries, 0..) |cert_entry, i| {
+            chain[i] = try self.allocator.dupe(u8, cert_entry.cert);
         }
 
         self.peer_cert_chain = chain;
@@ -2738,7 +2740,7 @@ pub const Context = struct {
 
         // RFC 8446 §4.4.3: Verify CertificateVerify signature
         // The signature is computed over the transcript hash up to (but not including) CertificateVerify
-        const transcript_hash = self.transcripts.current(self.hash_kind);
+        const transcript_hash = self.transcripts.handshake.finalize(self.hash_kind);
 
         // Get the leaf certificate's SPKI for signature verification
         const sig_alg = sig.fromTls13SignatureScheme(parsed.algorithm) catch {
@@ -2751,7 +2753,7 @@ pub const Context = struct {
             chain[0], // Leaf certificate DER
             parsed.signature,
             "TLS 1.3, server CertificateVerify", // RFC 8446 §4.4.3 context string
-            transcript_hash,
+            transcript_hash.slice(),
         );
 
         if (!verified) {

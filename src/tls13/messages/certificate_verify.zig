@@ -225,3 +225,64 @@ pub fn computeCertificateVerifySignature(
 
     return signature;
 }
+
+/// Parsed CertificateVerify message result.
+///
+/// Contains the signature algorithm and signature bytes extracted from
+/// a CertificateVerify message.
+pub const ParsedCertificateVerify = struct {
+    algorithm: core_types.SignatureScheme,
+    signature: []const u8,
+};
+
+/// Parse a CertificateVerify message (RFC 8446 §4.4.3).
+///
+/// Extracts the signature algorithm and signature from a CertificateVerify message.
+/// The signature should be verified against the transcript hash using the
+/// peer's public key from their certificate.
+///
+/// ## Parameters
+///
+/// - `body`: Raw CertificateVerify message body (after handshake header)
+///
+/// ## Returns
+///
+/// - `ParsedCertificateVerify`: Parsed algorithm and signature
+/// - `error.InvalidMessage`: Message too short or malformed
+///
+/// ## Message Format (RFC 8446 §4.4.3)
+///
+/// ```
+/// struct {
+///     SignatureScheme algorithm;
+///     opaque signature<0..2^16-1>;
+/// } CertificateVerify;
+/// ```
+pub fn parseCertificateVerify(body: []const u8) !ParsedCertificateVerify {
+    // Minimum length: 2 (algorithm) + 2 (signature length) = 4 bytes
+    if (body.len < 4) {
+        return error.InvalidMessage;
+    }
+
+    // Parse SignatureScheme (2 bytes)
+    const algo_raw = (@as(u16, body[0]) << 8) | body[1];
+    const algorithm = std.meta.intToEnum(core_types.SignatureScheme, algo_raw) catch {
+        return error.UnsupportedSignatureScheme;
+    };
+
+    // Parse signature length (2 bytes)
+    const sig_len = (@as(u16, body[2]) << 8) | body[3];
+
+    // Validate signature length
+    if (body.len < 4 + sig_len) {
+        return error.InvalidMessage;
+    }
+
+    // Extract signature slice
+    const signature = body[4 .. 4 + sig_len];
+
+    return ParsedCertificateVerify{
+        .algorithm = algorithm,
+        .signature = signature,
+    };
+}

@@ -186,6 +186,18 @@ pub const Config = struct {
     /// provided slice beyond its lifetime.
     on_sct_list: ?*const fn ([]const sct.SignedCertificateTimestamp) anyerror!void = null,
 
+    /// Server name (SNI) for certificate hostname validation (Client role only).
+    /// RFC 6066 §3: Server Name Indication extension.
+    ///
+    /// When set, the client will:
+    /// - Include SNI extension in ClientHello
+    /// - Validate server certificate against this hostname (RFC 5280 §4.2.1.6)
+    ///
+    /// Example: "example.com"
+    ///
+    /// null = No SNI extension (hostname validation skipped).
+    server_name: ?[]const u8 = null,
+
     /// Pre-shared key for session resumption (Client role only).
     /// If set, the client will offer this PSK in the ClientHello.
     /// RFC 8446 §4.2.11: pre_shared_key extension.

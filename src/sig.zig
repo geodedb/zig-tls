@@ -123,6 +123,30 @@ pub const SigAlg = enum {
     ed25519,
 };
 
+/// Convert from TLS 1.3 SignatureScheme (raw u16 value) to SigAlg.
+///
+/// Maps the TLS 1.3 signature scheme wire format to our internal SigAlg enum.
+/// Returns error.UnsupportedSignatureScheme for unrecognized or unsupported schemes.
+///
+/// ## Supported Mappings
+/// - 0x0403 (ecdsa_secp256r1_sha256) -> SigAlg.ecdsa_secp256r1_sha256
+/// - 0x0503 (ecdsa_secp384r1_sha384) -> SigAlg.ecdsa_secp384r1_sha384
+/// - 0x0804 (rsa_pss_rsae_sha256) -> SigAlg.rsa_pss_sha256
+/// - 0x0807 (ed25519) -> SigAlg.ed25519
+pub fn fromTls13SignatureScheme(scheme: anytype) !SigAlg {
+    const value: u16 = switch (@TypeOf(scheme)) {
+        u16 => scheme,
+        else => @intFromEnum(scheme),
+    };
+    return switch (value) {
+        0x0403 => SigAlg.ecdsa_secp256r1_sha256,
+        0x0503 => SigAlg.ecdsa_secp384r1_sha384,
+        0x0804 => SigAlg.rsa_pss_sha256,
+        0x0807 => SigAlg.ed25519,
+        else => error.UnsupportedSignatureScheme,
+    };
+}
+
 /// Parsed ECDSA public key from SubjectPublicKeyInfo.
 ///
 /// Represents an elliptic curve public key extracted from the X.509 SPKI structure.

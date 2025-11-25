@@ -146,6 +146,8 @@ pub const buildCertificate = certificate_mod.buildCertificate;
 // Re-export CertificateVerify functions for backward compatibility
 pub const buildCertificateVerify = certificate_verify_mod.buildCertificateVerify;
 pub const computeCertificateVerifySignature = certificate_verify_mod.computeCertificateVerifySignature;
+pub const ParsedCertificateVerify = certificate_verify_mod.ParsedCertificateVerify;
+pub const parseCertificateVerify = certificate_verify_mod.parseCertificateVerify;
 
 // Re-export Finished functions for backward compatibility
 pub const buildFinished = finished_mod.buildFinished;
