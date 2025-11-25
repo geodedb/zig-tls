@@ -404,7 +404,9 @@ pub const Engine = struct {
                         traceSecrets("onCryptoRecv: Transcript hash for handshake: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 of {})\n", .{ th_hash[0], th_hash[1], th_hash[2], th_hash[3], th_hash.len });
                         traceSecrets("onCryptoRecv: ECDHE secret first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3] });
                     }
-                    const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_secret);
+                    // Engine doesn't support PSK yet, so use early_secret from null
+                    const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+                    const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_secret, &early_secret);
                     const client_slice = hs.client_hs.slice();
                     const server_slice = hs.server_hs.slice();
                     if (secret_trace_enabled and client_slice.len >= 4 and server_slice.len >= 4) {
@@ -692,7 +694,8 @@ pub const Engine = struct {
                     const ok = if (peer_secret_opt) |ps| self.verifyPeerFinished(ps, p.body) else blk: {
                         traceHandshake("TLS: Using fallback for Finished verification\n", .{});
                         // Fallback (should not happen in real mode past this point)
-                        const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_before);
+                        const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+                        const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_before, &early_secret);
                         self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
                         self.handshake_client_secret = hs.client_hs;
                         self.handshake_server_secret = hs.server_hs;

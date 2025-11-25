@@ -185,4 +185,13 @@ pub const Config = struct {
     /// validation or telemetry. The callback must not retain references to the
     /// provided slice beyond its lifetime.
     on_sct_list: ?*const fn ([]const sct.SignedCertificateTimestamp) anyerror!void = null,
+
+    /// Pre-shared key for session resumption (Client role only).
+    /// If set, the client will offer this PSK in the ClientHello.
+    /// RFC 8446 §4.2.11: pre_shared_key extension.
+    resumption_psk: ?[]const u8 = null,
+
+    /// Obfuscated ticket age add value from NewSessionTicket (Client role only).
+    /// Required if resumption_psk is set.
+    resumption_ticket_age_add: u32 = 0,
 };

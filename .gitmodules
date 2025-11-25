@@ -1,0 +1,9 @@
+[submodule "forks/openssl"]
+	path = forks/openssl
+	url = https://github.com/openssl/openssl.git
+[submodule "forks/boringssl"]
+	path = forks/boringssl
+	url = https://github.com/google/boringssl.git
+[submodule "forks/picotls"]
+	path = forks/picotls
+	url = https://github.com/h2o/picotls.git

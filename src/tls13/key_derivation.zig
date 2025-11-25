@@ -67,49 +67,81 @@ inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
     if (secret_trace_enabled) std.debug.print(fmt, args);
 }
 
+/// Derive early secret from optional PSK (RFC 8446 §7.1).
+///
+/// ```
+/// early_secret = HKDF-Extract(0, psk)
+/// ```
+///
+/// If psk is null, uses a zero-length key (equivalent to 32 bytes of zeros for SHA-256).
+pub fn deriveEarlySecret(hash: Hash, psk: ?[]const u8) Secret {
+    const zero_salt = [_]u8{0} ** 32; // Salt is 0 for early_secret
+    // If PSK is not provided, use a zero-filled buffer of HashLen
+    if (psk) |k| {
+        return ks.extractHash(hash, &zero_salt, k);
+    } else {
+        const zero_ikm = [_]u8{0} ** 32; // TODO: Should match HashLen
+        return ks.extractHash(hash, &zero_salt, &zero_ikm);
+    }
+}
+
+/// Derive binder key for PSK authentication (RFC 8446 §7.1).
+///
+/// ```
+/// binder_key = Derive-Secret(early_secret, "ext binder" | "res binder", "")
+/// ```
+///
+/// Used to compute the HMAC binder in the pre_shared_key extension.
+pub fn deriveBinderKey(hash: Hash, early_secret: *const Secret, external: bool) Secret {
+    const label = if (external) "ext binder" else "res binder";
+    const empty_hash = ks.hashBytes(hash, &[_]u8{});
+    return ks.deriveSecretHash(hash, early_secret, label, empty_hash.slice());
+}
+
+/// Derive 0-RTT early traffic secret for client early data (RFC 8446 §7.1, §4.2.10).
+///
+/// ```
+/// client_early_traffic_secret = Derive-Secret(early_secret, "c e traffic", ClientHello)
+/// ```
+///
+/// This secret is used to protect 0-RTT data sent by the client in the first flight
+/// before receiving ServerHello. It provides encryption but NOT forward secrecy.
+///
+/// # Parameters
+/// - hash: Hash algorithm based on PSK cipher suite
+/// - early_secret: Early secret derived from PSK via deriveEarlySecret
+/// - client_hello_hash: Hash(ClientHello) including early_data extension
+///
+/// # Security Considerations
+/// - 0-RTT data is vulnerable to replay attacks (use AntiReplayWindow)
+/// - NOT forward secret (compromise of PSK reveals 0-RTT data)
+/// - Only use for idempotent operations
+///
+/// # RFC References
+/// - RFC 8446 §7.1: Key schedule derivation
+/// - RFC 8446 §8: 0-RTT data security model
+/// - RFC 9001 §4.6.1: Enabling 0-RTT in QUIC
+pub fn deriveEarlyTraffic(hash: Hash, early_secret: *const Secret, client_hello_hash: []const u8) Secret {
+    return ks.deriveSecretHash(hash, early_secret, "c e traffic", client_hello_hash);
+}
+
 /// Derive handshake traffic secrets from ECDHE shared secret (RFC 8446 §7.1).
 ///
 /// This function computes the handshake-level secrets used to protect messages
-/// after ServerHello. It implements the TLS 1.3 key schedule using HKDF:
-///
-/// ```
-/// early_secret = HKDF-Extract(0, 0)  // No PSK
-/// derived = Derive-Secret(early_secret, "derived", "")
-/// handshake_secret = HKDF-Extract(derived, ECDHE)
-/// client_handshake_traffic_secret = Derive-Secret(handshake_secret, "c hs traffic", CH..SH)
-/// server_handshake_traffic_secret = Derive-Secret(handshake_secret, "s hs traffic", CH..SH)
-/// ```
+/// after ServerHello. It implements the TLS 1.3 key schedule using HKDF.
 ///
 /// # Parameters
 /// - hash: Hash algorithm (SHA-256 or SHA-384) based on negotiated cipher suite
 /// - ecdhe_secret: Raw X25519 shared secret (32 bytes) from key exchange
 /// - transcript_hash: Hash(ClientHello || ServerHello) using negotiated hash
+/// - early_secret: The early secret derived from PSK (or 0 if no PSK)
 ///
 /// # Returns
 /// Struct containing:
 /// - handshake: Master handshake secret (used to derive application secrets later)
 /// - client_hs: Client→Server handshake traffic secret (32 or 48 bytes)
 /// - server_hs: Server→Client handshake traffic secret (32 or 48 bytes)
-///
-/// # RFC References
-/// - RFC 8446 §7.1: Key schedule diagram and derivation
-/// - RFC 9001 §5.1: QUIC packet protection uses these secrets
-///
-/// # Usage
-/// ```zig
-/// const shared = try X25519.scalarmult(priv, peer_pub);
-/// const transcript = Hash(client_hello || server_hello);
-/// const secrets = deriveHandshakeTraffic(.sha256, shared[0..], transcript);
-/// // Install secrets for packet protection at Handshake level
-/// try installTrafficSecret(.Handshake, .send, secrets.client_hs);
-/// try installTrafficSecret(.Handshake, .recv, secrets.server_hs);
-/// ```
-///
-/// # Security Notes
-/// - Assumes no PSK resumption (early_secret = HKDF-Extract(0, 0))
-/// - ECDHE provides forward secrecy
-/// - Secrets must be zeroized after use (handled by SecretSlot)
-pub fn deriveHandshakeTraffic(hash: Hash, ecdhe_secret: []const u8, transcript_hash: Secret) struct {
+pub fn deriveHandshakeTraffic(hash: Hash, ecdhe_secret: []const u8, transcript_hash: Secret, early_secret: *const Secret) struct {
     handshake: Secret,
     client_hs: Secret,
     server_hs: Secret,
@@ -123,12 +155,8 @@ pub fn deriveHandshakeTraffic(hash: Hash, ecdhe_secret: []const u8, transcript_h
         traceSecrets("\n", .{});
     }
 
-    // RFC 8446 §7.1: early_secret = HKDF-Extract(0, 0) when no PSK
-    // Both salt and IKM must be HashLen zero bytes (32 bytes for SHA-256)
-    const zero_ikm: [32]u8 = [_]u8{0} ** 32;
-    const early_secret = ks.extractHash(hash, null, &zero_ikm);
     const empty_hash = ks.hashBytes(hash, &[_]u8{});
-    const derived = ks.deriveSecretHash(hash, &early_secret, "derived", empty_hash.slice());
+    const derived = ks.deriveSecretHash(hash, early_secret, "derived", empty_hash.slice());
     const handshake_secret = ks.extractHash(hash, derived.slice(), ecdhe_secret);
     const client_hs = ks.deriveSecretHash(hash, &handshake_secret, "c hs traffic", transcript_hash.slice());
     const server_hs = ks.deriveSecretHash(hash, &handshake_secret, "s hs traffic", transcript_hash.slice());
@@ -332,7 +360,8 @@ pub fn deriveApplicationTrafficFromEcdhe(hash: Hash, ecdhe_secret: []const u8, t
     client_app: Secret,
     server_app: Secret,
 } {
-    const hs = deriveHandshakeTraffic(hash, ecdhe_secret, transcript_hash);
+    const early_secret = deriveEarlySecret(hash, null);
+    const hs = deriveHandshakeTraffic(hash, ecdhe_secret, transcript_hash, &early_secret);
     const apps = deriveApplicationTraffic(hash, &hs.handshake, transcript_hash);
     return .{ .client_app = apps.client_app, .server_app = apps.server_app };
 }
