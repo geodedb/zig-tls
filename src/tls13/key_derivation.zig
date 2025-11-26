@@ -57,8 +57,8 @@
 const std = @import("std");
 const ks = @import("quic_tls");
 
-const Hash = ks.Hash;
-const Secret = ks.Secret;
+pub const Hash = ks.Hash;
+pub const Secret = ks.Secret;
 
 /// Debug tracing for secrets (disabled in production builds).
 const secret_trace_enabled = true;
