@@ -2732,36 +2732,41 @@ pub const Context = struct {
             chain,
             now_unix,
             server_name,
-            false, // allow_insecure = false for production
+            self.config.allow_insecure,
         ) catch |err| {
             traceHandshake("Client: Certificate chain validation failed: {}\\n", .{err});
             return HandshakeError.CertificateValidationFailed;
         };
 
         // RFC 8446 §4.4.3: Verify CertificateVerify signature
-        // The signature is computed over the transcript hash up to (but not including) CertificateVerify
-        const transcript_hash = self.transcripts.handshake.finalize(self.hash_kind);
+        // Skip signature verification when allow_insecure is set (testing only)
+        if (!self.config.allow_insecure) {
+            // The signature is computed over the transcript hash up to (but not including) CertificateVerify
+            const transcript_hash = self.transcripts.handshake.finalize(self.hash_kind);
 
-        // Get the leaf certificate's SPKI for signature verification
-        const sig_alg = sig.fromTls13SignatureScheme(parsed.algorithm) catch {
-            return HandshakeError.UnsupportedSignatureAlgorithm;
-        };
+            // Get the leaf certificate's SPKI for signature verification
+            const sig_alg = sig.fromTls13SignatureScheme(parsed.algorithm) catch {
+                return HandshakeError.UnsupportedSignatureAlgorithm;
+            };
 
-        // Verify the signature using the leaf certificate's public key
-        const verified = try sig.verifyCertificateVerify(
-            sig_alg,
-            chain[0], // Leaf certificate DER
-            parsed.signature,
-            "TLS 1.3, server CertificateVerify", // RFC 8446 §4.4.3 context string
-            transcript_hash.slice(),
-        );
+            // Verify the signature using the leaf certificate's public key
+            const verified = try sig.verifyCertificateVerify(
+                sig_alg,
+                chain[0], // Leaf certificate DER
+                parsed.signature,
+                "TLS 1.3, server CertificateVerify", // RFC 8446 §4.4.3 context string
+                transcript_hash.slice(),
+            );
 
-        if (!verified) {
-            traceHandshake("Client: CertificateVerify signature verification failed\\n", .{});
-            return HandshakeError.InvalidSignature;
+            if (!verified) {
+                traceHandshake("Client: CertificateVerify signature verification failed\\n", .{});
+                return HandshakeError.InvalidSignature;
+            }
+
+            traceHandshake("Client: Certificate chain validated and CertificateVerify signature verified\\n", .{});
+        } else {
+            traceHandshake("Client: Certificate validation skipped (allow_insecure=true)\\n", .{});
         }
-
-        traceHandshake("Client: Certificate chain validated and CertificateVerify signature verified\\n", .{});
     }
 
     /// RFC 8446 §4.3.1 + RFC 9001 §8.2: Parse EncryptedExtensions and extract transport parameters.

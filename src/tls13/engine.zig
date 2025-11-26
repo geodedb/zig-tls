@@ -833,7 +833,8 @@ pub const Engine = struct {
         if (ch_sh_ready) {
             var snap = self.transcript;
             const th = snap.finalize(self.hash_kind);
-            const hs = deriveHandshakeTraffic(self.hash_kind, shared, th);
+            const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+            const hs = deriveHandshakeTraffic(self.hash_kind, shared, th, &early_secret);
             self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;
@@ -1204,7 +1205,8 @@ pub const Engine = struct {
 
         var snap = self.transcript;
         const th = snap.finalize(self.hash_kind);
-        const hs = deriveHandshakeTraffic(self.hash_kind, shared, th);
+        const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+        const hs = deriveHandshakeTraffic(self.hash_kind, shared, th, &early_secret);
         self.handshake_secret = hs.handshake;
         self.handshake_client_secret = hs.client_hs;
         self.handshake_server_secret = hs.server_hs;
@@ -1231,7 +1233,8 @@ pub const Engine = struct {
         var snap = self.transcript;
         const th = snap.finalize(self.hash_kind);
         const handshake_secret = self.handshake_secret orelse blk: {
-            const hs = deriveHandshakeTraffic(self.hash_kind, shared, th);
+            const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+            const hs = deriveHandshakeTraffic(self.hash_kind, shared, th, &early_secret);
             self.handshake_secret = hs.handshake;
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;
@@ -1370,7 +1373,8 @@ pub const Engine = struct {
             if (th_slice.len >= 8) {
                 std.debug.print("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
             }
-            const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th);
+            const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+            const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th, &early_secret);
 
             self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
             self.handshake_client_secret = hs.client_hs;

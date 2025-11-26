@@ -150,6 +150,15 @@ pub const deriveApplicationTrafficFromEcdhe = key_derivation.deriveApplicationTr
 /// QUIC key material.
 pub const QuicKeys = key_derivation.QuicKeys;
 
+/// Derive early secret from PSK (RFC 8446 §7.1).
+pub const deriveEarlySecret = key_derivation.deriveEarlySecret;
+
+/// Fixed-size secret type.
+pub const Secret = key_derivation.Secret;
+
+/// Hash algorithm type.
+pub const Hash = key_derivation.Hash;
+
 // ============================================================================
 // Finished Message
 // ============================================================================

@@ -183,6 +183,15 @@ pub const deriveApplicationTrafficFromEcdhe = mod.deriveApplicationTrafficFromEc
 /// QUIC key material.
 pub const QuicKeys = mod.QuicKeys;
 
+/// Derive early secret from PSK (RFC 8446 §7.1).
+pub const deriveEarlySecret = mod.deriveEarlySecret;
+
+/// Fixed-size secret type.
+pub const Secret = mod.Secret;
+
+/// Hash algorithm.
+pub const Hash = mod.Hash;
+
 // ============================================================================
 // Finished Message
 // ============================================================================

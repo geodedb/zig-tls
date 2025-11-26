@@ -198,6 +198,18 @@ pub const Config = struct {
     /// null = No SNI extension (hostname validation skipped).
     server_name: ?[]const u8 = null,
 
+    /// Skip certificate validation for testing purposes.
+    /// **WARNING**: Setting this to true disables ALL certificate validation!
+    /// Only use for testing with self-signed certificates.
+    ///
+    /// When true:
+    /// - Certificate chain validation is skipped
+    /// - Hostname/SNI validation is skipped
+    /// - Expiry checks are skipped
+    ///
+    /// Default: false (full validation required)
+    allow_insecure: bool = false,
+
     /// Pre-shared key for session resumption (Client role only).
     /// If set, the client will offer this PSK in the ClientHello.
     /// RFC 8446 §4.2.11: pre_shared_key extension.
