@@ -53,6 +53,7 @@
 //! ```
 
 const std = @import("std");
+const logger = @import("quic_logger");
 const ks = @import("quic_tls");
 
 const Hash = ks.Hash;
@@ -69,17 +70,17 @@ const Sha384 = std.crypto.hash.sha2.Sha384;
 /// hash computation to bind the retry to the original ClientHello.
 const MESSAGE_HASH_TYPE: u8 = 254;
 
-/// Debug tracing controls (ENABLED FOR DEBUGGING Phase 40).
-/// Set to true locally when diagnosing handshake flows; disabled in production builds.
-const handshake_trace_enabled = true;
-const secret_trace_enabled = true;
+/// Debug tracing controls (disabled in production builds).
+/// Set to true locally when diagnosing handshake flows.
+const handshake_trace_enabled = false;
+const secret_trace_enabled = false;
 
 inline fn traceHandshake(comptime fmt: []const u8, args: anytype) void {
-    if (handshake_trace_enabled) std.debug.print(fmt, args);
+    if (handshake_trace_enabled) logger.debugPrint(fmt, args);
 }
 
 inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
-    if (secret_trace_enabled) std.debug.print(fmt, args);
+    if (secret_trace_enabled) logger.debugPrint(fmt, args);
 }
 
 /// RFC 8446 §4.4.1: Transcript hash management

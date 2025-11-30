@@ -217,3 +217,24 @@ pub fn warn(comptime format: []const u8, args: anytype) void {
 pub fn err(comptime format: []const u8, args: anytype) void {
     log(.err, format, args);
 }
+
+// =============================================================================
+// Debug Print Functions (No-op placeholders for compatibility)
+// =============================================================================
+// These functions match the interface expected by TLS modules that call
+// logger.debugPrint() directly. They are no-ops to suppress debug output.
+
+/// Debug print wrapper - no-op placeholder for compatibility.
+/// TLS modules call this directly; keeping it as a no-op suppresses all output.
+pub inline fn debugPrint(comptime fmt: []const u8, args: anytype) void {
+    _ = fmt;
+    _ = args;
+    // No-op: compile-time eliminated for zero overhead
+}
+
+/// Debug print for hex bytes - no-op placeholder for compatibility.
+pub inline fn debugPrintHex(comptime prefix: []const u8, bytes: []const u8) void {
+    _ = prefix;
+    _ = bytes;
+    // No-op: compile-time eliminated for zero overhead
+}

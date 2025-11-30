@@ -78,11 +78,11 @@ const handshake_trace_enabled = false;
 const secret_trace_enabled = false;
 
 inline fn traceHandshake(comptime fmt: []const u8, args: anytype) void {
-    if (handshake_trace_enabled) std.debug.print(fmt, args);
+    if (handshake_trace_enabled) logger.debugPrint(fmt, args);
 }
 
 inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
-    if (secret_trace_enabled) std.debug.print(fmt, args);
+    if (secret_trace_enabled) logger.debugPrint(fmt, args);
 }
 
 fn cipherSuiteHash(suite: tls13_full.CipherSuite) Hash {
@@ -792,14 +792,14 @@ pub const Engine = struct {
                 // parseHandshakeOne returned null - not enough data
                 if (off < self.inbox.items.len) {
                     const remaining_data = self.inbox.items[off..];
-                    std.debug.print("TLS: parseHandshakeOne failed with {} bytes available\n", .{remaining_data.len});
+                    logger.debugPrint("TLS: parseHandshakeOne failed with {} bytes available\n", .{remaining_data.len});
 
                     // Check if it's a partial message that needs more data
                     if (remaining_data.len >= 4) {
                         const msg_type = remaining_data[0];
                         const msg_len = (@as(usize, remaining_data[1]) << 16) | (@as(usize, remaining_data[2]) << 8) | @as(usize, remaining_data[3]);
                         const need_total = 4 + msg_len;
-                        std.debug.print("TLS: Partial message type=0x{X:0>2} needs {} bytes total, have {} bytes\n", .{ msg_type, need_total, remaining_data.len });
+                        logger.debugPrint("TLS: Partial message type=0x{X:0>2} needs {} bytes total, have {} bytes\n", .{ msg_type, need_total, remaining_data.len });
                     }
                 }
                 break;
@@ -814,7 +814,7 @@ pub const Engine = struct {
                 std.mem.copyForwards(u8, self.inbox.items[0..remaining], self.inbox.items[off..]);
             }
             self.inbox.shrinkRetainingCapacity(remaining);
-            std.debug.print("TLS: Processed {} bytes, {} bytes remaining in buffer\n", .{ off, remaining });
+            logger.debugPrint("TLS: Processed {} bytes, {} bytes remaining in buffer\n", .{ off, remaining });
         }
 
         // Transcript is now updated message-by-message in the loop above
@@ -862,24 +862,24 @@ pub const Engine = struct {
                 0x14 => "Finished",
                 else => "Unknown",
             };
-            std.debug.print("[TRANSCRIPT-QUEUE] Adding {s} (0x{X:0>2}) len={} bytes, first 8: ", .{ type_name, msg_type, data.len - 4 });
+            logger.debugPrint("[TRANSCRIPT-QUEUE] Adding {s} (0x{X:0>2}) len={} bytes, first 8: ", .{ type_name, msg_type, data.len - 4 });
             const show_len = @min(8, data.len);
             var i: usize = 0;
             while (i < show_len) : (i += 1) {
-                std.debug.print("{X:0>2} ", .{data[i]});
+                logger.debugPrint("{X:0>2} ", .{data[i]});
             }
-            std.debug.print("\n", .{});
+            logger.debugPrint("\n", .{});
 
             // Show first 32 bytes for debugging
             if (data.len > 8) {
-                std.debug.print("[TRANSCRIPT-QUEUE] Full {s} message ({} bytes):\n", .{ type_name, data.len });
+                logger.debugPrint("[TRANSCRIPT-QUEUE] Full {s} message ({} bytes):\n", .{ type_name, data.len });
                 i = 0;
                 while (i < @min(64, data.len)) : (i += 1) {
-                    std.debug.print("{X:0>2} ", .{data[i]});
-                    if ((i + 1) % 16 == 0) std.debug.print("\n", .{});
+                    logger.debugPrint("{X:0>2} ", .{data[i]});
+                    if ((i + 1) % 16 == 0) logger.debugPrint("\n", .{});
                 }
-                if (data.len > 64) std.debug.print("... ({} more bytes)\n", .{data.len - 64});
-                std.debug.print("\n", .{});
+                if (data.len > 64) logger.debugPrint("... ({} more bytes)\n", .{data.len - 64});
+                logger.debugPrint("\n", .{});
             }
         }
         // If this was a proper handshake record, flip flags
@@ -1019,7 +1019,7 @@ pub const Engine = struct {
         const th = snap.finalize(self.hash_kind);
         const th_slice = th.slice();
         if (th_slice.len >= 8) {
-            std.debug.print("TLS: Queueing Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
+            logger.debugPrint("TLS: Queueing Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
         }
         const verify = deriveFinishedVerifyData(self.hash_kind, &traffic_secret, th);
         const msg = try encodeHandshake(self.allocator, .finished, verify.slice());
@@ -1037,14 +1037,14 @@ pub const Engine = struct {
         const th = snap.finalize(self.hash_kind);
         const th_slice = th.slice();
         if (th_slice.len >= 8) {
-            std.debug.print("TLS: Verifying Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
+            logger.debugPrint("TLS: Verifying Finished with transcript hash: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
         }
         const expect = deriveFinishedVerifyData(self.hash_kind, &peer_secret, th);
         const expect_slice = expect.slice();
 
         // Length check first (not timing-sensitive)
         if (finished_body.len != expect_slice.len) {
-            std.debug.print("TLS: Finished verification failed. Expected len={}, got len={}\n", .{ expect_slice.len, finished_body.len });
+            logger.debugPrint("TLS: Finished verification failed. Expected len={}, got len={}\n", .{ expect_slice.len, finished_body.len });
             return false;
         }
 
@@ -1063,7 +1063,7 @@ pub const Engine = struct {
         };
 
         if (!match) {
-            std.debug.print("TLS: MAC mismatch\n", .{});
+            logger.debugPrint("TLS: MAC mismatch\n", .{});
         }
         return match;
     }
@@ -1138,7 +1138,7 @@ pub const Engine = struct {
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
 
-        std.debug.print("TLS: Queued Certificate message (cert_len={}, total_body_len={})\n", .{ cert_der.len, body.items.len });
+        logger.debugPrint("TLS: Queued Certificate message (cert_len={}, total_body_len={})\n", .{ cert_der.len, body.items.len });
     }
 
     /// Queue CertificateVerify message (RFC 8446 Section 4.4.3)
@@ -1189,7 +1189,7 @@ pub const Engine = struct {
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
 
-        std.debug.print("TLS: Queued CertificateVerify message (alg={s}, sig_len={})\n", .{ @tagName(alg), signature.len });
+        logger.debugPrint("TLS: Queued CertificateVerify message (alg={s}, sig_len={})\n", .{ @tagName(alg), signature.len });
     }
 
     // --- New helper methods used by tests ---
@@ -1318,17 +1318,17 @@ pub const Engine = struct {
 
     /// Build a minimally spec-compliant TLS 1.3 ServerHello (real mode)
     pub fn queueRealServerHello(self: *Engine) !void {
-        std.debug.print("queueRealServerHello: ENTER - alpn={}, local_tp={}\n", .{ self.alpn != null, self.local_tp != null });
+        logger.debugPrint("queueRealServerHello: ENTER - alpn={}, local_tp={}\n", .{ self.alpn != null, self.local_tp != null });
 
         // Log transport parameters if available
         if (self.local_tp) |tp| {
-            std.debug.print("queueRealServerHello: Transport parameters available, {} bytes\n", .{tp.len});
+            logger.debugPrint("queueRealServerHello: Transport parameters available, {} bytes\n", .{tp.len});
         } else {
-            std.debug.print("WARNING: queueRealServerHello called without transport parameters - ServerHello will be non-compliant with RFC 9001\n", .{});
+            logger.debugPrint("WARNING: queueRealServerHello called without transport parameters - ServerHello will be non-compliant with RFC 9001\n", .{});
         }
         self.ensureKeypair();
         const pubkey = self.my_pub orelse {
-            std.debug.print("queueRealServerHello: EARLY EXIT - my_pub is NULL\n", .{});
+            logger.debugPrint("queueRealServerHello: EARLY EXIT - my_pub is NULL\n", .{});
             return error.Internal;
         };
 
@@ -1347,11 +1347,11 @@ pub const Engine = struct {
         defer self.allocator.free(msg);
 
         // Enhanced ServerHello logging
-        std.debug.print("ServerHello total length: {} bytes\n", .{msg.len});
+        logger.debugPrint("ServerHello total length: {} bytes\n", .{msg.len});
         if (msg.len >= 16) {
-            std.debug.print("ServerHello header: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ msg[0], msg[1], msg[2], msg[3] });
-            std.debug.print("ServerHello body start: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ msg[4], msg[5], msg[6], msg[7], msg[8], msg[9], msg[10], msg[11] });
-            std.debug.print("ServerHello body[12..20]: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ msg[12], msg[13], msg[14], msg[15], msg[16], msg[17], msg[18], msg[19] });
+            logger.debugPrint("ServerHello header: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ msg[0], msg[1], msg[2], msg[3] });
+            logger.debugPrint("ServerHello body start: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ msg[4], msg[5], msg[6], msg[7], msg[8], msg[9], msg[10], msg[11] });
+            logger.debugPrint("ServerHello body[12..20]: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ msg[12], msg[13], msg[14], msg[15], msg[16], msg[17], msg[18], msg[19] });
         }
 
         // Show transcript state before adding ServerHello
@@ -1359,7 +1359,7 @@ pub const Engine = struct {
         const pre_th = pre_snap.finalize(self.hash_kind);
         const pre_slice = pre_th.slice();
         if (pre_slice.len >= 8) {
-            std.debug.print("Transcript hash BEFORE ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ pre_slice[0], pre_slice[1], pre_slice[2], pre_slice[3], pre_slice[4], pre_slice[5], pre_slice[6], pre_slice[7] });
+            logger.debugPrint("Transcript hash BEFORE ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ pre_slice[0], pre_slice[1], pre_slice[2], pre_slice[3], pre_slice[4], pre_slice[5], pre_slice[6], pre_slice[7] });
         }
 
         try self.queueCrypto(msg);
@@ -1371,7 +1371,7 @@ pub const Engine = struct {
             const th = snap.finalize(self.hash_kind);
             const th_slice = th.slice();
             if (th_slice.len >= 8) {
-                std.debug.print("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
+                logger.debugPrint("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
             }
             const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
             const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th, &early_secret);
@@ -1385,12 +1385,12 @@ pub const Engine = struct {
 
         // RFC 9001: ServerHello goes to Initial CRYPTO space
         // EncryptedExtensions will be queued later by queueServerHandshakeFlight() for Handshake CRYPTO space
-        std.debug.print("Server: ServerHello queued to Initial CRYPTO (EncryptedExtensions will go to Handshake)\n", .{});
+        logger.debugPrint("Server: ServerHello queued to Initial CRYPTO (EncryptedExtensions will go to Handshake)\n", .{});
     }
 
     /// Extract ALPN from ClientHello for server
     fn extractAlpnFromClientHello(self: *Engine, body: []const u8) void {
-        std.debug.print("extractAlpnFromClientHello: body_len={}\n", .{body.len});
+        logger.debugPrint("extractAlpnFromClientHello: body_len={}\n", .{body.len});
         if (body.len < 35) return; // Minimum ClientHello size
         var pos: usize = 2 + 32; // Skip version + random
         if (pos >= body.len) return;
@@ -1424,14 +1424,14 @@ pub const Engine = struct {
                     if (3 + name_len <= elen and name_len > 0) {
                         if (self.alpn) |old| self.allocator.free(old);
                         self.alpn = self.allocator.dupe(u8, body[pos + 3 .. pos + 3 + name_len]) catch null;
-                        std.debug.print("extractAlpnFromClientHello: Extracted ALPN: {s}\n", .{self.alpn.?});
+                        logger.debugPrint("extractAlpnFromClientHello: Extracted ALPN: {s}\n", .{self.alpn.?});
                         return;
                     }
                 }
             }
             pos += elen;
         }
-        std.debug.print("extractAlpnFromClientHello: No ALPN found\n", .{});
+        logger.debugPrint("extractAlpnFromClientHello: No ALPN found\n", .{});
     }
 
     /// Internal: auto-send Finished when conditions satisfied
@@ -1453,13 +1453,13 @@ pub const Engine = struct {
             // 3. Breaking rustls strict TLS validation
         } else { // Client
             // Client waits for Finished verification; in authenticated mode also ensures peer_cert_ok
-            std.debug.print("Client: maybeAutoProgress - finished_verified={}, has_secret={}, allow_insecure={}, peer_cert_ok={}\n", .{ self.finished_verified, self.handshake_client_secret != null, self.allow_insecure, self.peer_cert_ok });
+            logger.debugPrint("Client: maybeAutoProgress - finished_verified={}, has_secret={}, allow_insecure={}, peer_cert_ok={}\n", .{ self.finished_verified, self.handshake_client_secret != null, self.allow_insecure, self.peer_cert_ok });
             if (self.finished_verified and self.handshake_client_secret != null) {
                 if (!self.allow_insecure and !self.peer_cert_ok) {
-                    std.debug.print("Client: Waiting for certificate validation to complete\n", .{});
+                    logger.debugPrint("Client: Waiting for certificate validation to complete\n", .{});
                     return; // wait for cert validation
                 }
-                std.debug.print("Client: Queueing Finished message in real mode\n", .{});
+                logger.debugPrint("Client: Queueing Finished message in real mode\n", .{});
                 self.queueFinished(self.handshake_client_secret.?) catch {};
             }
         }
@@ -1472,7 +1472,7 @@ pub const Engine = struct {
 
         const result = self.finished_sent and self.finished_verified;
         if (!result) {
-            std.debug.print("[TLS HANDSHAKE] NOT COMPLETE - role={s}, finished_sent={}, finished_verified={}, ecdhe_secret={}, handshake_client_secret={}, handshake_server_secret={}, peer_cert_ok={}, allow_insecure={}\n", .{
+            logger.debugPrint("[TLS HANDSHAKE] NOT COMPLETE - role={s}, finished_sent={}, finished_verified={}, ecdhe_secret={}, handshake_client_secret={}, handshake_server_secret={}, peer_cert_ok={}, allow_insecure={}\n", .{
                 if (self.role == .Server) "Server" else "Client",
                 self.finished_sent,
                 self.finished_verified,
@@ -1500,7 +1500,7 @@ pub const Engine = struct {
     /// CRITICAL FIX: Insert a message boundary marker (0xFF) between each TLS message
     /// This allows the connection layer to send each message in a separate CRYPTO frame/packet
     pub fn queueServerHandshakeFlight(self: *Engine) void {
-        std.debug.print("[FLIGHT] queueServerHandshakeFlight CALLED: role={s}, finished_sent={}, ee_sent={}, has_server_secret={}, has_client_secret={}, has_cert={}, has_key={}, enqueued={}\n", .{
+        logger.debugPrint("[FLIGHT] queueServerHandshakeFlight CALLED: role={s}, finished_sent={}, ee_sent={}, has_server_secret={}, has_client_secret={}, has_cert={}, has_key={}, enqueued={}\n", .{
             if (self.role == .Server) "Server" else "Client",
             self.finished_sent,
             self.ee_sent,
@@ -1512,37 +1512,37 @@ pub const Engine = struct {
         });
 
         if (self.role != .Server) {
-            std.debug.print("[FLIGHT] Early return: not server\n", .{});
+            logger.debugPrint("[FLIGHT] Early return: not server\n", .{});
             return;
         }
         if (self.server_handshake_flight_enqueued) {
-            std.debug.print("[FLIGHT] Early return: handshake flight already enqueued\n", .{});
+            logger.debugPrint("[FLIGHT] Early return: handshake flight already enqueued\n", .{});
             return;
         }
         // FIXED: Don't check finished_sent here - let endpoint.zig control when to queue messages
         // The flags should only be set after actual transmission, not after queuing
         // if (self.finished_sent) {
-        //     std.debug.print("[FLIGHT] Early return: already sent finished\n", .{});
+        //     logger.debugPrint("[FLIGHT] Early return: already sent finished\n", .{});
         //     return; // already done
         // }
 
         // Full handshake flight
         // Require that handshake_server_secret be present (after SH)
         if (self.handshake_server_secret == null) {
-            std.debug.print("[FLIGHT] Early return: no handshake_server_secret\n", .{});
+            logger.debugPrint("[FLIGHT] Early return: no handshake_server_secret\n", .{});
             return;
         }
 
-        std.debug.print("[FLIGHT] Proceeding with handshake flight\n", .{});
+        logger.debugPrint("[FLIGHT] Proceeding with handshake flight\n", .{});
 
         // RFC 9001: Queue EncryptedExtensions first for Handshake CRYPTO space
         var appended_any = false;
         if (!self.ee_sent) {
             const alpn_for_ee = self.alpn orelse &[_]u8{};
             const tp_for_ee = self.local_tp orelse &[_]u8{};
-            std.debug.print("Server: Queueing EncryptedExtensions to Handshake CRYPTO with ALPN={s} TP_len={}\n", .{ alpn_for_ee, tp_for_ee.len });
+            logger.debugPrint("Server: Queueing EncryptedExtensions to Handshake CRYPTO with ALPN={s} TP_len={}\n", .{ alpn_for_ee, tp_for_ee.len });
             self.queueEncryptedExtensions(alpn_for_ee, tp_for_ee) catch |e| {
-                std.debug.print("Server: Failed to queue EncryptedExtensions: {}\n", .{e});
+                logger.debugPrint("Server: Failed to queue EncryptedExtensions: {}\n", .{e});
                 return;
             };
             appended_any = true;
@@ -1552,11 +1552,11 @@ pub const Engine = struct {
         // RFC 8446 §4.4.1: Server must send Certificate and CertificateVerify before Finished
         // CRITICAL FIX: Proper error handling - if Certificate/CertificateVerify fail, handshake fails
         if (self.server_cert_der != null and self.server_priv_key != null) {
-            std.debug.print("Calling queueCertificate...\n", .{});
+            logger.debugPrint("Calling queueCertificate...\n", .{});
             // FIXED: Properly handle errors instead of silently catching them
             // If Certificate fails to queue, the handshake cannot proceed
             self.queueCertificate(self.server_cert_der.?) catch |e| {
-                std.debug.print("[FLIGHT] queueCertificate FAILED: {}\n", .{e});
+                logger.debugPrint("[FLIGHT] queueCertificate FAILED: {}\n", .{e});
                 // Mark handshake as failed - endpoint will handle connection termination
                 self.handshake_failed = true;
                 return;
@@ -1566,19 +1566,19 @@ pub const Engine = struct {
             if (self.server_sig_alg == null) {
                 const cert_der = self.server_cert_der.?;
                 const detected = x509.inferSignatureAlgorithm(cert_der) catch |err| {
-                    std.debug.print("[CERTVERIFY] Failed to infer signature algorithm from server cert: {} (defaulting to ECDSA P-256)\n", .{err});
+                    logger.debugPrint("[CERTVERIFY] Failed to infer signature algorithm from server cert: {} (defaulting to ECDSA P-256)\n", .{err});
                     self.server_sig_alg = .ecdsa_secp256r1_sha256;
                     return; // Exit early if inference fails
                 };
                 self.server_sig_alg = detected;
             }
 
-            std.debug.print("[CERTVERIFY] About to queue CertificateVerify with alg={}, priv_key_len={}\n", .{ self.server_sig_alg.?, self.server_priv_key.?.len });
+            logger.debugPrint("[CERTVERIFY] About to queue CertificateVerify with alg={}, priv_key_len={}\n", .{ self.server_sig_alg.?, self.server_priv_key.?.len });
 
             // FIXED: Use the existing queueCertificateVerify() helper which properly handles transcript timing
             // This ensures CertificateVerify signature is computed over transcript that includes Certificate
             self.queueCertificateVerify() catch |e| {
-                std.debug.print("[FLIGHT] queueCertificateVerify FAILED: {}\n", .{e});
+                logger.debugPrint("[FLIGHT] queueCertificateVerify FAILED: {}\n", .{e});
                 // Mark handshake as failed - endpoint will handle connection termination
                 self.handshake_failed = true;
                 return;
@@ -1586,7 +1586,7 @@ pub const Engine = struct {
 
             appended_any = true;
         } else {
-            std.debug.print("[FLIGHT] WARNING: No server certificate configured (cert={}, key={}). Skipping Certificate/CertificateVerify.\n", .{
+            logger.debugPrint("[FLIGHT] WARNING: No server certificate configured (cert={}, key={}). Skipping Certificate/CertificateVerify.\n", .{
                 self.server_cert_der != null,
                 self.server_priv_key != null,
             });
@@ -1594,21 +1594,21 @@ pub const Engine = struct {
             // This is acceptable for development/testing, but production should always have certificates
         }
         // Always queue Finished last
-        std.debug.print("[FLIGHT] About to queue Finished: finished_sent={}, has_secret={}\n", .{
+        logger.debugPrint("[FLIGHT] About to queue Finished: finished_sent={}, has_secret={}\n", .{
             self.finished_sent,
             self.handshake_server_secret != null,
         });
         // FIXED: Always queue Finished if we have the secret and outbox contains our handshake messages
         if (self.handshake_server_secret != null) {
-            std.debug.print("[FLIGHT] Calling queueFinished with server secret...\n", .{});
+            logger.debugPrint("[FLIGHT] Calling queueFinished with server secret...\n", .{});
             self.queueFinished(self.handshake_server_secret.?) catch |e| {
-                std.debug.print("[FLIGHT] queueFinished FAILED: {}\n", .{e});
+                logger.debugPrint("[FLIGHT] queueFinished FAILED: {}\n", .{e});
             };
-            std.debug.print("[FLIGHT] After queueFinished: finished_sent={}\n", .{self.finished_sent});
+            logger.debugPrint("[FLIGHT] After queueFinished: finished_sent={}\n", .{self.finished_sent});
             appended_any = true;
             // Note: No boundary marker after Finished as it's the last message
         } else {
-            std.debug.print("[FLIGHT] NOT queueing Finished (already sent or no secret)\n", .{});
+            logger.debugPrint("[FLIGHT] NOT queueing Finished (already sent or no secret)\n", .{});
         }
 
         if (appended_any) {
@@ -1684,7 +1684,7 @@ fn readU16(be: []const u8) u16 {
 /// Also stores the client's session ID for ServerHello echo (RFC 8446 requirement).
 /// Returns pubkey if successful; otherwise null. Does not perform deep validation beyond bounds.
 fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
-    std.debug.print("parseRealClientHello: body_len={}\n", .{body.len});
+    logger.debugPrint("parseRealClientHello: body_len={}\n", .{body.len});
 
     // Use a stack allocator for the parsing
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1693,10 +1693,10 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
 
     // Parse the ClientHello using the comprehensive parser
     const ch = tls13_full.parseClientHello(allocator, body) catch |err| {
-        std.debug.print("parseRealClientHello: failed to parse ClientHello with error: {}\n", .{err});
+        logger.debugPrint("parseRealClientHello: failed to parse ClientHello with error: {}\n", .{err});
         // Log first few bytes of body for debugging
         if (body.len >= 8) {
-            std.debug.print("parseRealClientHello: First 8 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7] });
+            logger.debugPrint("parseRealClientHello: First 8 bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7] });
         }
         return null;
     };
@@ -1712,16 +1712,16 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
         engine.client_session_id = engine.allocator.alloc(u8, ch.session_id.len) catch null;
         if (engine.client_session_id) |new_id| {
             @memcpy(new_id, ch.session_id);
-            std.debug.print("parseRealClientHello: stored client session_id len={}\n", .{ch.session_id.len});
+            logger.debugPrint("parseRealClientHello: stored client session_id len={}\n", .{ch.session_id.len});
         }
     } else {
-        std.debug.print("parseRealClientHello: client sent empty session_id\n", .{});
+        logger.debugPrint("parseRealClientHello: client sent empty session_id\n", .{});
         engine.client_session_id = null;
     }
 
     // Extract QUIC transport parameters if present (RFC 9001 Section 8.2)
     if (ch.quic_transport_parameters) |tp| {
-        std.debug.print("parseRealClientHello: found transport parameters (len={})\n", .{tp.len});
+        logger.debugPrint("parseRealClientHello: found transport parameters (len={})\n", .{tp.len});
         // Free any existing peer transport parameters
         if (engine.peer_tp) |old| {
             engine.allocator.free(old);
@@ -1729,24 +1729,24 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
         // Store a copy of the client's transport parameters
         engine.peer_tp = engine.allocator.dupe(u8, tp) catch null;
         if (engine.peer_tp != null) {
-            std.debug.print("parseRealClientHello: stored transport parameters\n", .{});
+            logger.debugPrint("parseRealClientHello: stored transport parameters\n", .{});
         }
     } else {
-        std.debug.print("parseRealClientHello: no transport parameters found in ClientHello\n", .{});
+        logger.debugPrint("parseRealClientHello: no transport parameters found in ClientHello\n", .{});
     }
 
     // Extract the X25519 key share if present
     if (ch.key_share) |key_share| {
         if (key_share.group == .x25519 and key_share.key_exchange.len == 32) {
-            std.debug.print("parseRealClientHello: found X25519 key!\n", .{});
+            logger.debugPrint("parseRealClientHello: found X25519 key!\n", .{});
             var out: [32]u8 = undefined;
             @memcpy(&out, key_share.key_exchange[0..32]);
-            std.debug.print("parseRealClientHello: successfully extracted public key\n", .{});
+            logger.debugPrint("parseRealClientHello: successfully extracted public key\n", .{});
             return out;
         }
     }
 
-    std.debug.print("parseRealClientHello: no X25519 key found\n", .{});
+    logger.debugPrint("parseRealClientHello: no X25519 key found\n", .{});
     return null;
 }
 

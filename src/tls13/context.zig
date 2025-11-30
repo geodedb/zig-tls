@@ -99,11 +99,11 @@ const handshake_trace_enabled = false;
 const secret_trace_enabled = false;
 
 inline fn traceHandshake(comptime fmt: []const u8, args: anytype) void {
-    if (handshake_trace_enabled) std.debug.print(fmt, args);
+    if (handshake_trace_enabled) logger.debugPrint(fmt, args);
 }
 
 inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
-    if (secret_trace_enabled) std.debug.print(fmt, args);
+    if (secret_trace_enabled) logger.debugPrint(fmt, args);
 }
 
 fn cipherSuiteHash(suite: tls13_full.CipherSuite) Hash {
@@ -1006,7 +1006,7 @@ pub const Context = struct {
             self.allocator.free(old);
         }
         self.local_transport_parameters = mutable_copy;
-        std.debug.print("Context.setTransportParameters: Set {} bytes of transport params on context={*}\n", .{ tp_bytes.len, self });
+        logger.debugPrint("Context.setTransportParameters: Set {} bytes of transport params on context={*}\n", .{ tp_bytes.len, self });
     }
 
     /// Process inbound CRYPTO data received from peer at specified encryption level.
@@ -1055,7 +1055,7 @@ pub const Context = struct {
     /// - Transcript hash critical: messages added in exact receive order
     /// - State transitions happen in afterHandshakeMessage()
     pub fn processCrypto(self: *Context, level: EncryptionLevel, data: []const u8) !void {
-        std.debug.print("Context.processCrypto: role={s}, level={s}, data_len={}\n", .{ if (self.config.role == .Server) "Server" else "Client", @tagName(level), data.len });
+        logger.debugPrint("Context.processCrypto: role={s}, level={s}, data_len={}\n", .{ if (self.config.role == .Server) "Server" else "Client", @tagName(level), data.len });
         var stream = self.streams.buffer(level);
         try stream.inbound.appendSlice(self.allocator, data);
 
@@ -1064,7 +1064,7 @@ pub const Context = struct {
             const buffer = stream.inbound.items;
             if (self.config.role == .Client and level == .Handshake) {
                 const head_len: usize = if (buffer.len < 8) buffer.len else 8;
-                std.debug.print("[TLS-HS-CLIENT] buffer len={} head={any}\n", .{ buffer.len, buffer[0..head_len] });
+                logger.debugPrint("[TLS-HS-CLIENT] buffer len={} head={any}\n", .{ buffer.len, buffer[0..head_len] });
             }
             const parsed_opt = try parseHandshakeOne(buffer);
             if (parsed_opt == null) break; // Need more data for complete message
@@ -1072,7 +1072,7 @@ pub const Context = struct {
             const parsed = parsed_opt.?;
             const message_bytes = buffer[0..parsed.n];
 
-            std.debug.print("  Parsed handshake message: type={X:0>2} ({s}), len={}\n", .{ @intFromEnum(parsed.typ), @tagName(parsed.typ), parsed.body.len });
+            logger.debugPrint("  Parsed handshake message: type={X:0>2} ({s}), len={}\n", .{ @intFromEnum(parsed.typ), @tagName(parsed.typ), parsed.body.len });
 
             // RFC 8446 §4.4.4: Update transcript BEFORE processing message
             // (except Finished which is added AFTER verification)
@@ -1193,9 +1193,9 @@ pub const Context = struct {
     /// - Generation counter enables key updates
     /// - Secrets should be zeroized after use (handled by SecretSlot)
     pub fn installTrafficSecret(self: *Context, level: EncryptionLevel, dir: TrafficDirection, secret: Secret) !void {
-        std.debug.print("[installTrafficSecret] level={s} dir={s} secret=", .{ @tagName(level), @tagName(dir) });
-        for (secret.slice()) |b| std.debug.print("{X:0>2}", .{b});
-        std.debug.print("\n", .{});
+        logger.debugPrint("[installTrafficSecret] level={s} dir={s} secret=", .{ @tagName(level), @tagName(dir) });
+        for (secret.slice()) |b| logger.debugPrint("{X:0>2}", .{b});
+        logger.debugPrint("\n", .{});
 
         var slot = self.secrets.slot(level, dir);
         slot.store(level, self.hash_kind, secret);
@@ -1257,7 +1257,7 @@ pub const Context = struct {
     /// # Example
     /// ```zig
     /// const gens = ctx.getBidirKeyGenerations(.Application);
-    /// std.debug.print("Send gen: {}, Recv gen: {}\n", .{gens.send, gens.recv});
+    /// logger.debugPrint("Send gen: {}, Recv gen: {}\n", .{gens.send, gens.recv});
     /// ```
     pub fn getBidirKeyGenerations(self: *const Context, level: EncryptionLevel) secrets_mod.BidirKeyGenerations {
         return self.secrets.getBidirGenerations(level);
@@ -1479,14 +1479,14 @@ pub const Context = struct {
     /// RFC 8446 §7.1: Derive application-level traffic secrets.
     /// Called after both peers' Finished messages are verified.
     fn ensureApplicationSecrets(self: *Context) !void {
-        std.debug.print("[ensureApplicationSecrets] Called for role={}\n", .{self.config.role});
+        logger.debugPrint("[ensureApplicationSecrets] Called for role={}\n", .{self.config.role});
         const send_slot = self.secrets.slot(.Application, .send);
         const recv_slot = self.secrets.slot(.Application, .recv);
-        std.debug.print("[ensureApplicationSecrets] send_slot.valid={} recv_slot.valid={}\n", .{ send_slot.valid, recv_slot.valid });
+        logger.debugPrint("[ensureApplicationSecrets] send_slot.valid={} recv_slot.valid={}\n", .{ send_slot.valid, recv_slot.valid });
 
         // Skip if already derived (idempotent)
         if (send_slot.valid and recv_slot.valid) {
-            std.debug.print("[ensureApplicationSecrets] Skipping - already derived\n", .{});
+            logger.debugPrint("[ensureApplicationSecrets] Skipping - already derived\n", .{});
             return;
         }
 
@@ -1496,11 +1496,11 @@ pub const Context = struct {
 
         // Transcript hash at this point includes all messages (CH...Finished)
         var transcript_snapshot = self.transcripts.handshake;
-        std.debug.print("[ensureApplicationSecrets] About to finalize transcript for role={}\n", .{self.config.role});
+        logger.debugPrint("[ensureApplicationSecrets] About to finalize transcript for role={}\n", .{self.config.role});
         const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
-        std.debug.print("[ensureApplicationSecrets] Finalized transcript hash: ", .{});
-        for (transcript_hash.slice()) |b| std.debug.print("{X:0>2}", .{b});
-        std.debug.print("\n", .{});
+        logger.debugPrint("[ensureApplicationSecrets] Finalized transcript hash: ", .{});
+        for (transcript_hash.slice()) |b| logger.debugPrint("{X:0>2}", .{b});
+        logger.debugPrint("\n", .{});
 
         // Key schedule: master_secret = Derive-Secret(handshake_secret, "derived", "")
         //               app_secrets = Derive-Secret(master_secret, label, transcript)
@@ -2799,7 +2799,7 @@ pub const Context = struct {
         // Notify QUIC layer of handshake metadata
         self.notifyMetadata();
 
-        std.debug.print("handleEncryptedExtensions: Extracted {} bytes of transport params, ALPN={s}\n", .{ if (parsed.quic_transport_parameters) |tp| tp.len else 0, if (parsed.alpn) |alpn| alpn else "none" });
+        logger.debugPrint("handleEncryptedExtensions: Extracted {} bytes of transport params, ALPN={s}\n", .{ if (parsed.quic_transport_parameters) |tp| tp.len else 0, if (parsed.alpn) |alpn| alpn else "none" });
     }
 
     fn handleKeyUpdateMessage(self: *Context, request: KeyUpdateRequest) !void {

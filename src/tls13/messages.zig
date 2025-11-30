@@ -8,12 +8,13 @@
 //! and length) and provides helpers for minimal test messages.
 
 const std = @import("std");
+const logger = @import("quic_logger");
 
 /// Debug tracing for handshake messages.
 const handshake_trace_enabled = false;
 
 inline fn traceHandshake(comptime fmt: []const u8, args: anytype) void {
-    if (handshake_trace_enabled) std.debug.print(fmt, args);
+    if (handshake_trace_enabled) logger.debugPrint(fmt, args);
 }
 
 /// TLS 1.3 handshake message types (RFC 8446 §4).
@@ -132,7 +133,7 @@ pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
 
     const typ: HsType = std.meta.intToEnum(HsType, t_byte) catch {
         const dump_len: usize = if (data.len < 32) data.len else 32;
-        std.debug.print(
+        logger.debugPrint(
             "TLS: Unknown handshake type byte=0x{X}, buf_len={}, head={any}\n",
             .{ t_byte, data.len, data[0..dump_len] },
         );

@@ -55,16 +55,17 @@
 //! ```
 
 const std = @import("std");
+const logger = @import("quic_logger");
 const ks = @import("quic_tls");
 
 pub const Hash = ks.Hash;
 pub const Secret = ks.Secret;
 
 /// Debug tracing for secrets (disabled in production builds).
-const secret_trace_enabled = true;
+const secret_trace_enabled = false;
 
 inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
-    if (secret_trace_enabled) std.debug.print(fmt, args);
+    if (secret_trace_enabled) logger.debugPrint(fmt, args);
 }
 
 /// Derive early secret from optional PSK (RFC 8446 §7.1).
