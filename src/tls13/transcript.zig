@@ -70,7 +70,7 @@ const Sha384 = std.crypto.hash.sha2.Sha384;
 /// hash computation to bind the retry to the original ClientHello.
 const MESSAGE_HASH_TYPE: u8 = 254;
 
-/// Debug tracing controls (disabled in production builds).
+/// Debug tracing controls (DISABLED for production builds).
 /// Set to true locally when diagnosing handshake flows.
 const handshake_trace_enabled = false;
 const secret_trace_enabled = false;

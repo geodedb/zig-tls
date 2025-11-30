@@ -1193,9 +1193,11 @@ pub const Context = struct {
     /// - Generation counter enables key updates
     /// - Secrets should be zeroized after use (handled by SecretSlot)
     pub fn installTrafficSecret(self: *Context, level: EncryptionLevel, dir: TrafficDirection, secret: Secret) !void {
-        logger.debugPrint("[installTrafficSecret] level={s} dir={s} secret=", .{ @tagName(level), @tagName(dir) });
-        for (secret.slice()) |b| logger.debugPrint("{X:0>2}", .{b});
-        logger.debugPrint("\n", .{});
+        if (secret_trace_enabled) {
+            std.debug.print("[installTrafficSecret] level={s} dir={s} secret=", .{ @tagName(level), @tagName(dir) });
+            for (secret.slice()) |b| std.debug.print("{X:0>2}", .{b});
+            std.debug.print("\n", .{});
+        }
 
         var slot = self.secrets.slot(level, dir);
         slot.store(level, self.hash_kind, secret);
@@ -1479,14 +1481,14 @@ pub const Context = struct {
     /// RFC 8446 §7.1: Derive application-level traffic secrets.
     /// Called after both peers' Finished messages are verified.
     fn ensureApplicationSecrets(self: *Context) !void {
-        logger.debugPrint("[ensureApplicationSecrets] Called for role={}\n", .{self.config.role});
+        if (secret_trace_enabled) std.debug.print("[ensureApplicationSecrets] Called for role={}\n", .{self.config.role});
         const send_slot = self.secrets.slot(.Application, .send);
         const recv_slot = self.secrets.slot(.Application, .recv);
-        logger.debugPrint("[ensureApplicationSecrets] send_slot.valid={} recv_slot.valid={}\n", .{ send_slot.valid, recv_slot.valid });
+        if (secret_trace_enabled) std.debug.print("[ensureApplicationSecrets] send_slot.valid={} recv_slot.valid={}\n", .{ send_slot.valid, recv_slot.valid });
 
         // Skip if already derived (idempotent)
         if (send_slot.valid and recv_slot.valid) {
-            logger.debugPrint("[ensureApplicationSecrets] Skipping - already derived\n", .{});
+            if (secret_trace_enabled) std.debug.print("[ensureApplicationSecrets] Skipping - already derived\n", .{});
             return;
         }
 
@@ -1496,11 +1498,13 @@ pub const Context = struct {
 
         // Transcript hash at this point includes all messages (CH...Finished)
         var transcript_snapshot = self.transcripts.handshake;
-        logger.debugPrint("[ensureApplicationSecrets] About to finalize transcript for role={}\n", .{self.config.role});
+        if (secret_trace_enabled) std.debug.print("[ensureApplicationSecrets] About to finalize transcript for role={}\n", .{self.config.role});
         const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
-        logger.debugPrint("[ensureApplicationSecrets] Finalized transcript hash: ", .{});
-        for (transcript_hash.slice()) |b| logger.debugPrint("{X:0>2}", .{b});
-        logger.debugPrint("\n", .{});
+        if (secret_trace_enabled) {
+            std.debug.print("[ensureApplicationSecrets] Finalized transcript hash: ", .{});
+            for (transcript_hash.slice()) |b| std.debug.print("{X:0>2}", .{b});
+            std.debug.print("\n", .{});
+        }
 
         // Key schedule: master_secret = Derive-Secret(handshake_secret, "derived", "")
         //               app_secrets = Derive-Secret(master_secret, label, transcript)
