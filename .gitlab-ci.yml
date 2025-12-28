@@ -5,7 +5,7 @@
 
 include:
   # Format/quality checking from CI/CD Catalog
-  - component: gitlab.com/devnw/ci-catalog/zig-format@1.1.0
+  - component: gitlab.com/devnw/ci-catalog/zig-format@v1.1.0
     inputs:
       zig_version: "0.15.1"
       paths: "src/ tests/ build.zig"
