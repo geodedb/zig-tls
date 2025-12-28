@@ -5,7 +5,7 @@
 
 include:
   # Format/quality checking from CI/CD Catalog
-  - component: gitlab.com/devnw/ci-catalog/zig-format@v1.1.0
+  - component: gitlab.com/devnw/ci-catalog/zig-format@v1.2.1
     inputs:
       zig_version: "0.15.1"
       paths: "src/ tests/ build.zig"
@@ -70,6 +70,12 @@ build-macos:
   stage: build
   tags:
     - saas-macos-medium-m1
+  timeout: 30 minutes
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
   cache:
     key: "macos-zig-${ZIG_VERSION}"
     paths:
