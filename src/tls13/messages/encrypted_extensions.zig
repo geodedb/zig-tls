@@ -210,13 +210,13 @@ pub fn parseEncryptedExtensions(body: []const u8) !EncryptedExtensions {
         // Need at least 4 bytes for type (2) and length (2)
         if (offset + 4 > ext_end) return error.MalformedExtensions;
 
-        const ext_type = helpers.readU16(body[offset..offset + 2]);
-        const data_len = helpers.readU16(body[offset + 2..offset + 4]);
+        const ext_type = helpers.readU16(body[offset .. offset + 2]);
+        const data_len = helpers.readU16(body[offset + 2 .. offset + 4]);
         offset += 4;
 
         if (offset + data_len > ext_end) return error.MalformedExtensions;
 
-        const ext_data = body[offset..offset + data_len];
+        const ext_data = body[offset .. offset + data_len];
         offset += data_len;
 
         switch (ext_type) {
@@ -231,7 +231,7 @@ pub fn parseEncryptedExtensions(body: []const u8) !EncryptedExtensions {
                 if (list_len > 0) {
                     const proto_len = ext_data[2];
                     if (2 + 1 + proto_len <= ext_data.len) {
-                        result.alpn = ext_data[3..3 + proto_len];
+                        result.alpn = ext_data[3 .. 3 + proto_len];
                     }
                 }
             },
