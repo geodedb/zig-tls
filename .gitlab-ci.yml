@@ -1,3 +1,16 @@
+# =============================================================================
+# ztls CI/CD Pipeline
+# Uses DevNW CI/CD Catalog components where applicable
+# =============================================================================
+
+include:
+  # Format/quality checking from CI/CD Catalog
+  - component: gitlab.com/devnw/ci-catalog/zig-format@1.1.0
+    inputs:
+      zig_version: "0.15.1"
+      paths: "src/ tests/ build.zig"
+      stage: test
+
 stages:
   - build
   - test
@@ -12,22 +25,8 @@ variables:
 
 build-linux:
   stage: build
-  image: ubuntu:24.04
-  cache:
-    key: "linux-zig-${ZIG_VERSION}"
-    paths:
-      - zig-${ZIG_VERSION}/
-  before_script:
-    - apt-get update && apt-get install -y curl xz-utils libssl-dev pkg-config make
-    - |
-      if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
-        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
-        mv "zig-x86_64-linux-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
-      fi
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
-    - zig version
+  image: registry.gitlab.com/devnw/ci-catalog/zig:${ZIG_VERSION}
   script:
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig build
     - zig build test --summary all
     - zig build test-vectors --summary all
@@ -132,104 +131,44 @@ build-windows:
     expire_in: 1 day
 
 # =============================================================================
-# Code Quality
-# =============================================================================
-
-quality:
-  stage: test
-  image: ubuntu:24.04
-  cache:
-    key: "linux-zig-${ZIG_VERSION}"
-    paths:
-      - zig-${ZIG_VERSION}/
-  before_script:
-    - apt-get update && apt-get install -y curl xz-utils findutils
-    - |
-      if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
-        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
-        mv "zig-x86_64-linux-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
-      fi
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
-    - zig version
-  script:
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
-    - |
-      zig fmt --check src/ tests/ build.zig || {
-        echo "Code formatting issues found. Run 'zig fmt src/ tests/ build.zig' to fix."
-        exit 1
-      }
-    - find src tests -name "*.zig" -exec zig ast-check {} \;
-
-# =============================================================================
-# Optimization Tests
+# Optimization Tests (using catalog image)
 # =============================================================================
 
 .optimization-test-template:
   stage: test
-  image: ubuntu:24.04
-  cache:
-    key: "linux-zig-${ZIG_VERSION}"
-    paths:
-      - zig-${ZIG_VERSION}/
-  before_script:
-    - apt-get update && apt-get install -y curl xz-utils libssl-dev pkg-config
-    - |
-      if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
-        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
-        mv "zig-x86_64-linux-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
-      fi
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
-    - zig version
+  image: registry.gitlab.com/devnw/ci-catalog/zig:${ZIG_VERSION}
 
 test-debug:
   extends: .optimization-test-template
   script:
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig build test -Doptimize=Debug --summary all
 
 test-release-safe:
   extends: .optimization-test-template
   script:
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig build test -Doptimize=ReleaseSafe --summary all
 
 test-release-fast:
   extends: .optimization-test-template
   script:
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig build test -Doptimize=ReleaseFast --summary all
 
 test-release-small:
   extends: .optimization-test-template
   script:
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig build test -Doptimize=ReleaseSmall --summary all
 
 # =============================================================================
-# Cross-Compilation (Linux targets)
+# Cross-Compilation (Linux targets, using catalog image)
 # =============================================================================
 
 .cross-compile-template:
   stage: cross-compile
-  image: ubuntu:24.04
-  cache:
-    key: "linux-zig-${ZIG_VERSION}"
-    paths:
-      - zig-${ZIG_VERSION}/
-  before_script:
-    - apt-get update && apt-get install -y curl xz-utils
-    - |
-      if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
-        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
-        mv "zig-x86_64-linux-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
-      fi
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
-    - zig version
+  image: registry.gitlab.com/devnw/ci-catalog/zig:${ZIG_VERSION}
 
 cross-compile-linux-arm:
   extends: .cross-compile-template
   script:
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig build -Dtarget=arm-linux-gnueabihf
   artifacts:
     paths:
@@ -240,7 +179,6 @@ cross-compile-linux-arm:
 cross-compile-linux-arm64:
   extends: .cross-compile-template
   script:
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig build -Dtarget=aarch64-linux-gnu
   artifacts:
     paths:
@@ -251,7 +189,6 @@ cross-compile-linux-arm64:
 cross-compile-linux-riscv64:
   extends: .cross-compile-template
   script:
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig build -Dtarget=riscv64-linux-gnu
   artifacts:
     paths:
@@ -266,7 +203,6 @@ cross-compile-linux-riscv64:
 cross-compile-windows-arm64:
   extends: .cross-compile-template
   script:
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig build -Dtarget=aarch64-windows-msvc
   artifacts:
     paths:
@@ -281,7 +217,6 @@ cross-compile-windows-arm64:
 cross-compile-macos-x86_64:
   extends: .cross-compile-template
   script:
-    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig build -Dtarget=x86_64-macos
   artifacts:
     paths:
