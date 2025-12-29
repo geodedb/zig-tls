@@ -5,9 +5,9 @@
 
 include:
   # Format/quality checking from CI/CD Catalog
-  - component: gitlab.com/devnw/ci-catalog/zig-format@v1.2.1
+  - component: gitlab.com/devnw/ci-catalog/zig-format@latest
     inputs:
-      zig_version: "0.15.1"
+      zig_version: "0.15.2"
       paths: "src/ tests/ build.zig"
       stage: test
 
@@ -17,7 +17,7 @@ stages:
   - cross-compile
 
 variables:
-  ZIG_VERSION: "0.15.1"
+  ZIG_VERSION: "0.15.2"
 
 # =============================================================================
 # Linux Jobs (GitLab.com shared runners)
@@ -25,7 +25,7 @@ variables:
 
 build-linux:
   stage: build
-  image: registry.gitlab.com/devnw/ci-catalog/zig:${ZIG_VERSION}
+  image: registry.gitlab.com/devnw/ci-catalog/zig:latest
   script:
     - zig build
     - zig build test --summary all
@@ -142,7 +142,7 @@ build-windows:
 
 .optimization-test-template:
   stage: test
-  image: registry.gitlab.com/devnw/ci-catalog/zig:${ZIG_VERSION}
+  image: registry.gitlab.com/devnw/ci-catalog/zig:latest
 
 test-debug:
   extends: .optimization-test-template
@@ -170,7 +170,7 @@ test-release-small:
 
 .cross-compile-template:
   stage: cross-compile
-  image: registry.gitlab.com/devnw/ci-catalog/zig:${ZIG_VERSION}
+  image: registry.gitlab.com/devnw/ci-catalog/zig:latest
 
 cross-compile-linux-arm:
   extends: .cross-compile-template
