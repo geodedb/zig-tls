@@ -7,21 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Merge request template for contributions
-- Issue templates for bug reports, features, and questions
-
-### Changed
-- Updated CI catalog components to v1.7.1
-
-### Fixed
-- Updated gitleaks allowlist for false positives
-
-## [0.1.0] - 2024
+## [0.1.0] - 2026-01-24
 
 This release marks the initial open source release of ztls under the Apache-2.0 license.
 
 ### Added
+- Merge request template for contributions
+- Issue templates for bug reports, features, and questions
 
 #### Core TLS 1.3 Implementation
 - Complete TLS 1.3 handshake state machine (RFC 8446)
@@ -70,6 +62,7 @@ This release marks the initial open source release of ztls under the Apache-2.0 
 - RFC section citations throughout the codebase
 
 ### Fixed
+- Updated gitleaks allowlist for false positives
 - TLS 1.3 early secret derivation (RFC 8446 Section 7.1)
 - Master secret derivation using empty slice instead of zero bytes
 - Use Hash("") instead of empty slice for 'derived' secret context
@@ -79,6 +72,7 @@ This release marks the initial open source release of ztls under the Apache-2.0 
 - Zig formatting compliance
 
 ### Changed
+- Updated CI catalog components to v1.7.1
 - Removed 'zig' prefix from library name (now `ztls`)
 - Prepared repository for open source release
 - Migrated to more stdlib implementations where possible
