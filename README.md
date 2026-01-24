@@ -2,6 +2,14 @@
 
 A **TLS 1.3** implementation for QUIC written in Zig, strictly adhering to RFC 8446 (TLS 1.3) and RFC 9001 (QUIC-TLS).
 
+## Status
+
+| Aspect | Info |
+|--------|------|
+| API Stability | Production |
+| Zig Version | 0.14.0+ |
+| Platforms | Linux, macOS, Windows |
+
 ## Features
 
 ✅ **RFC Compliant** - Implements TLS 1.3 (RFC 8446) and QUIC-TLS (RFC 9001)
