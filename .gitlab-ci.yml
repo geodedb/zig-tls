@@ -42,13 +42,23 @@ stages:
   - sbom
   - release
 
+# Zig installation script (reusable)
+.install-zig: &install-zig
+  - apt-get update && apt-get install -y curl xz-utils
+  - curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o zig.tar.xz
+  - tar -xf zig.tar.xz
+  - export PATH="$PWD/zig-x86_64-linux-0.15.2:$PATH"
+  - zig version
+
 # Build and unit tests
 build:
   stage: build
-  image: ghcr.io/zigtools/zig:0.15.0
+  image: debian:bookworm-slim
   tags:
     - company
     - linux
+  before_script:
+    - *install-zig
   script:
     - zig build
   artifacts:
@@ -58,10 +68,12 @@ build:
 
 test:
   stage: test
-  image: ghcr.io/zigtools/zig:0.15.0
+  image: debian:bookworm-slim
   tags:
     - company
     - linux
+  before_script:
+    - *install-zig
   script:
     - zig build test
   needs:
@@ -70,13 +82,17 @@ test:
 # Interoperability testing with OpenSSL/BoringSSL
 test-interop:
   stage: test
-  image: ghcr.io/zigtools/zig:0.15.0
+  image: debian:bookworm-slim
   tags:
     - company
     - linux
   before_script:
-    # Install OpenSSL development libraries directly (no submodules)
-    - apt-get update && apt-get install -y libssl-dev
+    # Install Zig and OpenSSL development libraries directly (no submodules)
+    - apt-get update && apt-get install -y curl xz-utils libssl-dev
+    - curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o zig.tar.xz
+    - tar -xf zig.tar.xz
+    - export PATH="$PWD/zig-x86_64-linux-0.15.2:$PATH"
+    - zig version
   script:
     - zig build test-conformance
   needs:
