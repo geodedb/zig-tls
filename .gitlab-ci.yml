@@ -1,9 +1,6 @@
 # GitLab CI/CD Configuration
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2024-2025 CodePros
-#
-# NOTE: Build/test skipped - requires Zig 0.15.x which is not yet released.
-# Security scanning is enabled.
 
 include:
   # Security scanning (Advanced SAST enabled by default)
@@ -34,8 +31,54 @@ default:
     - company
     - linux
 
+variables:
+  # Disable git submodules - dependencies are fetched directly in jobs
+  GIT_SUBMODULE_STRATEGY: none
+
 stages:
+  - build
+  - test
   - security
   - sbom
   - release
+
+# Build and unit tests
+build:
+  stage: build
+  image: ghcr.io/zigtools/zig:0.15.0
+  tags:
+    - company
+    - linux
+  script:
+    - zig build
+  artifacts:
+    paths:
+      - zig-out/
+    expire_in: 1 hour
+
+test:
+  stage: test
+  image: ghcr.io/zigtools/zig:0.15.0
+  tags:
+    - company
+    - linux
+  script:
+    - zig build test
+  needs:
+    - build
+
+# Interoperability testing with OpenSSL/BoringSSL
+test-interop:
+  stage: test
+  image: ghcr.io/zigtools/zig:0.15.0
+  tags:
+    - company
+    - linux
+  before_script:
+    # Install OpenSSL development libraries directly (no submodules)
+    - apt-get update && apt-get install -y libssl-dev
+  script:
+    - zig build test-conformance
+  needs:
+    - build
 
