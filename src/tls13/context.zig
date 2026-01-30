@@ -2486,6 +2486,16 @@ pub const Context = struct {
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2a, 0x00, 0x00 });
         }
 
+        // RFC 8446 §4.2.9: psk_key_exchange_modes extension (required when using PSK)
+        // Must be added BEFORE pre_shared_key extension (which must be last)
+        if (self.config.resumption_psk != null) {
+            // Extension type: psk_key_exchange_modes (0x002d)
+            // Extension length: 2 (list length + 1 mode)
+            // Modes list length: 1
+            // Mode: psk_dhe_ke (0x01) - PSK with (EC)DHE for forward secrecy
+            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2d, 0x00, 0x02, 0x01, 0x01 });
+        }
+
         // RFC 8446 §4.2.11: pre_shared_key extension (MUST be last)
         var psk_binder_placeholder_start: ?usize = null;
         var binder_len: u8 = 0;
