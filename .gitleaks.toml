@@ -28,6 +28,13 @@ paths = [
   # These are published test vectors from RFCs, not secrets
   '''.*_vectors\.zig$''',
 
+  # Test files and directories containing RFC test vectors and conformance data
+  # These contain TLS key derivation test data from RFCs (8446, 9001, etc.)
+  '''tests/.*\.zig$''',
+  '''tests/.*\.pem$''',
+  '''tests/.*\.key$''',
+  '''tests/.*\.crt$''',
+
   # Specification documents (may contain example keys from RFCs)
   # AUDIT: Periodically review specs/ for accidentally committed secrets
   # Files are .txt format (RFC specifications downloaded from IETF)
