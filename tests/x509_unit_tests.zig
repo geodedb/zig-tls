@@ -508,6 +508,53 @@ test "validateChain - expired certificate rejection" {
     );
 }
 
+test "validateChain - missing trust store rejects chain" {
+    const root_der = @embedFile("test_certs/ed25519_cert.der");
+
+    const chain = [_][]const u8{root_der};
+    const now = std.time.timestamp();
+
+    // Ensure no trust store configured
+    x509.setTrustStore(null);
+
+    const result = x509.validateChain(
+        testing.allocator,
+        &chain,
+        @intCast(now),
+        "",
+        false,
+    );
+    try testing.expectError(error.UntrustedRoot, result);
+}
+
+test "validateChain - trust store accepts root" {
+    const root_der = @embedFile("test_certs/ed25519_cert.der");
+
+    const root_cert = try x509.parseCert(testing.allocator, root_der);
+
+    const TrustStore = struct {
+        var trusted_spki: []const u8 = &[_]u8{};
+        fn isTrusted(spki: []const u8) bool {
+            return std.mem.eql(u8, spki, trusted_spki);
+        }
+    };
+
+    TrustStore.trusted_spki = root_cert.spki;
+    x509.setTrustStore(.{ .isTrustedSpki = TrustStore.isTrusted });
+    defer x509.setTrustStore(null);
+
+    const chain = [_][]const u8{root_der};
+    const now = std.time.timestamp();
+
+    try x509.validateChain(
+        testing.allocator,
+        &chain,
+        @intCast(now),
+        "",
+        false,
+    );
+}
+
 test "validateChain - allow_insecure bypass" {
     // Test that allow_insecure=true skips all validation
     const cert_hex = "308201893082013ba003020102021420dfbb8852a7114369616dac435570bb72705c1c300506032b6570303a311c301a06035504030c13656432353531392e6578616d706c652e636f6d310d300b060355040a0c0454657374310b3009060355040613025553301e170d3235313130363134313331345a170d3335313130343134313331345a303a311c301a06035504030c13656432353531392e6578616d706c652e636f6d310d300b060355040a0c0454657374310b3009060355040613025553302a300506032b657003210031f99a615d25bf4303b30463f4cbfff4f0213b4c661a69b86cbbce52aa792db8a3533051301d0603551d0e04160414d5391a5fa777855dea8251fcbe4629a70e9e1987301f0603551d23041830168014d5391a5fa777855dea8251fcbe4629a70e9e1987300f0603551d130101ff040530030101ff300506032b6570034100770d719a2b5ed56616d398830e92af4f6fbeeedcdc4f03b74d9679bb90090f5583738eb147352de491ebfdc928f84af6e917c272b3e186f0d7f389daef08460a";

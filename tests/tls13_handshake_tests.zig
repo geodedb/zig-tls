@@ -13,9 +13,18 @@
 const std = @import("std");
 const testing = std.testing;
 const tls13 = @import("tls13");
+const tls13_full = @import("tls13_full");
 const key_schedule = @import("quic_tls");
 const record = @import("record");
 const alert = @import("alert");
+
+const test_psk = "test_psk";
+const test_ticket = "test_ticket";
+
+fn lookupTestPsk(_: *tls13.Context, identity: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, identity, test_ticket)) return test_psk;
+    return null;
+}
 
 // ============================================================================
 // Context Initialization Tests
@@ -110,6 +119,114 @@ test "TLS 1.3 handshake completion check" {
 
     // Handshake should not be complete initially
     try testing.expect(!client_ctx.handshakeComplete());
+}
+
+// ============================================================================
+// 0-RTT Security Tests
+// ============================================================================
+
+test "TLS 1.3 server rejects 0-RTT replay (no early secret installed)" {
+    const client_callbacks = tls13.Callbacks{};
+    const client_config = tls13.Config{
+        .allocator = testing.allocator,
+        .role = .Client,
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .enable_early_data = true,
+        .resumption_psk = test_psk,
+        .resumption_ticket = test_ticket,
+        .quic_transport_parameters = &[_]u8{},
+    };
+
+    var client_ctx = try tls13.Context.init(client_config, client_callbacks);
+    defer client_ctx.deinit();
+    try client_ctx.startClientHandshake();
+
+    const ch_msg = try client_ctx.pollCrypto(testing.allocator, .Initial);
+    defer testing.allocator.free(ch_msg);
+
+    const server_callbacks = tls13.Callbacks{
+        .on_ticket_lookup = lookupTestPsk,
+    };
+    const server_config = tls13.Config{
+        .allocator = testing.allocator,
+        .role = .Server,
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .enable_early_data = true,
+        .quic_transport_parameters = &[_]u8{},
+    };
+
+    var server_ctx = try tls13.Context.init(server_config, server_callbacks);
+    defer server_ctx.deinit();
+
+    // Preload anti-replay window with the same random used by the incoming ClientHello.
+    try testing.expect(client_ctx.client_random != null);
+    try server_ctx.anti_replay.add(client_ctx.client_random.?);
+
+    try server_ctx.processCrypto(.Initial, ch_msg);
+
+    const early_slot = server_ctx.secrets.slot(.Initial, .recv);
+    try testing.expect(!early_slot.valid);
+}
+
+test "TLS 1.3 server rejects SHA-384 PSK binder trailing mismatch" {
+    const client_callbacks = tls13.Callbacks{};
+    const client_config = tls13.Config{
+        .allocator = testing.allocator,
+        .role = .Client,
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_256_GCM_SHA384},
+        .resumption_psk = test_psk,
+        .resumption_ticket = test_ticket,
+        .quic_transport_parameters = &[_]u8{},
+    };
+
+    var client_ctx = try tls13.Context.init(client_config, client_callbacks);
+    defer client_ctx.deinit();
+    try client_ctx.startClientHandshake();
+
+    const ch_msg = try client_ctx.pollCrypto(testing.allocator, .Initial);
+    defer testing.allocator.free(ch_msg);
+
+    const ch_body = ch_msg[4..];
+    const parsed = try tls13_full.parseClientHello(testing.allocator, ch_body);
+    defer {
+        testing.allocator.free(parsed.cipher_suites);
+        if (parsed.supported_groups) |groups| testing.allocator.free(groups);
+        if (parsed.signature_algorithms) |algs| testing.allocator.free(algs);
+        if (parsed.alpn_list) |list| testing.allocator.free(list);
+        if (parsed.pre_shared_key) |psk| {
+            testing.allocator.free(psk.identities);
+            testing.allocator.free(psk.binders);
+        }
+    }
+
+    try testing.expect(parsed.pre_shared_key != null);
+    const psk = parsed.pre_shared_key.?;
+    try testing.expect(psk.binders.len > 0);
+    try testing.expectEqual(@as(usize, 48), psk.binders[0].len);
+
+    var binder_mut = @constCast(psk.binders[0]);
+    binder_mut[binder_mut.len - 1] ^= 0xff;
+
+    const server_callbacks = tls13.Callbacks{
+        .on_ticket_lookup = lookupTestPsk,
+    };
+    const server_config = tls13.Config{
+        .allocator = testing.allocator,
+        .role = .Server,
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_256_GCM_SHA384},
+        .quic_transport_parameters = &[_]u8{},
+    };
+
+    var server_ctx = try tls13.Context.init(server_config, server_callbacks);
+    defer server_ctx.deinit();
+
+    try testing.expectError(tls13.HandshakeError.DecryptError, server_ctx.processCrypto(.Initial, ch_msg));
 }
 
 // ============================================================================

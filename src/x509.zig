@@ -632,9 +632,17 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     var ci = asn1.Decoder.init(cert_seq);
 
     // RFC 5280 §4.1 - Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
-    const tbs_seq = try ci.readSequence();
-    const tbs_off_begin = (@intFromPtr(tbs_seq.ptr) - @intFromPtr(cert_seq.ptr)) + (cert_seq.ptr - der.ptr);
-    const tbs_len = tbs_seq.len;
+    // Capture full DER-encoded TBSCertificate (tag + length + value) for signature verification.
+    const tbs_hdr = try ci.nextHeader();
+    if (asn1.tagClass(tbs_hdr.tag) != .universal or asn1.tagNumber(tbs_hdr.tag) != 16) {
+        return error.UnexpectedTag;
+    }
+    const tbs_start = ci.off - tbs_hdr.hdr_len;
+    const tbs_end = ci.off + tbs_hdr.len;
+    if (tbs_end > cert_seq.len) return error.Truncated;
+    const tbs_seq = cert_seq[ci.off..tbs_end];
+    const tbs_bytes = cert_seq[tbs_start..tbs_end];
+    ci.off = tbs_end;
 
     var ti = asn1.Decoder.init(tbs_seq);
 
@@ -707,9 +715,16 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
         }
     }
 
-    // SubjectPublicKeyInfo
-    const spki_tlv = try ti.readTLV();
-    const spki_bytes = spki_tlv.val;
+    // SubjectPublicKeyInfo (capture full DER, not just value)
+    const spki_hdr = try ti.nextHeader();
+    if (asn1.tagClass(spki_hdr.tag) != .universal or asn1.tagNumber(spki_hdr.tag) != 16) {
+        return error.UnexpectedTag;
+    }
+    const spki_start = ti.off - spki_hdr.hdr_len;
+    const spki_end = ti.off + spki_hdr.len;
+    if (spki_end > tbs_seq.len) return error.Truncated;
+    const spki_bytes = tbs_seq[spki_start..spki_end];
+    ti.off = spki_end;
 
     // Extensions (if any)
     var san_result: ?SubjectAltName = null;
@@ -930,8 +945,6 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     }
 
     const subject: Name = .{ .cn = subj_cn };
-    const tbs_start: usize = @intCast(tbs_off_begin);
-    const tbs_bytes = der[tbs_start .. tbs_start + tbs_len];
 
     return .{
         .tbs = tbs_bytes,
@@ -1539,6 +1552,8 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
             } else return error.BasicConstraints;
             if (getTrustStore()) |ts| {
                 if (!ts.isTrustedSpki(certs[i].spki)) return error.UntrustedRoot;
+            } else {
+                return error.UntrustedRoot;
             }
         }
     }

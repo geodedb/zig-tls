@@ -30,6 +30,7 @@
 const std = @import("std");
 const tls13_full = @import("tls13_full");
 const sct = @import("sct");
+const zero_rtt = @import("zero_rtt");
 
 // Import types from modularized tls13 package
 const types = @import("types.zig");
@@ -137,6 +138,26 @@ pub const Config = struct {
     ///
     /// Default: false (0-RTT disabled)
     enable_early_data: bool = false,
+
+    /// Limits for 0-RTT early data (RFC 8446 §4.2.10, CWE-400 prevention).
+    ///
+    /// Controls the maximum amount of 0-RTT data that can be accepted to prevent
+    /// DoS attacks. The max_early_data_size value is enforced at the record layer.
+    ///
+    /// ## Security Considerations
+    ///
+    /// - **Default 16KB**: Balances utility and DoS risk
+    /// - **Higher limits**: Increase replay/amplification attack surface
+    /// - **Lower limits**: Reduce attack surface but limit 0-RTT utility
+    ///
+    /// ## Example
+    ///
+    /// ```zig
+    /// .zero_rtt_limits = .{ .max_early_data_size = 8192 }, // 8KB limit
+    /// ```
+    ///
+    /// Default: 16KB max_early_data_size
+    zero_rtt_limits: zero_rtt.ZeroRttLimits = .{},
 
     /// DER-encoded server certificate (leaf) for authentication (Server role only).
     /// RFC 8446 §4.4.2: Certificate message contains certificate_list.

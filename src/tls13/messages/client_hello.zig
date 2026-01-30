@@ -296,6 +296,8 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     if (pos + ext_len > data.len) return error.TooShort;
 
     const ext_end = pos + ext_len;
+    var psk_seen = false; // RFC 8446 §4.2.11: Track if pre_shared_key was seen
+
     while (pos + 4 <= ext_end) {
         const ext_type = helpers.readU16(data[pos .. pos + 2]);
         const ext_data_len = helpers.readU16(data[pos + 2 .. pos + 4]);
@@ -307,9 +309,19 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
         // Use intToEnum to safely handle unknown extension types without panicking
         const ext = std.meta.intToEnum(core_types.ExtensionType, ext_type) catch {
             // Unknown extension type - ignore per TLS 1.3 spec
+            // But still check if PSK was already seen (it must be last)
+            if (psk_seen) {
+                return error.PskNotLastExtension; // CWE-345: pre_shared_key must be last
+            }
             pos += ext_data_len;
             continue;
         };
+
+        // RFC 8446 §4.2.11: pre_shared_key MUST be the last extension
+        // If we've already seen PSK and we're processing another extension, fail
+        if (psk_seen and ext != .pre_shared_key) {
+            return error.PskNotLastExtension;
+        }
 
         switch (ext) {
             .server_name => {
@@ -488,6 +500,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                     .identities = try identities.toOwnedSlice(allocator),
                     .binders = try binders.toOwnedSlice(allocator),
                 };
+                psk_seen = true; // Mark that we've seen PSK extension
             },
             .early_data => {
                 ch.early_data = true;

@@ -338,6 +338,30 @@ pub const HandshakeError = error{
     /// This includes validity period, hostname mismatch, chain verification, etc.
     CertificateValidationFailed,
 
+    /// OCSP response required but not provided by server.
+    /// RFC 6960 + RFC 8446 §4.4.2.1: OCSP stapling when require_ocsp=true.
+    MissingOcspResponse,
+
+    /// OCSP response validation failed (status revoked, bad signature, etc.).
+    /// RFC 6960 §2.2: Response must be signed by trusted responder and show good status.
+    OcspValidationFailed,
+
+    /// SCT list required but not provided by server.
+    /// RFC 6962 + RFC 8446 §4.4.2.1: Certificate Transparency when require_scts=true.
+    MissingSctList,
+
+    /// Failed to parse SCT list from certificate extensions.
+    /// RFC 6962 §3.3: SCT list must be properly encoded.
+    SctParsingFailed,
+
+    /// SCT list is empty when require_scts=true.
+    /// RFC 6962: At least one valid SCT required for Certificate Transparency.
+    EmptySctList,
+
+    /// SCT list validation callback rejected the provided SCTs.
+    /// User-defined validation (e.g., checking log inclusion) failed.
+    SctCallbackRejected,
+
     /// CertificateVerify signature verification failed.
     /// RFC 8446 §4.4.3: Signature must verify using leaf certificate's public key.
     InvalidSignature,
@@ -345,6 +369,22 @@ pub const HandshakeError = error{
     /// Signature algorithm in CertificateVerify is not supported.
     /// RFC 8446 §4.2.3: Algorithm must be in client's signature_algorithms extension.
     UnsupportedSignatureAlgorithm,
+
+    /// Decryption or authentication failure (e.g., PSK binder mismatch).
+    /// RFC 8446 §4.2.11.2: Invalid binders MUST be rejected.
+    DecryptError,
+
+    /// Cryptographic operation failed (HKDF, HMAC, or signature calculation).
+    /// RFC 8446 §7: Cryptographic computations must succeed to proceed.
+    CryptoError,
+
+    /// PSK offered but psk_key_exchange_modes extension missing.
+    /// RFC 8446 §4.2.9: Required when using PSK authentication.
+    MissingPskKeyExchangeModes,
+
+    /// PSK offered but psk_dhe_ke mode not supported.
+    /// RFC 8446 §4.2.9: psk_dhe_ke required for forward secrecy.
+    PskDheKeModeRequired,
 };
 
 /// Traffic direction relative to the current endpoint (RFC 8446 §7.1).
@@ -605,6 +645,7 @@ pub const ClientHelloView = struct {
     alpn_list: ?[]const []const u8,
     early_data: bool,
     pre_shared_key: ?ClientHelloPreSharedKeyView,
+    psk_key_exchange_modes: ?[]const u8, // RFC 8446 §4.2.9: Required when using PSK
     raw: []const u8,
 };
 
@@ -632,6 +673,7 @@ const ClientHelloInfo = struct {
     alpn_list: ?[]const []const u8,
     early_data: bool,
     pre_shared_key: ?PreSharedKeyInfo,
+    psk_key_exchange_modes: ?[]u8, // RFC 8446 §4.2.9
     raw: []u8,
 
     fn parse(allocator: std.mem.Allocator, body: []const u8) !ClientHelloInfo {
@@ -744,6 +786,13 @@ const ClientHelloInfo = struct {
             psk_copy = .{ .identities = ids, .binders = binders };
         }
 
+        // RFC 8446 §4.2.9: Copy psk_key_exchange_modes if present
+        var psk_modes_copy: ?[]u8 = null;
+        if (parsed.psk_key_exchange_modes) |modes| {
+            psk_modes_copy = try allocator.dupe(u8, modes);
+        }
+        errdefer if (psk_modes_copy) |buf| if (buf.len != 0) allocator.free(buf);
+
         const info = ClientHelloInfo{
             .random = parsed.random,
             .session_id = session_id_copy,
@@ -755,6 +804,7 @@ const ClientHelloInfo = struct {
             .alpn_list = alpn_copy,
             .early_data = parsed.early_data,
             .pre_shared_key = psk_copy,
+            .psk_key_exchange_modes = psk_modes_copy,
             .raw = raw_copy,
         };
 
@@ -785,6 +835,7 @@ const ClientHelloInfo = struct {
             }
             if (psk.binders.len != 0) allocator.free(@constCast(psk.binders));
         }
+        if (self.psk_key_exchange_modes) |buf| if (buf.len != 0) allocator.free(buf);
         if (self.raw.len != 0) allocator.free(self.raw);
     }
 };
@@ -829,6 +880,7 @@ const HandshakeState = struct {
                         .binders = psk.binders,
                     };
                 } else null,
+                .psk_key_exchange_modes = info.psk_key_exchange_modes,
                 .raw = info.raw,
             };
         }
@@ -933,6 +985,8 @@ pub const Context = struct {
     peer_cert_chain: ?[][]const u8 = null, // DER-encoded certificate chain from peer
     peer_cert_verify_sig: ?[]const u8 = null, // CertificateVerify signature from peer
     peer_cert_verify_alg: ?tls13_full.SignatureScheme = null, // Signature algorithm used
+    peer_ocsp_response: ?[]const u8 = null, // Stapled OCSP response from peer (leaf cert only)
+    peer_sct_list: ?[]const u8 = null, // Signed Certificate Timestamp list from peer (leaf cert only)
     // 0-RTT state (server role)
     anti_replay: zero_rtt_mod.AntiReplayWindow, // Anti-replay window for 0-RTT detection
 
@@ -997,6 +1051,14 @@ pub const Context = struct {
         if (self.peer_cert_verify_sig) |sig_data| {
             self.allocator.free(sig_data);
             self.peer_cert_verify_sig = null;
+        }
+        if (self.peer_ocsp_response) |ocsp_data| {
+            self.allocator.free(ocsp_data);
+            self.peer_ocsp_response = null;
+        }
+        if (self.peer_sct_list) |sct_data| {
+            self.allocator.free(sct_data);
+            self.peer_sct_list = null;
         }
         // Clean up 0-RTT anti-replay window
         self.anti_replay.deinit();
@@ -1742,8 +1804,24 @@ pub const Context = struct {
         // empty session id
         try body.append(self.allocator, 0);
 
-        // cipher_suites
-        try body.appendSlice(self.allocator, &.{ 0x00, 0x06, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03 });
+        // RFC 8446 §4.1.2: Cipher suites from config (CWE-327 prevention)
+        // Build cipher suite list from config.supported_cipher_suites
+        const cipher_suites = if (self.config.supported_cipher_suites.len > 0)
+            self.config.supported_cipher_suites
+        else
+            // Default to TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256
+            &[_]tls13_full.CipherSuite{
+                .TLS_AES_128_GCM_SHA256,
+                .TLS_AES_256_GCM_SHA384,
+                .TLS_CHACHA20_POLY1305_SHA256,
+            };
+
+        const cipher_list_len: u16 = @intCast(cipher_suites.len * 2);
+        try body.appendSlice(self.allocator, &.{ @intCast(cipher_list_len >> 8), @intCast(cipher_list_len & 0xff) });
+        for (cipher_suites) |suite| {
+            const val: u16 = @intFromEnum(suite);
+            try body.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
+        }
 
         // compression methods
         try body.appendSlice(self.allocator, &.{ 0x01, 0x00 });
@@ -1956,6 +2034,20 @@ pub const Context = struct {
     /// Iterates through offered identities and calls the on_ticket_lookup callback.
     /// If a match is found, verifies the PSK binder.
     ///
+    /// ## Ticket Age Validation
+    ///
+    /// RFC 8446 §4.2.11.1 requires validation of obfuscated_ticket_age to prevent
+    /// replay attacks. The ticket age must be within the ticket lifetime bounds.
+    ///
+    /// **IMPORTANT**: The on_ticket_lookup callback MUST validate ticket age before
+    /// returning the PSK. The callback should:
+    /// 1. Deobfuscate the ticket age using ticket_age_add
+    /// 2. Compare against ticket issue time and lifetime
+    /// 3. Return null for expired or invalid tickets
+    ///
+    /// This implementation provides basic validation but delegates full age checking
+    /// to the callback since it has access to ticket metadata.
+    ///
     /// Returns:
     /// - The selected PSK (used for early secret)
     /// - null if no PSK selected (use 0 for early secret)
@@ -1963,11 +2055,44 @@ pub const Context = struct {
         const psk_ext = ch_view.pre_shared_key orelse return null;
         const lookup_cb = self.callbacks.on_ticket_lookup orelse return null;
 
+        // RFC 8446 §4.2.9: Validate psk_key_exchange_modes extension is present
+        // When using PSK, client MUST include psk_key_exchange_modes extension
+        const psk_modes = ch_view.psk_key_exchange_modes orelse {
+            traceHandshake("Server: PSK offered but no psk_key_exchange_modes extension (CWE-345)\\n", .{});
+            return HandshakeError.MissingPskKeyExchangeModes;
+        };
+
+        // RFC 8446 §4.2.9: Verify psk_dhe_ke (0x01) is supported
+        // TLS 1.3 requires (EC)DHE with PSK for forward secrecy
+        var supports_psk_dhe_ke = false;
+        for (psk_modes) |mode| {
+            if (mode == 0x01) { // psk_dhe_ke
+                supports_psk_dhe_ke = true;
+                break;
+            }
+        }
+        if (!supports_psk_dhe_ke) {
+            traceHandshake("Server: PSK offered but psk_dhe_ke mode not supported (CWE-345)\\n", .{});
+            return HandshakeError.PskDheKeModeRequired;
+        }
+
         // Iterate over identities
         for (psk_ext.identities, 0..) |ident, idx| {
+            // RFC 8446 §4.2.11.1: Validate obfuscated_ticket_age bounds
+            // The ticket age should not be unreasonably large (e.g., > 7 days in milliseconds)
+            // This is a basic sanity check; full validation must be done by the callback
+            const max_ticket_age_ms = 7 * 24 * 60 * 60 * 1000; // 7 days
+            if (ident.obfuscated_ticket_age > max_ticket_age_ms * 2) {
+                // Skip this PSK if the obfuscated age is unreasonably large
+                // Note: The factor of 2 accounts for obfuscation via ticket_age_add
+                traceHandshake("Server: Skipping PSK with excessive ticket age: {}\\n", .{ident.obfuscated_ticket_age});
+                continue;
+            }
+
             if (lookup_cb(self, ident.identity)) |psk_bytes| {
                 // Found a matching PSK. Now verify the binder.
                 // RFC 8446 §4.2.11: Binder validation
+                // NOTE: The callback MUST have validated ticket age/lifetime before returning PSK
 
                 // 1. Derive early secret and binder key (RFC 8446 §7.1)
                 // early_secret = HKDF-Extract(0, psk)
@@ -2026,10 +2151,23 @@ pub const Context = struct {
                 // 5. Verify binder using constant-time comparison (security critical!)
                 // RFC 8446 §4.2.11.2: "Servers SHOULD check that it is valid"
                 // We use constant-time comparison to prevent timing attacks.
-                if (received_binder.len != expected_binder.len) {
+                const expected_len = ks.digestLength(self.hash_kind);
+                if (received_binder.len != expected_len or expected_binder.len != expected_len) {
                     return HandshakeError.DecryptError; // Binder length mismatch
                 }
-                if (!std.crypto.timing_safe.eql([32]u8, received_binder[0..32].*, expected_binder.bytes[0..32].*)) {
+                const binder_ok = switch (self.hash_kind) {
+                    .sha256 => blk: {
+                        const received_bytes: *const [32]u8 = received_binder[0..32];
+                        const expected_bytes: *const [32]u8 = expected_binder.bytes[0..32];
+                        break :blk std.crypto.timing_safe.eql([32]u8, received_bytes.*, expected_bytes.*);
+                    },
+                    .sha384 => blk: {
+                        const received_bytes: *const [48]u8 = received_binder[0..48];
+                        const expected_bytes: *const [48]u8 = expected_binder.bytes[0..48];
+                        break :blk std.crypto.timing_safe.eql([48]u8, received_bytes.*, expected_bytes.*);
+                    },
+                };
+                if (!binder_ok) {
                     return HandshakeError.DecryptError; // Binder verification failed
                 }
 
@@ -2108,28 +2246,34 @@ pub const Context = struct {
         const transcript_after_sh = self.transcripts.handshake.finalize(self.hash_kind);
 
         // Select PSK and derive early secret
-        const early_secret = (try self.selectPsk(ch_view)) orelse key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+        // Track whether PSK authentication succeeded for certificate requirement enforcement
+        const psk_selected = try self.selectPsk(ch_view);
+        const early_secret = psk_selected orelse key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
 
         // RFC 8446 §4.2.10 + RFC 9001 §4.6: Handle 0-RTT early data
         if (ch_view.early_data and self.config.enable_early_data and early_secret.slice().len > 0) {
             // Anti-replay check: verify ClientHello random hasn't been seen before
-            const client_random = ch_view.raw[6..38]; // ClientHello random is at offset 6
-            self.anti_replay.add(client_random[0..32].*) catch |err| {
+            const client_random = ch_view.random;
+            var accept_early = true;
+            self.anti_replay.add(client_random) catch |err| {
                 // Replay detected - reject 0-RTT, continue with 1-RTT handshake
                 traceHandshake("Server: 0-RTT anti-replay detected ({}), rejecting early data\\n", .{err});
+                accept_early = false;
             };
 
-            // Derive and install 0-RTT client early traffic secret
-            // Use transcript hash of ClientHello (before ServerHello)
-            const ch_hash = self.transcripts.handshake.finalize(self.hash_kind);
-            const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(self.hash_kind, &early_secret, ch_hash.slice());
+            if (accept_early) {
+                // Derive and install 0-RTT client early traffic secret
+                // Use transcript hash of ClientHello (before ServerHello)
+                const ch_hash = self.transcripts.handshake.finalize(self.hash_kind);
+                const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(self.hash_kind, &early_secret, ch_hash.slice());
 
-            // Install as receiving secret (server receives 0-RTT from client)
-            // NOTE: QUIC uses EarlyData encryption level, but we may need to map to Initial
-            // depending on how the QUIC layer handles it
-            try self.installTrafficSecret(.Initial, .recv, early_traffic_secret);
+                // Install as receiving secret (server receives 0-RTT from client)
+                // NOTE: QUIC uses EarlyData encryption level, but we may need to map to Initial
+                // depending on how the QUIC layer handles it
+                try self.installTrafficSecret(.Initial, .recv, early_traffic_secret);
 
-            traceHandshake("Server: Installed 0-RTT early traffic secret for receiving\\n", .{});
+                traceHandshake("Server: Installed 0-RTT early traffic secret for receiving\\n", .{});
+            }
         }
 
         const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], transcript_after_sh, &early_secret);
@@ -2157,6 +2301,7 @@ pub const Context = struct {
 
         // CRITICAL: Send Certificate and CertificateVerify before Finished (RFC 8446 §4.4.1)
         // Server must prove possession of private key corresponding to certificate
+        // RFC 8446 §4.4.1: Server MUST send Certificate unless using PSK-only authentication
         if (self.config.server_cert_der) |cert_der| {
             traceHandshake("Server: Sending Certificate message ({} bytes DER)\n", .{cert_der.len});
 
@@ -2219,7 +2364,16 @@ pub const Context = struct {
 
             traceHandshake("Server: Certificate and CertificateVerify sent successfully\n", .{});
         } else {
-            traceHandshake("Server: WARNING - No certificate configured, proceeding without Certificate/CertificateVerify\n", .{});
+            // No certificate configured - only acceptable if PSK authentication succeeded
+            // RFC 8446 §4.4.1: "The server MUST send this message in all handshakes
+            // except those using a PSK with key_exchange mode psk_ke"
+            if (psk_selected == null) {
+                // SECURITY: No PSK authentication and no certificate = unauthenticated server
+                // This prevents CWE-287: Improper Authentication
+                traceHandshake("Server: ERROR - Certificate required when not using PSK authentication\n", .{});
+                return HandshakeError.MissingCertificate;
+            }
+            traceHandshake("Server: Using PSK-only authentication, skipping Certificate/CertificateVerify\n", .{});
         }
 
         const hash_before_finished = self.transcripts.handshake.finalize(self.hash_kind);
@@ -2238,6 +2392,9 @@ pub const Context = struct {
     pub fn startClientHandshake(self: *Context) !void {
         if (self.config.role != .Client) return;
         if (self.client_priv != null) return; // already started
+        if (self.config.supported_cipher_suites.len != 0) {
+            self.hash_kind = cipherSuiteHash(self.config.supported_cipher_suites[0]);
+        }
         // Generate X25519 key pair
         var priv: [32]u8 = undefined;
         std.crypto.random.bytes(&priv);
@@ -2253,7 +2410,26 @@ pub const Context = struct {
         self.client_random = rnd; // Save for potential HRR handling
         try body.appendSlice(self.allocator, &rnd);
         try body.append(self.allocator, 0); // empty session id
-        try body.appendSlice(self.allocator, &.{ 0x00, 0x06, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03 });
+
+        // RFC 8446 §4.1.2: Cipher suites from config (CWE-327 prevention)
+        // Build cipher suite list from config.supported_cipher_suites
+        const cipher_suites = if (self.config.supported_cipher_suites.len > 0)
+            self.config.supported_cipher_suites
+        else
+            // Default to TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256
+            &[_]tls13_full.CipherSuite{
+                .TLS_AES_128_GCM_SHA256,
+                .TLS_AES_256_GCM_SHA384,
+                .TLS_CHACHA20_POLY1305_SHA256,
+            };
+
+        const cipher_list_len: u16 = @intCast(cipher_suites.len * 2);
+        try body.appendSlice(self.allocator, &.{ @intCast(cipher_list_len >> 8), @intCast(cipher_list_len & 0xff) });
+        for (cipher_suites) |suite| {
+            const val: u16 = @intFromEnum(suite);
+            try body.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
+        }
+
         // compression methods
         try body.appendSlice(self.allocator, &.{ 0x01, 0x00 });
         var ext_buf = std.ArrayList(u8){};
@@ -2312,6 +2488,7 @@ pub const Context = struct {
 
         // RFC 8446 §4.2.11: pre_shared_key extension (MUST be last)
         var psk_binder_placeholder_start: ?usize = null;
+        var binder_len: u8 = 0;
         if (self.config.resumption_psk) |_| {
             // Extension type: pre_shared_key (0x0029)
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x29 });
@@ -2345,7 +2522,7 @@ pub const Context = struct {
 
             // Binders list
             // Hash length depends on cipher suite (assume SHA-256 for now)
-            const binder_len: u8 = 32; // SHA-256
+            binder_len = @intCast(ks.digestLength(self.hash_kind));
             const binders_list_len: u16 = 1 + binder_len;
             try ext_buf.appendSlice(self.allocator, &.{ @intCast(binders_list_len >> 8), @intCast(binders_list_len & 0xff) });
 
@@ -2356,7 +2533,8 @@ pub const Context = struct {
             psk_binder_placeholder_start = ext_buf.items.len;
 
             // Placeholder binder (will be computed and replaced)
-            try ext_buf.appendSlice(self.allocator, &([_]u8{0} ** 32));
+            var zeros: [ks.max_digest_length]u8 = [_]u8{0} ** ks.max_digest_length;
+            try ext_buf.appendSlice(self.allocator, zeros[0..binder_len]);
 
             // Now fill in the extension length
             const ext_data_len = ext_buf.items.len - ext_data_start;
@@ -2372,6 +2550,7 @@ pub const Context = struct {
         // Compute PSK binder if needed
         if (psk_binder_placeholder_start) |binder_start| {
             const psk = self.config.resumption_psk.?;
+            if (binder_len == 0) return HandshakeError.CryptoError;
 
             // Derive early_secret from PSK
             const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, psk);
@@ -2381,15 +2560,15 @@ pub const Context = struct {
 
             // Compute transcript hash over ClientHello truncated before binders
             // Calculate how many bytes to hash (everything except the binders list)
-            const binders_list_len: usize = 2 + 1 + 32; // list_len (2) + binder_len (1) + binder (32)
+            const binders_list_len: usize = 2 + 1 + binder_len; // list_len (2) + binder_len (1) + binder
             const truncated_body_len = body.items.len - binders_list_len;
 
-            // Create handshake message header for hashing
+            // Create handshake message header for hashing (full ClientHello length)
             var header: [4]u8 = undefined;
             header[0] = @intFromEnum(HsType.client_hello);
-            header[1] = @intCast((truncated_body_len >> 16) & 0xff);
-            header[2] = @intCast((truncated_body_len >> 8) & 0xff);
-            header[3] = @intCast(truncated_body_len & 0xff);
+            header[1] = @intCast((body.items.len >> 16) & 0xff);
+            header[2] = @intCast((body.items.len >> 8) & 0xff);
+            header[3] = @intCast(body.items.len & 0xff);
 
             // Hash the truncated ClientHello
             var transcript = Transcript.init();
@@ -2403,7 +2582,7 @@ pub const Context = struct {
             // Replace placeholder with actual binder
             const exts_start = body.items.len - ext_buf.items.len;
             const binder_offset = exts_start + binder_start;
-            @memcpy(body.items[binder_offset..][0..32], binder.slice()[0..32]);
+            @memcpy(body.items[binder_offset..][0..binder_len], binder.slice()[0..binder_len]);
 
             // RFC 8446 §4.2.10: Derive and install 0-RTT early traffic secret if enabled
             if (self.config.enable_early_data) {
@@ -2748,6 +2927,24 @@ pub const Context = struct {
 
         self.peer_cert_chain = chain;
 
+        // Store OCSP response and SCT list from leaf certificate (first entry)
+        // RFC 8446 §4.4.2.1: Extensions in leaf certificate entry
+        if (parsed.entries[0].ocsp_response) |ocsp_data| {
+            if (self.peer_ocsp_response) |old| {
+                self.allocator.free(old);
+            }
+            self.peer_ocsp_response = try self.allocator.dupe(u8, ocsp_data);
+            traceHandshake("Client: Received OCSP response ({} bytes)\\n", .{ocsp_data.len});
+        }
+
+        if (parsed.entries[0].sct_list) |sct_data| {
+            if (self.peer_sct_list) |old| {
+                self.allocator.free(old);
+            }
+            self.peer_sct_list = try self.allocator.dupe(u8, sct_data);
+            traceHandshake("Client: Received SCT list ({} bytes)\\n", .{sct_data.len});
+        }
+
         traceHandshake("Client: Received Certificate with {} cert(s)\\n", .{chain.len});
     }
 
@@ -2791,11 +2988,96 @@ pub const Context = struct {
             return HandshakeError.CertificateValidationFailed;
         };
 
+        // RFC 6960 + RFC 8446 §4.4.2.1: OCSP stapling validation
+        if (!self.config.allow_insecure) {
+            if (self.config.require_ocsp) {
+                // OCSP is required - fail if not present
+                if (self.peer_ocsp_response == null) {
+                    traceHandshake("Client: ERROR - OCSP response required but not provided\\n", .{});
+                    return HandshakeError.MissingOcspResponse;
+                }
+            }
+
+            // Validate OCSP response if present
+            if (self.peer_ocsp_response) |ocsp_bytes| {
+                // Parse leaf certificate to get issuer information
+                const leaf_parsed = try x509.parseCert(self.allocator, chain[0]);
+
+                // Determine issuer info for OCSP validation
+                const issuer_info: ?ocsp.IssuerInfo = if (chain.len >= 2) blk: {
+                    const issuer_parsed = try x509.parseCert(self.allocator, chain[1]);
+                    break :blk ocsp.IssuerInfo{ .cert = &issuer_parsed, .der = chain[1] };
+                } else null;
+
+                // Validate the stapled OCSP response
+                ocsp.validateStapledResponse(
+                    self.allocator,
+                    ocsp_bytes,
+                    &leaf_parsed,
+                    chain[0],
+                    issuer_info,
+                    now_unix,
+                ) catch |err| {
+                    traceHandshake("Client: OCSP validation failed: {}\\n", .{err});
+                    return HandshakeError.OcspValidationFailed;
+                };
+
+                traceHandshake("Client: OCSP response validated successfully\\n", .{});
+            }
+
+            // RFC 6962 + RFC 8446 §4.4.2.1: Signed Certificate Timestamp (SCT) validation
+            if (self.config.require_scts) {
+                // SCT is required - fail if not present
+                if (self.peer_sct_list == null) {
+                    traceHandshake("Client: ERROR - SCT list required but not provided\\n", .{});
+                    return HandshakeError.MissingSctList;
+                }
+            }
+
+            // Validate and invoke callback for SCT list if present
+            if (self.peer_sct_list) |sct_bytes| {
+                const parsed_scts = sct.parseList(self.allocator, sct_bytes) catch |err| {
+                    traceHandshake("Client: Failed to parse SCT list: {}\\n", .{err});
+                    return HandshakeError.SctParsingFailed;
+                };
+                defer self.allocator.free(parsed_scts);
+
+                if (parsed_scts.len == 0 and self.config.require_scts) {
+                    traceHandshake("Client: ERROR - Empty SCT list when SCTs required\\n", .{});
+                    return HandshakeError.EmptySctList;
+                }
+
+                // Invoke user callback for additional validation if configured
+                if (self.config.on_sct_list) |callback| {
+                    callback(parsed_scts) catch |err| {
+                        traceHandshake("Client: SCT list callback rejected: {}\\n", .{err});
+                        return HandshakeError.SctCallbackRejected;
+                    };
+                }
+
+                traceHandshake("Client: SCT list validated ({} SCTs)\\n", .{parsed_scts.len});
+            }
+        }
+
         // RFC 8446 §4.4.3: Verify CertificateVerify signature
         // Skip signature verification when allow_insecure is set (testing only)
         if (!self.config.allow_insecure) {
             // The signature is computed over the transcript hash up to (but not including) CertificateVerify
             const transcript_hash = self.transcripts.handshake.finalize(self.hash_kind);
+
+            // RFC 8446 §4.2.3: Enforce signature algorithm policy
+            // Verify that the algorithm used in CertificateVerify is in our supported list
+            var algorithm_supported = false;
+            for (self.config.supported_signature_schemes) |scheme| {
+                if (scheme == parsed.algorithm) {
+                    algorithm_supported = true;
+                    break;
+                }
+            }
+            if (!algorithm_supported) {
+                traceHandshake("Client: CertificateVerify algorithm {} not in supported list\\n", .{parsed.algorithm});
+                return HandshakeError.UnsupportedSignatureAlgorithm;
+            }
 
             // Get the leaf certificate's SPKI for signature verification
             const sig_alg = sig.fromTls13SignatureScheme(parsed.algorithm) catch {

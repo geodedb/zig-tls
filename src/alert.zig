@@ -117,9 +117,11 @@ pub fn fromHandshakeError(err: anyerror) AlertDescription {
         error.AlpnNegotiationFailed => .no_application_protocol,
         error.NoSignatureScheme => .handshake_failure,
         error.FinishedVerifyFailed => .decrypt_error,
+        error.DecryptError => .decrypt_error,
         error.DowngradeAttempt => .illegal_parameter,
         error.DuplicateClientHello => .unexpected_message,
         error.PostHandshakeAuthUnsupported => .unexpected_message,
+        error.CryptoError => .internal_error,
         error.OutOfMemory => .internal_error,
         else => .internal_error,
     };
@@ -234,8 +236,10 @@ test "fromHandshakeError - comprehensive mapping" {
     try std.testing.expectEqual(AlertDescription.no_application_protocol, fromHandshakeError(error.AlpnNegotiationFailed));
     try std.testing.expectEqual(AlertDescription.handshake_failure, fromHandshakeError(error.NoSignatureScheme));
     try std.testing.expectEqual(AlertDescription.decrypt_error, fromHandshakeError(error.FinishedVerifyFailed));
+    try std.testing.expectEqual(AlertDescription.decrypt_error, fromHandshakeError(error.DecryptError));
     try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.DowngradeAttempt));
     try std.testing.expectEqual(AlertDescription.unexpected_message, fromHandshakeError(error.DuplicateClientHello));
+    try std.testing.expectEqual(AlertDescription.internal_error, fromHandshakeError(error.CryptoError));
     try std.testing.expectEqual(AlertDescription.internal_error, fromHandshakeError(error.OutOfMemory));
 }
 
