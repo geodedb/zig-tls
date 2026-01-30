@@ -45,7 +45,7 @@ test "SHA-256 hash conformance with OpenSSL" {
 
     // Compute with our implementation
     var our_buf: [64]u8 = undefined;
-    const our_digest = ocsp.computeDigest(.sha256, test_data, &our_buf);
+    const our_digest = try ocsp.computeDigest(.sha256, test_data, &our_buf);
 
     // Compute with OpenSSL
     var openssl_digest: [c.SHA256_DIGEST_LENGTH]u8 = undefined;
@@ -60,7 +60,7 @@ test "SHA-384 hash conformance with OpenSSL" {
 
     // Compute with our implementation
     var our_buf: [64]u8 = undefined;
-    const our_digest = ocsp.computeDigest(.sha384, test_data, &our_buf);
+    const our_digest = try ocsp.computeDigest(.sha384, test_data, &our_buf);
 
     // Compute with OpenSSL
     var openssl_digest: [c.SHA384_DIGEST_LENGTH]u8 = undefined;
@@ -75,7 +75,7 @@ test "SHA-512 hash conformance with OpenSSL" {
 
     // Compute with our implementation
     var our_buf: [64]u8 = undefined;
-    const our_digest = ocsp.computeDigest(.sha512, test_data, &our_buf);
+    const our_digest = try ocsp.computeDigest(.sha512, test_data, &our_buf);
 
     // Compute with OpenSSL
     var openssl_digest: [c.SHA512_DIGEST_LENGTH]u8 = undefined;
@@ -122,7 +122,7 @@ test "Certificate ID hash computation conformance" {
 
     // Compute SHA-256 hash with our implementation
     var our_buf: [64]u8 = undefined;
-    const our_hash = ocsp.computeDigest(.sha256, test_issuer_name[0..], &our_buf);
+    const our_hash = try ocsp.computeDigest(.sha256, test_issuer_name[0..], &our_buf);
 
     // Compute with OpenSSL
     var openssl_hash: [c.SHA256_DIGEST_LENGTH]u8 = undefined;
