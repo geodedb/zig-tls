@@ -78,7 +78,24 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 
 // Debug tracing (disabled in production)
 const handshake_trace_enabled = false;
+
+/// Secret tracing - logs cryptographic secrets for debugging.
+///
+/// ## Security Warning
+///
+/// **NEVER enable this in production!** When enabled, ECDHE secrets,
+/// handshake secrets, and other sensitive material may be logged.
+///
+/// This constant is compile-time checked and will cause a build error
+/// if enabled in ReleaseSafe/ReleaseFast/ReleaseSmall builds.
 const secret_trace_enabled = false;
+
+// Compile-time safety: prevent secret logging in release builds
+comptime {
+    if (secret_trace_enabled and @import("builtin").mode != .Debug) {
+        @compileError("SECURITY: secret_trace_enabled must be false in release builds - secrets would be logged!");
+    }
+}
 
 inline fn traceHandshake(comptime fmt: []const u8, args: anytype) void {
     if (handshake_trace_enabled) logger.debugPrint(fmt, args);
@@ -168,7 +185,15 @@ pub const Engine = struct {
     ch_recv: bool = false, // Server: received ClientHello
     sh_seen: bool = false, // Client: seen ServerHello; Server: sent ServerHello
     /// Security / verification state (minimal)
-    allow_insecure: bool = true,
+    ///
+    /// ## Security Warning
+    ///
+    /// **NEVER set `allow_insecure = true` in production!**
+    ///
+    /// When `true`, ALL certificate validation is bypassed, allowing MITM attacks.
+    /// This option exists ONLY for testing with self-signed certificates.
+    /// Default is `false` (secure) - certificate validation is enforced.
+    allow_insecure: bool = false,
     peer_cert_ok: bool = false,
     hash_kind: Hash = .sha256,
     finished_sent: bool = false,
@@ -213,10 +238,46 @@ pub const Engine = struct {
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = true, .peer_cert_ok = false, .hash_kind = .sha256, .finished_sent = false, .finished_verified = false, .ee_sent = false, .server_handshake_flight_enqueued = false, .handshake_secret = null, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .cached_app_client = null, .cached_app_server = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
+        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = false, .peer_cert_ok = false, .hash_kind = .sha256, .finished_sent = false, .finished_verified = false, .ee_sent = false, .server_handshake_flight_enqueued = false, .handshake_secret = null, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .cached_app_client = null, .cached_app_server = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
     }
     /// Release any owned resources and buffers.
+    /// Security: Zeroizes sensitive keying material (CWE-226) before freeing.
     pub fn deinit(self: *Engine) void {
+        // CWE-226: Zeroize sensitive keying material before freeing
+        // Use secureZero to prevent compiler from optimizing away the zeroization
+        if (self.my_priv) |*priv| {
+            std.crypto.secureZero(u8, priv);
+            self.my_priv = null;
+        }
+        // Zeroize ECDHE shared secret buffer
+        std.crypto.secureZero(u8, &self.ecdhe_buf);
+        self.ecdhe_secret = null;
+        // Zeroize handshake and master secrets if present
+        if (self.handshake_secret) |*hs| {
+            std.crypto.secureZero(u8, hs.data[0..hs.len]);
+            self.handshake_secret = null;
+        }
+        if (self.master_secret) |*ms| {
+            std.crypto.secureZero(u8, ms.data[0..ms.len]);
+            self.master_secret = null;
+        }
+        if (self.handshake_client_secret) |*hcs| {
+            std.crypto.secureZero(u8, hcs.data[0..hcs.len]);
+            self.handshake_client_secret = null;
+        }
+        if (self.handshake_server_secret) |*hss| {
+            std.crypto.secureZero(u8, hss.data[0..hss.len]);
+            self.handshake_server_secret = null;
+        }
+        if (self.cached_app_client) |*cac| {
+            std.crypto.secureZero(u8, cac.data[0..cac.len]);
+            self.cached_app_client = null;
+        }
+        if (self.cached_app_server) |*cas| {
+            std.crypto.secureZero(u8, cas.data[0..cas.len]);
+            self.cached_app_server = null;
+        }
+
         if (self.leaf_spki) |spki| self.allocator.free(spki);
         if (self.client_session_id) |sid| self.allocator.free(sid);
         if (self.local_tp) |b| self.allocator.free(b);
@@ -224,7 +285,11 @@ pub const Engine = struct {
         if (self.alpn) |a| self.allocator.free(a);
         if (self.server_name) |s| self.allocator.free(s);
         if (self.server_cert_der) |c| self.allocator.free(c);
-        if (self.server_priv_key) |k| self.allocator.free(k);
+        // Zeroize server private key before freeing
+        if (self.server_priv_key) |k| {
+            std.crypto.secureZero(u8, k);
+            self.allocator.free(k);
+        }
         self.tickets.deinit();
         self.outbox.deinit(self.allocator);
         self.inbox.deinit(self.allocator);
@@ -246,7 +311,10 @@ pub const Engine = struct {
         traceHandshake("TLS: Set finished_verified={}\n", .{value});
         if (self.peer_finished_cb) |cb| {
             traceHandshake("TLS: Calling peer_finished_cb callback\n", .{});
-            cb(self.peer_finished_ctx, self, value) catch {};
+            // CWE-391: Log callback errors instead of silently ignoring them.
+            cb(self.peer_finished_ctx, self, value) catch |err| {
+                traceHandshake("TLS: peer_finished_cb error: {}\n", .{err});
+            };
         } else {
             traceHandshake("TLS: No peer_finished_cb registered\n", .{});
         }
@@ -667,7 +735,7 @@ pub const Engine = struct {
                                     },
                                 };
                                 if (self.peer_cert_ok) { // Only verify if not already failed
-                                    const ok = sig.verifyCertificateVerify(alg, self.leaf_spki.?, signature, "TLS 1.3, server CertificateVerify", th.slice()) catch false;
+                                    const ok = sig.verifyCertificateVerify(alg, self.leaf_spki.?, signature, "TLS 1.3, server CertificateVerify", th.slice(), self.allocator) catch false;
                                     self.peer_cert_ok = ok;
                                     if (!ok) {
                                         traceHandshake("TLS: CertificateVerify signature verification FAILED\n", .{});
@@ -784,7 +852,10 @@ pub const Engine = struct {
                             const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
                             var master_local = ms;
                             const res_secret = ks.deriveSecretHash(self.hash_kind, &master_local, "res master", transcript_hash.slice());
-                            self.tickets.store(ticket_bytes, res_secret, lifetime) catch {};
+                            // CWE-391: Log ticket store errors instead of silently ignoring them.
+                            self.tickets.store(ticket_bytes, res_secret, lifetime) catch |err| {
+                                traceHandshake("TLS: Failed to store session ticket: {}\n", .{err});
+                            };
                             traceHandshake("TLS: Stored session ticket (len={}, lifetime={})\n", .{ ticket_bytes.len, lifetime });
                         } else {
                             traceHandshake("TLS: Received ticket before master_secret ready; ignoring\n", .{});
@@ -1463,7 +1534,11 @@ pub const Engine = struct {
                     return; // wait for cert validation
                 }
                 logger.debugPrint("Client: Queueing Finished message in real mode\n", .{});
-                self.queueFinished(self.handshake_client_secret.?) catch {};
+                // CWE-391: Log queueFinished errors instead of silently ignoring them.
+                // A failure here means the handshake won't complete properly.
+                self.queueFinished(self.handshake_client_secret.?) catch |err| {
+                    logger.debugPrint("Client: Failed to queue Finished message: {}\n", .{err});
+                };
             }
         }
     }
@@ -1568,7 +1643,7 @@ pub const Engine = struct {
             // Ensure signature algorithm is set
             if (self.server_sig_alg == null) {
                 const cert_der = self.server_cert_der.?;
-                const detected = x509.inferSignatureAlgorithm(cert_der) catch |err| {
+                const detected = x509.inferSignatureAlgorithm(cert_der, self.allocator) catch |err| {
                     logger.debugPrint("[CERTVERIFY] Failed to infer signature algorithm from server cert: {} (defaulting to ECDSA P-256)\n", .{err});
                     self.server_sig_alg = .ecdsa_secp256r1_sha256;
                     return; // Exit early if inference fails
@@ -1689,8 +1764,8 @@ fn readU16(be: []const u8) u16 {
 fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
     logger.debugPrint("parseRealClientHello: body_len={}\n", .{body.len});
 
-    // Use a stack allocator for the parsing
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    // Use arena allocator for parsing (backed by engine's allocator)
+    var arena = std.heap.ArenaAllocator.init(engine.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 

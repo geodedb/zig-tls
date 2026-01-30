@@ -141,7 +141,7 @@ test "hashAlgFromOid - unsupported algorithm rejection" {
 test "computeDigest - SHA-256 hash computation" {
     var out: [64]u8 = undefined;
     const data = "test data";
-    const digest = ocsp.computeDigest(.sha256, data, &out);
+    const digest = try ocsp.computeDigest(.sha256, data, &out);
 
     // Verify digest length
     try testing.expectEqual(@as(usize, 32), digest.len);
@@ -150,6 +150,13 @@ test "computeDigest - SHA-256 hash computation" {
     // SHA-256("test data") = 916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9
     const expected_start = [_]u8{ 0x91, 0x6f, 0x00, 0x27 };
     try testing.expectEqualSlices(u8, &expected_start, digest[0..4]);
+}
+
+test "computeDigest - SHA-1 returns error (deprecated per CWE-328)" {
+    var out: [64]u8 = undefined;
+    const data = "test data";
+    // SHA-1 is deprecated and should return an error
+    try testing.expectError(ocsp.ComputeDigestError.Sha1NotSupported, ocsp.computeDigest(.sha1, data, &out));
 }
 
 test "normalizeInteger - remove leading zeros" {

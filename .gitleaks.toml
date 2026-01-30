@@ -8,26 +8,39 @@ title = "Gitleaks Configuration"
 useDefault = true
 
 [allowlist]
-description = "Global allowlist"
+description = "Global allowlist - SECURITY: Keep exclusions minimal and audit regularly"
 paths = [
-  '''testdata''',
-  '''tests/.*''',
+  # Build artifacts (safe to exclude)
   '''\.zig-cache''',
   '''zig-out''',
   '''vendor''',
-  '''specs/.*''',
-  '''.*_test\.zig$''',
-  '''.*test_.*\.zig$''',
-  '''.*_vectors\.zig$''',
-  '''.*\.md$''',
   '''.*\.log$''',
+
+  # Test certificates and keys - intentionally committed for testing
+  # WARNING: These are TEST KEYS ONLY - never use in production!
+  # Files in these paths are self-signed test certificates, not real secrets.
+  '''tests/tests/test_certs/.*\.pem$''',
+  '''tests/tests/test_certs/.*\.crt$''',
+  '''tests/tests/test_certs/.*\.key$''',
+  '''testdata/.*\.pem$''',
+
+  # Test vector files containing expected cryptographic outputs
+  # These are published test vectors from RFCs, not secrets
+  '''.*_vectors\.zig$''',
+
+  # Specification documents (may contain example keys from RFCs)
+  # AUDIT: Periodically review specs/ for accidentally committed secrets
+  # Files are .txt format (RFC specifications downloaded from IETF)
+  '''specs/.*\.txt$''',
 ]
 stopwords = [
+  # TLS 1.3 key derivation variable names (not actual secrets)
   "initial_secret",
   "client_secret",
   "client_initial_secret",
   "ecdhe_secret",
   "expected_initial_secret_hex",
   "expected_client_secret_hex",
+  # X.509 extension name
   "keyCertSign",
 ]

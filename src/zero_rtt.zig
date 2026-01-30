@@ -140,6 +140,34 @@ pub const TicketState = enum {
     revoked, // Ticket explicitly invalidated (security event, expiration, etc.)
 };
 
+/// Default window size for anti-replay protection.
+/// 64 entries is suitable for low-to-moderate traffic scenarios.
+pub const default_window_size: usize = 64;
+
+/// Configurable anti-replay window size recommendations.
+///
+/// ## Sizing Guidelines (RFC 8446 §8.1)
+///
+/// The window should be sized based on expected 0-RTT connection rate:
+/// - **64 entries**: Low traffic (<100 0-RTT connections/sec) - 2KB memory
+/// - **256 entries**: Moderate traffic (~500 0-RTT connections/sec) - 8KB memory
+/// - **1024 entries**: High traffic (~2000 0-RTT connections/sec) - 32KB memory
+/// - **4096 entries**: Very high traffic (~8000 0-RTT connections/sec) - 128KB memory
+///
+/// For traffic exceeding these levels, consider using a distributed cache
+/// (Redis, Memcached) instead of this in-memory window.
+///
+/// ## Formula
+///
+/// window_size >= connections_per_second × ticket_lifetime_seconds / safety_factor
+/// Example: 500 conn/sec × 0.5 sec window ÷ 2 ≈ 125 → use 256 entries
+pub const WindowSizeRecommendations = struct {
+    pub const low_traffic: usize = 64;
+    pub const moderate_traffic: usize = 256;
+    pub const high_traffic: usize = 1024;
+    pub const very_high_traffic: usize = 4096;
+};
+
 /// Sliding window anti-replay cache for 0-RTT replay detection (RFC 8446 §8.1).
 ///
 /// Implements a simple FIFO-based cache that remembers recently seen ClientHello
@@ -155,10 +183,23 @@ pub const TicketState = enum {
 ///
 /// ## Window Behavior
 ///
-/// - **Size**: Configurable (default: 64 entries)
+/// - **Size**: Configurable via comptime parameter (default: 64 entries)
 /// - **Eviction**: FIFO (oldest entry evicted when full)
-/// - **Storage**: In-memory array (stack-allocated)
-/// - **Lookup**: Linear scan (O(n), acceptable for small windows)
+/// - **Storage**: In-memory array (stack-allocated for small windows)
+/// - **Lookup**: Linear scan (O(n), acceptable for windows up to ~1024)
+///
+/// ## Configuring Window Size
+///
+/// Use `AntiReplayWindowSized(N)` to create a window with N entries:
+/// ```zig
+/// // For high-traffic servers (1024 entries)
+/// var window = AntiReplayWindowSized(1024).init(allocator);
+///
+/// // Default size (64 entries)
+/// var window = AntiReplayWindow.init(allocator);
+/// ```
+///
+/// See `WindowSizeRecommendations` for sizing guidance.
 ///
 /// ## RFC Compliance
 ///
@@ -194,115 +235,228 @@ pub const TicketState = enum {
 /// - Linear scan: O(window_size) per lookup
 /// - For window_size=64, this is fast enough (negligible vs crypto ops)
 /// - For larger windows (1024+), consider hash table or bloom filter
-pub const AntiReplayWindow = struct {
-    const Self = @This();
-    const window_size = 64; // RFC 8446 §8.1: Track last 64 ClientHello randoms
+pub fn AntiReplayWindowSized(comptime size: usize) type {
+    return struct {
+        const Self = @This();
+        pub const window_size = size;
 
-    randoms: [window_size][32]u8 = undefined, // Fixed-size FIFO buffer
-    count: usize = 0, // Total randoms added (wraps for FIFO index)
-    allocator: std.mem.Allocator, // Reserved for future heap-based extensions
+        randoms: [window_size][32]u8 = undefined, // Fixed-size FIFO buffer
+        count: usize = 0, // Total randoms added (wraps for FIFO index)
+        allocator: std.mem.Allocator, // Reserved for future heap-based extensions
 
-    /// Initialize an empty anti-replay window.
-    ///
-    /// ## Parameters
-    ///
-    /// - `allocator`: Memory allocator (currently unused, reserved for future use)
-    ///
-    /// ## Returns
-    ///
-    /// - `AntiReplayWindow`: Initialized window with no entries
-    pub fn init(allocator: std.mem.Allocator) Self {
-        return .{
-            .randoms = undefined,
-            .count = 0,
-            .allocator = allocator,
-        };
-    }
-
-    /// Release resources held by the anti-replay window.
-    ///
-    /// Currently a no-op (stack-allocated buffer), but included for API consistency
-    /// and future heap-based implementations.
-    pub fn deinit(_: *Self) void {
-        // No heap allocations in this simple implementation
-    }
-
-    /// Check if a ClientHello random has been seen before (replay detection).
-    ///
-    /// Performs a linear scan over the window to detect duplicates.
-    ///
-    /// ## Parameters
-    ///
-    /// - `random`: 32-byte ClientHello random field (from TLS handshake)
-    ///
-    /// ## Returns
-    ///
-    /// - `true`: Random found in window (REPLAY DETECTED)
-    /// - `false`: Random not seen before (ACCEPT)
-    ///
-    /// ## RFC Compliance
-    ///
-    /// - RFC 8446 §8.1: Anti-replay mechanism based on ClientHello recording
-    ///
-    /// ## Security Note
-    ///
-    /// Uses constant-time comparison to prevent timing side-channels from
-    /// leaking information about which randoms are in the anti-replay window.
-    pub fn contains(self: *const Self, random: [32]u8) bool {
-        const limit = @min(self.count, window_size);
-        var found: bool = false;
-        var i: usize = 0;
-        while (i < limit) : (i += 1) {
-            // Constant-time comparison - always check all entries to avoid timing leak
-            const match = std.crypto.timing_safe.eql([32]u8, self.randoms[i], random);
-            found = found or match;
+        /// Initialize an empty anti-replay window.
+        ///
+        /// ## Parameters
+        ///
+        /// - `allocator`: Memory allocator (currently unused, reserved for future use)
+        ///
+        /// ## Returns
+        ///
+        /// - `AntiReplayWindowSized`: Initialized window with no entries
+        pub fn init(allocator: std.mem.Allocator) Self {
+            return .{
+                .randoms = undefined,
+                .count = 0,
+                .allocator = allocator,
+            };
         }
-        return found;
-    }
 
-    /// Add a new ClientHello random to the anti-replay window.
-    ///
-    /// Checks for duplicates before adding (replay detection). If the window is full,
-    /// the oldest entry is evicted (FIFO behavior).
-    ///
-    /// ## Parameters
-    ///
-    /// - `random`: 32-byte ClientHello random field to record
-    ///
-    /// ## Returns
-    ///
-    /// - `void`: Random successfully added
-    /// - `error.ReplayDetected`: Random already exists in window (MUST reject 0-RTT)
-    ///
-    /// ## RFC Compliance
-    ///
-    /// - RFC 8446 §8.2: ClientHello Recording (single-use enforcement)
-    ///
-    /// ## Security Critical
-    ///
-    /// This function MUST be called before accepting 0-RTT data. If it returns
-    /// `error.ReplayDetected`, the server MUST reject the 0-RTT attempt and
-    /// treat the connection as a regular 1-RTT handshake.
-    pub fn add(self: *Self, random: [32]u8) !void {
-        if (self.contains(random)) {
-            return error.ReplayDetected; // RFC 8446 §8.1: Reject replay
+        /// Release resources held by the anti-replay window.
+        ///
+        /// Currently a no-op (stack-allocated buffer), but included for API consistency
+        /// and future heap-based implementations.
+        pub fn deinit(_: *Self) void {
+            // No heap allocations in this simple implementation
         }
-        const idx = self.count % window_size; // FIFO eviction
-        self.randoms[idx] = random;
-        self.count += 1;
+
+        /// Check if a ClientHello random has been seen before (replay detection).
+        ///
+        /// Performs a linear scan over the window to detect duplicates.
+        ///
+        /// ## Parameters
+        ///
+        /// - `random`: 32-byte ClientHello random field (from TLS handshake)
+        ///
+        /// ## Returns
+        ///
+        /// - `true`: Random found in window (REPLAY DETECTED)
+        /// - `false`: Random not seen before (ACCEPT)
+        ///
+        /// ## RFC Compliance
+        ///
+        /// - RFC 8446 §8.1: Anti-replay mechanism based on ClientHello recording
+        ///
+        /// ## Security Note
+        ///
+        /// Uses constant-time comparison to prevent timing side-channels from
+        /// leaking information about which randoms are in the anti-replay window.
+        pub fn contains(self: *const Self, random: [32]u8) bool {
+            const limit = @min(self.count, window_size);
+            var found: bool = false;
+            var i: usize = 0;
+            while (i < limit) : (i += 1) {
+                // Constant-time comparison - always check all entries to avoid timing leak
+                const match = std.crypto.timing_safe.eql([32]u8, self.randoms[i], random);
+                found = found or match;
+            }
+            return found;
+        }
+
+        /// Add a new ClientHello random to the anti-replay window.
+        ///
+        /// Checks for duplicates before adding (replay detection). If the window is full,
+        /// the oldest entry is evicted (FIFO behavior).
+        ///
+        /// ## Parameters
+        ///
+        /// - `random`: 32-byte ClientHello random field to record
+        ///
+        /// ## Returns
+        ///
+        /// - `void`: Random successfully added
+        /// - `error.ReplayDetected`: Random already exists in window (MUST reject 0-RTT)
+        ///
+        /// ## RFC Compliance
+        ///
+        /// - RFC 8446 §8.2: ClientHello Recording (single-use enforcement)
+        ///
+        /// ## Security Critical
+        ///
+        /// This function MUST be called before accepting 0-RTT data. If it returns
+        /// `error.ReplayDetected`, the server MUST reject the 0-RTT attempt and
+        /// treat the connection as a regular 1-RTT handshake.
+        pub fn add(self: *Self, random: [32]u8) !void {
+            if (self.contains(random)) {
+                return error.ReplayDetected; // RFC 8446 §8.1: Reject replay
+            }
+            const idx = self.count % window_size; // FIFO eviction
+            self.randoms[idx] = random;
+            self.count += 1;
+        }
+
+        /// Clear all entries from the anti-replay window.
+        ///
+        /// **WARNING**: This resets replay protection! Only use for testing or when
+        /// explicitly required (e.g., server restart with fresh state).
+        ///
+        /// ## Security Warning
+        ///
+        /// Resetting the window allows previously seen ClientHello randoms to be
+        /// replayed. Only call this in controlled scenarios.
+        pub fn reset(self: *Self) void {
+            self.count = 0;
+        }
+    };
+}
+
+/// Default anti-replay window with 64 entries.
+/// For custom sizes, use `AntiReplayWindowSized(N)` instead.
+pub const AntiReplayWindow = AntiReplayWindowSized(default_window_size);
+
+/// Interface for persistent anti-replay storage backends (RFC 8446 §8.1).
+///
+/// ## Overview
+///
+/// For single-server deployments, the in-memory `AntiReplayWindow` is sufficient.
+/// However, production multi-server deployments require shared persistent storage
+/// to prevent cross-server replay attacks and survive server restarts.
+///
+/// This interface defines the contract that persistent backends must implement.
+/// Implementations can use Redis, Memcached, PostgreSQL, or any other backend
+/// that supports atomic check-and-set operations.
+///
+/// ## Security Requirements
+///
+/// Implementations MUST:
+/// - Provide atomic check-and-add semantics (no race conditions)
+/// - Expire entries after the configured TTL (typically ticket lifetime)
+/// - Be available across all servers in the deployment
+/// - Handle network failures gracefully (fail-closed: reject 0-RTT on errors)
+///
+/// ## Example Implementation (Redis)
+///
+/// ```zig
+/// const RedisPersistentStore = struct {
+///     const Self = @This();
+///     client: *RedisClient,
+///     ttl_seconds: u32,
+///
+///     pub fn checkAndAdd(self: *Self, random: [32]u8) PersistentStoreError!bool {
+///         const key = formatKey(&random);
+///         // SETNX returns 1 if key was set (not seen before)
+///         // SETNX returns 0 if key already exists (replay detected)
+///         const result = self.client.setnxWithExpiry(key, "1", self.ttl_seconds)
+///             catch return error.BackendUnavailable;
+///         return result == 1; // true = added (not a replay), false = replay detected
+///     }
+///
+///     fn formatKey(random: *const [32]u8) []const u8 {
+///         // Format as "tls13:ar:{hex}" for namespacing
+///         // ...
+///     }
+/// };
+/// ```
+///
+/// ## TTL Considerations
+///
+/// The TTL should match or exceed the maximum ticket lifetime:
+/// - Typical ticket lifetime: 7 days (604800 seconds)
+/// - Recommended TTL: 7 days + clock skew tolerance (e.g., 605000 seconds)
+/// - Storage requirement: ~40 bytes per entry (32-byte random + overhead)
+///
+/// ## Error Handling
+///
+/// When the backend is unavailable, servers SHOULD:
+/// - Reject 0-RTT and fall back to 1-RTT (fail-closed, more secure)
+/// - NOT accept 0-RTT without replay protection (fail-open, dangerous)
+///
+/// ## Future Work
+///
+/// This interface is designed for future integration. To use it:
+/// 1. Implement the interface for your chosen backend
+/// 2. Inject the implementation into your TLS server configuration
+/// 3. The TLS engine will call checkAndAdd() before accepting 0-RTT
+pub const PersistentAntiReplayStore = struct {
+    /// Opaque pointer to backend-specific state
+    ptr: *anyopaque,
+
+    /// VTable for dynamic dispatch
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        /// Check if a ClientHello random has been seen and atomically add it.
+        ///
+        /// ## Parameters
+        /// - `random`: 32-byte ClientHello random field
+        ///
+        /// ## Returns
+        /// - `true`: Random was NOT seen before (added successfully, accept 0-RTT)
+        /// - `false`: Random was seen before (replay detected, reject 0-RTT)
+        /// - `error.BackendUnavailable`: Cannot reach backend (reject 0-RTT)
+        /// - `error.BackendError`: Backend returned an error (reject 0-RTT)
+        checkAndAdd: *const fn (ptr: *anyopaque, random: [32]u8) PersistentStoreError!bool,
+
+        /// Optional: Clear all entries (for testing only, not recommended in production)
+        reset: ?*const fn (ptr: *anyopaque) void,
+    };
+
+    pub const PersistentStoreError = error{
+        /// Backend storage is unreachable (network error, timeout, etc.)
+        BackendUnavailable,
+        /// Backend returned an error (auth failure, quota exceeded, etc.)
+        BackendError,
+    };
+
+    /// Check if random has been seen; atomically add if not.
+    pub fn checkAndAdd(self: PersistentAntiReplayStore, random: [32]u8) PersistentStoreError!bool {
+        return self.vtable.checkAndAdd(self.ptr, random);
     }
 
-    /// Clear all entries from the anti-replay window.
-    ///
-    /// **WARNING**: This resets replay protection! Only use for testing or when
-    /// explicitly required (e.g., server restart with fresh state).
-    ///
-    /// ## Security Warning
-    ///
-    /// Resetting the window allows previously seen ClientHello randoms to be
-    /// replayed. Only call this in controlled scenarios.
-    pub fn reset(self: *Self) void {
-        self.count = 0;
+    /// Reset the store (testing only).
+    pub fn reset(self: PersistentAntiReplayStore) void {
+        if (self.vtable.reset) |resetFn| {
+            resetFn(self.ptr);
+        }
     }
 };
 
@@ -352,8 +506,50 @@ pub const AntiReplayWindow = struct {
 /// - `allow_non_idempotent`: Explicit opt-in for risky operations (NOT RECOMMENDED)
 /// - `time_window_tolerance`: Clock skew tolerance (seconds)
 pub const ZeroRttLimits = struct {
-    max_early_data_size: u32 = 16384, // RFC 8446 §4.2.10: 16KB default (balance of security and utility)
-    // Future: Additional limits (time windows, ticket lifetime, etc.)
+    /// Minimum allowed value for max_early_data_size (1KB).
+    /// Smaller values provide minimal utility for 0-RTT.
+    pub const min_early_data_size: u32 = 1024;
+
+    /// Maximum allowed value for max_early_data_size (16MB - 1).
+    /// Per RFC 8446 §4.2.10, max_early_data_size is a uint32, but TLS record
+    /// layer limits individual records. 16MB is a practical upper bound.
+    pub const max_early_data_size_limit: u32 = 0xFFFFFF; // 2^24 - 1 (TLS record layer max)
+
+    /// Maximum bytes of 0-RTT data allowed.
+    /// Default: 16KB (balance of security and utility per RFC 8446 §4.2.10)
+    max_early_data_size: u32 = 16384,
+
+    /// Validate that all limits are within acceptable bounds.
+    ///
+    /// ## Returns
+    /// - `void` if all limits are valid
+    /// - `error.InvalidEarlyDataSize` if max_early_data_size is out of bounds
+    ///
+    /// ## Security Note
+    /// Applications should call this after constructing ZeroRttLimits to ensure
+    /// the configuration doesn't allow dangerously large or uselessly small values.
+    pub fn validate(self: ZeroRttLimits) !void {
+        if (self.max_early_data_size < min_early_data_size) {
+            return error.InvalidEarlyDataSize;
+        }
+        if (self.max_early_data_size > max_early_data_size_limit) {
+            return error.InvalidEarlyDataSize;
+        }
+    }
+
+    /// Create a validated ZeroRttLimits with the given early data size.
+    ///
+    /// ## Parameters
+    /// - `size`: Maximum early data size in bytes (must be between 1KB and 16MB-1)
+    ///
+    /// ## Returns
+    /// - Validated `ZeroRttLimits` struct
+    /// - `error.InvalidEarlyDataSize` if size is out of bounds
+    pub fn withEarlyDataSize(size: u32) !ZeroRttLimits {
+        const limits = ZeroRttLimits{ .max_early_data_size = size };
+        try limits.validate();
+        return limits;
+    }
 };
 
 test "anti-replay window detects duplicates" {
@@ -409,4 +605,67 @@ test "anti-replay window reset" {
     window.reset();
     try std.testing.expect(!window.contains(random));
     try std.testing.expectEqual(@as(usize, 0), window.count);
+}
+
+test "configurable anti-replay window size" {
+    // Test with custom window size (128 entries)
+    const LargeWindow = AntiReplayWindowSized(128);
+    var window = LargeWindow.init(std.testing.allocator);
+    defer window.deinit();
+
+    // Verify the window size is as configured
+    try std.testing.expectEqual(@as(usize, 128), LargeWindow.window_size);
+
+    // Test basic functionality with unique random
+    var first_random: [32]u8 = undefined;
+    @memset(&first_random, 0);
+    first_random[0] = 0xAA;
+    first_random[1] = 0xBB;
+    try window.add(first_random);
+    try std.testing.expect(window.contains(first_random));
+
+    // Test FIFO eviction at custom size - generate unique randoms
+    var i: usize = 0;
+    while (i < LargeWindow.window_size + 5) : (i += 1) {
+        var rand: [32]u8 = undefined;
+        @memset(&rand, 0);
+        // Encode i as little-endian bytes in first 4 bytes to ensure uniqueness
+        rand[0] = @as(u8, @intCast((i + 1) & 0xFF));
+        rand[1] = @as(u8, @intCast(((i + 1) >> 8) & 0xFF));
+        rand[2] = @as(u8, @intCast(((i + 1) >> 16) & 0xFF));
+        rand[3] = @as(u8, @intCast(((i + 1) >> 24) & 0xFF));
+        try window.add(rand);
+    }
+
+    // Original random (0xAABB...) should be evicted after filling window
+    try std.testing.expect(!window.contains(first_random));
+}
+
+test "ZeroRttLimits validation" {
+    // Default limits should be valid
+    const default_limits = ZeroRttLimits{};
+    try default_limits.validate();
+
+    // Valid custom limit
+    const valid_limits = try ZeroRttLimits.withEarlyDataSize(32768);
+    try std.testing.expectEqual(@as(u32, 32768), valid_limits.max_early_data_size);
+
+    // Too small - should fail
+    try std.testing.expectError(
+        error.InvalidEarlyDataSize,
+        ZeroRttLimits.withEarlyDataSize(512),
+    );
+
+    // Too large - should fail
+    try std.testing.expectError(
+        error.InvalidEarlyDataSize,
+        ZeroRttLimits.withEarlyDataSize(0xFFFFFFFF),
+    );
+
+    // Boundary values
+    const min_valid = try ZeroRttLimits.withEarlyDataSize(ZeroRttLimits.min_early_data_size);
+    try std.testing.expectEqual(ZeroRttLimits.min_early_data_size, min_valid.max_early_data_size);
+
+    const max_valid = try ZeroRttLimits.withEarlyDataSize(ZeroRttLimits.max_early_data_size_limit);
+    try std.testing.expectEqual(ZeroRttLimits.max_early_data_size_limit, max_valid.max_early_data_size);
 }

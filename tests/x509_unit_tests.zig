@@ -300,7 +300,7 @@ test "matchDnsName - wildcard in Common Name" {
     try testing.expect(!x509.matchDnsName(&cert, "example.com"));
 }
 
-test "matchDnsName - case sensitivity" {
+test "matchDnsName - case insensitivity (RFC 4343)" {
     const dns_names = [_][]const u8{"Example.Com"};
     var cert = x509.Certificate{
         .tbs = &[_]u8{},
@@ -314,12 +314,40 @@ test "matchDnsName - case sensitivity" {
         .spki = &[_]u8{},
     };
 
-    // Current implementation is case-sensitive
-    // Note: DNS names are technically case-insensitive per RFC 4343
-    try testing.expect(x509.matchDnsName(&cert, "Example.Com"));
-    // These would fail with current implementation (case-sensitive):
-    // try testing.expect(!x509.matchDnsName(&cert, "example.com"));
-    // try testing.expect(!x509.matchDnsName(&cert, "EXAMPLE.COM"));
+    // RFC 4343 requires DNS names to be compared case-insensitively
+    // All these variants should match "Example.Com"
+    try testing.expect(x509.matchDnsName(&cert, "Example.Com")); // exact
+    try testing.expect(x509.matchDnsName(&cert, "example.com")); // lowercase
+    try testing.expect(x509.matchDnsName(&cert, "EXAMPLE.COM")); // uppercase
+    try testing.expect(x509.matchDnsName(&cert, "eXaMpLe.CoM")); // mixed case
+
+    // Different domain should NOT match
+    try testing.expect(!x509.matchDnsName(&cert, "example.org"));
+}
+
+test "matchDnsName - wildcard case insensitivity (RFC 4343)" {
+    const dns_names = [_][]const u8{"*.EXAMPLE.COM"};
+    var cert = x509.Certificate{
+        .tbs = &[_]u8{},
+        .issuer_der = &[_]u8{},
+        .subject_der = &[_]u8{},
+        .serial_number = &[_]u8{},
+        .subject = .{},
+        .san = .{ .dns = &dns_names },
+        .not_before_unix = 0,
+        .not_after_unix = 0,
+        .spki = &[_]u8{},
+    };
+
+    // Wildcard matching should also be case-insensitive
+    try testing.expect(x509.matchDnsName(&cert, "www.example.com"));
+    try testing.expect(x509.matchDnsName(&cert, "WWW.EXAMPLE.COM"));
+    try testing.expect(x509.matchDnsName(&cert, "Www.Example.Com"));
+    try testing.expect(x509.matchDnsName(&cert, "api.EXAMPLE.com"));
+
+    // Base domain should not match wildcard
+    try testing.expect(!x509.matchDnsName(&cert, "example.com"));
+    try testing.expect(!x509.matchDnsName(&cert, "EXAMPLE.COM"));
 }
 
 test "matchDnsName - no CN or SAN" {

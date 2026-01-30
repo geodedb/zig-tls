@@ -34,6 +34,11 @@ default:
 variables:
   # Disable git submodules - dependencies are fetched directly in jobs
   GIT_SUBMODULE_STRATEGY: none
+  # Zig version and SHA256 hash for supply chain integrity
+  # Hash obtained from https://ziglang.org/download/index.json
+  # SECURITY: Always verify downloads against official hashes
+  ZIG_VERSION: "0.15.2"
+  ZIG_SHA256: "02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239"
 
 stages:
   - build
@@ -42,12 +47,13 @@ stages:
   - sbom
   - release
 
-# Zig installation script (reusable)
+# Zig installation script (reusable) with integrity verification
 .install-zig: &install-zig
   - apt-get update && apt-get install -y curl xz-utils
-  - curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o zig.tar.xz
+  - curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+  - echo "${ZIG_SHA256}  zig.tar.xz" | sha256sum -c -
   - tar -xf zig.tar.xz
-  - export PATH="$PWD/zig-x86_64-linux-0.15.2:$PATH"
+  - export PATH="$PWD/zig-x86_64-linux-${ZIG_VERSION}:$PATH"
   - zig version
 
 # Build and unit tests
@@ -87,11 +93,12 @@ test-interop:
     - company
     - linux
   before_script:
-    # Install Zig and OpenSSL development libraries directly (no submodules)
+    # Install Zig (with hash verification) and OpenSSL development libraries
     - apt-get update && apt-get install -y curl xz-utils libssl-dev
-    - curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o zig.tar.xz
+    - curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+    - echo "${ZIG_SHA256}  zig.tar.xz" | sha256sum -c -
     - tar -xf zig.tar.xz
-    - export PATH="$PWD/zig-x86_64-linux-0.15.2:$PATH"
+    - export PATH="$PWD/zig-x86_64-linux-${ZIG_VERSION}:$PATH"
     - zig version
   script:
     - zig build test-conformance

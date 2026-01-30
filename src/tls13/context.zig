@@ -99,7 +99,24 @@ const Sha384 = std.crypto.hash.sha2.Sha384;
 
 // Debug tracing (disabled in production)
 const handshake_trace_enabled = false;
+
+/// Secret tracing - logs cryptographic secrets for debugging.
+///
+/// ## Security Warning
+///
+/// **NEVER enable this in production!** When enabled, traffic secrets,
+/// session keys, and other sensitive material may be logged.
+///
+/// This constant is compile-time checked and will cause a build error
+/// if enabled in ReleaseSafe/ReleaseFast/ReleaseSmall builds.
 const secret_trace_enabled = false;
+
+// Compile-time safety: prevent secret logging in release builds
+comptime {
+    if (secret_trace_enabled and @import("builtin").mode != .Debug) {
+        @compileError("SECURITY: secret_trace_enabled must be false in release builds - secrets would be logged!");
+    }
+}
 
 inline fn traceHandshake(comptime fmt: []const u8, args: anytype) void {
     if (handshake_trace_enabled) logger.debugPrint(fmt, args);
@@ -1219,7 +1236,11 @@ pub const Context = struct {
     pub fn confirmPeerFinished(self: *Context) void {
         self.flags.peer_finished_verified = true;
         if (self.callbacks.on_peer_finished) |cb| {
-            cb(self) catch {};
+            // CWE-391: Log callback errors instead of silently ignoring them.
+            // Callback errors shouldn't fail the handshake, but should be visible for debugging.
+            cb(self) catch |err| {
+                logger.debugPrint("[TLS] on_peer_finished callback error: {}\n", .{err});
+            };
         }
         self.bumpPhaseAfterFinished();
     }
@@ -1272,7 +1293,11 @@ pub const Context = struct {
         if (self.flags.peer_finished_verified and self.flags.local_finished_sent) {
             self.phase = .application_ready;
             if (self.callbacks.on_handshake_complete) |cb| {
-                cb(self) catch {};
+                // CWE-391: Log callback errors instead of silently ignoring them.
+                // Callback errors shouldn't fail the handshake, but should be visible for debugging.
+                cb(self) catch |err| {
+                    logger.debugPrint("[TLS] on_handshake_complete callback error: {}\n", .{err});
+                };
             }
         }
     }
@@ -1888,6 +1913,44 @@ pub const Context = struct {
         traceHandshake("Server: HelloRetryRequest sent successfully\n", .{});
     }
 
+    /// Compute transcript hash for PSK binder verification (RFC 8446 §4.2.11.2).
+    ///
+    /// The binder is computed over a hash of the ClientHello up to (but not including)
+    /// the binders list. This function computes that hash.
+    ///
+    /// Parameters:
+    /// - hash: Hash algorithm (SHA-256 or SHA-384 based on cipher suite)
+    /// - header: 4-byte handshake message header (Type + Length)
+    /// - truncated_body: ClientHello body truncated before binders list
+    ///
+    /// Returns:
+    /// - Secret containing the transcript hash
+    fn computeBinderTranscriptHash(hash: ks.Hash, header: *const [4]u8, truncated_body: []const u8) ks.Secret {
+        // RFC 8446 §4.2.11.2: The hash is over the concatenation of:
+        // - Handshake header (4 bytes: Type + 3-byte length)
+        // - Truncated ClientHello body (up to but not including binders)
+        //
+        // We compute this incrementally to avoid allocating a buffer.
+        return switch (hash) {
+            .sha256 => blk: {
+                var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+                hasher.update(header);
+                hasher.update(truncated_body);
+                var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+                hasher.final(&digest);
+                break :blk ks.Secret.fromSlice(hash, &digest);
+            },
+            .sha384 => blk: {
+                var hasher = std.crypto.hash.sha2.Sha384.init(.{});
+                hasher.update(header);
+                hasher.update(truncated_body);
+                var digest: [std.crypto.hash.sha2.Sha384.digest_length]u8 = undefined;
+                hasher.final(&digest);
+                break :blk ks.Secret.fromSlice(hash, &digest);
+            },
+        };
+    }
+
     /// Select a PSK from the ClientHello offered PSKs (RFC 8446 §4.2.11).
     ///
     /// Iterates through offered identities and calls the on_ticket_lookup callback.
@@ -1906,92 +1969,71 @@ pub const Context = struct {
                 // Found a matching PSK. Now verify the binder.
                 // RFC 8446 §4.2.11: Binder validation
 
-                // 1. Derive binder key
+                // 1. Derive early secret and binder key (RFC 8446 §7.1)
                 // early_secret = HKDF-Extract(0, psk)
                 const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, psk_bytes);
                 // binder_key = Derive-Secret(early_secret, "res binder", "")
                 // Note: We assume resumption binder ("res binder"). External PSK would use "ext binder".
                 // Since we looked it up via ticket callback, it's likely resumption.
                 const binder_key = key_derivation_mod.deriveBinderKey(self.hash_kind, &early_secret, false);
-                _ = binder_key; // TODO: Use for verification
 
-                // 2. Compute binder
-                // Transcript for binder is ClientHello truncated before the binders list
-                // Calculate binders length
+                // 2. Calculate truncated ClientHello for binder verification (RFC 8446 §4.2.11.2)
+                // The transcript for binder computation is the ClientHello truncated before the binders list.
+                // Calculate binders length (each binder is 1-byte length + binder bytes)
                 var binders_len: usize = 0;
                 for (psk_ext.binders) |b| {
                     binders_len += 1 + b.len;
                 }
 
+                // Validate we have enough bytes for truncation
+                // binders_len + 2 = binders list length (2 bytes) + binder entries
                 if (ch_view.raw.len < binders_len + 2) return HandshakeError.UnexpectedMessage;
                 const truncated_len = ch_view.raw.len - (binders_len + 2);
                 const truncated_ch = ch_view.raw[0..truncated_len];
-                _ = truncated_ch; // TODO: Use for verification
 
                 // Check if we have a binder for this identity
                 if (idx >= psk_ext.binders.len) return HandshakeError.UnexpectedMessage;
-                const binder = psk_ext.binders[idx];
-                _ = binder; // TODO: Verify against computed binder
+                const received_binder = psk_ext.binders[idx];
 
-                // Hash the truncated ClientHello
-                // We need to hash it. But wait, the transcript hash usually includes the Handshake Header (Type + Length).
-                // ch_view.raw is just the Body.
-                // We need to reconstruct the header?
-                // RFC 8446 §4.2.11.2: "The transcript hash is computed... over the following octets:
-                // - The first ClientHello...
-                // - ...
-                // - The Handshake structure... up to and including the PreSharedKeyExtension.identities field."
-
-                // The transcript logic in `Context` accumulates `Handshake` messages (Header + Body).
-                // `ch_view.raw` is just the Body.
-                // We need to prepend the Handshake Header (Type=ClientHello, Len=BodyLen).
-
+                // 3. Compute transcript hash for binder (RFC 8446 §4.2.11.2)
+                // The transcript includes the handshake header (Type + Length) + truncated body.
+                // ch_view.raw is just the body, so we need to prepend the header.
                 var header: [4]u8 = undefined;
                 header[0] = @intFromEnum(HsType.client_hello);
                 header[1] = @intCast((ch_view.raw.len >> 16) & 0xFF);
                 header[2] = @intCast((ch_view.raw.len >> 8) & 0xFF);
                 header[3] = @intCast(ch_view.raw.len & 0xFF);
 
-                // We need to hash (Header + TruncatedBody).
-                // We can clone the current transcript state (which should be empty or contain previous flights if HRR?)
-                // If HRR happened, the transcript contains ClientHello1 + HRR.
-                // The binder for ClientHello2 covers that prefix too.
+                // Compute hash of (Header + TruncatedBody)
+                // For first ClientHello (no HRR), this is the entire binder transcript.
+                // For ClientHello2 after HRR, we would need to include prior messages,
+                // but since we handle HRR separately and this is called for the initial CH,
+                // we compute the hash directly here.
+                const transcript_hash = computeBinderTranscriptHash(self.hash_kind, &header, truncated_ch);
 
-                // `self.transcripts.handshake` contains the current running hash.
-                // But we haven't added the current ClientHello to it yet!
-                // `driveServerHandshakeFlight` is called *after* `afterHandshakeMessage` updates the transcript?
-                // No, `afterHandshakeMessage` calls `driveServerHandshakeFlight`.
-                // In `afterHandshakeMessage` for `client_hello`:
-                // `self.transcripts.client_hello_hash = snapshot;`
-                // `try self.driveServerHandshakeFlight();`
+                // 4. Compute expected binder (RFC 8446 §4.2.11.2)
+                // finished_key = HKDF-Expand-Label(binder_key, "finished", "", Hash.length)
+                // binder = HMAC(finished_key, Transcript-Hash(Truncated ClientHello))
+                const digest_len = ks.digestLength(self.hash_kind);
+                var finished_key_buf: [ks.max_digest_length]u8 = undefined;
+                const finished_key = finished_key_buf[0..digest_len];
+                ks.expandLabelHash(self.hash_kind, &binder_key, "finished", &[_]u8{}, finished_key) catch {
+                    return HandshakeError.CryptoError;
+                };
 
-                // Wait, `handleHandshakeMessage` calls `state.setClientHello`.
-                // `processCrypto` calls `parseHandshakeOne`.
-                // `processCrypto` loops:
-                //   `handleHandshakeMessage` (updates state)
-                //   `transcripts.handshake.update(raw)` (updates transcript with FULL message)
-                //   `afterHandshakeMessage`
+                const expected_binder = ks.hmacHash(self.hash_kind, finished_key, transcript_hash.slice());
 
-                // So by the time we are in `driveServerHandshakeFlight`, the FULL ClientHello (including binders) is already in the transcript.
-                // This is a problem for binder verification. We need the hash *without* the binders.
+                // 5. Verify binder using constant-time comparison (security critical!)
+                // RFC 8446 §4.2.11.2: "Servers SHOULD check that it is valid"
+                // We use constant-time comparison to prevent timing attacks.
+                if (received_binder.len != expected_binder.len) {
+                    return HandshakeError.DecryptError; // Binder length mismatch
+                }
+                if (!std.crypto.timing_safe.eql([32]u8, received_binder[0..32].*, expected_binder.bytes[0..32].*)) {
+                    return HandshakeError.DecryptError; // Binder verification failed
+                }
 
-                // We can't easily "rewind" the transcript hash.
-                // However, `Context` keeps `transcripts.client_hello_hash`?
-                // No, that's a snapshot *after* ClientHello.
-
-                // Ideally, we should verify the binder *before* adding ClientHello to the transcript.
-                // But the architecture adds it automatically in `processCrypto`.
-
-                // Workaround: We can compute the hash of (PreviousTranscript + Header + TruncatedBody).
-                // But we don't have "PreviousTranscript" state easily available if we already updated it.
-                // Unless... `processCrypto` updates transcript *after* `handleHandshakeMessage`?
-                // Let's check `processCrypto` in `context.zig`.
-
-                // If I can't verify binder easily now, I will skip it for this iteration and add a TODO.
-                // Security-wise, this is a gap, but I'm fixing the Key Schedule first.
-                // I will assume the PSK is valid if found.
-
-                // TODO: Implement proper binder verification. Requires transcript rollback or pre-calculation.
+                // Binder verified successfully - PSK is authentic
                 return early_secret;
             }
         }
@@ -2280,8 +2322,8 @@ pub const Context = struct {
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x00 });
 
             // PskIdentity list
-            // For now, use a placeholder identity (in real impl, this would be the ticket)
-            const identity = "resumption_ticket"; // TODO: Use actual ticket from config
+            // Use the ticket identity from config, fallback to a default for backwards compatibility
+            const identity = self.config.resumption_ticket orelse "resumption_ticket";
             const identity_len: u16 = @intCast(identity.len);
 
             // Identities list length (2 + identity_len + 4 for obfuscated_ticket_age)
@@ -2473,7 +2515,11 @@ pub const Context = struct {
     fn notifyMetadata(self: *Context) void {
         if (self.flags.metadata_notified) return;
         if (self.callbacks.on_handshake_metadata) |cb| {
-            cb(self, self.metadataView()) catch {};
+            // CWE-391: Log callback errors instead of silently ignoring them.
+            // Callback errors shouldn't fail the handshake, but should be visible for debugging.
+            cb(self, self.metadataView()) catch |err| {
+                logger.debugPrint("[TLS] on_handshake_metadata callback error: {}\n", .{err});
+            };
         }
         self.flags.metadata_notified = true;
     }
@@ -2763,6 +2809,7 @@ pub const Context = struct {
                 parsed.signature,
                 "TLS 1.3, server CertificateVerify", // RFC 8446 §4.4.3 context string
                 transcript_hash.slice(),
+                self.allocator,
             );
 
             if (!verified) {

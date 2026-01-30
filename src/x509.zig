@@ -122,13 +122,47 @@ pub const TrustStore = struct {
     isTrustedSpki: *const fn (spki_der: []const u8) bool,
 };
 
-/// Global trust store instance (set via setTrustStore()).
-var g_trust_store: ?TrustStore = null;
+/// Global trust store state with thread-safe access.
+///
+/// ## Thread Safety
+/// Access to the global trust store is protected by a read-write lock to prevent
+/// data races in multi-threaded TLS handshake processing.
+///
+/// ## Design Rationale
+/// A RwLock is used instead of atomics because TrustStore contains a function
+/// pointer and we need to ensure the entire struct is read consistently.
+const TrustStoreState = struct {
+    store: ?TrustStore = null,
+    lock: std.Thread.RwLock = .{},
 
-/// Install or clear the global trust store hook.
+    /// Read the current trust store value with lock protection.
+    fn get(self: *TrustStoreState) ?TrustStore {
+        self.lock.lockShared();
+        defer self.lock.unlockShared();
+        return self.store;
+    }
+
+    /// Set the trust store value with lock protection.
+    fn set(self: *TrustStoreState, ts: ?TrustStore) void {
+        self.lock.lock();
+        defer self.lock.unlock();
+        self.store = ts;
+    }
+};
+
+/// Global trust store instance with thread-safe access.
+/// Use setTrustStore() to modify and getTrustStore() to read.
+var g_trust_store_state: TrustStoreState = .{};
+
+/// Install or clear the global trust store hook (thread-safe).
 ///
 /// Sets the trust store callback used by validateChain() for root certificate
 /// validation. Pass null to disable trust store validation (useful for testing).
+///
+/// ## Thread Safety
+/// This function is safe to call from multiple threads. Concurrent writes are
+/// serialized by an internal lock. However, applications should typically set
+/// the trust store once during initialization.
 ///
 /// ## Parameters
 /// - `ts`: Trust store instance with callback, or null to disable
@@ -140,7 +174,16 @@ var g_trust_store: ?TrustStore = null;
 /// Without a trust store, validateChain() will reject all chains unless
 /// `allow_insecure=true` is used. Always set a trust store in production.
 pub fn setTrustStore(ts: ?TrustStore) void {
-    g_trust_store = ts;
+    g_trust_store_state.set(ts);
+}
+
+/// Get the current global trust store (thread-safe).
+///
+/// Returns the currently configured trust store, or null if none is set.
+/// This function is safe to call from multiple threads concurrently with
+/// setTrustStore().
+pub fn getTrustStore() ?TrustStore {
+    return g_trust_store_state.get();
 }
 
 /// Distinguished Name subset containing only Common Name field.
@@ -912,8 +955,8 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
 /// Infer the TLS signature algorithm from a DER-encoded certificate's SubjectPublicKeyInfo.
 /// Detects Ed25519, ECDSA P-256, and RSA-PSS (SHA-256). Returns error.UnsupportedKeyAlgorithm
 /// for unsupported or unknown key types.
-pub fn inferSignatureAlgorithm(cert_der: []const u8) !sigmod.SigAlg {
-    const cert = try parseCert(std.heap.page_allocator, cert_der);
+pub fn inferSignatureAlgorithm(cert_der: []const u8, alloc: std.mem.Allocator) !sigmod.SigAlg {
+    const cert = try parseCert(alloc, cert_der);
 
     if (sigmod.parseEd25519Spki(cert.spki)) |_| {
         return .ed25519;
@@ -922,7 +965,7 @@ pub fn inferSignatureAlgorithm(cert_der: []const u8) !sigmod.SigAlg {
         else => return err,
     }
 
-    if (sigmod.parseEcdsaSpki(cert.spki, std.heap.page_allocator)) |spki_val| {
+    if (sigmod.parseEcdsaSpki(cert.spki, alloc)) |spki_val| {
         var spki = spki_val;
         defer spki.deinit();
         if (!spki.curve_p256) return error.UnsupportedKeyAlgorithm;
@@ -933,7 +976,7 @@ pub fn inferSignatureAlgorithm(cert_der: []const u8) !sigmod.SigAlg {
         else => return err,
     }
 
-    if (sigmod.parseRsaSpki(cert.spki, std.heap.page_allocator)) |spki_val| {
+    if (sigmod.parseRsaSpki(cert.spki, alloc)) |spki_val| {
         var spki = spki_val;
         defer spki.deinit();
         return .rsa_pss_sha256;
@@ -974,8 +1017,22 @@ pub fn checkValidity(now_unix: i64, cert: *const Certificate) !void {
     if (now_unix > cert.not_after_unix) return error.Expired;
 }
 
+/// Convert ASCII uppercase letter to lowercase (A-Z -> a-z).
+/// Non-ASCII and non-letter bytes are returned unchanged.
+/// Used for RFC 4343 DNS case-insensitive comparisons.
 fn toLowerAscii(b: u8) u8 {
     return if (b >= 'A' and b <= 'Z') b + 32 else b;
+}
+
+/// Case-insensitive ASCII string equality check per RFC 4343.
+/// DNS hostnames are case-insensitive for ASCII letters (A-Z == a-z).
+/// Returns true if strings are equal ignoring ASCII case differences.
+fn eqlAsciiCI(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ac, bc| {
+        if (toLowerAscii(ac) != toLowerAscii(bc)) return false;
+    }
+    return true;
 }
 
 fn endsWithAsciiCI(hay: []const u8, suf: []const u8) bool {
@@ -1115,13 +1172,14 @@ pub fn checkNameConstraints(name: []const u8, constraints: NameConstraints) bool
 /// `true` if `name` matches any SAN DNS entry or the CN (when no SAN present)
 ///
 /// ## Matching Rules
-/// 1. Exact case-sensitive match (for simplicity, RFC 4343 DNS is case-insensitive)
+/// 1. Case-insensitive ASCII match per RFC 4343 (DNS is case-insensitive)
 /// 2. Wildcard match: "*.example.com" matches "www.example.com" but NOT:
 ///    - "example.com" (needs at least one label before wildcard)
 ///    - "sub.www.example.com" (wildcard matches only one label)
 /// 3. SAN takes precedence: If SAN is present, CN is ignored per RFC 6125 §6.4.4
 ///
 /// ## RFC References
+/// - RFC 4343 - Domain Name System (DNS) Case Insensitivity Clarification
 /// - RFC 6125 §6.4.4 - Subject Alternative Name is authoritative for identity
 /// - RFC 5280 §4.2.1.6 - SubjectAltName extension
 /// - RFC 5280 §4.1.2.6 - Subject CN is deprecated for identity
@@ -1132,12 +1190,12 @@ pub fn checkNameConstraints(name: []const u8, constraints: NameConstraints) bool
 /// - SAN is checked first; CN is only checked if SAN is absent
 /// - Wildcard certificates are limited to left-most label only
 /// - No support for multiple wildcards or mid-label wildcards
-/// - Case-sensitive comparison (should be case-insensitive per DNS but simplified)
+/// - Case-insensitive comparison per RFC 4343 (A-Z treated as a-z)
 pub fn matchDnsName(cert: *const Certificate, name: []const u8) bool {
-    // Exact byte match (case-sensitive) for simplicity; wildcard support for leading label.
+    // Case-insensitive match per RFC 4343; wildcard support for leading label.
     if (cert.san) |san| {
         for (san.dns) |d| {
-            if (std.mem.eql(u8, d, name)) return true;
+            if (eqlAsciiCI(d, name)) return true;
             if (d.len >= 2 and d[0] == '*' and d[1] == '.') {
                 if (wildcardMatch(name, d)) return true;
             }
@@ -1145,7 +1203,7 @@ pub fn matchDnsName(cert: *const Certificate, name: []const u8) bool {
         return false;
     }
     if (cert.subject.cn) |cn| {
-        if (std.mem.eql(u8, cn, name)) return true;
+        if (eqlAsciiCI(cn, name)) return true;
         if (cn.len >= 2 and cn[0] == '*' and cn[1] == '.') return wildcardMatch(name, cn);
         return false;
     }
@@ -1183,11 +1241,11 @@ fn oidIsEd25519(oid: []const u8) bool {
     return oid.len >= 3 and std.mem.eql(u8, oid[oid.len - 3 ..], &[_]u8{ 0x2B, 0x65, 0x70 });
 }
 
-fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const u8, sig_der: []const u8) bool {
+fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const u8, sig_der: []const u8, alloc: std.mem.Allocator) bool {
     if (oidIsEcdsaSha256(algo_oid)) {
         const E = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, std.crypto.hash.sha2.Sha256);
         const signature = E.Signature.fromDer(sig_der) catch return false;
-        var spki = sigmod.parseEcdsaSpki(issuer_spki_der, std.heap.page_allocator) catch return false;
+        var spki = sigmod.parseEcdsaSpki(issuer_spki_der, alloc) catch return false;
         defer spki.deinit();
         const pubkey = E.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
         signature.verify(tbs, pubkey) catch return false;
@@ -1196,7 +1254,7 @@ fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const
     if (oidIsEcdsaSha384(algo_oid)) {
         const E = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, std.crypto.hash.sha2.Sha384);
         const signature = E.Signature.fromDer(sig_der) catch return false;
-        var spki = sigmod.parseEcdsaSpki(issuer_spki_der, std.heap.page_allocator) catch return false;
+        var spki = sigmod.parseEcdsaSpki(issuer_spki_der, alloc) catch return false;
         defer spki.deinit();
         const pubkey = E.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
         signature.verify(tbs, pubkey) catch return false;
@@ -1205,7 +1263,7 @@ fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const
     if (oidIsRsaPss(algo_oid)) {
         // Constrain to SHA-256 and saltLen=32. Verify TBSCertificate directly (no TLS context).
         // Note: We reuse the RSA-PSS verifier from sig.zig by providing the raw TBS as message.
-        return sigmod.verifyCertificateVerify(.rsa_pss_sha256, issuer_spki_der, sig_der, "", tbs) catch false;
+        return sigmod.verifyCertificateVerify(.rsa_pss_sha256, issuer_spki_der, sig_der, "", tbs, alloc) catch false;
     }
     if (oidIsEd25519(algo_oid)) {
         // Ed25519 signature verification using std.crypto
@@ -1239,14 +1297,14 @@ pub fn subjectPublicKeyBytes(spki_der: []const u8) ![]const u8 {
 /// Requires the parsed `Certificate` view for the subject so that TBSCertificate
 /// bytes can be supplied without re-parsing. Returns false on any parsing or
 /// signature verification failure.
-pub fn verifyCertificateSignedBy(cert: *const Certificate, cert_der: []const u8, issuer: *const Certificate) bool {
+pub fn verifyCertificateSignedBy(cert: *const Certificate, cert_der: []const u8, issuer: *const Certificate, alloc: std.mem.Allocator) bool {
     const parsed = parseCertSignature(cert_der) catch return false;
-    return verifyCertSig(issuer.spki, cert.tbs, parsed.algo_oid, parsed.sig_der);
+    return verifyCertSig(issuer.spki, cert.tbs, parsed.algo_oid, parsed.sig_der, alloc);
 }
 
 /// Verify a DER signature over the provided TBSCertificate-compatible bytes using an SPKI.
-pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oid: []const u8, sig_der: []const u8) bool {
-    return verifyCertSig(spki_der, signed, algo_oid, sig_der);
+pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oid: []const u8, sig_der: []const u8, alloc: std.mem.Allocator) bool {
+    return verifyCertSig(spki_der, signed, algo_oid, sig_der, alloc);
 }
 
 /// Validate a complete X.509 certificate chain for TLS server authentication.
@@ -1325,9 +1383,38 @@ pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oi
 /// ## Design Notes
 /// - Currently validates only the leaf certificate in detail; partial intermediate validation
 /// - Self-signed roots are accepted (last cert signs itself)
-/// - OCSP/CRL checking not implemented (revocation checking omitted)
 /// - Name constraints enforced per RFC 5280 §4.2.1.10
 /// - Policy mapping not supported (RFC 5280 §4.2.1.5)
+///
+/// ## Revocation Checking Limitations (IMPORTANT)
+///
+/// **This function does NOT perform certificate revocation checking.**
+///
+/// Specifically, it does NOT:
+/// - Fetch or validate Certificate Revocation Lists (CRLs) per RFC 5280 §6.3
+/// - Perform Online Certificate Status Protocol (OCSP) queries per RFC 6960
+/// - Check OCSP stapled responses (that's done separately in TLS handshake processing)
+///
+/// **Security Impact:**
+/// - A certificate that has been revoked by its CA may still pass validation
+/// - Compromised private keys that have been revoked will not be detected
+/// - This is a known limitation for simplicity and performance
+///
+/// **Mitigations:**
+/// 1. Enable `require_ocsp` in TLS config to require OCSP stapling (recommended)
+/// 2. Implement external revocation checking in application layer
+/// 3. Use short-lived certificates that expire before revocation would be needed
+/// 4. Combine with Certificate Transparency (SCT) checking for additional assurance
+///
+/// **When revocation checking matters:**
+/// - Long-lived certificates (validity > 30 days)
+/// - High-value transactions (financial, healthcare, etc.)
+/// - Environments where key compromise is a significant risk
+///
+/// **When it may be acceptable to skip:**
+/// - Short-lived certificates (< 24 hours)
+/// - Internal/controlled PKI with strong key protection
+/// - Environments with other out-of-band revocation mechanisms
 pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, allow_insecure: bool) !void {
     if (allow_insecure) return;
     if (chain_der.len == 0) return error.EmptyChain;
@@ -1443,14 +1530,14 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
         const issuer_index: usize = if (i + 1 < certs.len) i + 1 else i; // root self-signed
         const issuer_spki = certs[issuer_index].spki;
         const parsed = parseCertSignature(chain_der[i]) catch return error.SignatureParse;
-        const ok = verifyCertSig(issuer_spki, certs[i].tbs, parsed.algo_oid, parsed.sig_der);
+        const ok = verifyCertSig(issuer_spki, certs[i].tbs, parsed.algo_oid, parsed.sig_der, alloc);
         if (!ok) return error.BadSignature;
         if (i == certs.len - 1) {
             // Root must be CA and trusted if trust store provided
             if (certs[i].basic) |b| {
                 if (!b.ca) return error.BasicConstraints;
             } else return error.BasicConstraints;
-            if (g_trust_store) |ts| {
+            if (getTrustStore()) |ts| {
                 if (!ts.isTrustedSpki(certs[i].spki)) return error.UntrustedRoot;
             }
         }

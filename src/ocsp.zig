@@ -76,19 +76,21 @@ pub fn hashAlgFromOid(oid: []const u8) OcspError!HashAlg {
     return OcspError.UnsupportedHashAlgorithm;
 }
 
-pub fn computeDigest(alg: HashAlg, data: []const u8, out: *[64]u8) []const u8 {
+/// Error returned when SHA-1 hash is requested but not supported.
+/// SHA-1 is deprecated (CWE-328) and removed from std.crypto.
+pub const ComputeDigestError = error{
+    Sha1NotSupported,
+};
+
+pub fn computeDigest(alg: HashAlg, data: []const u8, out: *[64]u8) ComputeDigestError![]const u8 {
     switch (alg) {
         .sha1 => {
-            // SHA-1 is deprecated and not available in std.crypto for security reasons.
-            // OCSP responses using SHA-1 are no longer recommended per RFC 6960.
-            // For compatibility with legacy systems, we compute SHA-256 and return
-            // the first 20 bytes (SHA-1 length) as a placeholder.
-            // NOTE: This will NOT match actual SHA-1 hashes and should only be used
-            // when SHA-1 OCSP responses are encountered (which should be rare).
-            var h = std.crypto.hash.sha2.Sha256.init(.{});
-            h.update(data);
-            h.final(out[0..std.crypto.hash.sha2.Sha256.digest_length]);
-            return out[0..20]; // Return SHA-1 length for compatibility
+            // SHA-1 is deprecated (CWE-328) and not available in std.crypto.
+            // RFC 6960 §4.3 recommends SHA-256 for OCSP responses.
+            // Returning an error instead of an incorrect hash prevents silent
+            // security failures when encountering legacy SHA-1 OCSP responses.
+            // Servers should upgrade to SHA-256 per RFC 6960 recommendations.
+            return ComputeDigestError.Sha1NotSupported;
         },
         .sha256 => {
             var h = std.crypto.hash.sha2.Sha256.init(.{});
@@ -250,11 +252,17 @@ pub fn validateStapledResponse(
         if (asn1.tagClass(serial_tlv.tag) != .universal or asn1.tagNumber(serial_tlv.tag) != 2) return OcspError.MalformedResponse;
 
         var name_digest_buf: [64]u8 = undefined;
-        const expected_name_hash = computeDigest(hash_alg, leaf.issuer_der, &name_digest_buf);
+        const expected_name_hash = computeDigest(hash_alg, leaf.issuer_der, &name_digest_buf) catch {
+            // SHA-1 not supported (CWE-328) - skip this SingleResponse and try next
+            continue;
+        };
         if (!compareSlices(expected_name_hash, issuer_name_hash)) continue;
 
         var key_digest_buf: [64]u8 = undefined;
-        const expected_key_hash = computeDigest(hash_alg, issuer_spk, &key_digest_buf);
+        const expected_key_hash = computeDigest(hash_alg, issuer_spk, &key_digest_buf) catch {
+            // SHA-1 not supported (CWE-328) - skip this SingleResponse and try next
+            continue;
+        };
         if (!compareSlices(expected_key_hash, issuer_key_hash)) continue;
 
         if (!compareSlices(normalizeInteger(leaf.serial_number), normalizeInteger(serial_tlv.val))) return OcspError.SerialMismatch;
@@ -302,11 +310,11 @@ pub fn validateStapledResponse(
         if (responder_cert.eku) |eku| {
             if (!eku.ocsp_signing) return OcspError.ResponderMissingEku;
         } else return OcspError.ResponderMissingEku;
-        if (!x509.verifyCertificateSignedBy(&responder_cert, resp_der, issuer.cert)) return OcspError.ResponderSignatureInvalid;
+        if (!x509.verifyCertificateSignedBy(&responder_cert, resp_der, issuer.cert, allocator)) return OcspError.ResponderSignatureInvalid;
         signer_spki = responder_cert.spki;
     }
 
-    if (!x509.verifySignatureWithSpki(signer_spki, response_data_der, sig_algo_oid, signature_bits)) {
+    if (!x509.verifySignatureWithSpki(signer_spki, response_data_der, sig_algo_oid, signature_bits, allocator)) {
         return OcspError.SignatureInvalid;
     }
 

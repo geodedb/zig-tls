@@ -102,8 +102,23 @@ const asn1 = @import("asn1");
 // https://ziglang.org/documentation/master/std/#std.crypto.sign.Ed25519
 const Ed25519 = std.crypto.sign.Ed25519;
 
-/// Debug tracing for signature operations (disabled in production builds).
+/// Debug tracing for signature operations.
+///
+/// ## Security Warning
+///
+/// **NEVER enable this in production!** When enabled, private keys and
+/// other sensitive cryptographic material may be logged to stdout.
+///
+/// This constant is compile-time checked and will cause a build error
+/// if enabled in ReleaseSafe/ReleaseFast/ReleaseSmall builds.
 const sig_trace_enabled = false;
+
+// Compile-time safety: prevent secret logging in release builds
+comptime {
+    if (sig_trace_enabled and @import("builtin").mode != .Debug) {
+        @compileError("SECURITY: sig_trace_enabled must be false in release builds - secrets would be logged!");
+    }
+}
 
 inline fn traceSig(comptime fmt: []const u8, args: anytype) void {
     if (sig_trace_enabled) std.debug.print(fmt, args);
@@ -391,7 +406,7 @@ fn bitLenFromBe(bytes: []const u8) usize {
     return (bytes.len - i) * 8 - leading;
 }
 
-fn beSubInPlace(dst: *std.ArrayList(u8), b: []const u8) void {
+fn beSubInPlace(dst: *std.ArrayList(u8), b: []const u8, alloc: std.mem.Allocator) void {
     // assumes dst >= b
     var i: isize = @as(isize, @intCast(dst.items.len)) - 1;
     var j: isize = @as(isize, @intCast(b.len)) - 1;
@@ -415,7 +430,10 @@ fn beSubInPlace(dst: *std.ArrayList(u8), b: []const u8) void {
     if (k > 0) {
         // shift left by k bytes
         std.mem.copyForwards(u8, dst.items[0 .. dst.items.len - k], dst.items[k..]);
-        _ = dst.resize(std.heap.page_allocator, dst.items.len - k) catch {};
+        // CWE-391: Use shrinkRetainingCapacity instead of resize to avoid catch {}
+        // shrinkRetainingCapacity always succeeds since it doesn't deallocate.
+        _ = alloc;
+        dst.shrinkRetainingCapacity(dst.items.len - k);
     }
 }
 
@@ -475,7 +493,7 @@ fn modFromBytes(n: []const u8, value: []const u8, alloc: std.mem.Allocator) ![]u
         while (true) {
             const ord = beCmp(rem.items, n);
             if (ord == .lt) break;
-            beSubInPlace(&rem, n);
+            beSubInPlace(&rem, n, alloc);
         }
     }
     // ensure canonical single zero if empty
@@ -511,20 +529,20 @@ fn modExpSmallE(n: []const u8, base: []const u8, e: u64, alloc: std.mem.Allocato
     return alloc.dupe(u8, result);
 }
 
-fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []const u8, sig: []const u8, salt_len: usize) !bool {
+fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []const u8, sig: []const u8, salt_len: usize, alloc: std.mem.Allocator) !bool {
     // Parse SPKI
-    var spki = try parseRsaSpki(pubkey_spki_der, std.heap.page_allocator);
+    var spki = try parseRsaSpki(pubkey_spki_der, alloc);
     defer spki.deinit();
     const k: usize = spki.modulus.len; // modulus length in bytes (may include leading 0x00)
     if (sig.len != k) return false;
 
     // m = s^e mod n using minimal big integer
-    const m_be = try modExpSmallE(spki.modulus, sig, spki.exponent, std.heap.page_allocator);
-    defer std.heap.page_allocator.free(m_be);
+    const m_be = try modExpSmallE(spki.modulus, sig, spki.exponent, alloc);
+    defer alloc.free(m_be);
 
     // EM = I2OSP(m, k)
-    var EM = try std.heap.page_allocator.alloc(u8, k);
-    defer std.heap.page_allocator.free(EM);
+    var EM = try alloc.alloc(u8, k);
+    defer alloc.free(EM);
     @memset(EM, 0);
     const m_trim = beTrim(m_be);
     if (m_trim.len > k) return false;
@@ -540,13 +558,13 @@ fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []cons
     const H = EM[k - hLen - 1 .. k - 1];
 
     // dbMask = MGF1(H, k - hLen - 1)
-    const dbMask = try std.heap.page_allocator.alloc(u8, maskedDB.len);
-    defer std.heap.page_allocator.free(dbMask);
+    const dbMask = try alloc.alloc(u8, maskedDB.len);
+    defer alloc.free(dbMask);
     mgf1_sha256(H, dbMask);
 
     // DB = maskedDB XOR dbMask
-    const DB = try std.heap.page_allocator.alloc(u8, maskedDB.len);
-    defer std.heap.page_allocator.free(DB);
+    const DB = try alloc.alloc(u8, maskedDB.len);
+    defer alloc.free(DB);
     for (DB, 0..) |*b, i| b.* = maskedDB[i] ^ dbMask[i];
 
     // Set leftmost 8*k - emBits bits of DB[0] to zero
@@ -577,8 +595,8 @@ fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []cons
         hh.update(msg_signed_content);
         hh.final(&mhash);
     }
-    var mprime = try std.heap.page_allocator.alloc(u8, 8 + mhash.len + salt_len);
-    defer std.heap.page_allocator.free(mprime);
+    var mprime = try alloc.alloc(u8, 8 + mhash.len + salt_len);
+    defer alloc.free(mprime);
     @memset(mprime[0..8], 0);
     @memcpy(mprime[8 .. 8 + mhash.len], &mhash);
     @memcpy(mprime[8 + mhash.len ..][0..salt_len], salt);
@@ -672,15 +690,15 @@ fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []cons
 /// );
 /// if (!ok) return error.BadCertificateVerify;
 /// ```
-pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []const u8, context: []const u8, transcript_hash: []const u8) !bool {
+pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []const u8, context: []const u8, transcript_hash: []const u8, alloc: std.mem.Allocator) !bool {
     switch (alg) {
         .ed25519 => {
             // Parse Ed25519 public key from SPKI
             const pubkey_bytes = try parseEd25519Spki(pubkey_spki_der);
             const pubkey = try Ed25519.PublicKey.fromBytes(pubkey_bytes);
             // Build TLS 1.3 signed content
-            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
-            defer std.heap.page_allocator.free(sc);
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, alloc);
+            defer alloc.free(sc);
             // Verify Ed25519 signature
             if (sig.len != 64) return false;
             const signature = Ed25519.Signature.fromBytes(sig[0..64].*);
@@ -689,33 +707,33 @@ pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []
         },
         .rsa_pss_sha256 => {
             // Build TLS 1.3 signed content: 64 spaces || context || 0x00 || transcript_hash
-            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
-            defer std.heap.page_allocator.free(sc);
-            return rsa_pss_verify_sha256(pubkey_spki_der, sc, sig, 32);
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, alloc);
+            defer alloc.free(sc);
+            return rsa_pss_verify_sha256(pubkey_spki_der, sc, sig, 32, alloc);
         },
         .ecdsa_secp256r1_sha256 => {
             // Parse SPKI and use std.crypto ECDSA (P-256/SHA-256)
-            var spki = try parseEcdsaSpki(pubkey_spki_der, std.heap.page_allocator);
+            var spki = try parseEcdsaSpki(pubkey_spki_der, alloc);
             defer spki.deinit();
             if (!spki.curve_p256) return false;
             const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
             const signature = Ecdsa.Signature.fromDer(sig) catch return false;
             const pubkey = Ecdsa.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
-            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
-            defer std.heap.page_allocator.free(sc);
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, alloc);
+            defer alloc.free(sc);
             signature.verify(sc, pubkey) catch return false;
             return true;
         },
         .ecdsa_secp384r1_sha384 => {
             // Parse SPKI and use std.crypto ECDSA (P-384/SHA-384)
-            var spki = try parseEcdsaSpki(pubkey_spki_der, std.heap.page_allocator);
+            var spki = try parseEcdsaSpki(pubkey_spki_der, alloc);
             defer spki.deinit();
             if (spki.curve_p256) return false; // expect P-384
             const Ecdsa384 = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, Sha384);
             const signature = Ecdsa384.Signature.fromDer(sig) catch return false;
             const pubkey = Ecdsa384.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
-            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, std.heap.page_allocator);
-            defer std.heap.page_allocator.free(sc);
+            const sc = try tls13_build_context_and_hash(alg, context, transcript_hash, alloc);
+            defer alloc.free(sc);
             signature.verify(sc, pubkey) catch return false;
             return true;
         },
@@ -825,7 +843,9 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
             }
             @memcpy(out[o .. o + s_trim.len], s_trim);
             o += s_trim.len;
-            std.debug.assert(o == out.len);
+            // Security: Use explicit error handling instead of debug.assert
+            // (debug.assert is stripped in release builds, CWE-617)
+            if (o != out.len) return error.Encode;
             return out;
         },
         else => return error.Unsupported,

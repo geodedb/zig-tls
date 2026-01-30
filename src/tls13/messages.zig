@@ -167,13 +167,21 @@ pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
 /// - pub_key: Corresponding public key (32 bytes)
 /// - shared: ECDHE shared secret if peer_pub_opt provided, null otherwise
 ///
+/// # Security Considerations (CWE-226)
+/// The caller is responsible for zeroizing the returned priv_key after use
+/// via `std.crypto.secureZero(u8, &keys.priv_key)`. Private keys should not
+/// be stored longer than necessary and must be zeroized before the memory
+/// is released or goes out of scope.
+///
 /// # Usage
 /// ```zig
 /// // Generate keypair only
-/// const keys = x25519KeypairAndShared(null);
+/// var keys = x25519KeypairAndShared(null);
+/// defer std.crypto.secureZero(u8, &keys.priv_key);
 ///
 /// // Generate keypair and compute shared secret
-/// const keys = x25519KeypairAndShared(peer_public_key);
+/// var keys = x25519KeypairAndShared(peer_public_key);
+/// defer std.crypto.secureZero(u8, &keys.priv_key);
 /// if (keys.shared) |secret| {
 ///     // Use secret for key derivation
 /// }
@@ -187,8 +195,10 @@ pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) struct { priv_key: [32]u8, 
     if (peer_pub_opt) |peer_pub| {
         // Zig 0.15.1 API: scalarmult returns the shared secret directly
         const sh = std.crypto.dh.X25519.scalarmult(sk, peer_pub) catch {
-            shared = null;
-            return .{ .priv_key = sk, .pub_key = pk, .shared = shared };
+            // CWE-226: Zeroize private key on error before returning
+            // to prevent key leakage if caller doesn't handle error properly
+            std.crypto.secureZero(u8, &sk);
+            return .{ .priv_key = [_]u8{0} ** 32, .pub_key = pk, .shared = null };
         };
         shared = sh;
     }

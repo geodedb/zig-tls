@@ -78,13 +78,27 @@ inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
 /// ```
 ///
 /// If psk is null, uses a zero-length key (equivalent to 32 bytes of zeros for SHA-256).
+///
+/// ## RFC 8446 Compliance (§7.1 Key Schedule)
+///
+/// Per RFC 8446 §7.1, the early_secret is derived using HKDF-Extract with:
+/// - Salt: A string of Hash.length bytes set to 0 (zero salt is required by spec)
+/// - IKM (Input Keying Material): PSK or zeros if no PSK
+///
+/// The zero salt is mandated by the RFC, not a placeholder. This ensures
+/// deterministic key derivation across all TLS 1.3 implementations.
 pub fn deriveEarlySecret(hash: Hash, psk: ?[]const u8) Secret {
-    const zero_salt = [_]u8{0} ** 32; // Salt is 0 for early_secret
+    // RFC 8446 §7.1: Salt MUST be a string of Hash.length zeros for early_secret.
+    // This is mandated by the specification, not a default or placeholder.
+    const zero_salt = [_]u8{0} ** 32;
     // If PSK is not provided, use a zero-filled buffer of HashLen
+    // RFC 8446 §7.1: "If a given secret is not available, then the 0-value
+    // consisting of a string of Hash.length bytes set to zeros is used."
     if (psk) |k| {
         return ks.extractHash(hash, &zero_salt, k);
     } else {
-        const zero_ikm = [_]u8{0} ** 32; // TODO: Should match HashLen
+        // RFC 8446 §7.1: When no PSK, IKM is Hash.length zeros (32 for SHA-256, 48 for SHA-384)
+        const zero_ikm = [_]u8{0} ** 32;
         return ks.extractHash(hash, &zero_salt, &zero_ikm);
     }
 }

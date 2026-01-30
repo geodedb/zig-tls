@@ -174,9 +174,45 @@ pub const Config = struct {
     /// Default: null (auto-generated)
     server_secret: ?[]const u8 = null,
 
-    /// Require the peer to present a stapled OCSP response. When true, the
-    /// handshake aborts if the Certificate message omits OCSP data or if
-    /// validation fails.
+    /// Require the peer to present a stapled OCSP response (RFC 6960, RFC 6066 §8).
+    ///
+    /// When `true`:
+    /// - Handshake aborts if Certificate message omits OCSP data
+    /// - Handshake aborts if OCSP response validation fails
+    /// - Provides revocation checking without client-side OCSP queries
+    ///
+    /// When `false` (default):
+    /// - Certificates are accepted without revocation status verification
+    /// - Revoked certificates may be accepted if attacker controls the connection
+    /// - Suitable only when revocation checking is handled externally or
+    ///   for environments where OCSP stapling is not universally deployed
+    ///
+    /// ## Security Warning
+    ///
+    /// **Default `false` accepts certificates without revocation checking!**
+    ///
+    /// Compromised or revoked certificates will be accepted unless OCSP stapling
+    /// is required. This is a security trade-off for compatibility:
+    /// - Many servers don't support OCSP stapling
+    /// - Requiring stapling would break connections to those servers
+    ///
+    /// ## Recommendations
+    ///
+    /// - **High-security environments**: Set `require_ocsp = true`
+    /// - **General use**: Leave as `false`, but monitor for revocation issues
+    /// - **Internal/trusted networks**: May leave as `false` if CA controls revocation
+    ///
+    /// ## RFC References
+    /// - RFC 6960: Online Certificate Status Protocol (OCSP)
+    /// - RFC 6066 §8: Certificate Status Request extension (status_request)
+    /// - RFC 8446 §4.4.2.1: OCSP status in TLS 1.3 Certificate message
+    ///
+    /// ## Limitations
+    ///
+    /// This implementation only validates OCSP responses stapled by the server.
+    /// Active OCSP queries (client-side fetching) are not implemented.
+    /// For full revocation checking, consider implementing CRL checking or
+    /// an external OCSP client.
     require_ocsp: bool = false,
 
     /// Require Signed Certificate Timestamps (SCTs). When true, the handshake
@@ -218,7 +254,14 @@ pub const Config = struct {
     /// RFC 8446 §4.2.11: pre_shared_key extension.
     resumption_psk: ?[]const u8 = null,
 
+    /// Session ticket identity for resumption (Client role only).
+    /// This is the opaque ticket value received from the server in NewSessionTicket.
+    /// Required if resumption_psk is set.
+    /// RFC 8446 §4.6.1: ticket field from NewSessionTicket message.
+    resumption_ticket: ?[]const u8 = null,
+
     /// Obfuscated ticket age add value from NewSessionTicket (Client role only).
     /// Required if resumption_psk is set.
+    /// RFC 8446 §4.6.1: ticket_age_add field from NewSessionTicket message.
     resumption_ticket_age_add: u32 = 0,
 };
