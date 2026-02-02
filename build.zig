@@ -7,6 +7,22 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Spice parallelism option
+    const enable_spice = b.option(bool, "spice", "Enable spice-based parallelism") orelse true;
+
+    // Build options module for compile-time feature flags
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "enable_spice", enable_spice);
+
+    // Get spice dependency if enabled
+    const spice_mod: ?*std.Build.Module = if (enable_spice) blk: {
+        const spice_dep = b.dependency("spice", .{
+            .target = target,
+            .optimize = optimize,
+        });
+        break :blk spice_dep.module("spice");
+    } else null;
+
     // ========================================================================
     // Define all TLS modules
     // ========================================================================
@@ -160,6 +176,25 @@ pub fn build(b: *std.Build) void {
     });
 
     // ========================================================================
+    // Parallel Module - Spice-based parallelism
+    // ========================================================================
+
+    const parallel_mod = b.addModule("parallel", .{
+        .root_source_file = b.path("src/parallel.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options.createModule() },
+            .{ .name = "x509", .module = x509_mod },
+            .{ .name = "sig", .module = sig_mod },
+            .{ .name = "record", .module = record_mod },
+        },
+    });
+    if (spice_mod) |sm| {
+        parallel_mod.addImport("spice", sm);
+    }
+
+    // ========================================================================
     // Public API Module - Main Entry Point
     // ========================================================================
     //
@@ -188,6 +223,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "quic_transport_params", .module = transport_params_mod },
             .{ .name = "ocsp", .module = ocsp_mod },
             .{ .name = "sct", .module = sct_mod },
+            .{ .name = "parallel", .module = parallel_mod },
         },
     });
 
