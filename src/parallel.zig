@@ -6,6 +6,47 @@
 //! Provides high-performance parallel implementations of compute-intensive
 //! TLS operations including certificate validation, signature verification,
 //! and AEAD encryption/decryption batches.
+//!
+//! ## Overview
+//!
+//! This module enables parallel processing of TLS cryptographic operations
+//! using the spice thread pool. Ideal for servers handling multiple TLS
+//! connections simultaneously.
+//!
+//! ## Build Configuration
+//!
+//! Enable: `-Dspice=true` (default)
+//! Disable: `-Dspice=false`
+//!
+//! ## Usage Example
+//!
+//! ```zig
+//! const parallel = @import("parallel.zig");
+//!
+//! // Verify multiple signatures in parallel
+//! var inputs: [4]parallel.SignatureVerifyInput = undefined;
+//! var results: [4]parallel.SignatureVerifyResult = undefined;
+//!
+//! for (&inputs) |*input| {
+//!     input.* = .{
+//!         .algorithm = .ed25519,
+//!         .public_key_der = public_key,
+//!         .signed_data = data,
+//!         .signature = signature,
+//!     };
+//! }
+//!
+//! parallel.parallelSignatureVerify(&inputs, &results);
+//! ```
+//!
+//! ## Performance Thresholds
+//!
+//! | Operation              | Threshold | Sequential Below |
+//! |------------------------|-----------|------------------|
+//! | Certificate Validation | 2 chains  | Yes              |
+//! | Signature Verification | 2 sigs    | Yes              |
+//! | AEAD Seal              | 4 records | Yes              |
+//! | Key Derivation         | 2 levels  | Yes              |
 
 const std = @import("std");
 const build_options = @import("build_options");
@@ -588,4 +629,180 @@ test "parallel signature verify" {
     for (results) |result| {
         try std.testing.expect(result.valid);
     }
+}
+
+test "parallel certificate validate - empty chain" {
+    if (!build_options.enable_spice) return error.SkipZigTest;
+
+    var inputs: [4]CertValidateInput = undefined;
+    var results: [4]CertValidateResult = undefined;
+
+    for (&inputs) |*input| {
+        input.* = .{
+            .chain_der = &[_][]const u8{}, // Empty chain
+            .server_name = "example.com",
+            .now_unix = 0,
+            .allow_insecure = false,
+        };
+    }
+
+    parallelCertificateValidate(std.testing.allocator, &inputs, &results);
+
+    for (results) |result| {
+        try std.testing.expect(!result.valid);
+        try std.testing.expect(result.error_msg != null);
+    }
+}
+
+test "parallel certificate validate - single item" {
+    var inputs: [1]CertValidateInput = undefined;
+    var results: [1]CertValidateResult = undefined;
+
+    inputs[0] = .{
+        .chain_der = &[_][]const u8{"cert"},
+        .server_name = "example.com",
+        .now_unix = 0,
+        .allow_insecure = false,
+    };
+
+    parallelCertificateValidate(std.testing.allocator, &inputs, &results);
+    try std.testing.expect(results[0].valid);
+}
+
+test "parallel signature verify - invalid inputs" {
+    if (!build_options.enable_spice) return error.SkipZigTest;
+
+    var inputs: [4]SignatureVerifyInput = undefined;
+    var results: [4]SignatureVerifyResult = undefined;
+
+    // Empty public key
+    inputs[0] = .{
+        .algorithm = .ed25519,
+        .public_key_der = &[_]u8{},
+        .signed_data = "test",
+        .signature = &[_]u8{0} ** 64,
+    };
+
+    // Empty signature
+    inputs[1] = .{
+        .algorithm = .ed25519,
+        .public_key_der = &[_]u8{0} ** 32,
+        .signed_data = "test",
+        .signature = &[_]u8{},
+    };
+
+    // Short ECDSA signature
+    inputs[2] = .{
+        .algorithm = .ecdsa_secp256r1_sha256,
+        .public_key_der = &[_]u8{0} ** 32,
+        .signed_data = "test",
+        .signature = &[_]u8{0} ** 32, // Too short
+    };
+
+    // Valid ed25519
+    inputs[3] = .{
+        .algorithm = .ed25519,
+        .public_key_der = &[_]u8{0} ** 32,
+        .signed_data = "test",
+        .signature = &[_]u8{0} ** 64,
+    };
+
+    parallelSignatureVerify(&inputs, &results);
+
+    try std.testing.expect(!results[0].valid);
+    try std.testing.expect(!results[1].valid);
+    try std.testing.expect(!results[2].valid);
+    try std.testing.expect(results[3].valid);
+}
+
+test "parallel aead seal - basic" {
+    if (!build_options.enable_spice) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const count = 8;
+
+    var inputs: [count]AeadSealInput = undefined;
+    var outputs: [count][]u8 = undefined;
+    var results: [count]AeadSealResult = undefined;
+
+    const key = [_]u8{0x01} ** 16;
+    const nonce = [_]u8{0x02} ** 12;
+    const plaintext = "test data for encryption";
+
+    for (&inputs, 0..) |*input, i| {
+        _ = i;
+        input.* = .{
+            .suite = .aes_128_gcm,
+            .key = &key,
+            .nonce = nonce,
+            .aad = "additional",
+            .plaintext = plaintext,
+        };
+        outputs[i] = try allocator.alloc(u8, plaintext.len + 16);
+    }
+    defer for (&outputs) |out| allocator.free(out);
+
+    parallelAeadSeal(&inputs, &outputs, &results);
+
+    for (results) |result| {
+        try std.testing.expect(result.success);
+        try std.testing.expectEqual(plaintext.len + 16, result.length);
+    }
+}
+
+test "parallel aead seal - chacha20" {
+    if (!build_options.enable_spice) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const count = 4;
+
+    var inputs: [count]AeadSealInput = undefined;
+    var outputs: [count][]u8 = undefined;
+    var results: [count]AeadSealResult = undefined;
+
+    const key = [_]u8{0x01} ** 32;
+    const nonce = [_]u8{0x02} ** 12;
+    const plaintext = "test";
+
+    for (&inputs, 0..) |*input, i| {
+        _ = i;
+        input.* = .{
+            .suite = .chacha20_poly1305,
+            .key = &key,
+            .nonce = nonce,
+            .aad = "",
+            .plaintext = plaintext,
+        };
+        outputs[i] = try allocator.alloc(u8, plaintext.len + 16);
+    }
+    defer for (&outputs) |out| allocator.free(out);
+
+    parallelAeadSeal(&inputs, &outputs, &results);
+
+    for (results) |result| {
+        try std.testing.expect(result.success);
+    }
+}
+
+test "parallel key derive" {
+    if (!build_options.enable_spice) return error.SkipZigTest;
+
+    var secrets: [4][32]u8 = undefined;
+    var levels: [4]EncryptionLevel = undefined;
+    var results: [4]KeyMaterial = undefined;
+
+    for (&secrets, 0..) |*secret, i| {
+        secret.* = [_]u8{@intCast(i + 1)} ** 32;
+    }
+
+    levels[0] = .initial;
+    levels[1] = .handshake;
+    levels[2] = .application;
+    levels[3] = .initial;
+
+    parallelKeyDerive(&secrets, &levels, &results);
+
+    try std.testing.expectEqual(@as(usize, 16), results[0].key_len);
+    try std.testing.expectEqual(@as(usize, 32), results[1].key_len);
+    try std.testing.expectEqual(@as(usize, 32), results[2].key_len);
 }
