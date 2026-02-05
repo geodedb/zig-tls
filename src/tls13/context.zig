@@ -987,6 +987,9 @@ pub const Context = struct {
     peer_cert_verify_alg: ?tls13_full.SignatureScheme = null, // Signature algorithm used
     peer_ocsp_response: ?[]const u8 = null, // Stapled OCSP response from peer (leaf cert only)
     peer_sct_list: ?[]const u8 = null, // Signed Certificate Timestamp list from peer (leaf cert only)
+    // mTLS state (RFC 8446 §4.3.2)
+    client_cert_requested: bool = false, // Client: tracks that server sent CertificateRequest
+    client_cert_request_context: ?[]u8 = null, // Client: stores request context from CertificateRequest
     // 0-RTT state (server role)
     anti_replay: zero_rtt_mod.AntiReplayWindow, // Anti-replay window for 0-RTT detection
 
@@ -1060,6 +1063,12 @@ pub const Context = struct {
             self.allocator.free(sct_data);
             self.peer_sct_list = null;
         }
+        // Clean up mTLS state
+        if (self.client_cert_request_context) |ctx_data| {
+            self.allocator.free(ctx_data);
+            self.client_cert_request_context = null;
+        }
+        self.client_cert_requested = false;
         // Clean up 0-RTT anti-replay window
         self.anti_replay.deinit();
         self.negotiated_signature = null;
@@ -1419,11 +1428,26 @@ pub const Context = struct {
                 // Parse ServerHello, extract key_share, derive handshake secrets
                 try self.handleServerHello(parsed.body);
             },
-            // NOTE: certificate_request is not in HsType enum
-            // RFC 9001 forbids post-handshake client authentication
-            // .certificate_request => {
-            //     return HandshakeError.PostHandshakeAuthUnsupported;
-            // },
+            .certificate_request => {
+                // RFC 8446 §4.3.2: CertificateRequest only valid for client role during initial handshake
+                if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
+
+                // Parse CertificateRequest to extract context and signature algorithms
+                const cr_parsed = try tls13_full.parseCertificateRequest(self.allocator, parsed.body);
+                defer self.allocator.free(cr_parsed.signature_algorithms);
+
+                // Store request context for client Certificate response
+                if (self.client_cert_request_context) |old| {
+                    self.allocator.free(old);
+                }
+                self.client_cert_request_context = if (cr_parsed.context.len > 0)
+                    try self.allocator.dupe(u8, cr_parsed.context)
+                else
+                    null;
+
+                self.client_cert_requested = true;
+                traceHandshake("Client: Received CertificateRequest from server\n", .{});
+            },
             .finished => {
                 // RFC 8446 §4.4.4: Verify peer Finished message
                 // Must verify BEFORE adding to transcript
@@ -1447,18 +1471,26 @@ pub const Context = struct {
                 try self.handleEncryptedExtensions(parsed.body);
             },
             .certificate => {
-                // RFC 8446 §4.4.2: Certificate message only valid for client role
-                if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
-
-                // Parse and store the certificate chain from the server
-                try self.handleCertificate(parsed.body);
+                // RFC 8446 §4.4.2: Certificate message valid for client role (server cert),
+                // or for server role when mTLS is enabled (client cert)
+                if (self.config.role == .Client) {
+                    try self.handleCertificate(parsed.body);
+                } else if (self.config.role == .Server and self.config.request_client_cert) {
+                    try self.handleClientCertificate(parsed.body);
+                } else {
+                    return HandshakeError.UnexpectedMessage;
+                }
             },
             .certificate_verify => {
-                // RFC 8446 §4.4.3: CertificateVerify only valid for client role
-                if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
-
-                // Parse and store the signature for later verification
-                try self.handleCertificateVerify(parsed.body);
+                // RFC 8446 §4.4.3: CertificateVerify valid for client role (server CV),
+                // or for server role when mTLS is enabled (client CV)
+                if (self.config.role == .Client) {
+                    try self.handleCertificateVerify(parsed.body);
+                } else if (self.config.role == .Server and self.config.request_client_cert) {
+                    try self.handleClientCertificateVerify(parsed.body);
+                } else {
+                    return HandshakeError.UnexpectedMessage;
+                }
             },
             else => {
                 // Other messages processed implicitly via transcript updates
@@ -2299,6 +2331,23 @@ pub const Context = struct {
         defer self.allocator.free(ee_msg);
         try self.appendOutbound(.Handshake, ee_msg, true);
 
+        // RFC 8446 §4.3.2: Send CertificateRequest if mTLS is configured
+        // Must be sent after EncryptedExtensions and before Certificate
+        if (self.config.request_client_cert) {
+            const cr_body = try tls13_full.buildCertificateRequest(
+                self.allocator,
+                self.config.supported_signature_schemes,
+                self.config.client_auth_ca_certs,
+            );
+            defer self.allocator.free(cr_body);
+
+            const cr_msg = try encodeHandshake(self.allocator, .certificate_request, cr_body);
+            defer self.allocator.free(cr_msg);
+            try self.appendOutbound(.Handshake, cr_msg, true);
+
+            traceHandshake("Server: Sent CertificateRequest message\n", .{});
+        }
+
         // CRITICAL: Send Certificate and CertificateVerify before Finished (RFC 8446 §4.4.1)
         // Server must prove possession of private key corresponding to certificate
         // RFC 8446 §4.4.1: Server MUST send Certificate unless using PSK-only authentication
@@ -2692,6 +2741,69 @@ pub const Context = struct {
     fn sendClientFinished(self: *Context) !void {
         const slot = self.secrets.slot(.Handshake, .send);
         if (!slot.valid) return HandshakeError.UnexpectedMessage;
+
+        // RFC 8446 §4.4.2: Client sends Certificate + CertificateVerify before Finished
+        // if the server sent a CertificateRequest
+        if (self.client_cert_requested) {
+            const request_context = if (self.client_cert_request_context) |ctx| ctx else &[_]u8{};
+
+            if (self.config.client_cert_der) |cert_der| {
+                // Client has a certificate: send Certificate with the cert
+                const cert_entries = [_]tls13_full.CertificateEntryData{.{ .cert = cert_der }};
+                const cert_body = try tls13_full.buildCertificate(self.allocator, request_context, &cert_entries);
+                defer self.allocator.free(cert_body);
+
+                const cert_msg = try encodeHandshake(self.allocator, .certificate, cert_body);
+                defer self.allocator.free(cert_msg);
+                try self.appendOutbound(.Handshake, cert_msg, true);
+
+                traceHandshake("Client: Sent Certificate message for mTLS\n", .{});
+
+                // Send CertificateVerify signed with client private key
+                if (self.config.client_key_der) |priv_key| {
+                    const hash_for_sig = self.transcripts.handshake.finalize(self.hash_kind);
+
+                    // Use the negotiated signature scheme or default to ed25519
+                    const sig_scheme = self.negotiated_signature orelse .ed25519;
+                    const sig_alg: sig.SigAlg = switch (sig_scheme) {
+                        .ecdsa_secp256r1_sha256 => .ecdsa_secp256r1_sha256,
+                        .ecdsa_secp384r1_sha384 => .ecdsa_secp384r1_sha384,
+                        .rsa_pss_rsae_sha256 => .rsa_pss_sha256,
+                        .ed25519 => .ed25519,
+                        else => .ed25519,
+                    };
+
+                    const signature = try sig.signCertificateVerify(
+                        sig_alg,
+                        priv_key,
+                        "TLS 1.3, client CertificateVerify",
+                        hash_for_sig.slice(),
+                        self.allocator,
+                    );
+                    defer self.allocator.free(signature);
+
+                    const cv_body = try tls13_full.buildCertificateVerify(self.allocator, sig_scheme, signature);
+                    defer self.allocator.free(cv_body);
+
+                    const cv_msg = try encodeHandshake(self.allocator, .certificate_verify, cv_body);
+                    defer self.allocator.free(cv_msg);
+                    try self.appendOutbound(.Handshake, cv_msg, true);
+
+                    traceHandshake("Client: Sent CertificateVerify for mTLS\n", .{});
+                }
+            } else {
+                // No client certificate configured: send empty Certificate (RFC 8446 §4.4.2)
+                const cert_body = try tls13_full.buildCertificate(self.allocator, request_context, &[_]tls13_full.CertificateEntryData{});
+                defer self.allocator.free(cert_body);
+
+                const cert_msg = try encodeHandshake(self.allocator, .certificate, cert_body);
+                defer self.allocator.free(cert_msg);
+                try self.appendOutbound(.Handshake, cert_msg, true);
+
+                traceHandshake("Client: Sent empty Certificate (no client cert configured)\n", .{});
+            }
+        }
+
         var transcript_snapshot = self.transcripts.handshake;
         const hash_before = transcript_snapshot.finalize(slot.hash);
         const verify_data = deriveFinishedVerifyData(slot.hash, &slot.value, hash_before);
@@ -3112,6 +3224,113 @@ pub const Context = struct {
             traceHandshake("Client: Certificate chain validated and CertificateVerify signature verified\\n", .{});
         } else {
             traceHandshake("Client: Certificate validation skipped (allow_insecure=true)\\n", .{});
+        }
+    }
+
+    /// RFC 8446 §4.4.2: Parse and store client Certificate message (server-side mTLS).
+    /// Reuses the existing peer_cert_chain storage (role-neutral).
+    fn handleClientCertificate(self: *Context, body: []const u8) !void {
+        const parsed = try tls13_full.parseCertificate(self.allocator, body);
+        defer self.allocator.free(parsed.entries);
+
+        // Empty certificate list is allowed (RFC 8446 §4.4.2) - client has no cert
+        if (parsed.entries.len == 0) {
+            traceHandshake("Server: Client sent empty Certificate (no client cert)\n", .{});
+            // Store empty chain so handleClientCertificateVerify knows no cert was sent
+            if (self.peer_cert_chain) |old_chain| {
+                for (old_chain) |cert| self.allocator.free(cert);
+                self.allocator.free(old_chain);
+            }
+            self.peer_cert_chain = null;
+            return;
+        }
+
+        // Free any previously stored chain
+        if (self.peer_cert_chain) |old_chain| {
+            for (old_chain) |cert| self.allocator.free(cert);
+            self.allocator.free(old_chain);
+        }
+
+        // Allocate and copy the certificate chain
+        var chain = try self.allocator.alloc([]const u8, parsed.entries.len);
+        errdefer {
+            for (chain[0..]) |cert| self.allocator.free(cert);
+            self.allocator.free(chain);
+        }
+
+        for (parsed.entries, 0..) |cert_entry, i| {
+            chain[i] = try self.allocator.dupe(u8, cert_entry.cert);
+        }
+
+        self.peer_cert_chain = chain;
+        traceHandshake("Server: Received client Certificate with {} cert(s)\n", .{chain.len});
+    }
+
+    /// RFC 8446 §4.4.3: Parse and verify client CertificateVerify (server-side mTLS).
+    /// Uses "TLS 1.3, client CertificateVerify" context string and skips hostname validation.
+    fn handleClientCertificateVerify(self: *Context, body: []const u8) !void {
+        const parsed = try tls13_full.parseCertificateVerify(body);
+
+        // Store signature and algorithm
+        if (self.peer_cert_verify_sig) |old_sig| self.allocator.free(old_sig);
+        self.peer_cert_verify_sig = try self.allocator.dupe(u8, parsed.signature);
+        self.peer_cert_verify_alg = parsed.algorithm;
+
+        // Need a certificate chain to verify against
+        const chain = self.peer_cert_chain orelse return HandshakeError.MissingCertificate;
+        if (chain.len == 0) return HandshakeError.MissingCertificate;
+
+        if (!self.config.allow_insecure) {
+            // RFC 5280 §6: Validate client certificate chain
+            // Skip hostname validation for client certs (no SNI to match against)
+            const now_unix = std.time.timestamp();
+            x509.validateChain(
+                self.allocator,
+                chain,
+                now_unix,
+                "", // No hostname validation for client certs
+                false, // Don't skip validation
+            ) catch |err| {
+                traceHandshake("Server: Client certificate chain validation failed: {}\n", .{err});
+                return HandshakeError.CertificateValidationFailed;
+            };
+
+            // Verify CertificateVerify signature with client context string
+            const transcript_hash = self.transcripts.handshake.finalize(self.hash_kind);
+
+            // Check signature algorithm is supported
+            var algorithm_supported = false;
+            for (self.config.supported_signature_schemes) |scheme| {
+                if (scheme == parsed.algorithm) {
+                    algorithm_supported = true;
+                    break;
+                }
+            }
+            if (!algorithm_supported) {
+                return HandshakeError.UnsupportedSignatureAlgorithm;
+            }
+
+            const sig_alg = sig.fromTls13SignatureScheme(parsed.algorithm) catch {
+                return HandshakeError.UnsupportedSignatureAlgorithm;
+            };
+
+            const verified = try sig.verifyCertificateVerify(
+                sig_alg,
+                chain[0], // Leaf certificate DER
+                parsed.signature,
+                "TLS 1.3, client CertificateVerify", // Client context string
+                transcript_hash.slice(),
+                self.allocator,
+            );
+
+            if (!verified) {
+                traceHandshake("Server: Client CertificateVerify signature verification failed\n", .{});
+                return HandshakeError.InvalidSignature;
+            }
+
+            traceHandshake("Server: Client certificate validated and CertificateVerify verified\n", .{});
+        } else {
+            traceHandshake("Server: Client certificate validation skipped (allow_insecure=true)\n", .{});
         }
     }
 

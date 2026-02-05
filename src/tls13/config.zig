@@ -270,6 +270,38 @@ pub const Config = struct {
     /// Default: false (full validation required)
     allow_insecure: bool = false,
 
+    /// Server: request client certificate during handshake (RFC 8446 §4.3.2).
+    /// When true, the server sends a CertificateRequest message after
+    /// EncryptedExtensions, and the client responds with Certificate +
+    /// CertificateVerify before Finished.
+    ///
+    /// Note: RFC 9001 forbids *post-handshake* client auth in QUIC, but
+    /// *initial handshake* client auth (CertificateRequest before server
+    /// Finished) is fully supported.
+    ///
+    /// Default: false (no client certificate requested)
+    request_client_cert: bool = false,
+
+    /// Client: DER-encoded client certificate for mutual TLS authentication.
+    /// Sent in the Certificate message when the server requests client auth.
+    /// Must be valid X.509v3 certificate.
+    ///
+    /// null = No client certificate (will send empty Certificate if requested).
+    client_cert_der: ?[]const u8 = null,
+
+    /// Client: DER-encoded private key (PKCS#8 format) for client authentication.
+    /// Used to generate CertificateVerify signature when server requests client auth.
+    /// Must correspond to public key in client_cert_der.
+    ///
+    /// null = No client private key.
+    client_key_der: ?[]const u8 = null,
+
+    /// Server: trusted CA certificates for client certificate validation (optional).
+    /// If set, included in the certificate_authorities extension of CertificateRequest.
+    ///
+    /// null = No certificate_authorities extension sent.
+    client_auth_ca_certs: ?[]const []const u8 = null,
+
     /// Pre-shared key for session resumption (Client role only).
     /// If set, the client will offer this PSK in the ClientHello.
     /// RFC 8446 §4.2.11: pre_shared_key extension.

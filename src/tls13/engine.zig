@@ -254,27 +254,27 @@ pub const Engine = struct {
         self.ecdhe_secret = null;
         // Zeroize handshake and master secrets if present
         if (self.handshake_secret) |*hs| {
-            std.crypto.secureZero(u8, hs.data[0..hs.len]);
+            std.crypto.secureZero(u8, hs.bytes[0..hs.len]);
             self.handshake_secret = null;
         }
         if (self.master_secret) |*ms| {
-            std.crypto.secureZero(u8, ms.data[0..ms.len]);
+            std.crypto.secureZero(u8, ms.bytes[0..ms.len]);
             self.master_secret = null;
         }
         if (self.handshake_client_secret) |*hcs| {
-            std.crypto.secureZero(u8, hcs.data[0..hcs.len]);
+            std.crypto.secureZero(u8, hcs.bytes[0..hcs.len]);
             self.handshake_client_secret = null;
         }
         if (self.handshake_server_secret) |*hss| {
-            std.crypto.secureZero(u8, hss.data[0..hss.len]);
+            std.crypto.secureZero(u8, hss.bytes[0..hss.len]);
             self.handshake_server_secret = null;
         }
         if (self.cached_app_client) |*cac| {
-            std.crypto.secureZero(u8, cac.data[0..cac.len]);
+            std.crypto.secureZero(u8, cac.bytes[0..cac.len]);
             self.cached_app_client = null;
         }
         if (self.cached_app_server) |*cas| {
-            std.crypto.secureZero(u8, cas.data[0..cas.len]);
+            std.crypto.secureZero(u8, cas.bytes[0..cas.len]);
             self.cached_app_server = null;
         }
 

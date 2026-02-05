@@ -223,10 +223,10 @@ pub fn computeCertificateVerifySignature(
         return error.InvalidPrivateKey;
     }
 
-    const kp = try std.crypto.sign.Ed25519.KeyPair.create(private_key[0..32].*);
-    const signature = try std.crypto.sign.Ed25519.sign(&msg, kp, null);
+    const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(private_key[0..32].*);
+    const signature = try kp.sign(&msg, null);
 
-    return signature;
+    return signature.toBytes();
 }
 
 /// Parsed CertificateVerify message result.

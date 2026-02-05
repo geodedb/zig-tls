@@ -107,6 +107,7 @@ const server_hello_mod = @import("tls13/messages/server_hello.zig");
 const encrypted_extensions_mod = @import("tls13/messages/encrypted_extensions.zig");
 const certificate_mod = @import("tls13/messages/certificate.zig");
 const certificate_verify_mod = @import("tls13/messages/certificate_verify.zig");
+const certificate_request_mod = @import("tls13/messages/certificate_request.zig");
 const finished_mod = @import("tls13/messages/finished.zig");
 
 // Re-export core types for backward compatibility (RFC 8446 Appendix B)
@@ -151,6 +152,11 @@ pub const buildCertificateVerify = certificate_verify_mod.buildCertificateVerify
 pub const computeCertificateVerifySignature = certificate_verify_mod.computeCertificateVerifySignature;
 pub const ParsedCertificateVerify = certificate_verify_mod.ParsedCertificateVerify;
 pub const parseCertificateVerify = certificate_verify_mod.parseCertificateVerify;
+
+// Re-export CertificateRequest types and functions
+pub const ParsedCertificateRequest = certificate_request_mod.ParsedCertificateRequest;
+pub const buildCertificateRequest = certificate_request_mod.buildCertificateRequest;
+pub const parseCertificateRequest = certificate_request_mod.parseCertificateRequest;
 
 // Re-export Finished functions for backward compatibility
 pub const buildFinished = finished_mod.buildFinished;

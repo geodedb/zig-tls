@@ -857,6 +857,27 @@ pub fn build(b: *std.Build) void {
     const run_mutual_tls_conformance_test = b.addRunArtifact(mutual_tls_conformance_test);
     conformance_step.dependOn(&run_mutual_tls_conformance_test.step);
 
+    // mTLS OpenSSL interop conformance tests (CertificateRequest/Verify/Certificate round-trip + EVP)
+    const mtls_openssl_interop_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/openssl/mtls_interop.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        }),
+    });
+    mtls_openssl_interop_test.linkSystemLibrary("ssl");
+    mtls_openssl_interop_test.linkSystemLibrary("crypto");
+    mtls_openssl_interop_test.linkLibC();
+    if (vcpkg_include_path) |path| {
+        mtls_openssl_interop_test.addIncludePath(.{ .cwd_relative = path });
+    }
+
+    const run_mtls_openssl_interop_test = b.addRunArtifact(mtls_openssl_interop_test);
+    conformance_step.dependOn(&run_mtls_openssl_interop_test.step);
+
     // P-256/P-384 ECDHE conformance tests (Phase 4, Task 1)
     const p256_ecdhe_conformance_test = b.addTest(.{
         .root_module = b.createModule(.{
@@ -889,6 +910,20 @@ pub fn build(b: *std.Build) void {
     });
     const run_cross_suite_conformance_test = b.addRunArtifact(cross_suite_conformance_test);
     conformance_step.dependOn(&run_cross_suite_conformance_test.step);
+
+    // mTLS BoringSSL format parity tests (CertificateRequest wire encoding validation)
+    const mtls_format_parity_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/conformance/boringssl/mtls_format_parity.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        }),
+    });
+    const run_mtls_format_parity_test = b.addRunArtifact(mtls_format_parity_test);
+    conformance_step.dependOn(&run_mtls_format_parity_test.step);
 
     // OCSP validation conformance tests (Phase 5, Task 1)
     const ocsp_validation_conformance_test = b.addTest(.{

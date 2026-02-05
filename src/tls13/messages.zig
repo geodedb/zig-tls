@@ -32,6 +32,8 @@ pub const HsType = enum(u8) {
     encrypted_extensions = 8,
     /// Certificate message (RFC 8446 §4.4.2).
     certificate = 11,
+    /// CertificateRequest message (RFC 8446 §4.3.2).
+    certificate_request = 13,
     /// CertificateVerify message (RFC 8446 §4.4.3).
     certificate_verify = 15,
     /// Finished message (RFC 8446 §4.4.4).
