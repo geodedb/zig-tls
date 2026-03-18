@@ -1399,6 +1399,13 @@ pub const Context = struct {
                 // RFC 8446 §4.1.2: ClientHello only valid for server role
                 if (self.config.role != .Server) return HandshakeError.UnexpectedMessage;
 
+                // RFC 8446 §4.1.4: After HelloRetryRequest, server must accept a
+                // second ClientHello. Reset stored CH state so setClientHello
+                // doesn't reject it as DuplicateClientHello.
+                if (self.hrr_sent) {
+                    self.state.reset(self.allocator);
+                }
+
                 // Parse and store ClientHello for parameter negotiation
                 try self.state.setClientHello(self.allocator, parsed.body);
 
