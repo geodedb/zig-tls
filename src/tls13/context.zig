@@ -535,34 +535,61 @@ const HandshakeFlags = struct {
 const encryption_level_count = std.meta.fields(EncryptionLevel).len;
 
 /// RFC 9001 §4.1.4: per-encryption-level CRYPTO queues keeping inbound/outbound bytes.
+/// PERF-036: Uses offset-based O(1) amortized consume (matching handshake_state.zig pattern).
 const CryptoBuffer = struct {
     level: EncryptionLevel,
     inbound: ArrayListUnmanaged(u8) = .{},
     outbound: ArrayListUnmanaged(u8) = .{},
+    read_offset: usize = 0,
 
     fn init(level: EncryptionLevel) CryptoBuffer {
         return .{ .level = level };
     }
 
+    /// Returns the unread portion of the inbound buffer.
+    fn data(self: *const CryptoBuffer) []const u8 {
+        return self.inbound.items[self.read_offset..];
+    }
+
+    /// Returns the unread portion of the inbound buffer as mutable.
+    fn dataMut(self: *CryptoBuffer) []u8 {
+        return self.inbound.items[self.read_offset..];
+    }
+
+    /// Returns the number of unread bytes.
+    fn readableLength(self: *const CryptoBuffer) usize {
+        return self.inbound.items.len - self.read_offset;
+    }
+
     fn clear(self: *CryptoBuffer) void {
         self.inbound.clearRetainingCapacity();
         self.outbound.clearRetainingCapacity();
+        self.read_offset = 0;
     }
 
     fn deinit(self: *CryptoBuffer, alloc: std.mem.Allocator) void {
         self.inbound.deinit(alloc);
         self.outbound.deinit(alloc);
+        self.read_offset = 0;
     }
 
+    /// O(1) amortized consume: advance read_offset, compact when offset > capacity/2.
     fn consume(self: *CryptoBuffer, count: usize) void {
-        std.debug.assert(count <= self.inbound.items.len);
-        const remaining = self.inbound.items.len - count;
-        if (remaining > 0) {
-            // Shift remaining bytes toward the front; use forwards copy to avoid
-            // clobbering source data when regions overlap.
-            std.mem.copyForwards(u8, self.inbound.items[0..remaining], self.inbound.items[count .. count + remaining]);
+        std.debug.assert(count <= self.readableLength());
+        self.read_offset += count;
+        self.compact();
+    }
+
+    /// Compact: shift remaining data to front when read_offset exceeds half capacity.
+    fn compact(self: *CryptoBuffer) void {
+        if (self.read_offset > 0 and (self.read_offset > self.inbound.capacity / 2 or self.read_offset == self.inbound.items.len)) {
+            const remaining = self.readableLength();
+            if (remaining > 0) {
+                std.mem.copyForwards(u8, self.inbound.items[0..remaining], self.inbound.items[self.read_offset .. self.read_offset + remaining]);
+            }
+            self.inbound.items = self.inbound.items[0..remaining];
+            self.read_offset = 0;
         }
-        self.inbound.items = self.inbound.items[0..remaining];
     }
 };
 
@@ -759,11 +786,11 @@ pub const Context = struct {
     ///
     /// Note: This updates the config's quic_transport_parameters pointer to reference
     /// the provided bytes. Caller must ensure the bytes remain valid for the Context's lifetime.
-    pub fn setTransportParameters(self: *Context, tp_bytes: []const u8) void {
+    pub fn setTransportParameters(self: *Context, tp_bytes: []const u8) !void {
         // Store in the mutable local_transport_parameters field instead of trying to modify the immutable config
         // The config's quic_transport_parameters is set at Context creation time; this allows updating it later
         // We need to make a mutable copy since local_transport_parameters is ?[]u8, not ?[]const u8
-        const mutable_copy = self.allocator.dupe(u8, tp_bytes) catch return;
+        const mutable_copy = try self.allocator.dupe(u8, tp_bytes);
         // Free any existing allocation
         if (self.local_transport_parameters) |old| {
             self.allocator.free(old);
@@ -824,7 +851,7 @@ pub const Context = struct {
         // SEC-018: Enforce maximum CRYPTO buffer size per RFC 9001 §7.5 recommendation.
         // Prevents memory exhaustion from excessively large or fragmented handshake messages.
         const max_crypto_buffer = 65536; // 64KB per RFC 9001 §7.5
-        if (stream.inbound.items.len + data.len > max_crypto_buffer) {
+        if (stream.readableLength() + data.len > max_crypto_buffer) {
             return HandshakeError.UnexpectedMessage;
         }
 
@@ -832,7 +859,7 @@ pub const Context = struct {
 
         // Process all complete messages in buffer
         while (true) {
-            const buffer = stream.inbound.items;
+            const buffer = stream.data();
             if (self.config.role == .Client and level == .Handshake) {
                 const head_len: usize = if (buffer.len < 8) buffer.len else 8;
                 logger.debugPrint("[TLS-HS-CLIENT] buffer len={} head={any}\n", .{ buffer.len, buffer[0..head_len] });
@@ -1125,14 +1152,15 @@ pub const Context = struct {
                 const cr_parsed = try tls13_full.parseCertificateRequest(self.allocator, parsed.body);
                 defer self.allocator.free(cr_parsed.signature_algorithms);
 
-                // Store request context for client Certificate response
-                if (self.client_cert_request_context) |old| {
-                    self.allocator.free(old);
-                }
-                self.client_cert_request_context = if (cr_parsed.context.len > 0)
+                // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
+                const new_ctx = if (cr_parsed.context.len > 0)
                     try self.allocator.dupe(u8, cr_parsed.context)
                 else
                     null;
+                if (self.client_cert_request_context) |old| {
+                    self.allocator.free(old);
+                }
+                self.client_cert_request_context = new_ctx;
 
                 self.client_cert_requested = true;
 
@@ -1771,9 +1799,12 @@ pub const Context = struct {
             // RFC 8446 §4.2.11: Try external PSK config first, then fall back to ticket lookup callback.
             // External PSKs are provisioned out-of-band and use "ext binder" label.
             // Resumption PSKs come from NewSessionTicket and use "res binder" label.
+            // SEC-046: Use constant-time comparison for PSK identity matching to prevent
+            // timing side-channel leaks (CWE-208). Length check is non-secret.
             const is_external_psk = self.config.external_psk != null and
                 self.config.external_psk_identity != null and
-                std.mem.eql(u8, ident.identity, self.config.external_psk_identity.?);
+                ident.identity.len == self.config.external_psk_identity.?.len and
+                std.crypto.timing_safe.compare(u8, ident.identity, self.config.external_psk_identity.?, .big) == .eq;
             const psk_bytes_opt: ?[]const u8 = if (is_external_psk)
                 self.config.external_psk
             else
@@ -1907,6 +1938,13 @@ pub const Context = struct {
         var server_priv: [32]u8 = undefined;
         defer std.crypto.secureZero(u8, &server_priv);
         std.crypto.random.bytes(&server_priv);
+        // SEC-048: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
+        // Zig's X25519 internally clamps during DH computation, but we clamp here
+        // too for consistency with sendClientHello2() and engine.zig's ensureKeypair()
+        // and to ensure the stored private key bytes are canonical.
+        server_priv[0] &= 248;
+        server_priv[31] &= 127;
+        server_priv[31] |= 64;
 
         const server_pub = std.crypto.dh.X25519.recoverPublicKey(server_priv) catch {
             return HandshakeError.UnsupportedKeyShareGroup;
@@ -2122,6 +2160,13 @@ pub const Context = struct {
         // Generate X25519 key pair
         var priv: [32]u8 = undefined;
         std.crypto.random.bytes(&priv);
+        // SEC-040: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
+        // Zig's X25519 internally clamps during DH computation, but we clamp here
+        // too for consistency with sendClientHello2() and engine.zig's ensureKeypair()
+        // and to ensure the stored private key bytes are canonical.
+        priv[0] &= 248;
+        priv[31] &= 127;
+        priv[31] |= 64;
         const client_pubkey = std.crypto.dh.X25519.recoverPublicKey(priv) catch return HandshakeError.UnsupportedKeyShareGroup;
         self.client_priv = priv;
         self.client_pub = client_pubkey;
@@ -2638,19 +2683,22 @@ pub const Context = struct {
 
         // Store OCSP response and SCT list from leaf certificate (first entry)
         // RFC 8446 §4.4.2.1: Extensions in leaf certificate entry
+        // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
         if (parsed.entries[0].ocsp_response) |ocsp_data| {
+            const new_copy = try self.allocator.dupe(u8, ocsp_data);
             if (self.peer_ocsp_response) |old| {
                 self.allocator.free(old);
             }
-            self.peer_ocsp_response = try self.allocator.dupe(u8, ocsp_data);
+            self.peer_ocsp_response = new_copy;
             traceHandshake("Client: Received OCSP response ({} bytes)\\n", .{ocsp_data.len});
         }
 
         if (parsed.entries[0].sct_list) |sct_data| {
+            const new_copy = try self.allocator.dupe(u8, sct_data);
             if (self.peer_sct_list) |old| {
                 self.allocator.free(old);
             }
-            self.peer_sct_list = try self.allocator.dupe(u8, sct_data);
+            self.peer_sct_list = new_copy;
             traceHandshake("Client: Received SCT list ({} bytes)\\n", .{sct_data.len});
         }
 
@@ -2663,11 +2711,12 @@ pub const Context = struct {
         // Parse CertificateVerify message
         const parsed = try tls13_full.parseCertificateVerify(body);
 
-        // Store signature and algorithm for verification
+        // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
+        const sig_copy = try self.allocator.dupe(u8, parsed.signature);
         if (self.peer_cert_verify_sig) |old_sig| {
             self.allocator.free(old_sig);
         }
-        self.peer_cert_verify_sig = try self.allocator.dupe(u8, parsed.signature);
+        self.peer_cert_verify_sig = sig_copy;
         self.peer_cert_verify_alg = parsed.algorithm;
 
         // Validate certificate chain
@@ -2877,9 +2926,10 @@ pub const Context = struct {
     fn handleClientCertificateVerify(self: *Context, body: []const u8) !void {
         const parsed = try tls13_full.parseCertificateVerify(body);
 
-        // Store signature and algorithm
+        // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
+        const sig_copy = try self.allocator.dupe(u8, parsed.signature);
         if (self.peer_cert_verify_sig) |old_sig| self.allocator.free(old_sig);
-        self.peer_cert_verify_sig = try self.allocator.dupe(u8, parsed.signature);
+        self.peer_cert_verify_sig = sig_copy;
         self.peer_cert_verify_alg = parsed.algorithm;
 
         // Need a certificate chain to verify against
