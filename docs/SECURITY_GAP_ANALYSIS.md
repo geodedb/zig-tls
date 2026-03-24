@@ -2,28 +2,31 @@
 
 > **Last updated:** 2026-03-24
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Phase 8 -- Closure round: SEC-040, SEC-046, SEC-047, SEC-048 closed
+> **Review phase:** Phase 9 -- Closure round: SEC-009, SEC-039, SEC-045 closed; SEC-010/011/012/013/038 Won't Do
 
 ## Summary
 
-| Risk Level | Open | Closed | Total |
-|-----------|------|--------|-------|
-| Critical  | 0    | 0      | 0     |
-| High      | 0    | 10     | 10    |
-| Medium    | 0    | 15     | 15    |
-| Low       | 5    | 14     | 19    |
-| Info      | 3    | 1      | 4     |
-| **Total** | **8** | **40** | **48** |
+| Risk Level | Open | Closed | Won't Do | Total |
+|-----------|------|--------|----------|-------|
+| Critical  | 0    | 0      | 0        | 0     |
+| High      | 0    | 10     | 0        | 10    |
+| Medium    | 0    | 15     | 0        | 15    |
+| Low       | 0    | 15     | 4        | 19    |
+| Info      | 0    | 3      | 1        | 4     |
+| **Total** | **0** | **43** | **5**   | **48** |
 
-**Phase 8** closed the remaining HIGH finding (SEC-047) and 3 Low findings (SEC-040, SEC-046, SEC-048). All Phase 6-7 closures remain valid. Zero HIGH/Critical items remain open.
+**Phase 9** closed 3 remaining items (SEC-009, SEC-039, SEC-045) and marked 5 as Won't Do (SEC-010, SEC-011, SEC-012, SEC-013, SEC-038). **All 48 findings are now resolved. Zero items remain open.**
 
-### Top 5 Risks (Open -- Remaining)
+### Phase 9 Closures
 
-1. **SEC-038** -- Global mutable TrustStore creates theoretical TOCTOU window (Risk 12, Info) -- Benign; Zig lacks dynamic library unloading
-2. **SEC-039** -- Handshake trace may leak error details in production (Risk 8, Info) -- Add compileError guard matching secret trace pattern
-3. **SEC-009** -- x25519KeypairAndShared returns value instead of error on failure (Risk 6, Low) -- Return an error union
-4. **SEC-045** -- `@ptrCast` on PSK binder/identity bypasses type safety (Risk 2, Info) -- Replace with explicit field-by-field conversion
-5. **SEC-010** -- OCSP digest comparison uses std.mem.eql (Risk 1, Info) -- Non-secret data; informational only
+- **SEC-009** -- **CLOSED** (Low): `x25519KeypairAndShared` now returns `X25519Error!X25519Result` error union. File: `src/tls13/messages.zig:228-248`
+- **SEC-045** -- **CLOSED** (Info): `@ptrCast` replaced with field-by-field conversion for PSK binder/identity. File: `src/tls13/context.zig:452-489`
+- **SEC-039** -- **CLOSED** (Info): `@compileError` guard added for `handshake_trace_enabled` in release builds, matching secret trace pattern. File: `src/tls13/context.zig:121-126`
+- **SEC-010** -- **WON'T DO** (Low): OCSP digest comparison uses non-secret public data; `std.mem.eql` is appropriate
+- **SEC-011** -- **WON'T DO** (Low): Downgrade sentinel values are public RFC 8446 constants; timing leakage does not benefit an attacker
+- **SEC-012** -- **WON'T DO** (Low): Compile-time guard already prevents debug trace of private key scalar in release builds
+- **SEC-013** -- **WON'T DO** (Low): P-256 DER lengths always fit u8; Zig's `@intCast` is runtime bounds-checked
+- **SEC-038** -- **WON'T DO** (Info): TOCTOU window is benign; Zig lacks dynamic library unloading; trust store changes during handshake are administrative
 
 ### Phase 8 Closures
 
@@ -38,7 +41,7 @@
 - **SEC-043** -- **CLOSED**: `deriveApplicationTraffic` intermediates now zeroized via `defer std.crypto.secureZero` on `derived.bytes` and `master.bytes`
 - **SEC-041** -- **CLOSED**: `expandLabelHash` PRK copy now zeroized via `defer std.crypto.secureZero` on `arr` in both sha256/sha384 branches
 - **SEC-044** -- **CLOSED**: `expandLabelHash` fbb buffer now zeroized via `defer std.crypto.secureZero` on `fbb`
-- **SEC-045** -- OPEN (Info): `@ptrCast` on PSK binder/identity bypasses type safety at `context.zig:506,512,514`
+- **SEC-045** -- **CLOSED** (Info): `@ptrCast` replaced with field-by-field conversion at `context.zig:452-489` (Phase 9)
 
 ### Recently Closed (Phase 6 -- Round 3)
 
@@ -108,19 +111,19 @@
 | 19 | SEC-016 | High | 13.0 | Context ECDHE shared secret not zeroized (server+client) | `context.zig` | CWE-226 / A02:2021 | `context.zig:2163,2677` | [#91](https://gitlab.com/devnw/zig/tls/-/issues/91) | Changed `const shared` to `var shared`; added `defer secureZero` on both paths | Claude | 2026-03-24 | Closed |
 | 20 | SEC-007 | Medium | 12.6 | No CRL checking; OCSP is optional | `x509.zig` | CWE-299 / A07:2021 | `x509.zig:1451-1479` | -- | Document limitation; add `require_ocsp` enforcement path | -- | 90 days | Closed |
 | 21 | SEC-037 | Low | 12 | sendClientHello2 does not explicitly clamp X25519 private key | `context.zig` | CWE-326 / A02:2021 | `context.zig:1543-1549` | -- | Explicit X25519 clamping added (priv[0]&=248, priv[31]&=127|=64) | Claude | 2026-03-24 | Closed |
-| 22 | SEC-038 | Info | 12 | Global mutable TrustStore creates theoretical TOCTOU window | `x509.zig` | CWE-367 / A04:2021 | `x509.zig:134-155` | -- | Benign; Zig lacks dynamic library unloading | -- | Backlog | Open |
+| 22 | SEC-038 | Info | 12 | Global mutable TrustStore creates theoretical TOCTOU window | `x509.zig` | CWE-367 / A04:2021 | `x509.zig:134-155` | -- | Won't Do: Benign; Zig lacks dynamic library unloading | -- | -- | Won't Do |
 | 23 | SEC-017 | Medium | 10.0 | TicketStore unbounded growth (DoS) | `engine.zig` | CWE-770 / A05:2021 | `engine.zig:128-151` | [#93](https://gitlab.com/devnw/zig/tls/-/issues/93) | Added max_tickets=16 with FIFO eviction; secrets zeroized on eviction | Claude | 2026-03-24 | Closed |
 | 24 | SEC-018 | Medium | 10.0 | CRYPTO inbound/inbox buffer unbounded (Context + Engine) | `context.zig`, `engine.zig` | CWE-770 / A05:2021 | `context.zig:1033`, `engine.zig:437` | [#95](https://gitlab.com/devnw/zig/tls/-/issues/95) | Added 64KB MAX_HANDSHAKE_BUFFER limit in both context.zig and engine.zig | Claude | 2026-03-24 | Closed |
 | 25 | SEC-019 | Medium | 9.0 | Engine `allow_insecure` no release guard | `engine.zig` | CWE-295 / A05:2021 | `engine.zig:207` | [#96](https://gitlab.com/devnw/zig/tls/-/issues/96) | Added `setAllowInsecure` with `@panic` in release builds matching Context pattern | Claude | 2026-03-24 | Closed |
 | 26 | SEC-040 | Low | 8 | `startClientHandshake` missing X25519 clamping | `context.zig` | CWE-326 / A02:2021 | `context.zig:2181-2187` | [#126](https://gitlab.com/devnw/zig/tls/-/issues/126) | Explicit X25519 clamping added (priv[0]&=248, priv[31]&=127|=64) | Claude | 2026-03-24 | Closed |
-| 27 | SEC-039 | Info | 8 | Handshake trace may leak error details in production | `context.zig` | CWE-209 / A09:2021 | `context.zig:2950,3146` | -- | Add `@compileError` guard matching secret trace pattern | -- | Backlog | Open |
+| 27 | SEC-039 | Info | 8 | Handshake trace may leak error details in production | `context.zig` | CWE-209 / A09:2021 | `context.zig:121-126` | -- | `@compileError` guard added for `handshake_trace_enabled` in release builds | Claude | 2026-03-24 | Closed |
 | 28 | SEC-020 | Medium | 8.0 | Engine Finished verification failure is non-fatal | `engine.zig` | CWE-287 / A07:2021 | `engine.zig:768-792` | [#97](https://gitlab.com/devnw/zig/tls/-/issues/97) | Finished failure now returns `error.HandshakeFailure`; prevents app data exchange | Claude | 2026-03-24 | Closed |
 | 29 | SEC-021 | Medium | 8.0 | Engine cert validation failure non-fatal in processing loop | `engine.zig` | CWE-295 / A07:2021 | `engine.zig:621-765` | [#98](https://gitlab.com/devnw/zig/tls/-/issues/98) | Added `cert_ok` check to `handshakeComplete()`; cert failure now gates handshake | Claude | 2026-03-24 | Closed |
 | 30 | SEC-008 | Medium | 7.0 | `x25519KeypairAndShared` missing sk zeroize on error (engine.zig) | `engine.zig` | CWE-226 / A02:2021 | `engine.zig:1723-1736` | -- | Added `defer std.crypto.secureZero` | Claude | 2026-03-24 | Closed |
 | 31 | SEC-023 | Medium | 7.0 | `x25519KeypairAndShared` priv_key not zeroized on success path | `messages.zig` | CWE-226 / A02:2021 | `messages.zig:191-209` | [#76](https://gitlab.com/devnw/zig/tls/-/issues/76) | Added `defer secureZero(u8, &sk)` on all paths in messages.zig | Claude | 2026-03-24 | Closed |
 | 32 | SEC-046 | Low | 6 | PSK identity comparison non-constant-time | `context.zig` | CWE-208 / A02:2021 | `context.zig:1825` | -- | Replaced `std.mem.eql` with `timing_safe.compare` for PSK identity lookup | Claude | 2026-03-24 | Closed |
 | 33 | SEC-048 | Low | 6 | Server `negotiateCipherAndKeys` missing X25519 clamping | `context.zig` | CWE-326 / A02:2021 | `context.zig:1959-1965` | [#127](https://gitlab.com/devnw/zig/tls/-/issues/127) | Explicit X25519 clamping added (priv[0]&=248, priv[31]&=127|=64) | Claude | 2026-03-24 | Closed |
-| 34 | SEC-009 | Low | 6.0 | `x25519KeypairAndShared` returns value instead of error on failure | `messages.zig` | CWE-252 / A07:2021 | `messages.zig:201-205` | -- | Return an error union so callers can distinguish failure | -- | 180 days | Open |
+| 34 | SEC-009 | Low | 6.0 | `x25519KeypairAndShared` returns value instead of error on failure | `messages.zig` | CWE-252 / A07:2021 | `messages.zig:228-248` | -- | Returns `X25519Error!X25519Result` error union; callers must handle error | Claude | 2026-03-24 | Closed |
 | 35 | SEC-024 | Low | 5.0 | Certificate chain no depth limit | `x509.zig` | CWE-770 / A05:2021 | `x509.zig:1480` | [#99](https://gitlab.com/devnw/zig/tls/-/issues/99) | Added `max_chain_depth=10` guard before allocation in x509.zig | Claude | 2026-03-24 | Closed |
 | 36 | SEC-042 | Low | 4 | `deriveHandshakeTraffic` intermediates not zeroized | `key_derivation.zig` | CWE-226 / A02:2021 | `key_derivation.zig:218-222` | -- | Added `defer std.crypto.secureZero(u8, &derived.bytes)` | Claude | 2026-03-24 | **Closed** |
 | 37 | SEC-043 | Low | 4 | `deriveApplicationTraffic` intermediates not zeroized | `key_derivation.zig` | CWE-226 / A02:2021 | `key_derivation.zig:340-351` | -- | Added `defer std.crypto.secureZero` on `derived.bytes` and `master.bytes` | Claude | 2026-03-24 | **Closed** |
@@ -128,12 +131,12 @@
 | 39 | SEC-041 | Low | 3 | `expandLabelHash` PRK copy not zeroized | `key_schedule.zig` | CWE-226 / A02:2021 | `key_schedule.zig:143-150` | -- | Added `defer std.crypto.secureZero(u8, &arr)` in both sha256/sha384 branches | Claude | 2026-03-24 | **Closed** |
 | 40 | SEC-026 | Low | 3.0 | OCSP `compareSlices` non-constant-time | `ocsp.zig` | CWE-208 / A02:2021 | `ocsp.zig:143` | [#101](https://gitlab.com/devnw/zig/tls/-/issues/101) | Switched to `timing_safe.compare` for defense-in-depth | Claude | 2026-03-24 | Closed |
 | 41 | SEC-027 | Low | 3.0 | Engine CertificateVerify unknown scheme dead fallback | `engine.zig` | CWE-697 / A07:2021 | `engine.zig:744-748` | [#102](https://gitlab.com/devnw/zig/tls/-/issues/102) | Removed dead `.rsa_pss_sha256` fallback; replaced with `continue` | Claude | 2026-03-24 | Closed |
-| 42 | SEC-045 | Info | 2 | `@ptrCast` on PSK binder/identity bypasses type safety | `context.zig` | CWE-843 / A07:2021 | `context.zig:506,512,514` | -- | Replace `@ptrCast` with explicit field-by-field conversion | -- | Backlog | **Open** |
-| 43 | SEC-010 | Low | 1.0 | OCSP digest comparison uses `std.mem.eql` | `ocsp.zig` | CWE-208 / A02:2021 | `ocsp.zig:140-141` | -- | Non-secret data; informational only | -- | Backlog | Open |
+| 42 | SEC-045 | Info | 2 | `@ptrCast` on PSK binder/identity bypasses type safety | `context.zig` | CWE-843 / A07:2021 | `context.zig:452-489` | -- | Replaced `@ptrCast` with explicit field-by-field conversion | Claude | 2026-03-24 | **Closed** |
+| 43 | SEC-010 | Low | 1.0 | OCSP digest comparison uses `std.mem.eql` | `ocsp.zig` | CWE-208 / A02:2021 | `ocsp.zig:140-141` | -- | Won't Do: Non-secret public data; `std.mem.eql` is appropriate | -- | -- | Won't Do |
 | 44 | SEC-044 | Info | 1 | `expandLabelHash` fbb buffer not zeroized | `key_schedule.zig` | CWE-226 / A02:2021 | `key_schedule.zig:134` | -- | Added `defer std.crypto.secureZero(u8, &fbb)` | Claude | 2026-03-24 | **Closed** |
-| 45 | SEC-011 | Low | 1.0 | Downgrade sentinel detection uses `std.mem.eql` | `server_hello.zig` | CWE-208 / A02:2021 | `server_hello.zig:145,167,189` | -- | Non-secret data; informational only | -- | Backlog | Open |
-| 46 | SEC-012 | Low | 0.9 | Debug trace logs private key scalar (compile-guarded) | `sig.zig` | CWE-532 / A09:2021 | `sig.zig:564-566` | -- | Comptime guard is effective; acceptable | -- | Backlog | Open |
-| 47 | SEC-013 | Low | 0.6 | `@intCast` in DER encoding (bounds-checked at runtime) | `sig.zig` | CWE-681 / A07:2021 | `sig.zig:620,624,634` | -- | P-256 lengths always fit u8; low risk | -- | Backlog | Open |
+| 45 | SEC-011 | Low | 1.0 | Downgrade sentinel detection uses `std.mem.eql` | `server_hello.zig` | CWE-208 / A02:2021 | `server_hello.zig:145,167,189` | -- | Won't Do: Non-secret public constants; timing leakage does not benefit attacker | -- | -- | Won't Do |
+| 46 | SEC-012 | Low | 0.9 | Debug trace logs private key scalar (compile-guarded) | `sig.zig` | CWE-532 / A09:2021 | `sig.zig:564-566` | -- | Won't Do: Compile-time guard already effective in release builds | -- | -- | Won't Do |
+| 47 | SEC-013 | Low | 0.6 | `@intCast` in DER encoding (bounds-checked at runtime) | `sig.zig` | CWE-681 / A07:2021 | `sig.zig:620,624,634` | -- | Won't Do: P-256 lengths always fit u8; Zig `@intCast` is runtime bounds-checked | -- | -- | Won't Do |
 | 48 | SEC-014 | Low | 0.3 | Dead default algorithm `.rsa_pss_sha256` for unknown scheme | `engine.zig` | CWE-394 / A07:2021 | `engine.zig:744-748` | [#102](https://gitlab.com/devnw/zig/tls/-/issues/102) | Duplicate of SEC-027; resolved by SEC-027 closure | -- | -- | Closed |
 
 ---
@@ -915,6 +918,8 @@ const sh = std.crypto.dh.X25519.scalarmult(sk, peer_pub) catch {
 
 **SLA:** 180 days
 
+**Status: Closed** (2026-03-24) -- Function now returns `X25519Error!X25519Result` error union. Callers are forced to handle the error at compile time. See `src/tls13/messages.zig:228-248`.
+
 ---
 
 #### SEC-014: Dead default algorithm `.rsa_pss_sha256` for unknown scheme (Low, Risk 0.3) -- CLOSED
@@ -1616,6 +1621,8 @@ var g_trust_store_state: TrustStoreState = .{};
 
 **SLA:** Backlog
 
+**Status: Won't Do** (2026-03-24) -- Benign; Zig lacks dynamic library unloading, and trust store changes during active handshakes are an administrative operation with negligible practical risk.
+
 ---
 
 ### Logging and Debug (Phase 5)
@@ -1662,6 +1669,8 @@ No equivalent guard exists for `handshake_trace_enabled`.
 **Affected paths:** `src/tls13/context.zig`
 
 **SLA:** Backlog
+
+**Status: Closed** (2026-03-24) -- `@compileError` guard added for `handshake_trace_enabled` in release builds at `src/tls13/context.zig:121-126`, matching the `sig_trace_enabled` and `secret_trace_enabled` patterns.
 
 ---
 
@@ -2011,6 +2020,8 @@ comptime {
 
 **SLA:** Backlog
 
+**Status: Closed** (2026-03-24) -- `@ptrCast` replaced with explicit field-by-field conversion at `src/tls13/context.zig:452-489`. PSK handshake tests pass.
+
 ---
 
 ### Buffer Zeroization (Phase 7)
@@ -2059,7 +2070,7 @@ No zeroing after use. The allocated info is freed via `defer alloc.free(info)` b
 | SEC-042 | Add `defer secureZero` on intermediates in `deriveHandshakeTraffic` | 30 min | Closed |
 | SEC-043 | Add `defer secureZero` on intermediates in `deriveApplicationTraffic` | 30 min | Closed |
 | SEC-044 | Add `defer secureZero` on fbb buffer in `expandLabelHash` | 5 min | Closed |
-| SEC-045 | Add comptime layout assertions for `@ptrCast` PSK types | 15 min | Open |
+| SEC-045 | Replace `@ptrCast` with field-by-field conversion for PSK types | 15 min | Closed |
 | SEC-032 | Add month/day range validation in `parseDerTime` | 15 min | Closed |
 | SEC-033 | Replace `std.mem.eql` with `toLowerAscii` in `matchesNameConstraint` | 15 min | Closed |
 | SEC-035 | Add bounds check for `sid_len` in HRR handler | 15 min | Closed |
@@ -2091,7 +2102,7 @@ No zeroing after use. The allocated info is freed via `defer alloc.free(info)` b
 | SEC-031 | Add clientAuth EKU check in mTLS validation path | 1-2 days | Closed |
 | SEC-001 | Parse CertificateRequest signature_algorithms on client side, set `negotiated_signature` | 2-3 days | Closed |
 | SEC-005 | Add runtime guard or comptime opt-in for `allow_insecure` in release builds | 1 day | Closed |
-| SEC-009 | Refactor `x25519KeypairAndShared` to return error union | 1-2 days | Open |
+| SEC-009 | Refactor `x25519KeypairAndShared` to return error union | 1-2 days | Closed |
 | SEC-017 | Add max capacity + FIFO eviction to TicketStore | 1 day | Closed |
 | SEC-018 | Add max buffer size to CRYPTO inbound buffers (2 locations) | 1 day | Closed |
 | SEC-020 | Return error on Finished verification failure in Engine | 1-2 days | Closed |
@@ -2128,7 +2139,7 @@ No zeroing after use. The allocated info is freed via `defer alloc.free(info)` b
 | SEC-006 | `confidence::confirmed` | Direct code observation of `else => .ed25519` |
 | SEC-007 | `confidence::confirmed` | Documented in x509.zig comments by the authors |
 | SEC-008 | `confidence::confirmed` | Direct comparison with corrected messages.zig version |
-| SEC-009 | `confidence::confirmed` | Function signature returns struct, not error union |
+| SEC-009 | `confidence::confirmed` | **Closed**: Now returns `X25519Error!X25519Result` error union at messages.zig:228-248 |
 | SEC-010 | `confidence::confirmed` | Non-secret data; informational |
 | SEC-011 | `confidence::confirmed` | Non-secret data; informational |
 | SEC-012 | `confidence::confirmed` | Comptime guard verified present |
@@ -2157,13 +2168,13 @@ No zeroing after use. The allocated info is freed via `defer alloc.free(info)` b
 | SEC-036 | `confidence::confirmed` | No secureZero on old client_priv before overwrite at context.zig:1538 |
 | SEC-037 | `confidence::confirmed` | No explicit clamping; Zig's X25519 internally clamps (verified in std.crypto source) |
 | SEC-038 | `confidence::confirmed` | Global mutable var at x509.zig:155; benign due to Zig's lack of dynamic unloading |
-| SEC-039 | `confidence::suspected` | Verify whether handshake_trace_enabled has a comptime release guard |
+| SEC-039 | `confidence::confirmed` | **Closed**: `@compileError` guard added at context.zig:121-126 |
 | SEC-040 | `confidence::confirmed` | No explicit clamping at context.zig:2122-2126; SEC-037 pattern not applied to this path |
 | SEC-041 | `confidence::confirmed` | No `defer secureZero` on `arr` in either sha256/sha384 branch at key_schedule.zig:143-150 |
 | SEC-042 | `confidence::confirmed` | All intermediates are `const` with no zeroization at key_derivation.zig:218-222 |
 | SEC-043 | `confidence::confirmed` | All intermediates are `const` with no zeroization at key_derivation.zig:340-351 |
 | SEC-044 | `confidence::confirmed` | `fbb` buffer at key_schedule.zig:134 has no zeroing; contains non-secret HKDF label data |
-| SEC-045 | `confidence::confirmed` | Direct `@ptrCast` at context.zig:506,512,514 with no comptime layout assertions |
+| SEC-045 | `confidence::confirmed` | **Closed**: `@ptrCast` replaced with field-by-field conversion at context.zig:452-489 |
 | SEC-046 | `confidence::confirmed` | `std.mem.eql` at context.zig:1776; PSK identities are cleartext but timing could reveal server state |
 | SEC-047 | `confidence::confirmed` | engine.zig:1474 passes `&[_]u8{}` vs key_derivation.zig:340-341 uses `emptyHash()` and `zeroSecret()` |
 | SEC-048 | `confidence::confirmed` | No explicit clamping at context.zig:1907-1909; SEC-037 pattern not applied to server path |

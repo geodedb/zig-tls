@@ -1,6 +1,6 @@
 # GAP Analysis
 
-> **Last updated:** 2026-03-24
+> **Last updated:** 2026-03-24 (Phase 9)
 > **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 
@@ -13,14 +13,14 @@
 | Critical | 8        | 8      | 0        | 0    |
 | High     | 18       | 18     | 0        | 0    |
 | Medium   | 35       | 34     | 1        | 0    |
-| Low      | 33       | 25     | 1        | 7    |
-| **Total**| **94**   | **85** | **2**    | **7**|
+| Low      | 33       | 25     | 4        | 4    |
+| **Total**| **94**   | **85** | **5**    | **4**|
 
 ### Implementation Status
 
-**Closed: 87 findings** - All implemented and verified
-**Won't Do: 2 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib)
-**Open: 7 findings** - GAP-0076 (CRL, by design), GAP-0077 (minimal encoders, Engine deprecation path), GAP-0092 (issue #12 false claims), GAP-0093 (skipped tests), plus 2 Low open items from earlier reviews
+**Closed: 85 findings** - All implemented and verified
+**Won't Do: 5 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133)
+**Open: 4 findings** - GAP-0093 (3 skipped tests, partially blocked by external factors), plus 3 Low open items from earlier reviews
 
 ### Seventh Review Remediations (2026-03-24)
 
@@ -190,6 +190,51 @@ The following GitLab issues were closed with evidence comments during the Eleven
 - [#71](https://gitlab.com/devnw/zig/tls/-/issues/71) -- QUAL-077 Engine-to-Context Migration Guide: **CLOSED** (covered by inline docs + PERF-026 #106)
 - [#83](https://gitlab.com/devnw/zig/tls/-/issues/83) -- PERF-013: **CLOSED** (zero-alloc server flight)
 - [#89](https://gitlab.com/devnw/zig/tls/-/issues/89) -- PERF-015: **CLOSED** (single-buffer ClientHello)
+
+### Thirteenth Review (2026-03-24) -- Phase 9 Final Closure Round
+
+Phase 9 closed 10 items across all 4 tracking files and marked 12 as Won't Do, 5 as Deferred:
+
+**Security (8 items resolved):**
+1. SEC-009 (Low): **CLOSED** -- `x25519KeypairAndShared` returns `X25519Error!X25519Result` error union. File: `src/tls13/messages.zig:228-248`
+2. SEC-045 (Info): **CLOSED** -- `@ptrCast` replaced with field-by-field conversion. File: `src/tls13/context.zig:452-489`
+3. SEC-039 (Info): **CLOSED** -- `@compileError` guard added for handshake trace in release builds. File: `src/tls13/context.zig:121-126`
+4. SEC-010 (Low): **WON'T DO** -- Non-secret data; informational only
+5. SEC-011 (Low): **WON'T DO** -- Non-secret data; informational only
+6. SEC-012 (Low): **WON'T DO** -- Compile-time guard already effective
+7. SEC-013 (Low): **WON'T DO** -- P-256 lengths always fit u8; runtime bounds-checked
+8. SEC-038 (Info): **WON'T DO** -- Benign; Zig lacks dynamic library unloading
+
+**Quality (7 items resolved):**
+9. QUAL-127 (Low): **CLOSED** -- handshake_state.zig errdefer + 2 tests. File: `src/tls13/handshake_state.zig:353-364`
+10. QUAL-122 (Medium): **CLOSED** -- Engine dupe errdefer verified. All sites covered by Engine.deinit()
+11. QUAL-126 (Low): **CLOSED** -- QTP errdefer verified. Top-level errdefer covers all sites
+12. QUAL-129 (Low): **CLOSED** -- Engine systematic errdefer audit complete. All 12 sites verified
+13. QUAL-114 (High): **CLOSED** -- Umbrella errdefer coverage complete (all 4 files)
+14. QUAL-118 (Medium): **CLOSED** -- SecretSlot dedup. File: `src/tls13/context.zig:287`
+15. QUAL-125 (Low): **CLOSED** -- HashDigestCache dead code removed (23 lines)
+16. QUAL-124 (Low): **WON'T DO** -- sct.zig intentionally avoids tls13 imports
+
+**Performance (7 items resolved):**
+17. PERF-045 (P3): **CLOSED** -- hkdfLabel stack array. File: `src/key_schedule.zig:312`
+18. PERF-037 (P2): **CLOSED** -- Redundant cert parse consolidated. File: `src/tls13/context.zig:2749`
+19. PERF-038 (P2): **CLOSED** -- sendClientFinished zero-alloc. File: `src/tls13/context.zig:2391-2448`
+20. PERF-019 (P2): **CLOSED** -- sendClientHello2 appendOutboundFramed. File: `src/tls13/context.zig:1618`
+21. PERF-021 (P2): **WON'T DO** -- Acceptable at 3-5 items; not worth bitset complexity
+22. PERF-033 (P2): **WON'T DO** -- CI infrastructure concern, not library code
+23. PERF-044 (P3): **WON'T DO** -- Benchmark infrastructure only
+
+**General (3 items resolved):**
+24. GAP-0076 (Low): **WON'T DO** -- By design; OCSP stapling is the chosen alternative
+25. GAP-0077 (Low): **WON'T DO** -- Will resolve via Engine deprecation (PERF-026)
+26. GAP-0092 (Low): **WON'T DO** -- Issue tracker maintenance, tracked by Issue #133
+
+**Deferred (5 items):**
+27. QUAL-069 (High): **DEFERRED** -- context.zig 3431 lines; high regression risk; deferred to Engine deprecation
+28. QUAL-091 (High): **DEFERRED** -- Engine legacy key schedule patterns; deferred to Engine-to-Context migration
+29. QUAL-073 (Medium): **DEFERRED** -- Near-duplicate parseRealServerHello; different return types prevent consolidation
+30. PERF-026 (P3): **DEFERRED** -- Engine legacy code; blocked by QUAL-069/091
+31. PERF-040 (P2): **DEFERRED** -- Engine encodeHandshake; depends on PERF-026
 
 ### Twelfth Review (2026-03-24) -- Phase 8 Security/Quality/Perf Closure Round
 
@@ -378,8 +423,8 @@ All 11 remaining open issues from the third review have been implemented:
 | 40 | Medium | 20 | parallel.zig crypto stubs are debug-only (@compileError in release) | src/parallel.zig | CWE-1188 | src/parallel.zig | [#55](https://gitlab.com/devnw/zig/tls/-/issues/55) | Replaced stubs with real x509/sig/HKDF implementations; removed @compileError guards | 2026-03-24 | 2026-03-24 | Closed |
 | 41 | Low | 8 | SHA-1 OCSP SingleResponses silently skipped without diagnostic | src/ocsp.zig | CWE-328 | src/ocsp.zig:87-93 | N/A | Added OCSP trace diagnostic flag and SHA-1 trace message | Claude | 2026-03-24 | Closed |
 | 42 | Low | 8 | AES-CCM cipher suites defined but non-functional (blocked by Zig stdlib) | src/tls13/types.zig, src/record/aead.zig | -- | N/A | [#8](https://gitlab.com/devnw/zig/tls/-/issues/8) | Won't Do: No std.crypto.aead.aes_ccm in Zig stdlib; AES-GCM/ChaCha20 cover all practical cases | N/A | N/A | Won't Do |
-| 43 | Low | 4 | CRL distribution point checking absent (design decision; OCSP stapling alternative) | src/x509.zig | CWE-299 | src/x509.zig | N/A | -- | TBD | TBD | Open |
-| 44 | Low | 4 | Minimal ClientHello/ServerHello encoders are non-interoperable placeholders in Engine API | src/tls13/messages.zig | CWE-1188 | src/tls13/messages.zig:212-268 | N/A | -- | TBD | TBD | Open |
+| 43 | Low | 4 | CRL distribution point checking absent (design decision; OCSP stapling alternative) | src/x509.zig | CWE-299 | src/x509.zig | N/A | Won't Do: By design; OCSP stapling is the chosen alternative | -- | 2026-03-24 | Won't Do |
+| 44 | Low | 4 | Minimal ClientHello/ServerHello encoders are non-interoperable placeholders in Engine API | src/tls13/messages.zig | CWE-1188 | src/tls13/messages.zig:212-268 | N/A | Won't Do: Will resolve via Engine deprecation (PERF-026) | -- | 2026-03-24 | Won't Do |
 | 45 | Medium | 20 | x25519KeypairAndShared missing defer secureZero on success path for stack-local private key | src/tls13/messages.zig | CWE-226 | src/tls13/messages.zig:191-210 | [#76](https://gitlab.com/devnw/zig/tls/-/issues/76) | Added `defer secureZero(u8, &sk)` on all paths; engine.zig duplicate deleted | Claude | 2026-03-24 | Closed |
 | 46 | Low | 8 | Unknown handshake message types silently dropped (no alert, no logging) | src/tls13/context.zig | CWE-390 | src/tls13/context.zig:1398-1400 | [#77](https://gitlab.com/devnw/zig/tls/-/issues/77) | Already rejected at parse layer; verified RFC 8446 S4 compliance | Claude | 2026-03-24 | Closed |
 | 47 | Low | 4 | Hardcoded supported_groups (x25519 only), ignores config; no P-256/P-384 negotiation | src/tls13/context.zig, src/tls13/config.zig | -- | src/tls13/context.zig:2403-2424 | [#78](https://gitlab.com/devnw/zig/tls/-/issues/78) | Dynamic encoding from config.supported_groups with init-time validation | Claude | 2026-03-24 | Closed |
@@ -394,7 +439,7 @@ All 11 remaining open issues from the third review have been implemented:
 | 56 | Medium | 12 | RELEASE_NOTES.md falsely claims FFDHE key exchange | RELEASE_NOTES.md | -- | RELEASE_NOTES.md:78, src/tls13/messages/core_types.zig:116-120 | [#131](https://gitlab.com/devnw/zig/tls/-/issues/131) | RELEASE_NOTES.md corrected: FFDHE marked as wire format parsing only | Claude | 2026-03-24 | Closed |
 | 57 | Medium | 12 | RELEASE_NOTES.md overstates P-256/P-384 key exchange support | RELEASE_NOTES.md | -- | RELEASE_NOTES.md:76-77, src/tls13/config.zig:101,107 | [#132](https://gitlab.com/devnw/zig/tls/-/issues/132) | RELEASE_NOTES.md corrected: P-256/P-384 clarified as signature-only | Claude | 2026-03-24 | Closed |
 | 58 | Low | 4 | RELEASE_NOTES.md falsely claims certificate policy enforcement | RELEASE_NOTES.md | -- | RELEASE_NOTES.md:65 | [#130](https://gitlab.com/devnw/zig/tls/-/issues/130) | RELEASE_NOTES.md corrected: cert policy enforcement marked as not yet implemented | Claude | 2026-03-24 | Closed |
-| 59 | Low | 4 | GitLab issue #12 falsely claims P-256/P-384/FFDHE as implemented | GitLab issue #12 | -- | Issue #12 description | [#133](https://gitlab.com/devnw/zig/tls/-/issues/133) | -- | TBD | TBD | Open |
+| 59 | Low | 4 | GitLab issue #12 falsely claims P-256/P-384/FFDHE as implemented | GitLab issue #12 | -- | Issue #12 description | [#133](https://gitlab.com/devnw/zig/tls/-/issues/133) | Won't Do: Issue tracker maintenance, tracked by Issue #133 | -- | 2026-03-24 | Won't Do |
 | 60 | Low | 4 | 3 skipped tests indicate incomplete test coverage | tests/ | -- | tests/sig_unit_tests.zig:151, tests/x509_unit_tests.zig:539, tests/openssl_conformance.zig:450 | [#134](https://gitlab.com/devnw/zig/tls/-/issues/134) | -- | TBD | TBD | Open |
 | 61 | Low | 4 | 7 closable GitLab issues remained open despite code implemented (#4,#14,#15,#19,#71,#83,#89) | GitLab tracker | -- | Issues #4,#14,#15,#19,#71,#83,#89 | [#135](https://gitlab.com/devnw/zig/tls/-/issues/135) | All 7 issues closed with evidence comments | Claude | 2026-03-24 | Closed |
 

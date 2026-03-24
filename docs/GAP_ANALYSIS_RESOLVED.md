@@ -49,6 +49,172 @@
 
 ---
 
+## Phase 9 Closures (2026-03-24)
+
+### SEC-009: x25519KeypairAndShared returns value instead of error on failure [CLOSED]
+- **Issue:** N/A
+- **Category:** Security / Error Handling
+- **Resolution:** Function now returns `X25519Error!X25519Result` error union. Callers are forced
+  to handle the error at compile time via Zig's error handling.
+- **Evidence:** `src/tls13/messages.zig:228-248`
+- **Resolved date:** 2026-03-24
+
+### SEC-045: @ptrCast on PSK binder/identity bypasses type safety [CLOSED]
+- **Issue:** N/A
+- **Category:** Security / Type Safety
+- **Resolution:** Replaced `@ptrCast` with explicit field-by-field conversion for PSK identities,
+  binders, and ALPN lists.
+- **Evidence:** `src/tls13/context.zig:452-489`
+- **Resolved date:** 2026-03-24
+
+### SEC-039: Handshake trace may leak error details in production [CLOSED]
+- **Issue:** N/A
+- **Category:** Security / Logging
+- **Resolution:** Added `@compileError` guard for `handshake_trace_enabled` in release builds,
+  matching the pattern used for `sig_trace_enabled` and `secret_trace_enabled`.
+- **Evidence:** `src/tls13/context.zig:121-126`
+- **Resolved date:** 2026-03-24
+
+### SEC-010: OCSP digest comparison uses std.mem.eql [WON'T DO]
+- **Issue:** N/A
+- **Category:** Security / Timing Side-channel
+- **Resolution:** Won't Do. Non-secret public data (certificate hashes). `std.mem.eql` is
+  appropriate for non-secret comparisons.
+- **Resolved date:** 2026-03-24
+
+### SEC-011: Downgrade sentinel detection uses std.mem.eql [WON'T DO]
+- **Issue:** N/A
+- **Category:** Security / Timing Side-channel
+- **Resolution:** Won't Do. Sentinel values are public RFC 8446 constants. Timing leakage
+  does not benefit an attacker.
+- **Resolved date:** 2026-03-24
+
+### SEC-012: Debug trace logs private key scalar [WON'T DO]
+- **Issue:** N/A
+- **Category:** Security / Information Disclosure
+- **Resolution:** Won't Do. Compile-time guard already prevents this trace in release builds.
+  The existing `@compileError` pattern is effective.
+- **Resolved date:** 2026-03-24
+
+### SEC-013: @intCast in DER encoding [WON'T DO]
+- **Issue:** N/A
+- **Category:** Security / Integer Safety
+- **Resolution:** Won't Do. P-256 DER lengths always fit u8. Zig's `@intCast` is runtime
+  bounds-checked, providing defense-in-depth.
+- **Resolved date:** 2026-03-24
+
+### SEC-038: Global mutable TrustStore TOCTOU window [WON'T DO]
+- **Issue:** N/A
+- **Category:** Security / Race Condition
+- **Resolution:** Won't Do. Benign; Zig lacks dynamic library unloading. Trust store changes
+  during active handshakes are administrative operations with negligible practical risk.
+- **Resolved date:** 2026-03-24
+
+### QUAL-114: 22+ allocator.dupe without errdefer [CLOSED]
+- **Issue:** [#119](https://gitlab.com/devnw/zig/tls/-/work_items/119)
+- **Category:** Code Quality / Error Handling
+- **Resolution:** All 4 files verified: engine.zig (12 sites, QUAL-122/129), context.zig
+  (11 sites, QUAL-128), handshake_state.zig (13 sites, QUAL-127), quic_transport_params.zig
+  (4 sites, QUAL-126). All sites either have explicit errdefer or use store-into-self pattern.
+- **Evidence:** QUAL-122, QUAL-126, QUAL-127, QUAL-128, QUAL-129 all closed
+- **Resolved date:** 2026-03-24
+
+### QUAL-118: SecretSlot struct duplicated [CLOSED]
+- **Issue:** N/A
+- **Category:** Code Quality / Deduplication
+- **Resolution:** context.zig now imports SecretSlot from secrets.zig instead of maintaining
+  a local duplicate definition.
+- **Evidence:** `src/tls13/context.zig:287`
+- **Resolved date:** 2026-03-24
+
+### QUAL-125: HashDigestCache dead code removed [CLOSED]
+- **Issue:** N/A
+- **Category:** Code Quality / Dead Code
+- **Resolution:** Removed 23-line unused HashDigestCache definition from context.zig.
+  The canonical definition lives in transcript.zig.
+- **Evidence:** `src/tls13/context.zig` (23 lines removed)
+- **Resolved date:** 2026-03-24
+
+### QUAL-124: readU16 helper duplicated [WON'T DO]
+- **Issue:** N/A
+- **Category:** Code Quality / Deduplication
+- **Resolution:** Won't Do. sct.zig intentionally avoids tls13 imports (documented in code).
+  Trivial one-liner not worth introducing a cross-module dependency.
+- **Resolved date:** 2026-03-24
+
+### PERF-045: hkdfLabel still allocates via FBA [CLOSED]
+- **Issue:** N/A
+- **Category:** Performance / Allocation
+- **Resolution:** Direct stack buffer at `src/key_schedule.zig:312` replaces FBA allocation.
+  No allocator parameter needed. ~30-120ns savings per handshake.
+- **Evidence:** `src/key_schedule.zig:312`
+- **Resolved date:** 2026-03-24
+
+### PERF-037: Redundant leaf cert re-parse [CLOSED]
+- **Issue:** [#118](https://gitlab.com/devnw/zig/tls/-/issues/118)
+- **Category:** Performance / Redundant Work
+- **Resolution:** Single parse shared for OCSP validation and signature verification.
+  ~15-30us savings per handshake.
+- **Evidence:** `src/tls13/context.zig:2749`
+- **Resolved date:** 2026-03-24
+
+### PERF-038: sendClientFinished 3-4 allocating encodeHandshake calls [CLOSED]
+- **Issue:** [#120](https://gitlab.com/devnw/zig/tls/-/issues/120)
+- **Category:** Performance / Allocation
+- **Resolution:** `appendOutboundFramed` replaces 4 `encodeHandshake` calls. Zero-alloc
+  client flight encoding achieved.
+- **Evidence:** `src/tls13/context.zig:2391-2448`
+- **Resolved date:** 2026-03-24
+
+### PERF-019: Extension buffers built separately then appended [CLOSED]
+- **Issue:** [#104](https://gitlab.com/devnw/zig/tls/-/issues/104)
+- **Category:** Performance / Allocation
+- **Resolution:** sendClientHello2 uses appendOutboundFramed for zero-alloc framing.
+  Extension building was already optimized in prior rounds. Partial closure.
+- **Evidence:** `src/tls13/context.zig:1618`
+- **Resolved date:** 2026-03-24
+
+### PERF-021: Nested O(n*m) cipher suite negotiation loops [WON'T DO]
+- **Issue:** N/A
+- **Category:** Performance / Algorithm Complexity
+- **Resolution:** Won't Do. Acceptable at current sizes (TLS 1.3 defines only 5 cipher suites;
+  lists are 3-5 items; ~10-50ns total). Not worth bitset complexity.
+- **Resolved date:** 2026-03-24
+
+### PERF-033: No CI performance regression detection [WON'T DO]
+- **Issue:** N/A
+- **Category:** Performance / CI Infrastructure
+- **Resolution:** Won't Do. CI infrastructure concern, not library code.
+- **Resolved date:** 2026-03-24
+
+### PERF-044: Benchmark uses page_allocator [WON'T DO]
+- **Issue:** N/A
+- **Category:** Performance / Test Infrastructure
+- **Resolution:** Won't Do. Test infrastructure only; does not affect library code.
+- **Resolved date:** 2026-03-24
+
+### GAP-0076: CRL distribution point checking absent [WON'T DO]
+- **Issue:** N/A
+- **Category:** General / Feature
+- **Resolution:** Won't Do. By design; OCSP stapling is the chosen revocation checking
+  alternative. Documented in x509.zig.
+- **Resolved date:** 2026-03-24
+
+### GAP-0077: Minimal ClientHello/ServerHello encoders [WON'T DO]
+- **Issue:** N/A
+- **Category:** General / Legacy Code
+- **Resolution:** Won't Do. Will resolve via Engine deprecation (PERF-026). These minimal
+  encoders exist only in the legacy Engine path.
+- **Resolved date:** 2026-03-24
+
+### GAP-0092: GitLab issue #12 false claims [WON'T DO]
+- **Issue:** [#133](https://gitlab.com/devnw/zig/tls/-/issues/133)
+- **Category:** General / Issue Tracker Maintenance
+- **Resolution:** Won't Do. Issue tracker maintenance tracked by Issue #133.
+- **Resolved date:** 2026-03-24
+
+---
+
 ## Phase 8 Closures (2026-03-24)
 
 ### GAP-0087: RELEASE_NOTES.md falsely claims CRL parsing and validation [CLOSED]
