@@ -58,11 +58,11 @@ ztls 1.0.0 is the first production-ready release of a TLS 1.3 implementation spe
 - Basic Constraints
 - Name Constraints enforcement
 
-✅ **Revocation Checking**
+🔶 **Revocation Checking**
 - OCSP stapling support
-- CRL parsing and validation
-- Authority Information Access (AIA)
-- Certificate policy enforcement
+- ⚠️ CRL support not yet implemented (see lib.zig)
+- ⚠️ Authority Information Access (AIA) not yet implemented
+- ⚠️ Certificate policy enforcement not yet implemented
 
 ### Cryptographic Algorithms
 
@@ -73,9 +73,8 @@ ztls 1.0.0 is the first production-ready release of a TLS 1.3 implementation spe
 
 ✅ **Key Exchange**
 - X25519 (Curve25519 ECDHE)
-- secp256r1 (NIST P-256)
-- secp384r1 (NIST P-384)
-- ffdhe2048, ffdhe3072, ffdhe4096
+- ⚠️ secp256r1/secp384r1 supported for signatures only (not key exchange)
+- ⚠️ ffdhe2048/ffdhe3072/ffdhe4096: wire format parsing only (no key agreement implementation)
 
 ✅ **Signature Schemes**
 - ECDSA with P-256 SHA-256

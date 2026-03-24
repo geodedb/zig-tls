@@ -132,6 +132,7 @@ pub fn extractHash(hash: Hash, salt: ?[]const u8, ikm: []const u8) Secret {
 
 pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, context: []const u8, out: []u8) !void {
     var fbb: [256]u8 = undefined;
+    defer std.crypto.secureZero(u8, &fbb);
     var fba = std.heap.FixedBufferAllocator.init(&fbb);
     const alloc = fba.allocator();
     const info = try hkdfLabel(alloc, label, context, @as(u16, @intCast(out.len)));
@@ -141,11 +142,13 @@ pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, contex
     switch (hash) {
         .sha256 => {
             var arr: [Sha256.digest_length]u8 = undefined;
+            defer std.crypto.secureZero(u8, &arr);
             @memcpy(arr[0..], prk_slice);
             HkdfSha256.expand(out, info, arr);
         },
         .sha384 => {
             var arr: [Sha384.digest_length]u8 = undefined;
+            defer std.crypto.secureZero(u8, &arr);
             @memcpy(arr[0..], prk_slice);
             HkdfSha384.expand(out, info, arr);
         },

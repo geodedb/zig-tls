@@ -558,6 +558,7 @@ pub const TransportParameters = struct {
     /// - RFC 9000 §7.4: Unknown parameters must be ignored
     pub fn decode(data: []const u8, allocator: std.mem.Allocator) !TransportParameters {
         var params = TransportParameters{};
+        errdefer params.deinit(allocator);
         var offset: usize = 0;
 
         // RFC 9000 §18: Parse sequence of (ID, Length, Value) tuples

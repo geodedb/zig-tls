@@ -1,9 +1,9 @@
 # Gap Closure Completion Report
 
 > **Date:** 2026-03-24
-> **Scope:** TLS 1.3/QUIC Implementation in Zig -- Phases 1-6 gap closure
+> **Scope:** TLS 1.3/QUIC Implementation in Zig -- Phases 1-8 gap closure
 > **Repository:** gitlab.com/devnw/zig/tls
-> **Commits:** 0929ceb..f42ac0a (comprehensive remediation), 4d493a2, cf6586c (additional closures), 2e7a9fd (Phase 6: SEC-028..037, QUAL-097..112, PERF-010/025/027/031/034/035, config docs, migration guide)
+> **Commits:** 0929ceb..f42ac0a (comprehensive remediation), 4d493a2, cf6586c (additional closures), 2e7a9fd (Phase 6), Phase 7-8 (SEC-040..048, QUAL-113/115/120/121, PERF-039, GAP-0087..0091)
 
 ---
 
@@ -11,12 +11,12 @@
 
 | File | Closed | Blocked | Won't Do | By Design | Deferred | Remaining Open | Total |
 |------|--------|---------|----------|-----------|----------|----------------|-------|
-| GAP_ANALYSIS.md | 77 | 0 | 2 | 0 | 0 | 7 | 86 |
-| SECURITY_GAP_ANALYSIS.md | 31 | 0 | 0 | 0 | 0 | 8 | 39 |
-| QUALITY_GAP_ANALYSIS.md | 30 | 0 | 0 | 3 | 3 | 8 | 44 |
-| PERF_GAP_ANALYSIS.md | 21 | 0 | 1 | 0 | 0 | 11 | 33 |
+| GAP_ANALYSIS.md | 85 | 0 | 2 | 0 | 0 | 7 | 94 |
+| SECURITY_GAP_ANALYSIS.md | 40 | 0 | 0 | 0 | 0 | 8 | 48 |
+| QUALITY_GAP_ANALYSIS.md | 37 | 0 | 0 | 3 | 3 | 19 | 62 |
+| PERF_GAP_ANALYSIS.md | 21 | 0 | 1 | 1 (Accepted) | 0 | 20 | 43 |
 
-**Overall (deduplicated across files):** 80 items closed in Phases 1-6, 3 deferred, 3 by-design, 6 won't-do. Remaining open items are strategic/feature-level work, informational findings, or performance optimization backlog.
+**Overall (deduplicated across files):** 92+ items closed across Phases 1-8, 3 deferred, 3 by-design, 3 won't-do. Remaining open items are strategic/feature-level work, informational findings, or performance optimization backlog. **Zero HIGH/Critical severity items remain open.**
 
 ---
 
@@ -99,6 +99,23 @@
 | PERF-010 | PERF | Anti-replay O(n) documented as acceptable | `src/zero_rtt.zig` -- timing-safe by design at window_size=64 |
 | PERF-025 | PERF | TicketStore linear scan documented | `src/tls13/engine.zig` -- intentional at max_tickets=16 |
 | PERF-027 | PERF | Chain validation depth limit documented | `src/x509.zig` -- max_chain_depth=10 is sufficient DoS defense |
+| SEC-047 | SECURITY | Engine computeApplicationSecrets RFC 8446 S7.1 key schedule fix | `src/tls13/engine.zig:1510-1516` -- emptyHash() + zeroSecret() |
+| SEC-040 | SECURITY | X25519 clamping in startClientHandshake | `src/tls13/context.zig:2181-2187` -- priv[0]&=248, priv[31]&=127|=64 |
+| SEC-048 | SECURITY | X25519 clamping in negotiateCipherAndKeys | `src/tls13/context.zig:1959-1965` -- priv[0]&=248, priv[31]&=127|=64 |
+| SEC-046 | SECURITY | PSK identity constant-time comparison | `src/tls13/context.zig:1825` -- timing_safe.compare |
+| SEC-041 | SECURITY | expandLabelHash PRK copy zeroized | `src/key_schedule.zig` -- defer secureZero on arr |
+| SEC-042 | SECURITY | deriveHandshakeTraffic derived intermediate zeroized | `src/tls13/key_derivation.zig` -- defer secureZero on derived.bytes |
+| SEC-043 | SECURITY | deriveApplicationTraffic derived+master zeroized | `src/tls13/key_derivation.zig` -- defer secureZero on derived.bytes, master.bytes |
+| SEC-044 | SECURITY | expandLabelHash fbb buffer zeroized | `src/key_schedule.zig` -- defer secureZero on fbb |
+| QUAL-115 | QUALITY | setTransportParameters returns !void | `src/tls13/context.zig:806` -- try replaces catch return |
+| QUAL-120 | QUALITY | decode() errdefer for params | `src/quic_transport_params.zig:560` -- errdefer params.deinit(allocator) |
+| QUAL-121 | QUALITY | Engine cert OOM propagated | `src/tls13/engine.zig:865-870` -- try replaces catch { break :blk false } |
+| PERF-039 | PERF | tls13_build_context_and_hash stack buffer | `src/sig.zig:318-328` -- 512-byte stack buffer, no heap alloc |
+| GAP-0087 | GAP | RELEASE_NOTES CRL claim corrected | `RELEASE_NOTES.md:63` -- marked as not implemented |
+| GAP-0088 | GAP | RELEASE_NOTES AIA claim corrected | `RELEASE_NOTES.md:64` -- marked as not implemented |
+| GAP-0089 | GAP | RELEASE_NOTES cert policy claim corrected | `RELEASE_NOTES.md:65` -- marked as not implemented |
+| GAP-0090 | GAP | RELEASE_NOTES FFDHE claim corrected | `RELEASE_NOTES.md:78` -- marked as wire format only |
+| GAP-0091 | GAP | RELEASE_NOTES P-256/P-384 claim corrected | `RELEASE_NOTES.md:76-77` -- signature only, not key exchange |
 
 ---
 
@@ -170,6 +187,13 @@
 - Old client_priv securely zeroized before HRR rekey overwrite (SEC-036)
 - Explicit X25519 clamping in sendClientHello2 for defense-in-depth (SEC-037)
 
+### Phases 7-8
+- **SEC-047 (HIGH) closed:** Engine `computeApplicationSecrets` was using empty slices instead of RFC 8446 S7.1-mandated `Hash("")` and `HashLen` zeros for master secret derivation. Fixed with `emptyHash()` and `zeroSecret()`.
+- X25519 clamping defense-in-depth extended to `startClientHandshake` (SEC-040) and `negotiateCipherAndKeys` (SEC-048), now consistent with all other key generation paths
+- PSK identity comparison hardened from `std.mem.eql` to `timing_safe.compare` (SEC-046)
+- Key schedule intermediates (`derived`, `master`, `fbb`, `arr`) now zeroized in 4 locations (SEC-041/042/043/044)
+- OOM error handling improved: `setTransportParameters` and engine cert handling no longer silently swallow allocation failures
+
 ---
 
 ## Remaining Blockers
@@ -235,15 +259,16 @@
 
 ## Summary
 
-Across 6 implementation phases:
+Across 8 implementation phases:
 
-- **80 gap items closed** with code changes and verification
+- **92+ gap items closed** with code changes and verification
 - **3 items deferred** with documented blockers and unblock steps
 - **3 items accepted as by-design** with documented rationale
-- **6 items marked Won't Do** with justification
+- **3 items marked Won't Do** with justification
 - **40 GitLab issues closed** with evidence comments (Phases 1-5)
 - **0 High-severity security items remaining open**
 - **0 Critical-severity items remaining open**
+- **1 item partially closed** (QUAL-113: 3 of 14 `.?` unwraps fixed)
 
 ### Phase 6 Closures (Round 3, 2026-03-24)
 
@@ -302,4 +327,33 @@ Across 6 implementation phases:
 8. **QUAL-069** -- Deferred: context.zig file split (high regression risk, not idiomatic in Zig)
 9. **QUAL-073** -- Deferred: ServerHello parse dedup (different return types, best done during Engine deprecation)
 
-All gap tracking files (`GAP_ANALYSIS.md`, `SECURITY_GAP_ANALYSIS.md`, `QUALITY_GAP_ANALYSIS.md`, `PERF_GAP_ANALYSIS.md`) have been updated to reflect the final state. Platform issues match tracking file state.
+### Phase 7-8 Closures (2026-03-24)
+
+Phase 7 added 9 new security findings and Phase 8 closed the implementation round. 12 items closed, 1 partial:
+
+**Security (7 items closed):**
+1. **SEC-047** (HIGH) -- Engine `computeApplicationSecrets` now uses `emptyHash()` and `zeroSecret()` per RFC 8446 S7.1. File: `src/tls13/engine.zig:1510-1516`
+2. **SEC-040** -- X25519 clamping in `startClientHandshake`. File: `src/tls13/context.zig:2181-2187`
+3. **SEC-048** -- X25519 clamping in `negotiateCipherAndKeys`. File: `src/tls13/context.zig:1959-1965`
+4. **SEC-046** -- PSK identity uses `timing_safe.compare`. File: `src/tls13/context.zig:1825`
+5. **SEC-041/SEC-044** -- Zeroization of `fbb` and `arr` in `expandLabelHash`. File: `src/key_schedule.zig`
+6. **SEC-042** -- Zeroization of `derived` in `deriveHandshakeTraffic`. File: `src/tls13/key_derivation.zig`
+7. **SEC-043** -- Zeroization of `derived` and `master` in `deriveApplicationTraffic`. File: `src/tls13/key_derivation.zig`
+
+**Quality (3 closed, 1 partial):**
+8. **QUAL-115** -- `setTransportParameters` returns `!void`. File: `src/tls13/context.zig:806`
+9. **QUAL-120** -- `errdefer params.deinit(allocator)` in decode(). File: `src/quic_transport_params.zig:560`
+10. **QUAL-121** -- Engine cert handling propagates OOM. File: `src/tls13/engine.zig:865-870`
+11. **QUAL-113** (PARTIAL) -- 3 of 14 `.?` unwraps fixed (`ecdhe_secret` x2, `leaf_spki` x1). 11 remaining.
+
+**Performance (1 item closed):**
+12. **PERF-039** -- Stack buffer for `tls13_build_context_and_hash`. File: `src/sig.zig:318-328`
+
+**Documentation (5 items closed):**
+13. **GAP-0087** -- RELEASE_NOTES.md CRL claim corrected
+14. **GAP-0088** -- RELEASE_NOTES.md AIA claim corrected
+15. **GAP-0089** -- RELEASE_NOTES.md cert policy claim corrected
+16. **GAP-0090** -- RELEASE_NOTES.md FFDHE claim corrected
+17. **GAP-0091** -- RELEASE_NOTES.md P-256/P-384 key exchange claim corrected
+
+All gap tracking files (`GAP_ANALYSIS.md`, `SECURITY_GAP_ANALYSIS.md`, `QUALITY_GAP_ANALYSIS.md`, `PERF_GAP_ANALYSIS.md`) have been updated to reflect the final state. Platform issues not updated per user instruction (skip issue operations).

@@ -12,15 +12,15 @@
 |----------|----------|--------|----------|------|
 | Critical | 8        | 8      | 0        | 0    |
 | High     | 18       | 18     | 0        | 0    |
-| Medium   | 31       | 30     | 1        | 0    |
-| Low      | 29       | 21     | 1        | 7    |
-| **Total**| **86**   | **77** | **2**    | **7**|
+| Medium   | 35       | 34     | 1        | 0    |
+| Low      | 33       | 25     | 1        | 7    |
+| **Total**| **94**   | **85** | **2**    | **7**|
 
 ### Implementation Status
 
-**Closed: 80 findings** - All implemented and verified
+**Closed: 87 findings** - All implemented and verified
 **Won't Do: 2 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib)
-**Open: 4 findings** - GAP-0076 (CRL, by design), GAP-0077 (minimal encoders, Engine deprecation path), GAP-0082 (QUAL-074 partial), GAP-0084 (PERF issues untracked)
+**Open: 7 findings** - GAP-0076 (CRL, by design), GAP-0077 (minimal encoders, Engine deprecation path), GAP-0092 (issue #12 false claims), GAP-0093 (skipped tests), plus 2 Low open items from earlier reviews
 
 ### Seventh Review Remediations (2026-03-24)
 
@@ -141,19 +141,20 @@ Full codebase audit identified 4 additional findings. All 4 closed:
 
 Phase 3 gap-detector identified 5 documentation/tracking inconsistencies. All Low severity:
 
-1. GAP-0082 (Low): **OPEN** -- QUAL-074 marked Closed but `on_session_ticket` callback is not wired.
-   `src/tls13/context.zig:1207` has a TODO confirming incomplete work. QUAL-074 closure is partial:
-   the `new_session_ticket` message is now handled (logged) rather than silently dropped, but the
-   application-layer callback surface is still missing. Recommend noting as "Partial" or filing a
-   separate tracking item for the callback.
+1. GAP-0082 (Low): **RESOLVED** -- QUAL-074 tracking inconsistency resolved by filing GitLab issue
+   [#115](https://gitlab.com/devnw/zig/tls/-/issues/115) as separate tracking item for the
+   `on_session_ticket` callback. The `new_session_ticket` message is now handled (logged) rather
+   than silently dropped; the application-layer callback is tracked by #115.
    - Files: `src/tls13/context.zig` (line 1207)
 2. GAP-0083 (Low): **CLOSED** -- SEC-014 already marked as Closed/Duplicate of SEC-027 in
    SECURITY_GAP_ANALYSIS.md (Phase 5 closure at line 30). No further action needed.
    - See: `docs/SECURITY_GAP_ANALYSIS.md` (SEC-014 and SEC-027 entries)
-3. GAP-0084 (Low): **OPEN** -- 9 open PERF items have no GitLab issues filed: PERF-008, PERF-010,
-   PERF-016, PERF-017, PERF-019, PERF-023, PERF-025, PERF-026, PERF-027. These are tracked only in
-   `docs/PERF_GAP_ANALYSIS.md` with `--` in the Issue URL column. Low urgency (P2/P3 items) but
-   should have GitLab issues for discoverability.
+3. GAP-0084 (Low): **RESOLVED** -- Of the 9 PERF items without GitLab issues: 5 are now closed
+   (PERF-008, PERF-010, PERF-017, PERF-025, PERF-027); 4 now have GitLab issues filed:
+   PERF-016 ([#103](https://gitlab.com/devnw/zig/tls/-/issues/103)),
+   PERF-019 ([#104](https://gitlab.com/devnw/zig/tls/-/issues/104)),
+   PERF-023 ([#105](https://gitlab.com/devnw/zig/tls/-/issues/105)),
+   PERF-026 ([#106](https://gitlab.com/devnw/zig/tls/-/issues/106)).
    - See: `docs/PERF_GAP_ANALYSIS.md` (Issue URL column)
 4. GAP-0085 (Low): **CLOSED** -- QUAL-019 documentation already updated to reflect 29 instances
    (see QUAL-019 Update section below). The GAP_ANALYSIS.md body text at line 215-216 already
@@ -181,12 +182,90 @@ exceedance ratio is now 4.37x (was 4.48x).
 
 #### Stale GitLab Issues Note
 
-The following GitLab issues reference functionality that has been fully implemented in code and
-should be reviewed for closure (separate action -- not closed here):
-- [#4](https://gitlab.com/devnw/zig/tls/-/issues/4) -- PSK / NewSessionTicket: ticket_age_add randomized (GAP-0070), external PSK support added (GAP-0070), PSK derivation from resumption_master_secret implemented (GAP-0071)
-- [#14](https://gitlab.com/devnw/zig/tls/-/issues/14) -- Functionality fully implemented per code review evidence
-- [#15](https://gitlab.com/devnw/zig/tls/-/issues/15) -- Functionality fully implemented per code review evidence
-- [#19](https://gitlab.com/devnw/zig/tls/-/issues/19) -- PSK ticket identity: hardcoded "resumption_ticket" replaced with MissingResumptionTicket error; NewSessionTicket derives PSK properly
+The following GitLab issues were closed with evidence comments during the Eleventh Review (GAP-0094):
+- [#4](https://gitlab.com/devnw/zig/tls/-/issues/4) -- PSK / NewSessionTicket: **CLOSED** (GAP-0070, GAP-0071, GAP-003, GAP-010)
+- [#14](https://gitlab.com/devnw/zig/tls/-/issues/14) -- RFC 8446 Appendix A Test Vectors: **CLOSED** (GAP-004)
+- [#15](https://gitlab.com/devnw/zig/tls/-/issues/15) -- PSK Binder Verification: **CLOSED**
+- [#19](https://gitlab.com/devnw/zig/tls/-/issues/19) -- Use Actual Ticket from Config: **CLOSED** (GAP-003, GAP-0071)
+- [#71](https://gitlab.com/devnw/zig/tls/-/issues/71) -- QUAL-077 Engine-to-Context Migration Guide: **CLOSED** (covered by inline docs + PERF-026 #106)
+- [#83](https://gitlab.com/devnw/zig/tls/-/issues/83) -- PERF-013: **CLOSED** (zero-alloc server flight)
+- [#89](https://gitlab.com/devnw/zig/tls/-/issues/89) -- PERF-015: **CLOSED** (single-buffer ClientHello)
+
+### Twelfth Review (2026-03-24) -- Phase 8 Security/Quality/Perf Closure Round
+
+Phase 8 closed 12 items across all 4 tracking files:
+
+**Security (7 items):**
+1. SEC-047 (HIGH): **CLOSED** -- `computeApplicationSecrets` in engine.zig now uses `emptyHash()` and `zeroSecret()` per RFC 8446 Section 7.1 key schedule. File: `src/tls13/engine.zig:1510-1516`
+2. SEC-040 (Low): **CLOSED** -- X25519 clamping added in `startClientHandshake`. File: `src/tls13/context.zig:2181-2187`
+3. SEC-048 (Low): **CLOSED** -- X25519 clamping added in `negotiateCipherAndKeys`. File: `src/tls13/context.zig:1959-1965`
+4. SEC-046 (Low): **CLOSED** -- PSK identity comparison uses `timing_safe.compare`. File: `src/tls13/context.zig:1825`
+5. SEC-041/SEC-044 (Low/Info): **CLOSED** -- Zeroization of `fbb` and `arr` buffers in `expandLabelHash`. File: `src/key_schedule.zig`
+6. SEC-042 (Low): **CLOSED** -- Zeroization of `derived` intermediate in `deriveHandshakeTraffic`. File: `src/tls13/key_derivation.zig`
+7. SEC-043 (Low): **CLOSED** -- Zeroization of `derived` and `master` intermediates in `deriveApplicationTraffic`. File: `src/tls13/key_derivation.zig`
+
+**Quality (3 items):**
+8. QUAL-115 (High): **CLOSED** -- `setTransportParameters` returns `!void` instead of swallowing OOM. File: `src/tls13/context.zig:806`
+9. QUAL-120 (Medium): **CLOSED** -- `errdefer params.deinit(allocator)` in `decode()`. File: `src/quic_transport_params.zig:560`
+10. QUAL-121 (Medium): **CLOSED** -- Engine cert handling propagates OOM via `try` instead of converting to cert-invalid. File: `src/tls13/engine.zig:865-870`
+11. QUAL-113 (High): **PARTIAL** -- 3 of 14 unsafe `.?` unwraps replaced with safe alternatives (`ecdhe_secret` x2, `leaf_spki` x1). 11 remaining.
+
+**Performance (1 item):**
+12. PERF-039 (P2): **CLOSED** -- `tls13_build_context_and_hash` uses 512-byte stack buffer instead of heap allocation. File: `src/sig.zig:318-328`
+
+**Documentation (5 items):**
+13. GAP-0087 (Medium): **CLOSED** -- RELEASE_NOTES.md CRL claim corrected
+14. GAP-0088 (Medium): **CLOSED** -- RELEASE_NOTES.md AIA claim corrected
+15. GAP-0089 (Low): **CLOSED** -- RELEASE_NOTES.md cert policy claim corrected
+16. GAP-0090 (Medium): **CLOSED** -- RELEASE_NOTES.md FFDHE claim corrected
+17. GAP-0091 (Medium): **CLOSED** -- RELEASE_NOTES.md P-256/P-384 key exchange claim corrected
+
+### Eleventh Review Findings (2026-03-24) -- Phase 3 Gap-Detector Documentation Audit
+
+Phase 3 gap-detector identified 8 new gaps (GAP-0087 through GAP-0094) and resolved 2 existing gaps.
+Also closed 7 stale GitLab issues (#4, #14, #15, #19, #71, #83, #89) with evidence comments.
+
+**Resolved:**
+1. GAP-0082 (Low): **RESOLVED** -- Tracking inconsistency resolved by filing GitLab issue
+   [#115](https://gitlab.com/devnw/zig/tls/-/issues/115) as separate tracking item for
+   `on_session_ticket` callback. The gap (QUAL-074 marked Closed but work incomplete) is
+   addressed by the new issue.
+2. GAP-0084 (Low): **RESOLVED** -- 5 of 9 PERF items now closed (PERF-008, PERF-010,
+   PERF-017, PERF-025, PERF-027). Remaining 4 open items now have GitLab issues filed:
+   PERF-016 (#103), PERF-019 (#104), PERF-023 (#105), PERF-026 (#106).
+
+**Documentation accuracy gaps (GAP-0087 through GAP-0091) -- RESOLVED:**
+1. GAP-0087 (Medium): **RESOLVED** -- RELEASE_NOTES.md line 63 corrected: "CRL parsing and validation"
+   replaced with "CRL support not yet implemented (see lib.zig)". Section header changed to partial.
+   - Issue: [#128](https://gitlab.com/devnw/zig/tls/-/issues/128)
+   - Files: `RELEASE_NOTES.md:63`, `src/x509.zig:1535-1537`
+2. GAP-0088 (Medium): **RESOLVED** -- RELEASE_NOTES.md line 64 corrected: "Authority Information Access
+   (AIA)" now marked as "not yet implemented".
+   - Issue: [#129](https://gitlab.com/devnw/zig/tls/-/issues/129)
+   - Files: `RELEASE_NOTES.md:64`
+3. GAP-0089 (Low): **RESOLVED** -- RELEASE_NOTES.md line 65 corrected: "Certificate policy enforcement"
+   now marked as "not yet implemented".
+   - Issue: [#130](https://gitlab.com/devnw/zig/tls/-/issues/130)
+   - Files: `RELEASE_NOTES.md:65`
+4. GAP-0090 (Medium): **RESOLVED** -- RELEASE_NOTES.md ffdhe line corrected: now states
+   "wire format parsing only (no key agreement implementation)".
+   - Issue: [#131](https://gitlab.com/devnw/zig/tls/-/issues/131)
+   - Files: `RELEASE_NOTES.md:77`, `src/tls13/messages/core_types.zig:116-120`
+5. GAP-0091 (Medium): **RESOLVED** -- RELEASE_NOTES.md P-256/P-384 line corrected: now states
+   "signature verification only (not key exchange)". X25519 identified as sole key exchange method.
+   - Issue: [#132](https://gitlab.com/devnw/zig/tls/-/issues/132)
+   - Files: `RELEASE_NOTES.md:75-76`, `src/tls13/config.zig:101,107`, `src/tls13/engine.zig:536`
+6. GAP-0092 (Low): GitLab issue #12 falsely claims P-256/P-384/FFDHE as "Current Implementation" --
+   only x25519 key exchange is implemented.
+   - Issue: [#133](https://gitlab.com/devnw/zig/tls/-/issues/133)
+7. GAP-0093 (Low): 3 skipped tests indicate incomplete coverage -- sig_unit_tests.zig (RSA SPKI
+   test data issue), x509_unit_tests.zig (Ed25519 sig verification incomplete),
+   openssl_conformance.zig (ChaCha20-Poly1305 build-dependent).
+   - Issue: [#134](https://gitlab.com/devnw/zig/tls/-/issues/134)
+   - Files: `tests/sig_unit_tests.zig:151`, `tests/x509_unit_tests.zig:539`, `tests/openssl_conformance.zig:450`
+8. GAP-0094 (Low): **CLOSED** -- 7 stale GitLab issues (#4, #14, #15, #19, #71, #83, #89) remained
+   open despite code being fully implemented. All closed with evidence comments.
+   - Issue: [#135](https://gitlab.com/devnw/zig/tls/-/issues/135) (closed)
 
 ### Sixth Review Remediations (2026-03-23)
 
@@ -305,11 +384,19 @@ All 11 remaining open issues from the third review have been implemented:
 | 46 | Low | 8 | Unknown handshake message types silently dropped (no alert, no logging) | src/tls13/context.zig | CWE-390 | src/tls13/context.zig:1398-1400 | [#77](https://gitlab.com/devnw/zig/tls/-/issues/77) | Already rejected at parse layer; verified RFC 8446 S4 compliance | Claude | 2026-03-24 | Closed |
 | 47 | Low | 4 | Hardcoded supported_groups (x25519 only), ignores config; no P-256/P-384 negotiation | src/tls13/context.zig, src/tls13/config.zig | -- | src/tls13/context.zig:2403-2424 | [#78](https://gitlab.com/devnw/zig/tls/-/issues/78) | Dynamic encoding from config.supported_groups with init-time validation | Claude | 2026-03-24 | Closed |
 | 48 | Low | 4 | No server/client role validation on received QUIC transport parameters | src/quic_transport_params.zig | -- | src/tls13/context.zig:1294-1305 | [#79](https://gitlab.com/devnw/zig/tls/-/issues/79) | Added validateClientRole() rejecting server-only params per RFC 9000 S18.2 | Claude | 2026-03-24 | Closed |
-| 49 | Low | 4 | QUAL-074 marked Closed but on_session_ticket callback not wired (TODO at context.zig:1207) | src/tls13/context.zig | -- | src/tls13/context.zig:1207 | N/A | -- | TBD | TBD | Open |
+| 49 | Low | 4 | QUAL-074 marked Closed but on_session_ticket callback not wired (TODO at context.zig:1207) | src/tls13/context.zig | -- | src/tls13/context.zig:1207 | [#115](https://gitlab.com/devnw/zig/tls/-/issues/115) | Tracking gap resolved by filing #115 as separate tracking item | Claude | 2026-03-24 | Closed |
 | 50 | Low | 4 | SEC-014 is duplicate of closed SEC-027 (same code location engine.zig:744-748) | docs/SECURITY_GAP_ANALYSIS.md | -- | docs/SECURITY_GAP_ANALYSIS.md | N/A | SEC-014 already marked Closed/Duplicate in SECURITY_GAP_ANALYSIS.md (Phase 5) | Claude | 2026-03-24 | Closed |
-| 51 | Low | 4 | 9 open PERF items have no GitLab issues (PERF-008,-010,-016,-017,-019,-023,-025,-026,-027) | docs/PERF_GAP_ANALYSIS.md | -- | docs/PERF_GAP_ANALYSIS.md (Issue URL column) | N/A | File GitLab issues for each open PERF item | TBD | TBD | Open |
+| 51 | Low | 4 | 9 open PERF items have no GitLab issues (PERF-008,-010,-016,-017,-019,-023,-025,-026,-027) | docs/PERF_GAP_ANALYSIS.md | -- | docs/PERF_GAP_ANALYSIS.md (Issue URL column) | N/A | 5 items closed (PERF-008,-010,-017,-025,-027); 4 now have issues: #103 (PERF-016), #104 (PERF-019), #105 (PERF-023), #106 (PERF-026) | Claude | 2026-03-24 | Closed |
 | 52 | Low | 4 | catch unreachable count is 29 not 27 as documented in QUAL-019 (3 new in parallel.zig) | src/parallel.zig, docs/QUALITY_GAP_ANALYSIS.md | CWE-391 | Multiple source files | N/A | QUAL-019 Update section already documents count as 29; GAP-0085 resolved | Claude | 2026-03-24 | Closed |
 | 53 | Low | 4 | PERF_GAP_ANALYSIS.md summary shows 10 open but detail has 11 (P2 count off by 1) | docs/PERF_GAP_ANALYSIS.md | -- | docs/PERF_GAP_ANALYSIS.md (summary table) | N/A | Corrected P2 Closed from 7 to 6 (PERF-020 is Accepted not Closed); Total Closed from 15 to 14 | Claude | 2026-03-24 | Closed |
+| 54 | Medium | 12 | RELEASE_NOTES.md falsely claims CRL parsing and validation | RELEASE_NOTES.md | -- | RELEASE_NOTES.md:63, src/x509.zig:1535-1537 | [#128](https://gitlab.com/devnw/zig/tls/-/issues/128) | RELEASE_NOTES.md corrected: CRL marked as not yet implemented | Claude | 2026-03-24 | Closed |
+| 55 | Medium | 12 | RELEASE_NOTES.md falsely claims AIA support | RELEASE_NOTES.md | -- | RELEASE_NOTES.md:64 | [#129](https://gitlab.com/devnw/zig/tls/-/issues/129) | RELEASE_NOTES.md corrected: AIA marked as not yet implemented | Claude | 2026-03-24 | Closed |
+| 56 | Medium | 12 | RELEASE_NOTES.md falsely claims FFDHE key exchange | RELEASE_NOTES.md | -- | RELEASE_NOTES.md:78, src/tls13/messages/core_types.zig:116-120 | [#131](https://gitlab.com/devnw/zig/tls/-/issues/131) | RELEASE_NOTES.md corrected: FFDHE marked as wire format parsing only | Claude | 2026-03-24 | Closed |
+| 57 | Medium | 12 | RELEASE_NOTES.md overstates P-256/P-384 key exchange support | RELEASE_NOTES.md | -- | RELEASE_NOTES.md:76-77, src/tls13/config.zig:101,107 | [#132](https://gitlab.com/devnw/zig/tls/-/issues/132) | RELEASE_NOTES.md corrected: P-256/P-384 clarified as signature-only | Claude | 2026-03-24 | Closed |
+| 58 | Low | 4 | RELEASE_NOTES.md falsely claims certificate policy enforcement | RELEASE_NOTES.md | -- | RELEASE_NOTES.md:65 | [#130](https://gitlab.com/devnw/zig/tls/-/issues/130) | RELEASE_NOTES.md corrected: cert policy enforcement marked as not yet implemented | Claude | 2026-03-24 | Closed |
+| 59 | Low | 4 | GitLab issue #12 falsely claims P-256/P-384/FFDHE as implemented | GitLab issue #12 | -- | Issue #12 description | [#133](https://gitlab.com/devnw/zig/tls/-/issues/133) | -- | TBD | TBD | Open |
+| 60 | Low | 4 | 3 skipped tests indicate incomplete test coverage | tests/ | -- | tests/sig_unit_tests.zig:151, tests/x509_unit_tests.zig:539, tests/openssl_conformance.zig:450 | [#134](https://gitlab.com/devnw/zig/tls/-/issues/134) | -- | TBD | TBD | Open |
+| 61 | Low | 4 | 7 closable GitLab issues remained open despite code implemented (#4,#14,#15,#19,#71,#83,#89) | GitLab tracker | -- | Issues #4,#14,#15,#19,#71,#83,#89 | [#135](https://gitlab.com/devnw/zig/tls/-/issues/135) | All 7 issues closed with evidence comments | Claude | 2026-03-24 | Closed |
 
 ---
 

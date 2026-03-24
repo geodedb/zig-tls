@@ -4,7 +4,7 @@
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 > **Target:** <2ms handshake, <100KB memory per connection
 > **Methodology:** Static code analysis, allocation pattern review, hot-path tracing
-> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3
+> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3 + Phase 7 Perf-Reviewer Audit + Phase 8 Closure
 
 ---
 
@@ -14,9 +14,9 @@
 |-------------|-------|--------|------|----------|----------|
 | P0          | 4     | 4      | 0    | 0        | 0        |
 | P1          | 7     | 4      | 3    | 0        | 0        |
-| P2          | 16    | 7      | 7    | 1        | 1        |
-| P3          | 6     | 5      | 1    | 0        | 0        |
-| **Total**   | **33**| **20** | **11** | **1** | **1**   |
+| P2          | 21    | 8      | 11   | 1        | 1        |
+| P3          | 11    | 5      | 6    | 0        | 0        |
+| **Total**   | **43**| **21** | **20** | **1** | **1**   |
 
 ### Recently Closed (Phases 1-4)
 - All P0 items closed (PERF-001/003, PERF-002, PERF-012)
@@ -30,13 +30,25 @@
 - PERF-017 updated with PERF-030 engine.zig site: 4 call sites total, ~50-100us/handshake (was ~10-50us estimate)
 - 6 new findings added: PERF-029 (P1), PERF-031/032/033 (P2), PERF-034/035 (P3)
 
+### Phase 7 Updates (Perf-Reviewer Audit)
+- PERF-036 (P2): CryptoBuffer.consume still O(n) memmove in context.zig -- PERF-008 fix was incomplete
+- PERF-037 (P2): Redundant leaf cert re-parse within handleCertificateVerify -- PERF-017 incomplete
+- PERF-038 (P2): Client sendClientFinished uses 3-4 allocating encodeHandshake calls
+- PERF-039 (P2): tls13_build_context_and_hash allocates ~130 bytes per sig operation
+- PERF-040 (P2): Engine.zig 7+ allocating encodeHandshake calls
+- PERF-041 (P3): Zero-capacity ArrayList in validateChain name constraints
+- PERF-042 (P3): Per-cert allocator.dupe in handleCertificate loop
+- PERF-043 (P3): Context struct hot/cold field mixing
+- PERF-044 (P3): Benchmark uses page_allocator, masking allocation overhead
+- PERF-045 (P3): hkdfLabel still allocates via FBA for bounded-size buffer
+
 ### Top 5 Remaining Risks (by PerfScore)
 
-1. **PERF-008** (PerfScore 36, P2): CryptoBuffer.consume O(n) memmove -- **Closed**: offset-based O(1) consume implemented
-2. **PERF-029** (PerfScore 20, P1): Missing critical benchmarks -- **Closed**: 7 new benchmarks added (bench.zig)
-3. **PERF-010** (PerfScore 20, P3): AntiReplayWindow.contains O(n) linear scan -- timing-safe by design
-4. **PERF-013** (PerfScore 16, P1): 10+ alloc/free cycles per server flight -- **Closed**: zero-alloc server flight via encodeHandshakeBuf + appendOutboundFramed
-5. **PERF-015** (PerfScore 15, P1): Double buffer copy in ClientHello construction -- **Closed**: single-buffer ClientHello construction
+1. **PERF-036** (PerfScore 14, P2): CryptoBuffer.consume O(n) memmove in context.zig -- PERF-008 fix incomplete
+2. **PERF-037** (PerfScore 12, P2): Redundant leaf cert re-parse in handleCertificateVerify -- ~15-30us wasted
+3. **PERF-038** (PerfScore 12, P2): Client sendClientFinished 3-4 allocating encodeHandshake calls -- ~2-4us wasted
+4. **PERF-016** (PerfScore 12, P2): Global trust store RwLock contention on every handshake
+5. **PERF-040** (PerfScore 10, P2): Engine.zig 7+ allocating encodeHandshake calls per handshake
 
 ---
 
@@ -77,6 +89,16 @@
 | 31 | PERF-027 | P3 | 7 | No timeout on X.509 chain validation | app | `src/x509.zig:1480-1541` | Potential hang on malformed/deep chains | -- | Documented max_chain_depth=10 as sufficient DoS defense; ASN.1 parsing has bounded complexity | Claude | 2026-03-24 | Closed |
 | 32 | PERF-034 | P3 | 5 | hkdfLabel uses std.mem.concat for "tls13 " prefix on FixedBufferAllocator | app | `src/key_schedule.zig:312` | ~10ns/call x 6-12 calls per handshake = ~60-120ns total | -- | Replaced std.mem.concat with inline @memcpy of prefix+label directly into output buffer | Claude | 2026-03-24 | Closed |
 | 33 | PERF-035 | P3 | 4 | Missing inline hint on deriveNonce (AEAD hot path) | app | `src/record/aead.zig:577` | Likely zero impact -- LLVM inlines in ReleaseFast | -- | Added `inline` keyword to deriveNonce for defense-in-depth in debug builds | Claude | 2026-03-24 | Closed |
+| 34 | PERF-036 | P2 | 14 | CryptoBuffer.consume still O(n) memmove -- PERF-008 fix incomplete | app | `src/tls13/context.zig:557-566` | ~90-300ns/handshake (3-5 consume calls x ~30-60ns memmove) | [#116](https://gitlab.com/devnw/zig/tls/-/issues/116) | Apply offset-based O(1) consume (same as handshake_state.zig fix) | git blame owner | Next quarter | Open |
+| 35 | PERF-037 | P2 | 12 | Redundant leaf cert re-parse in handleCertificateVerify -- PERF-017 incomplete | app | `src/tls13/context.zig:2721,2810` | ~15-30us/handshake (1 redundant ASN.1 DER walk + alloc) | [#118](https://gitlab.com/devnw/zig/tls/-/issues/118) | Parse chain[0] once, share parsed struct for OCSP + sig verify | git blame owner | Next quarter | Open |
+| 36 | PERF-038 | P2 | 12 | Client sendClientFinished uses 3-4 allocating encodeHandshake calls | app | `src/tls13/context.zig:2337-2412` | ~2-4us/mTLS handshake (3-4 alloc/free + memcpy cycles) | [#120](https://gitlab.com/devnw/zig/tls/-/issues/120) | Use encodeHandshakeBuf/appendOutboundFramed (same as server flight fix) | git blame owner | Next quarter | Open |
+| 37 | PERF-039 | P2 | 10 | tls13_build_context_and_hash allocates ~130 bytes per sig operation | app | `src/sig.zig:318-328` | ~20-40ns/handshake (1-2 alloc/free for bounded buffer) | [#121](https://gitlab.com/devnw/zig/tls/-/issues/121) | Replaced heap alloc with caller-provided `*[512]u8` stack buffer | Claude | 2026-03-24 | Closed |
+| 38 | PERF-040 | P2 | 10 | Engine.zig 7+ allocating encodeHandshake calls per handshake | app | `src/tls13/engine.zig` (7+ call sites) | ~3-5us/Engine handshake (7+ alloc/free + memcpy cycles) | [#124](https://gitlab.com/devnw/zig/tls/-/issues/124) | Port encodeHandshakeBuf to Engine or complete PERF-026 migration | git blame owner | Next quarter | Open |
+| 39 | PERF-041 | P3 | 8 | Zero-capacity ArrayList in validateChain name constraints | app | `src/x509.zig:1657,1659` | ~50-100ns/chain (2 zero-cap ArrayLists, rare path) | -- | Pre-size or use fixed stack buffer for name constraint accumulation | git blame owner | Backlog | Open |
+| 40 | PERF-042 | P3 | 8 | Per-cert allocator.dupe in handleCertificate loop | app | `src/tls13/context.zig:2632-2634` | ~50-100ns/cert x 2-4 certs = ~100-400ns/handshake | -- | Batch dupe into single allocation or arena | git blame owner | Backlog | Open |
+| 41 | PERF-043 | P3 | 6 | Context struct hot/cold field mixing | app | `src/tls13/context.zig:594-630` | Cache-line waste (cold fields like hrr_sent, peer_sct_list interleaved with hot phase/hash_kind) | -- | Group hot fields (phase, hash_kind, transcripts, secrets) at struct top; move cold fields to end or sub-struct | git blame owner | Backlog | Open |
+| 42 | PERF-044 | P3 | 6 | Benchmark uses page_allocator, masking allocation overhead | ci | `tests/bench.zig` (benchCertParse, benchClientHelloParse, benchCertChainValidation) | N/A -- measurement artifact, not runtime cost | -- | Replace page_allocator with std.testing.allocator or GeneralPurposeAllocator in benchmarks | git blame owner | Backlog | Open |
+| 43 | PERF-045 | P3 | 5 | hkdfLabel still allocates via FBA for bounded-size buffer | app | `src/key_schedule.zig:309-334` | ~5-10ns/call x 6-12 calls = ~30-120ns/handshake | -- | Use stack array (max ~70 bytes) instead of FBA alloc; eliminate allocator parameter | git blame owner | Backlog | Open |
 
 ---
 
@@ -1344,9 +1366,363 @@ This is a documentation-level change that makes the performance intent explicit.
 
 ---
 
+### PERF-036: CryptoBuffer.consume Still O(n) Memmove -- PERF-008 Fix Incomplete (P2)
+
+**PerfScore:** 14 (Impact: 2 x Likelihood: 4 x 4 = 32, scaled to 14)
+
+**Summary:** `CryptoBuffer.consume()` at `src/tls13/context.zig:557-566` still uses `std.mem.copyForwards` to shift remaining bytes toward the front of the inbound buffer. PERF-008 was marked closed after applying an offset-based O(1) consume to `handshake_state.zig`, but the `context.zig` CryptoBuffer -- a separate definition used by the QUIC Context path -- was not updated.
+
+**Evidence:**
+- File: `src/tls13/context.zig:557-566`
+- Line 563: `std.mem.copyForwards(u8, self.inbound.items[0..remaining], self.inbound.items[count .. count + remaining])`
+- Called 3-5 times per handshake from CryptoStreams
+- Buffer typically <1KB during handshake
+
+**Root Cause:** The PERF-008 fix was applied only to the `handshake_state.zig` CryptoBuffer. The `context.zig` CryptoBuffer is a separate struct definition that retained the O(n) memmove pattern.
+
+**Fix Guidance:**
+1. Add a `consumed_offset` field to CryptoBuffer
+2. In `consume()`, advance the offset: `self.consumed_offset += count`
+3. In read accessors, return `self.inbound.items[self.consumed_offset..]`
+4. Only compact when offset exceeds 50% of capacity
+
+**Validation Plan:**
+```
+# Benchmark consume() with varying buffer sizes:
+# Before: O(n) memmove -- ~30ns at 1KB
+# After: O(1) offset advance -- ~2ns
+# Verify: all QUIC handshake tests pass
+```
+
+**Rollout Risk:** Low. Same pattern already validated in handshake_state.zig.
+
+**Confidence:** `confidence::confirmed` -- `copyForwards` with overlapping ranges is an O(n) shift by definition.
+
+---
+
+### PERF-037: Redundant Leaf Cert Re-Parse in handleCertificateVerify -- PERF-017 Incomplete (P2)
+
+**PerfScore:** 12 (Impact: 2 x Likelihood: 3 x 4 = 24, scaled to 12)
+
+**Summary:** Within `handleServerCertificateVerify()`, the leaf certificate (`chain[0]`) is parsed twice via `x509.parseCert`: once at line 2721 for OCSP validation and again at line 2810 for CertificateVerify signature extraction. PERF-017 was closed after consolidating cross-function redundancy, but these two sites within the same function were not merged.
+
+**Evidence:**
+- File: `src/tls13/context.zig:2721`: `const leaf_parsed = try x509.parseCert(self.allocator, chain[0]);` (OCSP block)
+- File: `src/tls13/context.zig:2810`: `const leaf_cert = try x509.parseCert(self.allocator, chain[0]);` (CertificateVerify block)
+- Both parse identical `chain[0]` DER bytes within the same function
+- Each `parseCert` performs full ASN.1 DER walk + SPKI extraction + allocation
+
+**Root Cause:** The OCSP validation block and CertificateVerify block were written as independent sections. PERF-017 fixed cross-function redundancy but missed within-function redundancy.
+
+**Fix Guidance:**
+Parse `chain[0]` once before the OCSP block and reuse the parsed struct for both OCSP validation and signature verification.
+
+**Validation Plan:**
+```
+# Before: 2 parseCert calls for chain[0] in handleServerCertificateVerify
+# After: 1 parseCert call, result shared
+# Expected: ~15-30us savings (1 avoided ASN.1 parse + 1 avoided alloc)
+# Verify: OCSP and CertificateVerify tests pass
+```
+
+**Rollout Risk:** Minimal. Parsed struct is identical regardless of consumer.
+
+**Confidence:** `confidence::confirmed` -- Two `parseCert(self.allocator, chain[0])` calls are visible at lines 2721 and 2810.
+
+---
+
+### PERF-038: Client sendClientFinished Uses 3-4 Allocating encodeHandshake Calls (P2)
+
+**PerfScore:** 12 (Impact: 2 x Likelihood: 3 x 4 = 24, scaled to 12)
+
+**Summary:** `sendClientFinished()` at `src/tls13/context.zig:2337-2412` performs 3-4 `encodeHandshake()` calls for mTLS flows (Certificate + CertificateVerify + Finished). Each call allocates a new buffer, copies body with header, appends to outbound, and frees. This is the same alloc/copy/free pattern fixed in PERF-013 for the server flight but not for the client path.
+
+**Evidence:**
+- File: `src/tls13/context.zig:2352`: `const cert_msg = try encodeHandshake(self.allocator, .certificate, cert_body);`
+- File: `src/tls13/context.zig:2386`: `const cv_msg = try encodeHandshake(self.allocator, .certificate_verify, cv_body);`
+- File: `src/tls13/context.zig:2397`: `const cert_msg = try encodeHandshake(self.allocator, .certificate, cert_body);` (empty cert path)
+- File: `src/tls13/context.zig:2408`: `const fin_msg = try encodeHandshake(self.allocator, .finished, verify_data.slice());`
+- Each follows `alloc -> memcpy -> appendOutbound -> free` pattern
+
+**Root Cause:** Server flight was optimized with `encodeHandshakeBuf` + `appendOutboundFramed` in PERF-013. Client mTLS path was not in scope.
+
+**Fix Guidance:**
+Apply the same zero-alloc pattern from the server flight: use `encodeHandshakeBuf` or `appendOutboundFramed` for all client messages.
+
+**Validation Plan:**
+```
+# Before: 6-8 allocations (3-4 build + 3-4 encode)
+# After: 3-4 allocations (build only)
+# Expected: ~2-4us savings per mTLS handshake
+# Verify: mTLS conformance tests (OpenSSL + BoringSSL)
+```
+
+**Rollout Risk:** Low. Identical byte output. Pattern already proven in server flight.
+
+**Confidence:** `confidence::confirmed` -- `encodeHandshake` calls with defer free are visible at lines 2352, 2386, 2397, 2408.
+
+---
+
+### PERF-039: tls13_build_context_and_hash Allocates ~130 Bytes Per Signature Operation (P2)
+
+**PerfScore:** 10 (Impact: 2 x Likelihood: 3 x 4 = 24, scaled to 10)
+
+**Summary:** `tls13_build_context_and_hash()` in `src/sig.zig:318-328` allocates ~130 bytes via `allocator.alloc` to construct the RFC 8446 Section 4.4.3 signed content (64 spaces + context string + 0x00 + transcript hash). The output is bounded (max 146 bytes) and could use stack allocation.
+
+**Evidence:**
+- File: `src/sig.zig:318-328`
+- Line 323: `var out = try allocator.alloc(u8, 64 + ctx_len + 1 + hash_len);`
+- Context string is always 33 bytes ("TLS 1.3, server/client CertificateVerify")
+- Transcript hash is 32 (SHA-256) or 48 (SHA-384) bytes
+- Maximum size: 64 + 33 + 1 + 48 = 146 bytes
+- Called 1-2 times per handshake
+
+**Root Cause:** Function returns an owned slice, requiring heap allocation. The bounded size (146 bytes max) makes stack allocation a better choice.
+
+**Resolution:**
+Changed function signature to accept a caller-provided `*[512]u8` stack buffer and return a slice into it. All 6 call sites updated to declare `var buf: [512]u8 = undefined;` on the stack and pass `&buf`. The allocator parameter was removed from the function. No heap allocations remain in this path.
+
+**Validation:**
+- All 545 tests pass (0 regressions)
+- `zig fmt --check src/` clean
+
+**Confidence:** `confidence::confirmed` -- resolved.
+
+---
+
+### PERF-040: Engine.zig 7+ Allocating encodeHandshake Calls Per Handshake (P2)
+
+**PerfScore:** 10 (Impact: 2 x Likelihood: 3 x 4 = 24, scaled to 10)
+
+**Summary:** `Engine` in `src/tls13/engine.zig` uses the allocating `encodeHandshake()` for 7+ handshake messages. Each call allocates, copies, appends to outbox, and frees. This is the same pattern fixed for Context in PERF-013 but not ported to the Engine path.
+
+**Evidence:**
+- File: `src/tls13/engine.zig` -- 10 references to `encodeHandshake`
+- Line 487: `encodeHandshake(self.allocator, .new_session_ticket, body.items)`
+- Line 1222: `encodeHandshake(self.allocator, .client_hello, ch_result.body)`
+- Line 1248: `encodeHandshake(self.allocator, .finished, verify.slice())`
+- Line 1317: `encodeHandshake(self.allocator, .encrypted_extensions, body.items)`
+- Line 1360: `encodeHandshake(self.allocator, .certificate, body.items)`
+- Line 1411: `encodeHandshake(self.allocator, .certificate_verify, body.items)`
+- Line 1582: `encodeHandshake(self.allocator, .server_hello, sh_body)`
+
+**Root Cause:** Engine is the legacy handshake driver not updated with PERF-013 zero-alloc encoding. Related to PERF-026 (Engine-to-Context migration).
+
+**Fix Guidance:**
+Port `encodeHandshakeBuf` from Context to Engine, or complete PERF-026 Engine-to-Context migration.
+
+**Validation Plan:**
+```
+# Before: 14+ allocations (7 build + 7 encode)
+# After: 7 allocations (build only)
+# Expected: ~3-5us savings per Engine handshake
+```
+
+**Rollout Risk:** Low if porting direct-write pattern. Medium if migrating to Context.
+
+**Confidence:** `confidence::confirmed` -- 7+ `encodeHandshake` call sites are visible in engine.zig.
+
+---
+
+### PERF-041: Zero-Capacity ArrayList in validateChain Name Constraints (P3)
+
+**PerfScore:** 8 (Impact: 1 x Likelihood: 2 x 4)
+
+**Summary:** `validateChain()` in `src/x509.zig:1657,1659` creates two zero-capacity ArrayLists (`accumulated_permitted` and `accumulated_excluded`) inside a per-certificate loop for name constraint validation. These are allocated and freed on every iteration even when most certificates have no name constraints.
+
+**Evidence:**
+- File: `src/x509.zig:1657`: `var accumulated_permitted = try std.ArrayList([]const u8).initCapacity(alloc, 0);`
+- File: `src/x509.zig:1659`: `var accumulated_excluded = try std.ArrayList([]const u8).initCapacity(alloc, 0);`
+- Created inside a `while (i < certs.len)` loop -- allocated/freed per certificate
+- Name constraints are rare; most certificates have none
+
+**Root Cause:** Zero-capacity ArrayLists are created even when the name constraints check is a no-op for most certs.
+
+**Fix Guidance:**
+1. Check if any issuer has name constraints before allocating
+2. Or use a small fixed-size stack buffer (most chains have <4 name constraints)
+3. Or pre-size to a reasonable capacity: `initCapacity(alloc, 4)`
+
+**Validation Plan:**
+```
+# Count allocator calls during chain validation:
+# Before: 2 ArrayList allocs per cert in chain (even if no name constraints)
+# After: 0 allocs when no name constraints present
+# Verify: name constraint validation tests pass
+```
+
+**Rollout Risk:** Low. Optimization only skips allocation when unnecessary.
+
+**Confidence:** `confidence::confirmed` -- `initCapacity(alloc, 0)` in per-cert loop is visible at lines 1657, 1659.
+
+---
+
+### PERF-042: Per-Cert allocator.dupe in handleCertificate Loop (P3)
+
+**PerfScore:** 8 (Impact: 1 x Likelihood: 2 x 4)
+
+**Summary:** In `handleCertificate()` at `src/tls13/context.zig:2632-2634`, each certificate in the received chain is individually duplicated via `allocator.dupe(u8, cert_entry.cert)` inside a loop. For a typical 2-4 certificate chain, this is 2-4 separate allocator calls where a single batch allocation would suffice.
+
+**Evidence:**
+- File: `src/tls13/context.zig:2632-2634`
+```zig
+for (parsed.entries, 0..) |cert_entry, i| {
+    chain[i] = try self.allocator.dupe(u8, cert_entry.cert);
+    allocated_count += 1;
+}
+```
+- Typical chain: 2-4 certificates, each 500-2000 bytes DER
+- Each `dupe` = 1 alloc + 1 memcpy
+
+**Root Cause:** Certificates are individually duplicated rather than batch-allocated into a contiguous buffer.
+
+**Fix Guidance:**
+1. Compute total chain DER size in a first pass
+2. Allocate a single contiguous buffer
+3. Copy all certs into the buffer and set slice pointers
+4. Or use an arena allocator scoped to the certificate chain lifetime
+
+**Validation Plan:**
+```
+# Before: 2-4 individual dupe calls
+# After: 1 allocation for entire chain
+# Expected: ~100-400ns savings
+# Verify: certificate handling tests pass
+```
+
+**Rollout Risk:** Low-medium. Callers that individually free chain entries must be updated to free the batch buffer instead.
+
+**Confidence:** `confidence::confirmed` -- Per-cert `allocator.dupe` in a loop is visible at lines 2632-2634.
+
+---
+
+### PERF-043: Context Struct Hot/Cold Field Mixing (P3)
+
+**PerfScore:** 6 (Impact: 1 x Likelihood: 3 x 4 = 12, scaled to 6)
+
+**Summary:** The `Context` struct at `src/tls13/context.zig:594-630` interleaves frequently accessed "hot" fields (phase, hash_kind, transcripts, secrets) with rarely accessed "cold" fields (hrr_sent, hrr_received, peer_sct_list, client_cert_requested). This causes unnecessary cache-line loads when accessing hot fields during the handshake fast path.
+
+**Evidence:**
+- File: `src/tls13/context.zig:594-630`
+- Hot fields: `phase` (line 598), `hash_kind` (line 604), `transcripts` (line 599), `secrets` (line 600), `streams` (line 601)
+- Cold fields interleaved: `hrr_sent` (line 614), `hrr_received` (line 615), `peer_cert_verify_alg` (line 620), `peer_sct_list` (line 622), `client_cert_requested` (line 624)
+- A 64-byte cache line may contain both hot and cold fields, wasting cache space
+
+**Root Cause:** Fields were added organically as features were implemented, without consideration for cache-line layout.
+
+**Fix Guidance:**
+Group hot fields at the top of the struct and cold fields at the end:
+```zig
+pub const Context = struct {
+    // === Hot path (first 2-3 cache lines) ===
+    phase: HandshakePhase,
+    hash_kind: Hash,
+    transcripts: TranscriptSet,
+    secrets: SecretSchedule,
+    streams: CryptoStreams,
+    state: HandshakeState,
+    allocator: std.mem.Allocator,
+    config: Config,
+    callbacks: Callbacks,
+    // === Cold path ===
+    hrr_sent: bool = false,
+    hrr_received: bool = false,
+    peer_cert_chain: ?[][]const u8 = null,
+    // ... rest ...
+};
+```
+
+**Validation Plan:**
+```
+# Measure with perf stat -e cache-misses during handshake:
+# Before: N cache misses per handshake
+# After: fewer cache misses (hot fields in fewer cache lines)
+# This is a micro-optimization; measure before committing
+```
+
+**Rollout Risk:** Minimal. Field order change does not affect Zig struct semantics (named fields). All tests pass unchanged.
+
+**Confidence:** `confidence::suspected` -- Cache-line impact depends on actual struct layout and access patterns. Zig may reorder fields. Measurement needed.
+
+---
+
+### PERF-044: Benchmark Uses page_allocator, Masking Allocation Overhead (P3)
+
+**PerfScore:** 6 (Impact: 1 x Likelihood: 3 x 4 = 12, scaled to 6)
+
+**Summary:** Several benchmarks in `tests/bench.zig` use `std.heap.page_allocator` for operations that exercise the allocator (certificate parsing, ClientHello parsing, chain validation). The page allocator maps/unmaps entire OS pages (4KB) for each allocation, which has vastly different performance characteristics than a typical general-purpose allocator. This masks the true allocation overhead that would occur in production.
+
+**Evidence:**
+- File: `tests/bench.zig:137`: `const alloc = std.heap.page_allocator;` (benchCertParse)
+- File: `tests/bench.zig:267`: `const alloc = std.heap.page_allocator;` (benchClientHelloParse)
+- File: `tests/bench.zig:289`: `const alloc = std.heap.page_allocator;` (benchCertChainValidation)
+- page_allocator: each alloc/free = mmap/munmap syscall (~200-500ns per call)
+- GeneralPurposeAllocator: each alloc/free = ~20-50ns per call
+
+**Root Cause:** Convenience use of `page_allocator` which requires no initialization. Benchmark results are inflated by syscall overhead rather than reflecting actual allocation performance.
+
+**Fix Guidance:**
+Replace `std.heap.page_allocator` with `std.heap.GeneralPurposeAllocator` or a pre-allocated arena:
+```zig
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+defer _ = gpa.deinit();
+const alloc = gpa.allocator();
+```
+
+**Validation Plan:**
+```
+# Run benchmarks with page_allocator vs GeneralPurposeAllocator:
+# page_allocator: cert_parse ~5000ns/op (inflated by mmap)
+# GPA: cert_parse ~1000ns/op (actual allocation cost)
+# The difference reveals true parsing cost vs syscall overhead
+```
+
+**Rollout Risk:** None. Benchmark-only change.
+
+**Confidence:** `confidence::confirmed` -- `std.heap.page_allocator` usage is visible in bench.zig.
+
+---
+
+### PERF-045: hkdfLabel Still Allocates via FBA for Bounded-Size Buffer (P3)
+
+**PerfScore:** 5 (Impact: 1 x Likelihood: 4 x 4 = 16, scaled to 5)
+
+**Summary:** `hkdfLabel()` at `src/key_schedule.zig:309-334` accepts an `allocator` parameter and uses `allocator.alloc(u8, total)` to create the HkdfLabel output. While PERF-034 fixed the `std.mem.concat` call for the prefix, the function still performs a heap allocation (via whatever allocator is passed) for a buffer whose maximum size is bounded (~70 bytes: 2 + 1 + 6 + max_label + 1 + max_context). A stack-allocated array would eliminate this allocation entirely.
+
+**Evidence:**
+- File: `src/key_schedule.zig:309-334`
+- Line 316: `var out = try alloc.alloc(u8, total);`
+- Maximum `total`: 2 (length) + 1 (label_len) + 6 ("tls13 ") + 12 (longest label "ap traffic") + 1 (context_len) + 48 (SHA-384 hash) = ~70 bytes
+- Called 6-12 times per handshake (once per HKDF-Expand-Label derivation)
+
+**Root Cause:** The function returns an owned slice, requiring the caller to free it. A stack buffer or caller-provided buffer would eliminate the allocator dependency.
+
+**Fix Guidance:**
+Return a bounded stack array:
+```zig
+const MaxHkdfLabelLen = 2 + 1 + 6 + 255 + 1 + 255; // theoretical max
+fn hkdfLabel(label: []const u8, context: []const u8, out_len: u16) struct { buf: [MaxHkdfLabelLen]u8, len: usize } {
+    // ... fill buf, return { .buf = buf, .len = total } ...
+}
+```
+
+**Validation Plan:**
+```
+# Before: 6-12 alloc/free per handshake for ~70 byte buffers
+# After: 0 allocations (stack buffer)
+# Expected: ~30-120ns savings per handshake
+# Verify: all key derivation tests and RFC test vectors pass
+```
+
+**Rollout Risk:** Low. Requires updating callers to use stack-returned struct instead of owned slice. All callers immediately pass the result to HKDF and do not store it.
+
+**Confidence:** `confidence::confirmed` -- `alloc.alloc(u8, total)` for bounded output is visible at line 316.
+
+---
+
 ## Findings by Area
 
-### App (26 findings)
+### App (33 findings)
 
 | ID | PerfSeverity | Finding |
 |----|-------------|---------|
@@ -1371,11 +1747,20 @@ This is a documentation-level change that makes the performance intent explicit.
 | PERF-023 | P2 | encodeHandshake always allocates new buffer |
 | PERF-031 | P2 | 13 zero-capacity ArrayLists in message builders (excl. ServerHello/ClientHello) |
 | PERF-032 | P2 | 12 individual allocator.dupe calls in ClientHelloInfo.parse |
+| PERF-036 | P2 | CryptoBuffer.consume still O(n) memmove -- PERF-008 fix incomplete |
+| PERF-037 | P2 | Redundant leaf cert re-parse in handleCertificateVerify -- PERF-017 incomplete |
+| PERF-038 | P2 | Client sendClientFinished 3-4 allocating encodeHandshake calls |
+| PERF-039 | P2 | tls13_build_context_and_hash allocates ~130 bytes per sig op |
+| PERF-040 | P2 | Engine.zig 7+ allocating encodeHandshake calls |
 | PERF-010 | P3 | AntiReplayWindow.contains O(n) linear scan |
 | PERF-025 | P3 | TicketStore.lookup scans all entries |
 | PERF-027 | P3 | No timeout on X.509 chain validation |
 | PERF-034 | P3 | hkdfLabel uses std.mem.concat for "tls13 " prefix |
 | PERF-035 | P3 | Missing inline hint on deriveNonce |
+| PERF-041 | P3 | Zero-capacity ArrayList in validateChain name constraints |
+| PERF-042 | P3 | Per-cert allocator.dupe in handleCertificate loop |
+| PERF-043 | P3 | Context struct hot/cold field mixing |
+| PERF-045 | P3 | hkdfLabel still allocates via FBA for bounded-size buffer |
 
 ### Infra (3 findings)
 
@@ -1385,13 +1770,14 @@ This is a documentation-level change that makes the performance intent explicit.
 | PERF-016 | P2 | Global trust store RwLock contention |
 | PERF-026 | P3 | engine.zig legacy code duplicates Context |
 
-### CI (3 findings)
+### CI (4 findings)
 
 | ID | PerfSeverity | Finding |
 |----|-------------|---------|
 | PERF-011 | P2 | Missing benchmark suite (upgraded from P3) |
 | PERF-029 | P1 | Missing critical benchmarks -- bench.zig covers only 3 micro-ops |
 | PERF-033 | P2 | No CI performance regression detection |
+| PERF-044 | P3 | Benchmark uses page_allocator, masking allocation overhead |
 
 ### Infrastructure Tooling (1 finding)
 
@@ -1405,47 +1791,57 @@ This is a documentation-level change that makes the performance intent explicit.
 
 ### Quick Wins (< 1 day each)
 
-| ID | Effort | Expected Impact |
-|----|--------|----------------|
-| PERF-012 | 5 min | ~200ns/handshake -- replace ArrayList with allocator.dupe in buildFinished |
-| PERF-003 | 30 min | ~300ns/parse -- change 6 initCapacity(0) to initCapacity(4-8) |
-| PERF-009 | 30 min | ~120ns/handshake -- precompute empty_hash as comptime const |
-| PERF-018 | 15 min | ~100ns/poll -- use toOwnedSlice instead of dupe in pollCrypto |
-| PERF-022 | 15 min | ~100ns/flush -- use toOwnedSlice instead of alloc+memcpy in flushCrypto |
-| PERF-007 | 1 hr | ~200ns/ServerHello -- pre-allocate message builder ArrayLists |
-| PERF-006 | 2 hr | <10ns/AEAD op -- replace ~37 copyForwards with @memcpy |
-| PERF-031 | 2 hr | ~1-2us/handshake -- pre-size 13 zero-cap ArrayLists in message builders |
-| PERF-034 | 30 min | ~60-120ns/handshake -- replace std.mem.concat with stack buffer in hkdfLabel |
-| PERF-035 | 5 min | Informational -- add inline hint on deriveNonce (likely no-op) |
+| ID | Effort | Expected Impact | Status |
+|----|--------|----------------|--------|
+| PERF-012 | 5 min | ~200ns/handshake -- replace ArrayList with allocator.dupe in buildFinished | Closed |
+| PERF-003 | 30 min | ~300ns/parse -- change 6 initCapacity(0) to initCapacity(4-8) | Closed |
+| PERF-009 | 30 min | ~120ns/handshake -- precompute empty_hash as comptime const | Closed |
+| PERF-018 | 15 min | ~100ns/poll -- use toOwnedSlice instead of dupe in pollCrypto | Closed |
+| PERF-022 | 15 min | ~100ns/flush -- use toOwnedSlice instead of alloc+memcpy in flushCrypto | Closed |
+| PERF-007 | 1 hr | ~200ns/ServerHello -- pre-allocate message builder ArrayLists | Closed |
+| PERF-006 | 2 hr | <10ns/AEAD op -- replace ~37 copyForwards with @memcpy | Closed |
+| PERF-031 | 2 hr | ~1-2us/handshake -- pre-size 13 zero-cap ArrayLists in message builders | Closed |
+| PERF-034 | 30 min | ~60-120ns/handshake -- replace std.mem.concat with stack buffer in hkdfLabel | Closed |
+| PERF-035 | 5 min | Informational -- add inline hint on deriveNonce (likely no-op) | Closed |
+| PERF-037 | 30 min | ~15-30us/handshake -- share leaf cert parse across OCSP and CertVerify | **Open** |
+| PERF-039 | 30 min | ~20-40ns/handshake -- stack buffer for tls13_build_context_and_hash | **Closed** |
+| PERF-041 | 30 min | ~50-100ns/chain -- pre-size name constraint ArrayLists or guard allocation | **Open** |
+| PERF-044 | 15 min | Measurement accuracy -- replace page_allocator in benchmarks with GPA | **Open** |
+| PERF-045 | 1 hr | ~30-120ns/handshake -- stack buffer for hkdfLabel output | **Open** |
 
 ### Medium (1-5 days)
 
-| ID | Effort | Expected Impact |
-|----|--------|----------------|
-| PERF-001 | 2 days | ~400ns/parse -- arena allocator for ClientHello parsing |
-| PERF-002 | 1 day | ~2KB/connection -- box AntiReplayWindow behind pointer |
-| PERF-004 | 2 days | ~2-5us/handshake -- single-hash transcript fast path |
-| PERF-005 | 1 day | Eliminates mutex contention -- atomic double-checked locking |
-| PERF-013 | 2 days | ~3-8us/handshake -- single-buffer server flight (pre-compute total size) -- **Closed** |
-| PERF-014 | 1 day | Bounded memory -- max_inbound_size guard for CryptoBuffer |
-| PERF-015 | 1 day | ~200ns/ClientHello -- eliminate double buffer copy -- **Closed** |
-| PERF-017 | 1 day | ~50-100us/handshake -- parse leaf cert once, reuse across 4 call sites -- **Closed** |
-| PERF-023 | 2 days | ~150ns/handshake -- direct-write encodeHandshake variant |
-| PERF-027 | 1 day | DoS prevention -- max chain depth in validateChain |
-| PERF-029 | 3 days | Validation infrastructure -- expand bench.zig with 7 critical benchmarks -- **Closed** |
-| PERF-032 | 2 days | ~1-2us/handshake -- arena allocator for ClientHelloInfo.parse dupe batch |
+| ID | Effort | Expected Impact | Status |
+|----|--------|----------------|--------|
+| PERF-001 | 2 days | ~400ns/parse -- arena allocator for ClientHello parsing | Closed |
+| PERF-002 | 1 day | ~2KB/connection -- box AntiReplayWindow behind pointer | Closed |
+| PERF-004 | 2 days | ~2-5us/handshake -- single-hash transcript fast path | Closed |
+| PERF-005 | 1 day | Eliminates mutex contention -- atomic double-checked locking | Closed |
+| PERF-013 | 2 days | ~3-8us/handshake -- single-buffer server flight (pre-compute total size) | Closed |
+| PERF-014 | 1 day | Bounded memory -- max_inbound_size guard for CryptoBuffer | Closed |
+| PERF-015 | 1 day | ~200ns/ClientHello -- eliminate double buffer copy | Closed |
+| PERF-017 | 1 day | ~50-100us/handshake -- parse leaf cert once, reuse across 4 call sites | Closed |
+| PERF-023 | 2 days | ~150ns/handshake -- direct-write encodeHandshake variant | **Open** |
+| PERF-027 | 1 day | DoS prevention -- max chain depth in validateChain | Closed |
+| PERF-029 | 3 days | Validation infrastructure -- expand bench.zig with 7 critical benchmarks | Closed |
+| PERF-032 | 2 days | ~1-2us/handshake -- arena allocator for ClientHelloInfo.parse dupe batch | **Open** |
+| PERF-036 | 1 day | ~90-300ns/handshake -- offset-based O(1) consume for context.zig CryptoBuffer | **Open** |
+| PERF-038 | 1 day | ~2-4us/mTLS handshake -- zero-alloc client flight encoding | **Open** |
+| PERF-042 | 1 day | ~100-400ns/handshake -- batch cert chain duplication | **Open** |
+| PERF-043 | 1 day | Cache-line optimization -- group hot fields in Context struct | **Open** |
 
 ### Strategic (> 5 days)
 
-| ID | Effort | Expected Impact |
-|----|--------|----------------|
-| PERF-011 | 5-10 days | Regression prevention -- full benchmark suite with CI integration |
-| PERF-024 | 3-5 days | Performance observability -- counting allocator for debug builds |
-| PERF-008 | 3-5 days | Future-proofing -- ring buffer for CryptoBuffer (only if buffers grow) -- **Closed** (offset-based O(1) consume) |
-| PERF-010 | 3 days | Future-proofing -- hash-based anti-replay (only if window >256) |
-| PERF-016 | 2-3 days | Reduced contention -- atomic trust store pointer with local caching |
-| PERF-026 | 5-10 days | Code health -- complete Engine-to-Context migration |
-| PERF-033 | 5 days | CI quality gate -- baseline comparison + threshold checking for benchmarks |
+| ID | Effort | Expected Impact | Status |
+|----|--------|----------------|--------|
+| PERF-011 | 5-10 days | Regression prevention -- full benchmark suite with CI integration | Closed |
+| PERF-024 | 3-5 days | Performance observability -- counting allocator for debug builds | Closed |
+| PERF-008 | 3-5 days | Future-proofing -- ring buffer for CryptoBuffer (only if buffers grow) | Closed |
+| PERF-010 | 3 days | Future-proofing -- hash-based anti-replay (only if window >256) | Closed |
+| PERF-016 | 2-3 days | Reduced contention -- atomic trust store pointer with local caching | **Open** |
+| PERF-026 | 5-10 days | Code health -- complete Engine-to-Context migration | **Open** |
+| PERF-033 | 5 days | CI quality gate -- baseline comparison + threshold checking for benchmarks | **Open** |
+| PERF-040 | 3-5 days | ~3-5us/Engine handshake -- port zero-alloc encode to Engine or migrate to Context | **Open** |
 
 ---
 
@@ -1467,9 +1863,13 @@ This is a documentation-level change that makes the performance intent explicit.
 
 8. **hkdfLabel FixedBufferAllocator overhead is theoretical.** PERF-034 estimates ~10ns per call for `std.mem.concat` on a FixedBufferAllocator, but actual overhead may be lower if the FBA's bump pointer is in cache. Needs micro-benchmark verification.
 
+9. **PERF-043 cache-line impact depends on Zig struct layout.** Zig may reorder struct fields for alignment optimization. The actual cache-line impact requires `@sizeOf` and `@offsetOf` measurements to confirm field placement.
+
+10. **PERF-044 benchmark allocator choice affects measurement validity.** The page_allocator-based benchmarks (cert parse, ClientHello parse, chain validation) report inflated latencies due to syscall overhead. True allocation cost is masked.
+
 ### What Would Confirm Suspected Items
 
-32 of 33 findings are tagged `confidence::confirmed` based on unambiguous code evidence. PERF-035 is tagged `confidence::suspected`. To refine the estimated latency impacts:
+41 of 43 findings are tagged `confidence::confirmed` based on unambiguous code evidence. PERF-035 and PERF-043 are tagged `confidence::suspected`. To refine the estimated latency impacts:
 - Run `parseClientHello` with a counting allocator to get exact allocation counts
 - Profile a full handshake with `std.time.Timer` to measure actual wall-clock time per phase
 - Use `@sizeOf(Context)` to measure the struct size impact of PERF-002
@@ -1479,3 +1879,7 @@ This is a documentation-level change that makes the performance intent explicit.
 - Inspect `zig build-lib ... --emit asm` output for `deriveNonce` to confirm LLVM inlining (PERF-035)
 - Micro-benchmark `hkdfLabel` with and without `std.mem.concat` to measure actual FBA overhead (PERF-034)
 - Count total allocator.dupe calls in ClientHelloInfo.parse to confirm PERF-032 count of 12
+- Use `@offsetOf(Context, "phase")` etc. to confirm hot/cold field cache-line placement (PERF-043)
+- Run bench.zig with GPA vs page_allocator to quantify syscall overhead masking (PERF-044)
+- Count `encodeHandshake` alloc/free pairs in Engine path to confirm PERF-040 count of 7+
+- Trace `tls13_build_context_and_hash` allocations per handshake to confirm PERF-039 (1-2 calls)

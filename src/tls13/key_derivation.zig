@@ -216,7 +216,8 @@ pub fn deriveHandshakeTraffic(hash: Hash, ecdhe_secret: []const u8, transcript_h
     }
 
     const eh = emptyHash(hash);
-    const derived = ks.deriveSecretHash(hash, early_secret, "derived", eh.slice());
+    var derived = ks.deriveSecretHash(hash, early_secret, "derived", eh.slice());
+    defer std.crypto.secureZero(u8, &derived.bytes);
     const handshake_secret = ks.extractHash(hash, derived.slice(), ecdhe_secret);
     const client_hs = ks.deriveSecretHash(hash, &handshake_secret, "c hs traffic", transcript_hash.slice());
     const server_hs = ks.deriveSecretHash(hash, &handshake_secret, "s hs traffic", transcript_hash.slice());
@@ -338,14 +339,16 @@ pub fn deriveApplicationTraffic(hash: Hash, handshake_secret: *const Secret, tra
     }
 
     const eh = emptyHash(hash);
-    const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", eh.slice());
+    var derived = ks.deriveSecretHash(hash, handshake_secret, "derived", eh.slice());
+    defer std.crypto.secureZero(u8, &derived.bytes);
     // RFC 8446 §7.1: IKM is Hash.length zeros (32 for SHA-256, 48 for SHA-384)
     const zero_ikm = ks.zeroSecret(hash);
     if (secret_trace_enabled) {
         const zslice = zero_ikm.slice();
         traceSecrets("[TLS_APP_KEYS] IKM for master secret (zeros): len={} first_byte={} last_byte={}\n", .{ zslice.len, zslice[0], zslice[zslice.len - 1] });
     }
-    const master = ks.extractHash(hash, derived.slice(), zero_ikm.slice());
+    var master = ks.extractHash(hash, derived.slice(), zero_ikm.slice());
+    defer std.crypto.secureZero(u8, &master.bytes);
     const client_app = ks.deriveSecretHash(hash, &master, "c ap traffic", transcript_hash.slice());
     const server_app = ks.deriveSecretHash(hash, &master, "s ap traffic", transcript_hash.slice());
     const exporter_master = ks.deriveSecretHash(hash, &master, "exp master", transcript_hash.slice());

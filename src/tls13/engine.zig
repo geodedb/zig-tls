@@ -72,6 +72,41 @@ const Hash = ks.Hash;
 const Secret = ks.Secret;
 const max_digest_length = ks.max_digest_length;
 const Sha256 = std.crypto.hash.sha2.Sha256;
+const Sha384 = std.crypto.hash.sha2.Sha384;
+
+// SEC-047: Pre-computed empty hash constants (Hash("") for each supported algorithm).
+// These mirror key_derivation.zig's private emptyHash() to fix the master secret derivation
+// in computeApplicationSecrets, which must use Hash("") (not empty slice) as context for
+// Derive-Secret(., "derived", "") per RFC 8446 Section 7.1.
+const empty_hash_sha256: Secret = computeEmptyHash(.sha256);
+const empty_hash_sha384: Secret = computeEmptyHash(.sha384);
+
+fn computeEmptyHash(comptime hash: Hash) Secret {
+    const digest = switch (hash) {
+        .sha256 => blk: {
+            @setEvalBranchQuota(10000);
+            var out: [Sha256.digest_length]u8 = undefined;
+            Sha256.hash(&[_]u8{}, &out, .{});
+            break :blk out;
+        },
+        .sha384 => blk: {
+            @setEvalBranchQuota(10000);
+            var out: [Sha384.digest_length]u8 = undefined;
+            Sha384.hash(&[_]u8{}, &out, .{});
+            break :blk out;
+        },
+    };
+    return Secret.fromSlice(hash, &digest);
+}
+
+/// Return the pre-computed empty hash for the given algorithm.
+/// RFC 8446 Section 7.1: Derive-Secret(., "derived", "") uses Hash("") as context.
+fn emptyHash(hash: Hash) Secret {
+    return switch (hash) {
+        .sha256 => empty_hash_sha256,
+        .sha384 => empty_hash_sha384,
+    };
+}
 
 // Debug tracing (disabled in production).
 // QUAL-082: Per-file trace constants are intentionally NOT extracted to a shared
@@ -150,6 +185,7 @@ pub const TicketStore = struct {
             _ = self.tickets.orderedRemove(0);
         }
         const ident_copy = try self.allocator.dupe(u8, identity);
+        errdefer self.allocator.free(ident_copy);
         try self.tickets.append(self.allocator, .{
             .identity = ident_copy,
             .secret = secret,
@@ -663,14 +699,15 @@ pub const Engine = struct {
             var snapshot = self.transcript;
             const th_secret = snapshot.finalize(self.hash_kind);
             const th_hash = th_secret.slice();
+            const ecdhe_hello = self.ecdhe_secret orelse return error.HandshakeFailure;
             if (secret_trace_enabled and th_hash.len >= 4) {
                 traceSecrets("onCryptoRecv: Deriving handshake secrets after ServerHello\n", .{});
                 traceSecrets("onCryptoRecv: Transcript hash for handshake: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 of {})\n", .{ th_hash[0], th_hash[1], th_hash[2], th_hash[3], th_hash.len });
-                traceSecrets("onCryptoRecv: ECDHE secret first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3] });
+                traceSecrets("onCryptoRecv: ECDHE secret first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ ecdhe_hello[0], ecdhe_hello[1], ecdhe_hello[2], ecdhe_hello[3] });
             }
             // Engine doesn't support PSK yet, so use early_secret from null
             const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
-            const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_secret, &early_secret);
+            const hs = deriveHandshakeTraffic(self.hash_kind, ecdhe_hello, th_secret, &early_secret);
             const client_slice = hs.client_hs.slice();
             const server_slice = hs.server_hs.slice();
             if (secret_trace_enabled and client_slice.len >= 4 and server_slice.len >= 4) {
@@ -768,16 +805,20 @@ pub const Engine = struct {
                                     if (2 + list_len <= edata.len and list_len > 0) {
                                         const name_len = edata[2];
                                         if (3 + name_len <= edata.len and name_len > 0) {
+                                            // QUAL-122: Allocate before freeing old to avoid dangling pointer on OOM
+                                            const new_alpn = try self.allocator.dupe(u8, edata[3 .. 3 + name_len]);
                                             if (self.alpn) |old| self.allocator.free(old);
-                                            self.alpn = try self.allocator.dupe(u8, edata[3 .. 3 + name_len]);
+                                            self.alpn = new_alpn;
                                         }
                                     }
                                 }
                             }
                         },
                         0x0039 => { // QUIC TP
+                            // QUAL-122: Allocate before freeing old to avoid dangling pointer on OOM
+                            const new_tp = try self.allocator.dupe(u8, edata);
                             if (self.peer_tp) |old| self.allocator.free(old);
-                            self.peer_tp = try self.allocator.dupe(u8, edata);
+                            self.peer_tp = new_tp;
                         },
                         else => {},
                     }
@@ -829,16 +870,11 @@ pub const Engine = struct {
                     }
 
                     const validation_ok = blk: {
-                        var chain_der = self.allocator.alloc([]const u8, parsed_cert_msg.entries.len) catch {
-                            traceHandshake("TLS: Out of memory allocating certificate chain view\n", .{});
-                            break :blk false;
-                        };
+                        // QUAL-121: Propagate OOM from allocations instead of converting to cert-invalid
+                        var chain_der = try self.allocator.alloc([]const u8, parsed_cert_msg.entries.len);
                         defer self.allocator.free(chain_der);
 
-                        var parsed_certs = self.allocator.alloc(x509.Certificate, parsed_cert_msg.entries.len) catch {
-                            traceHandshake("TLS: Out of memory allocating parsed certificate array\n", .{});
-                            break :blk false;
-                        };
+                        var parsed_certs = try self.allocator.alloc(x509.Certificate, parsed_cert_msg.entries.len);
                         var certs_parsed_count: usize = 0;
                         defer {
                             for (parsed_certs[0..certs_parsed_count]) |c| c.deinit(self.allocator);
@@ -856,10 +892,8 @@ pub const Engine = struct {
 
                         const leaf = parsed_certs[0];
                         const leaf_entry = parsed_cert_msg.entries[0];
-                        self.leaf_spki = self.allocator.dupe(u8, leaf.spki) catch {
-                            traceHandshake("TLS: Out of memory duplicating leaf SPKI\n", .{});
-                            break :blk false;
-                        };
+                        // QUAL-121: Propagate OOM instead of converting to cert-invalid
+                        self.leaf_spki = try self.allocator.dupe(u8, leaf.spki);
 
                         const now = std.time.timestamp();
                         const server_name_slice: []const u8 = if (self.server_name) |sni| sni else &[_]u8{};
@@ -941,7 +975,12 @@ pub const Engine = struct {
                             },
                         };
                         if (self.peer_cert_ok) { // Only verify if not already failed
-                            const ok = sig.verifyCertificateVerify(alg, self.leaf_spki.?, signature, "TLS 1.3, server CertificateVerify", th.slice(), self.allocator) catch false;
+                            const spki = self.leaf_spki orelse {
+                                traceHandshake("TLS: CertificateVerify failed - no leaf SPKI available\n", .{});
+                                self.peer_cert_ok = false;
+                                return;
+                            };
+                            const ok = sig.verifyCertificateVerify(alg, spki, signature, "TLS 1.3, server CertificateVerify", th.slice(), self.allocator) catch false;
                             self.peer_cert_ok = ok;
                             if (!ok) {
                                 traceHandshake("TLS: CertificateVerify signature verification FAILED\n", .{});
@@ -961,22 +1000,24 @@ pub const Engine = struct {
 
     /// Handle received Finished: verify MAC, derive application secrets, update transcript.
     fn handleReceivedFinished(self: *Engine, p: messages_mod.HandshakeMessage, th_before: Secret, data: []const u8, off: usize) !void {
-        if (self.ecdhe_secret == null) return;
+        const ecdhe = self.ecdhe_secret orelse return;
 
         traceHandshake("TLS: Processing Finished message\n", .{});
         var peer_secret_opt: ?Secret = null;
-        if (self.handshake_client_secret != null and self.handshake_server_secret != null) {
-            peer_secret_opt = switch (self.role) {
-                .Client => self.handshake_server_secret.?,
-                .Server => self.handshake_client_secret.?,
-            };
-            traceHandshake("TLS: Using stored handshake secrets for verification\n", .{});
+        if (self.handshake_client_secret) |client_hs| {
+            if (self.handshake_server_secret) |server_hs| {
+                peer_secret_opt = switch (self.role) {
+                    .Client => server_hs,
+                    .Server => client_hs,
+                };
+                traceHandshake("TLS: Using stored handshake secrets for verification\n", .{});
+            }
         }
         const ok = if (peer_secret_opt) |ps| self.verifyPeerFinished(ps, p.body) else blk: {
             traceHandshake("TLS: Using fallback for Finished verification\n", .{});
             // Fallback (should not happen in real mode past this point)
             const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
-            const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_before, &early_secret);
+            const hs = deriveHandshakeTraffic(self.hash_kind, ecdhe, th_before, &early_secret);
             self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
             self.handshake_client_secret = hs.client_hs;
             self.handshake_server_secret = hs.server_hs;
@@ -1166,14 +1207,18 @@ pub const Engine = struct {
     /// Attach local Transport Parameters to be sent in next handshake message.
     /// The Engine will prefix with a simple marker "TP" and include bytes as-is.
     pub fn setLocalTransportParameters(self: *Engine, tp_encoded: []const u8) !void {
+        // QUAL-122: Allocate before freeing old to avoid dangling pointer on OOM
+        const new_tp = try self.allocator.dupe(u8, tp_encoded);
         if (self.local_tp) |old| self.allocator.free(old);
-        self.local_tp = try self.allocator.dupe(u8, tp_encoded);
+        self.local_tp = new_tp;
     }
 
     /// Set the expected server name (SNI) for certificate validation on client.
     pub fn setServerName(self: *Engine, name: []const u8) !void {
+        // QUAL-122: Allocate before freeing old to avoid dangling pointer on OOM
+        const new_name = try self.allocator.dupe(u8, name);
         if (self.server_name) |old| self.allocator.free(old);
-        self.server_name = try self.allocator.dupe(u8, name);
+        self.server_name = new_name;
     }
 
     /// Build and queue a ClientHello handshake message using full TLS 1.3.
@@ -1471,8 +1516,13 @@ pub const Engine = struct {
         };
 
         const master = blk2: {
-            const derived = ks.deriveSecretHash(self.hash_kind, &handshake_secret, "derived", &[_]u8{});
-            break :blk2 ks.extractHash(self.hash_kind, derived.slice(), &[_]u8{});
+            // SEC-047: RFC 8446 Section 7.1 key schedule fix.
+            // Context for Derive-Secret(., "derived", "") must be Hash(""), not empty slice.
+            // IKM for HKDF-Extract to derive Master Secret must be HashLen zeros, not empty.
+            const eh = emptyHash(self.hash_kind);
+            const derived = ks.deriveSecretHash(self.hash_kind, &handshake_secret, "derived", eh.slice());
+            const zero_ikm = ks.zeroSecret(self.hash_kind);
+            break :blk2 ks.extractHash(self.hash_kind, derived.slice(), zero_ikm.slice());
         };
         self.master_secret = master;
 
@@ -1602,21 +1652,23 @@ pub const Engine = struct {
 
         self.hash_kind = cipherSuiteHash(.TLS_AES_128_GCM_SHA256);
         try self.tryComputeShared();
-        if (self.ecdhe_secret != null and self.handshake_client_secret == null) {
-            var snap = self.transcript;
-            const th = snap.finalize(self.hash_kind);
-            const th_slice = th.slice();
-            if (th_slice.len >= 8) {
-                logger.debugPrint("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
-            }
-            const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
-            const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th, &early_secret);
+        if (self.ecdhe_secret) |ecdhe_sh| {
+            if (self.handshake_client_secret == null) {
+                var snap = self.transcript;
+                const th = snap.finalize(self.hash_kind);
+                const th_slice = th.slice();
+                if (th_slice.len >= 8) {
+                    logger.debugPrint("Transcript hash AFTER ServerHello: {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ th_slice[0], th_slice[1], th_slice[2], th_slice[3], th_slice[4], th_slice[5], th_slice[6], th_slice[7] });
+                }
+                const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+                const hs = deriveHandshakeTraffic(self.hash_kind, ecdhe_sh, th, &early_secret);
 
-            self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
-            self.handshake_client_secret = hs.client_hs;
-            self.handshake_server_secret = hs.server_hs;
-            // NOTE: Do NOT derive Application secrets here! They must be derived after Finished is added to transcript
-            // Application secrets will be derived in queueFinished() after server Finished is added
+                self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
+                self.handshake_client_secret = hs.client_hs;
+                self.handshake_server_secret = hs.server_hs;
+                // NOTE: Do NOT derive Application secrets here! They must be derived after Finished is added to transcript
+                // Application secrets will be derived in queueFinished() after server Finished is added
+            }
         }
 
         // RFC 9001: ServerHello goes to Initial CRYPTO space
@@ -1658,9 +1710,11 @@ pub const Engine = struct {
                 if (2 + list_len <= elen and list_len > 0) {
                     const name_len = body[pos + 2];
                     if (3 + name_len <= elen and name_len > 0) {
+                        // QUAL-122: Allocate before freeing old to avoid dangling pointer on OOM
+                        const alpn_name = try self.allocator.dupe(u8, body[pos + 3 .. pos + 3 + name_len]);
                         if (self.alpn) |old| self.allocator.free(old);
-                        self.alpn = try self.allocator.dupe(u8, body[pos + 3 .. pos + 3 + name_len]);
-                        logger.debugPrint("extractAlpnFromClientHello: Extracted ALPN: {s}\n", .{self.alpn.?});
+                        self.alpn = alpn_name;
+                        logger.debugPrint("extractAlpnFromClientHello: Extracted ALPN: {s}\n", .{alpn_name});
                         return;
                     }
                 }
@@ -1691,13 +1745,15 @@ pub const Engine = struct {
         } else { // Client
             // Client waits for Finished verification; in authenticated mode also ensures peer_cert_ok
             logger.debugPrint("Client: maybeAutoProgress - finished_verified={}, has_secret={}, allow_insecure={}, peer_cert_ok={}\n", .{ self.finished_verified, self.handshake_client_secret != null, self.allow_insecure, self.peer_cert_ok });
-            if (self.finished_verified and self.handshake_client_secret != null) {
-                if (!self.allow_insecure and !self.peer_cert_ok) {
-                    logger.debugPrint("Client: Waiting for certificate validation to complete\n", .{});
-                    return; // wait for cert validation
+            if (self.finished_verified) {
+                if (self.handshake_client_secret) |client_secret| {
+                    if (!self.allow_insecure and !self.peer_cert_ok) {
+                        logger.debugPrint("Client: Waiting for certificate validation to complete\n", .{});
+                        return; // wait for cert validation
+                    }
+                    logger.debugPrint("Client: Queueing Finished message in real mode\n", .{});
+                    try self.queueFinished(client_secret);
                 }
-                logger.debugPrint("Client: Queueing Finished message in real mode\n", .{});
-                try self.queueFinished(self.handshake_client_secret.?);
             }
         }
     }
@@ -1728,10 +1784,17 @@ pub const Engine = struct {
     /// Install server certificate and private key (ECDSA P-256 for now). Stored for future emission.
     pub fn setServerCertificate(self: *Engine, cert_der: []const u8, priv_key: []const u8, alg: sig.SigAlg) !void {
         if (self.role != .Server) return error.WrongRole;
+        // QUAL-122: Allocate both copies before freeing old values to avoid
+        // dangling pointers and memory leaks if the second dupe fails.
+        const new_cert = try self.allocator.dupe(u8, cert_der);
+        const new_key = self.allocator.dupe(u8, priv_key) catch |err| {
+            self.allocator.free(new_cert);
+            return err;
+        };
         if (self.server_cert_der) |c| self.allocator.free(c);
         if (self.server_priv_key) |k| self.allocator.free(k);
-        self.server_cert_der = try self.allocator.dupe(u8, cert_der);
-        self.server_priv_key = try self.allocator.dupe(u8, priv_key);
+        self.server_cert_der = new_cert;
+        self.server_priv_key = new_key;
         self.server_sig_alg = alg;
     }
 
@@ -1782,12 +1845,13 @@ pub const Engine = struct {
         // Note: allow_insecure only affects peer certificate validation, not whether we send ours
         // RFC 8446 §4.4.1: Server must send Certificate and CertificateVerify before Finished
         if (self.server_cert_der != null and self.server_priv_key != null) {
+            const cert_der = self.server_cert_der orelse return error.HandshakeFailure;
+            const priv_key = self.server_priv_key orelse return error.HandshakeFailure;
             logger.debugPrint("Calling queueCertificate...\n", .{});
-            try self.queueCertificate(self.server_cert_der.?);
+            try self.queueCertificate(cert_der);
 
             // Ensure signature algorithm is set
             if (self.server_sig_alg == null) {
-                const cert_der = self.server_cert_der.?;
                 self.server_sig_alg = x509.inferSignatureAlgorithm(cert_der, self.allocator) catch |err| {
                     logger.debugPrint("[CERTVERIFY] Failed to infer signature algorithm from server cert: {} (defaulting to ECDSA P-256)\n", .{err});
                     self.server_sig_alg = .ecdsa_secp256r1_sha256;
@@ -1795,7 +1859,8 @@ pub const Engine = struct {
                 };
             }
 
-            logger.debugPrint("[CERTVERIFY] About to queue CertificateVerify with alg={}, priv_key_len={}\n", .{ self.server_sig_alg.?, self.server_priv_key.?.len });
+            const sig_alg = self.server_sig_alg orelse return error.HandshakeFailure;
+            logger.debugPrint("[CERTVERIFY] About to queue CertificateVerify with alg={}, priv_key_len={}\n", .{ sig_alg, priv_key.len });
 
             // Use the existing queueCertificateVerify() helper which properly handles transcript timing
             // This ensures CertificateVerify signature is computed over transcript that includes Certificate
@@ -1815,9 +1880,9 @@ pub const Engine = struct {
             self.finished_sent,
             self.handshake_server_secret != null,
         });
-        if (self.handshake_server_secret != null) {
+        if (self.handshake_server_secret) |server_secret| {
             logger.debugPrint("[FLIGHT] Calling queueFinished with server secret...\n", .{});
-            try self.queueFinished(self.handshake_server_secret.?);
+            try self.queueFinished(server_secret);
             logger.debugPrint("[FLIGHT] After queueFinished: finished_sent={}\n", .{self.finished_sent});
             appended_any = true;
             // Note: No boundary marker after Finished as it's the last message
@@ -1902,13 +1967,12 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) !?[32]u8 {
 
     // Store the client's session ID for ServerHello echo (RFC 8446 Section 4.1.3)
     if (ch.session_id.len > 0) {
-        // Free any existing session ID
+        // QUAL-122: Allocate before freeing old to avoid dangling pointer on OOM
+        const new_sid = try engine.allocator.dupe(u8, ch.session_id);
         if (engine.client_session_id) |old_id| {
             engine.allocator.free(old_id);
         }
-
-        // Store a copy of the client's session ID
-        engine.client_session_id = try engine.allocator.dupe(u8, ch.session_id);
+        engine.client_session_id = new_sid;
         logger.debugPrint("parseRealClientHello: stored client session_id len={}\n", .{ch.session_id.len});
     } else {
         logger.debugPrint("parseRealClientHello: client sent empty session_id\n", .{});
@@ -1918,12 +1982,12 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) !?[32]u8 {
     // Extract QUIC transport parameters if present (RFC 9001 Section 8.2)
     if (ch.quic_transport_parameters) |tp| {
         logger.debugPrint("parseRealClientHello: found transport parameters (len={})\n", .{tp.len});
-        // Free any existing peer transport parameters
+        // QUAL-122: Allocate before freeing old to avoid dangling pointer on OOM
+        const new_tp = try engine.allocator.dupe(u8, tp);
         if (engine.peer_tp) |old| {
             engine.allocator.free(old);
         }
-        // Store a copy of the client's transport parameters
-        engine.peer_tp = try engine.allocator.dupe(u8, tp);
+        engine.peer_tp = new_tp;
         logger.debugPrint("parseRealClientHello: stored transport parameters\n", .{});
     } else {
         logger.debugPrint("parseRealClientHello: no transport parameters found in ClientHello\n", .{});
