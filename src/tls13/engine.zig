@@ -135,6 +135,7 @@ pub const TicketStore = struct {
 
     pub fn deinit(self: *TicketStore) void {
         for (self.tickets.items) |*t| {
+            std.crypto.secureZero(u8, t.secret.bytes[0..t.secret.len]);
             self.allocator.free(t.identity);
         }
         self.tickets.deinit(self.allocator);

@@ -25,10 +25,10 @@
 const std = @import("std");
 const testing = std.testing;
 
-const alert = @import("alert.zig");
-const record = @import("record.zig");
-const tls13_full = @import("tls13_full.zig");
-const key_schedule = @import("key_schedule.zig");
+const alert = @import("alert");
+const record = @import("record");
+const tls13_full = @import("tls13_full");
+const key_schedule = @import("quic_tls");
 
 // ============================================================================
 // RFC 8446 §6 - Alert Protocol

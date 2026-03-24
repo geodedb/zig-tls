@@ -186,11 +186,18 @@ fn parallelCertValidateTask(t: *spice.Task, ctx: CertValidateContext) void {
 
 fn validateCertificateChain(allocator: std.mem.Allocator, input: CertValidateInput) CertValidateResult {
     _ = allocator;
-    // Certificate validation logic would go here
-    // For now, return success if chain is non-empty
+
     if (input.chain_der.len == 0) {
         return .{ .valid = false, .error_msg = "empty certificate chain" };
     }
+
+    // TODO(security): Implement real certificate chain validation using x509.zig.
+    // This stub currently accepts any non-empty chain without cryptographic verification.
+    // Do NOT use parallelCertificateValidate in production until this is implemented.
+    if (@import("builtin").mode != .Debug) {
+        @compileError("SECURITY: validateCertificateChain is a stub — must not be used in release builds");
+    }
+
     return .{ .valid = true, .error_msg = null };
 }
 
@@ -312,7 +319,13 @@ fn verifySignature(input: SignatureVerifyInput) SignatureVerifyResult {
         },
     }
 
-    // Would perform actual crypto verification here
+    // TODO(security): Implement real signature verification using sig.zig.
+    // This stub currently accepts any well-formed input without cryptographic verification.
+    // Do NOT use parallelSignatureVerify in production until this is implemented.
+    if (@import("builtin").mode != .Debug) {
+        @compileError("SECURITY: verifySignature is a stub — must not be used in release builds");
+    }
+
     return .{ .valid = true, .error_code = null };
 }
 
@@ -563,8 +576,13 @@ fn parallelKeyDeriveTask(t: *spice.Task, ctx: KeyDeriveContext) void {
 }
 
 fn deriveKeyMaterial(secret: [32]u8, level: EncryptionLevel) KeyMaterial {
-    // HKDF-Expand-Label would be used here
-    // Simplified for demonstration
+    // TODO(security): Implement real HKDF-Expand-Label using key_schedule.zig.
+    // This stub currently copies the secret verbatim instead of proper key derivation.
+    // Do NOT use parallelKeyDerive in production until this is implemented.
+    if (@import("builtin").mode != .Debug) {
+        @compileError("SECURITY: deriveKeyMaterial is a stub — must not be used in release builds");
+    }
+
     var result = KeyMaterial{
         .key = undefined,
         .iv = undefined,
@@ -575,7 +593,6 @@ fn deriveKeyMaterial(secret: [32]u8, level: EncryptionLevel) KeyMaterial {
         },
     };
 
-    // Use secret to derive keys (simplified)
     @memcpy(&result.key, &secret);
     @memset(&result.iv, 0);
     @memcpy(&result.hp_key, &secret);

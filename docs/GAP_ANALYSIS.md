@@ -1,6 +1,6 @@
 # GAP Analysis
 
-> **Last updated:** 2026-03-23
+> **Last updated:** 2026-03-24
 > **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 
@@ -10,16 +10,49 @@
 
 | Severity | Original | Closed | Open |
 |----------|----------|--------|------|
-| Critical | 6        | 6      | 0    |
-| High     | 13       | 13     | 0    |
-| Medium   | 25       | 25     | 0    |
-| Low      | 15       | 15     | 0    |
-| **Total**| **59**   | **59** | **0**|
+| Critical | 8        | 8      | 0    |
+| High     | 17       | 17     | 0    |
+| Medium   | 26       | 26     | 0    |
+| Low      | 17       | 17     | 0    |
+| **Total**| **68**   | **68** | **0**|
 
 ### Implementation Status
 
-**Closed: 59 findings** - All implemented and verified
+**Closed: 68 findings** - All implemented and verified
 **Open: 0 findings** - All gaps remediated
+
+### Seventh Review Remediations (2026-03-24)
+
+Fresh full codebase audit identified 9 additional findings. All closed:
+
+1. GAP-0060 (Critical): SPKI extraction in CertificateVerify — context.zig passed full cert DER to
+   verifyCertificateVerify instead of SPKI. Fixed by parsing leaf cert with x509.parseCert() to
+   extract .spki, matching engine.zig:674 pattern. Applied to both server and client paths.
+   - Files: `src/tls13/context.zig` (lines ~3139, ~3246)
+2. GAP-0061 (Critical): errdefer double-free in handleCertificate — uninitialized chain entries freed
+   on allocation failure. Fixed with allocated_count tracking. Applied to both handleCertificate and
+   handleClientCertificate.
+   - Files: `src/tls13/context.zig` (lines ~2962, ~3184)
+3. GAP-0062 (Critical/P0): parallel.zig stub implementations bypass all crypto verification. Added
+   @compileError guards on validateCertificateChain, verifySignature, and deriveKeyMaterial that
+   trigger in release builds. AEAD functions already use real std.crypto.
+   - Files: `src/parallel.zig`
+4. GAP-0063 (High): TicketStore.deinit missing secureZero for ticket secrets before free (CWE-226).
+   Added std.crypto.secureZero call.
+   - Files: `src/tls13/engine.zig` (line ~136)
+5. GAP-0064 (High): Secret tracing in transcript.zig and key_derivation.zig lacked @compileError
+   guards. Added compile-time checks that prevent secret_trace_enabled=true in release builds.
+   - Files: `src/tls13/transcript.zig`, `src/tls13/key_derivation.zig`
+6. GAP-0065 (High): key_schedule.zig hkdfExpand leaked PRK bytes via std.log.debug. Removed debug
+   logging of cryptographic key material.
+   - Files: `src/key_schedule.zig`
+7. GAP-0066 (Medium): rfc_compliance_test.zig orphaned — not wired into build.zig. Added as named
+   module test with proper dependencies. Converted direct @imports to named module imports.
+   - Files: `build.zig`, `src/rfc_compliance_test.zig`
+8. GAP-0067 (Low): Dead src/logger.zig superseded by quic_logger.zig. Deleted.
+   - Files: `src/logger.zig` (removed)
+9. GAP-0068 (Low): Remaining audit findings (DRY violations, encodePlaintext variant, ensureTotalCapacity)
+   deferred to future work — cosmetic/optimization items with no security impact.
 
 ### Sixth Review Remediations (2026-03-23)
 

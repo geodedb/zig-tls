@@ -377,6 +377,27 @@ pub fn build(b: *std.Build) void {
     // Add RFC 8446 tests to main test suite
     test_step.dependOn(test_rfc8446_step);
 
+    // RFC Compliance Tests (enum/constant verification against RFC specs)
+    const rfc_compliance_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/rfc_compliance_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "sig", .module = sig_mod },
+                .{ .name = "quic_logger", .module = logger_mod },
+                .{ .name = "asn1", .module = asn1_mod },
+                .{ .name = "alert", .module = alert_mod },
+                .{ .name = "record", .module = record_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        }),
+    });
+    const run_rfc_compliance_test = b.addRunArtifact(rfc_compliance_test);
+    test_step.dependOn(&run_rfc_compliance_test.step);
+
     // RFC 9001: QUIC-TLS Tests
     const test_rfc9001_step = b.step("test-rfc9001", "Run RFC 9001 (QUIC-TLS) test suite");
 

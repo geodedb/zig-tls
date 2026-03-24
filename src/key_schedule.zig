@@ -361,9 +361,7 @@ fn hkdfExtractRaw(salt: ?[]const u8, ikm: []const u8) [Sha256.digest_length]u8 {
 }
 
 fn hkdfExpand(out: []u8, prk: [Sha256.digest_length]u8, info: []const u8) void {
-    std.log.debug("hkdfExpand: out.len={}, prk[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}, info.len={}", .{ out.len, prk[0], prk[1], prk[2], prk[3], info.len });
     HkdfSha256.expand(out, info, prk);
-    std.log.debug("hkdfExpand: AFTER expand, out[0..4]={X:0>2}{X:0>2}{X:0>2}{X:0>2}", .{ out[0], out[1], out[2], out[3] });
 }
 
 /// HKDF-Expand-Label derives keying material using TLS 1.3 label convention.

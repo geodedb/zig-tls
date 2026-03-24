@@ -2960,8 +2960,9 @@ pub const Context = struct {
 
         // Allocate and copy the certificate chain
         var chain = try self.allocator.alloc([]const u8, parsed.entries.len);
+        var allocated_count: usize = 0;
         errdefer {
-            for (chain[0..]) |cert| {
+            for (chain[0..allocated_count]) |cert| {
                 self.allocator.free(cert);
             }
             self.allocator.free(chain);
@@ -2969,6 +2970,7 @@ pub const Context = struct {
 
         for (parsed.entries, 0..) |cert_entry, i| {
             chain[i] = try self.allocator.dupe(u8, cert_entry.cert);
+            allocated_count += 1;
         }
 
         self.peer_cert_chain = chain;
@@ -3135,10 +3137,14 @@ pub const Context = struct {
                 return HandshakeError.UnsupportedSignatureAlgorithm;
             };
 
-            // Verify the signature using the leaf certificate's public key
+            // Extract SPKI from leaf certificate for signature verification
+            const leaf_cert = try x509.parseCert(self.allocator, chain[0]);
+            defer leaf_cert.deinit(self.allocator);
+
+            // Verify the signature using the leaf certificate's public key (SPKI)
             const verified = try sig.verifyCertificateVerify(
                 sig_alg,
-                chain[0], // Leaf certificate DER
+                leaf_cert.spki, // SPKI DER, not full certificate
                 parsed.signature,
                 "TLS 1.3, server CertificateVerify", // RFC 8446 §4.4.3 context string
                 transcript_hash.slice(),
@@ -3182,13 +3188,15 @@ pub const Context = struct {
 
         // Allocate and copy the certificate chain
         var chain = try self.allocator.alloc([]const u8, parsed.entries.len);
+        var client_allocated_count: usize = 0;
         errdefer {
-            for (chain[0..]) |cert| self.allocator.free(cert);
+            for (chain[0..client_allocated_count]) |cert| self.allocator.free(cert);
             self.allocator.free(chain);
         }
 
         for (parsed.entries, 0..) |cert_entry, i| {
             chain[i] = try self.allocator.dupe(u8, cert_entry.cert);
+            client_allocated_count += 1;
         }
 
         self.peer_cert_chain = chain;
@@ -3243,9 +3251,13 @@ pub const Context = struct {
                 return HandshakeError.UnsupportedSignatureAlgorithm;
             };
 
+            // Extract SPKI from leaf certificate for signature verification
+            const client_leaf = try x509.parseCert(self.allocator, chain[0]);
+            defer client_leaf.deinit(self.allocator);
+
             const verified = try sig.verifyCertificateVerify(
                 sig_alg,
-                chain[0], // Leaf certificate DER
+                client_leaf.spki, // SPKI DER, not full certificate
                 parsed.signature,
                 "TLS 1.3, client CertificateVerify", // Client context string
                 transcript_hash.slice(),
