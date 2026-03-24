@@ -159,6 +159,10 @@ pub const QuicKeys = key_derivation.QuicKeys;
 /// Derive early secret from PSK (RFC 8446 §7.1).
 pub const deriveEarlySecret = key_derivation.deriveEarlySecret;
 
+/// Derive binder key for PSK authentication (RFC 8446 §7.1).
+/// Uses "ext binder" label for external PSKs, "res binder" for resumption PSKs.
+pub const deriveBinderKey = key_derivation.deriveBinderKey;
+
 /// Fixed-size secret type.
 pub const Secret = key_derivation.Secret;
 

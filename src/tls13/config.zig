@@ -302,6 +302,28 @@ pub const Config = struct {
     /// null = No certificate_authorities extension sent.
     client_auth_ca_certs: ?[]const []const u8 = null,
 
+    /// External pre-shared key bytes for out-of-band PSK authentication (RFC 8446 §4.2.11).
+    /// When set, the client will offer this PSK in the ClientHello using the "ext binder" label.
+    /// External PSKs are provisioned out-of-band (not via NewSessionTicket).
+    ///
+    /// RFC 8446 §7.1: External PSKs use "ext binder" label for binder key derivation,
+    /// while resumption PSKs use "res binder". This distinction is critical for security.
+    ///
+    /// Note: If both external_psk and resumption_psk are set, resumption_psk takes priority
+    /// (resumption is preferred over external PSK per common practice).
+    ///
+    /// null = No external PSK configured.
+    external_psk: ?[]const u8 = null,
+
+    /// Identity to advertise for the external PSK (RFC 8446 §4.2.11).
+    /// Required if external_psk is set. This is the opaque identity sent in the
+    /// PskIdentity structure in the ClientHello pre_shared_key extension.
+    ///
+    /// For external PSKs, the identity format is application-defined (not a ticket).
+    ///
+    /// null = No external PSK identity.
+    external_psk_identity: ?[]const u8 = null,
+
     /// Pre-shared key for session resumption (Client role only).
     /// If set, the client will offer this PSK in the ClientHello.
     /// RFC 8446 §4.2.11: pre_shared_key extension.

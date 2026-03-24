@@ -501,11 +501,17 @@ const HandshakeState = struct {
                 .supported_versions = info.supported_versions,
                 .key_share = .{ .group = info.key_share.group, .key = info.key_share.key },
                 .quic_transport_parameters = info.quic_transport_parameters,
-                .alpn_list = info.alpn_list,
+                // [][]u8 -> []const []const u8: safe cast, same memory layout
+                .alpn_list = if (info.alpn_list) |list|
+                    @as([]const []const u8, @ptrCast(list))
+                else
+                    null,
                 .early_data = info.early_data,
                 .pre_shared_key = if (info.pre_shared_key) |psk| ClientHelloPreSharedKeyView{
-                    .identities = psk.identities,
-                    .binders = psk.binders,
+                    // []OwnedPskIdentity -> []const ClientHelloPskIdentityView: same layout
+                    .identities = @as([]const ClientHelloPskIdentityView, @ptrCast(psk.identities)),
+                    // [][]u8 -> []const []const u8: safe cast, same memory layout
+                    .binders = @as([]const []const u8, @ptrCast(psk.binders)),
                 } else null,
                 .psk_key_exchange_modes = info.psk_key_exchange_modes,
                 .raw = info.raw,
@@ -625,6 +631,12 @@ pub const Context = struct {
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) !Context {
+        // GAP-0080: Validate that config.supported_groups only contains implemented groups.
+        // Currently only x25519 is implemented for ECDHE key exchange.
+        for (config.supported_groups) |group| {
+            if (group != .x25519) return HandshakeError.UnsupportedKeyShareGroup;
+        }
+
         // PERF-002: Only allocate anti-replay window for servers with 0-RTT enabled.
         const anti_replay: ?*zero_rtt_mod.AntiReplayWindow = if (config.role == .Server and config.enable_early_data) blk: {
             const ptr = try config.allocator.create(zero_rtt_mod.AntiReplayWindow);
@@ -1569,8 +1581,26 @@ pub const Context = struct {
         // supported_versions (REQUIRED)
         try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
 
-        // supported_groups
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
+        // supported_groups (RFC 8446 Section 4.2.7) - dynamically encoded from config
+        {
+            const groups = self.config.supported_groups;
+            if (groups.len != 0) {
+                const group_list_len: u16 = @intCast(groups.len * 2);
+                const group_ext_len: u16 = group_list_len + 2;
+                try ext_buf.appendSlice(self.allocator, &.{
+                    0x00,
+                    0x0a,
+                    @intCast(group_ext_len >> 8),
+                    @intCast(group_ext_len & 0xff),
+                    @intCast(group_list_len >> 8),
+                    @intCast(group_list_len & 0xff),
+                });
+                for (groups) |group| {
+                    const gval: u16 = @intFromEnum(group);
+                    try ext_buf.appendSlice(self.allocator, &.{ @intCast(gval >> 8), @intCast(gval & 0xff) });
+                }
+            }
+        }
 
         // signature_algorithms
         const sigs = self.config.supported_signature_schemes;
@@ -1831,18 +1861,27 @@ pub const Context = struct {
                 continue;
             }
 
-            if (lookup_cb(self, ident.identity)) |psk_bytes| {
+            // RFC 8446 §4.2.11: Try external PSK config first, then fall back to ticket lookup callback.
+            // External PSKs are provisioned out-of-band and use "ext binder" label.
+            // Resumption PSKs come from NewSessionTicket and use "res binder" label.
+            const is_external_psk = self.config.external_psk != null and
+                self.config.external_psk_identity != null and
+                std.mem.eql(u8, ident.identity, self.config.external_psk_identity.?);
+            const psk_bytes_opt: ?[]const u8 = if (is_external_psk)
+                self.config.external_psk
+            else
+                lookup_cb(self, ident.identity);
+            if (psk_bytes_opt) |psk_bytes| {
                 // Found a matching PSK. Now verify the binder.
                 // RFC 8446 §4.2.11: Binder validation
-                // NOTE: The callback MUST have validated ticket age/lifetime before returning PSK
+                // NOTE: For resumption PSKs, the callback MUST have validated ticket age/lifetime before returning PSK
 
                 // 1. Derive early secret and binder key (RFC 8446 §7.1)
                 // early_secret = HKDF-Extract(0, psk)
                 const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, psk_bytes);
-                // binder_key = Derive-Secret(early_secret, "res binder", "")
-                // Note: We assume resumption binder ("res binder"). External PSK would use "ext binder".
-                // Since we looked it up via ticket callback, it's likely resumption.
-                const binder_key = key_derivation_mod.deriveBinderKey(self.hash_kind, &early_secret, false);
+                // binder_key = Derive-Secret(early_secret, "ext binder" | "res binder", "")
+                // RFC 8446 §7.1: Use "ext binder" for external PSKs, "res binder" for resumption PSKs.
+                const binder_key = key_derivation_mod.deriveBinderKey(self.hash_kind, &early_secret, is_external_psk);
 
                 // 2. Calculate truncated ClientHello for binder verification (RFC 8446 §4.2.11.2)
                 // The transcript for binder computation is the ClientHello truncated before the binders list.
@@ -2215,8 +2254,19 @@ pub const Context = struct {
         defer ext_buf.deinit(self.allocator);
         // supported_versions
         try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
-        // supported_groups (x25519)
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
+        // supported_groups (RFC 8446 Section 4.2.7) - dynamically encoded from config
+        {
+            const groups = self.config.supported_groups;
+            if (groups.len != 0) {
+                const group_list_len: u16 = @intCast(groups.len * 2);
+                const group_ext_len: u16 = group_list_len + 2;
+                try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0a, @intCast(group_ext_len >> 8), @intCast(group_ext_len & 0xff), @intCast(group_list_len >> 8), @intCast(group_list_len & 0xff) });
+                for (groups) |group| {
+                    const gval: u16 = @intFromEnum(group);
+                    try ext_buf.appendSlice(self.allocator, &.{ @intCast(gval >> 8), @intCast(gval & 0xff) });
+                }
+            }
+        }
         // signature_algorithms
         const sigs = self.config.supported_signature_schemes;
         if (sigs.len != 0) {
@@ -2258,16 +2308,24 @@ pub const Context = struct {
             try ext_buf.appendSlice(self.allocator, tp);
         }
 
+        // Determine if we have any PSK to offer (resumption takes priority over external)
+        // RFC 8446 §4.2.11: Resumption PSKs and external PSKs use different binder labels.
+        const has_resumption_psk = self.config.resumption_psk != null;
+        const has_external_psk = self.config.external_psk != null and self.config.external_psk_identity != null;
+        const has_any_psk = has_resumption_psk or has_external_psk;
+        const using_external_psk = has_external_psk and !has_resumption_psk;
+
         // RFC 8446 §4.2.10 + RFC 9001 §4.6: Add early_data extension for 0-RTT
         // Must be added BEFORE pre_shared_key extension (which must be last)
-        if (self.config.resumption_psk != null and self.config.enable_early_data) {
+        // Note: 0-RTT is only supported with resumption PSKs, not external PSKs
+        if (has_resumption_psk and self.config.enable_early_data) {
             // early_data extension (type 0x002a, empty data)
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2a, 0x00, 0x00 });
         }
 
         // RFC 8446 §4.2.9: psk_key_exchange_modes extension (required when using PSK)
         // Must be added BEFORE pre_shared_key extension (which must be last)
-        if (self.config.resumption_psk != null) {
+        if (has_any_psk) {
             // Extension type: psk_key_exchange_modes (0x002d)
             // Extension length: 2 (list length + 1 mode)
             // Modes list length: 1
@@ -2278,7 +2336,7 @@ pub const Context = struct {
         // RFC 8446 §4.2.11: pre_shared_key extension (MUST be last)
         var psk_binder_placeholder_start: ?usize = null;
         var binder_len: u8 = 0;
-        if (self.config.resumption_psk) |_| {
+        if (has_any_psk) {
             // Extension type: pre_shared_key (0x0029)
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x29 });
 
@@ -2288,8 +2346,11 @@ pub const Context = struct {
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x00 });
 
             // PskIdentity list
-            // RFC 8446 §4.2.11: PSK identity (ticket) is required when offering PSK resumption
-            const identity = self.config.resumption_ticket orelse return HandshakeError.MissingResumptionTicket;
+            // RFC 8446 §4.2.11: PSK identity is the ticket (resumption) or external identity
+            const identity = if (using_external_psk)
+                self.config.external_psk_identity.?
+            else
+                (self.config.resumption_ticket orelse return HandshakeError.MissingResumptionTicket);
             const identity_len: u16 = @intCast(identity.len);
 
             // Identities list length (2 + identity_len + 4 for obfuscated_ticket_age)
@@ -2301,7 +2362,8 @@ pub const Context = struct {
             try ext_buf.appendSlice(self.allocator, identity);
 
             // obfuscated_ticket_age (u32)
-            const ticket_age = self.config.resumption_ticket_age_add;
+            // RFC 8446 §4.2.11: For external PSKs, obfuscated_ticket_age SHOULD be 0.
+            const ticket_age: u32 = if (using_external_psk) 0 else self.config.resumption_ticket_age_add;
             try ext_buf.appendSlice(self.allocator, &.{
                 @intCast((ticket_age >> 24) & 0xff),
                 @intCast((ticket_age >> 16) & 0xff),
@@ -2310,7 +2372,7 @@ pub const Context = struct {
             });
 
             // Binders list
-            // Hash length depends on cipher suite (assume SHA-256 for now)
+            // Hash length depends on cipher suite
             binder_len = @intCast(ks.digestLength(self.hash_kind));
             const binders_list_len: u16 = 1 + binder_len;
             try ext_buf.appendSlice(self.allocator, &.{ @intCast(binders_list_len >> 8), @intCast(binders_list_len & 0xff) });
@@ -2338,14 +2400,16 @@ pub const Context = struct {
 
         // Compute PSK binder if needed
         if (psk_binder_placeholder_start) |binder_start| {
-            const psk = self.config.resumption_psk.?;
+            // Use the appropriate PSK based on whether it's external or resumption
+            const psk = if (using_external_psk) self.config.external_psk.? else self.config.resumption_psk.?;
             if (binder_len == 0) return HandshakeError.CryptoError;
 
             // Derive early_secret from PSK
             const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, psk);
 
-            // Derive binder_key (assuming resumption binder)
-            const binder_key = key_derivation_mod.deriveBinderKey(self.hash_kind, &early_secret, false);
+            // Derive binder_key with correct label for external vs resumption PSK
+            // RFC 8446 §7.1: "ext binder" for external PSKs, "res binder" for resumption
+            const binder_key = key_derivation_mod.deriveBinderKey(self.hash_kind, &early_secret, using_external_psk);
 
             // Compute transcript hash over ClientHello truncated before binders
             // Calculate how many bytes to hash (everything except the binders list)
@@ -2478,7 +2542,14 @@ pub const Context = struct {
         // RFC 8446 §4.2.11: Validate pre_shared_key extension from server
         const early_secret = if (server_selected_psk_index) |psk_idx| blk: {
             // Server selected a PSK -- validate and use it
-            const psk = self.config.resumption_psk orelse {
+            // Check for external PSK first, then resumption PSK
+            const client_has_external_psk = self.config.external_psk != null and self.config.external_psk_identity != null;
+            const client_has_resumption_psk = self.config.resumption_psk != null;
+            const psk = if (client_has_resumption_psk)
+                self.config.resumption_psk.?
+            else if (client_has_external_psk)
+                self.config.external_psk.?
+            else {
                 // Server sent pre_shared_key but client didn't offer PSK
                 return HandshakeError.UnexpectedPskExtension;
             };

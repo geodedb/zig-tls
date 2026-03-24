@@ -153,8 +153,14 @@ pub const ClientHelloView = struct {
 
 /// Internal owned copy of pre-shared key info.
 const PreSharedKeyInfo = struct {
-    identities: []ClientHelloPskIdentityView,
-    binders: []const []const u8,
+    identities: []OwnedPskIdentity,
+    binders: [][]u8,
+};
+
+/// Internal owned version of PSK identity (mutable slices for proper freeing).
+const OwnedPskIdentity = struct {
+    identity: []u8,
+    obfuscated_ticket_age: u32,
 };
 
 /// Internal storage for parsed ClientHello data.
@@ -162,14 +168,14 @@ pub const ClientHelloInfo = struct {
     random: [32]u8,
     session_id: []u8,
     cipher_suites: []tls13_full.CipherSuite,
-    signature_algorithms: ?[]const tls13_full.SignatureScheme,
+    signature_algorithms: ?[]tls13_full.SignatureScheme,
     supported_versions: []u8,
     key_share: struct {
         group: tls13_full.NamedGroup,
         key: []u8,
     },
     quic_transport_parameters: ?[]u8,
-    alpn_list: ?[]const []const u8,
+    alpn_list: ?[][]u8,
     early_data: bool,
     pre_shared_key: ?PreSharedKeyInfo,
     psk_key_exchange_modes: ?[]u8, // RFC 8446 §4.2.9
@@ -204,11 +210,11 @@ pub const ClientHelloInfo = struct {
         const cipher_suites_copy = try allocator.dupe(tls13_full.CipherSuite, parsed.cipher_suites);
         errdefer if (cipher_suites_copy.len != 0) allocator.free(cipher_suites_copy);
 
-        var sigalgs_copy: ?[]const tls13_full.SignatureScheme = null;
+        var sigalgs_copy: ?[]tls13_full.SignatureScheme = null;
         if (parsed.signature_algorithms) |algs| {
             sigalgs_copy = try allocator.dupe(tls13_full.SignatureScheme, algs);
         }
-        errdefer if (sigalgs_copy) |buf| if (buf.len != 0) allocator.free(@constCast(buf));
+        errdefer if (sigalgs_copy) |buf| if (buf.len != 0) allocator.free(buf);
 
         const versions_copy = try allocator.dupe(u8, versions);
         errdefer if (versions_copy.len != 0) allocator.free(versions_copy);
@@ -225,9 +231,9 @@ pub const ClientHelloInfo = struct {
         }
         errdefer if (tp_copy) |buf| if (buf.len != 0) allocator.free(buf);
 
-        var alpn_copy: ?[]const []const u8 = null;
+        var alpn_copy: ?[][]u8 = null;
         if (parsed.alpn_list) |list| {
-            const dest = try allocator.alloc([]const u8, list.len);
+            const dest = try allocator.alloc([]u8, list.len);
             errdefer allocator.free(dest);
 
             var copied_count: usize = 0;
@@ -235,7 +241,7 @@ pub const ClientHelloInfo = struct {
                 while (copied_count != 0) {
                     copied_count -= 1;
                     const proto = dest[copied_count];
-                    if (proto.len != 0) allocator.free(@constCast(proto));
+                    if (proto.len != 0) allocator.free(proto);
                 }
             }
 
@@ -249,21 +255,21 @@ pub const ClientHelloInfo = struct {
         errdefer if (alpn_copy) |list| {
             if (list.len != 0) {
                 for (list) |proto| {
-                    if (proto.len != 0) allocator.free(@constCast(proto));
+                    if (proto.len != 0) allocator.free(proto);
                 }
-                allocator.free(@constCast(list));
+                allocator.free(list);
             }
         };
 
         var psk_copy: ?PreSharedKeyInfo = null;
         if (parsed.pre_shared_key) |psk_ext| {
-            const ids = try allocator.alloc(ClientHelloPskIdentityView, psk_ext.identities.len);
+            const ids = try allocator.alloc(OwnedPskIdentity, psk_ext.identities.len);
             var ids_filled: usize = 0;
             errdefer {
                 while (ids_filled != 0) {
                     ids_filled -= 1;
                     const ident = ids[ids_filled];
-                    if (ident.identity.len != 0) allocator.free(@constCast(ident.identity));
+                    if (ident.identity.len != 0) allocator.free(ident.identity);
                 }
                 allocator.free(ids);
             }
@@ -277,13 +283,13 @@ pub const ClientHelloInfo = struct {
                 };
             }
 
-            const binders = try allocator.alloc([]const u8, psk_ext.binders.len);
+            const binders = try allocator.alloc([]u8, psk_ext.binders.len);
             var binders_filled: usize = 0;
             errdefer {
                 while (binders_filled != 0) {
                     binders_filled -= 1;
                     const binder = binders[binders_filled];
-                    if (binder.len != 0) allocator.free(@constCast(binder));
+                    if (binder.len != 0) allocator.free(binder);
                 }
                 allocator.free(binders);
             }
@@ -327,25 +333,25 @@ pub const ClientHelloInfo = struct {
     pub fn deinit(self: *ClientHelloInfo, allocator: std.mem.Allocator) void {
         if (self.session_id.len != 0) allocator.free(self.session_id);
         if (self.cipher_suites.len != 0) allocator.free(self.cipher_suites);
-        if (self.signature_algorithms) |list| if (list.len != 0) allocator.free(@constCast(list));
+        if (self.signature_algorithms) |list| if (list.len != 0) allocator.free(list);
         if (self.supported_versions.len != 0) allocator.free(self.supported_versions);
         if (self.key_share.key.len != 0) allocator.free(self.key_share.key);
         if (self.quic_transport_parameters) |buf| if (buf.len != 0) allocator.free(buf);
         if (self.alpn_list) |list| {
             for (list) |proto| {
-                if (proto.len != 0) allocator.free(@constCast(proto));
+                if (proto.len != 0) allocator.free(proto);
             }
-            if (list.len != 0) allocator.free(@constCast(list));
+            if (list.len != 0) allocator.free(list);
         }
         if (self.pre_shared_key) |*psk| {
             for (psk.identities) |ident| {
-                if (ident.identity.len != 0) allocator.free(@constCast(ident.identity));
+                if (ident.identity.len != 0) allocator.free(ident.identity);
             }
             if (psk.identities.len != 0) allocator.free(psk.identities);
             for (psk.binders) |binder| {
-                if (binder.len != 0) allocator.free(@constCast(binder));
+                if (binder.len != 0) allocator.free(binder);
             }
-            if (psk.binders.len != 0) allocator.free(@constCast(psk.binders));
+            if (psk.binders.len != 0) allocator.free(psk.binders);
         }
         if (self.psk_key_exchange_modes) |buf| if (buf.len != 0) allocator.free(buf);
         if (self.raw.len != 0) allocator.free(self.raw);
@@ -369,17 +375,17 @@ fn supportsTls13Version(encoded: []const u8) bool {
 fn freeParsedClientHello(allocator: std.mem.Allocator, parsed: *tls13_full.ClientHello) void {
     if (parsed.cipher_suites.len != 0) allocator.free(parsed.cipher_suites);
     if (parsed.supported_groups) |groups| {
-        if (groups.len != 0) allocator.free(@constCast(groups));
+        if (groups.len != 0) allocator.free(groups);
     }
     if (parsed.signature_algorithms) |algs| {
-        if (algs.len != 0) allocator.free(@constCast(algs));
+        if (algs.len != 0) allocator.free(algs);
     }
     if (parsed.pre_shared_key) |psk| {
         if (psk.identities.len != 0) allocator.free(psk.identities);
-        if (psk.binders.len != 0) allocator.free(@constCast(psk.binders));
+        if (psk.binders.len != 0) allocator.free(psk.binders);
     }
     if (parsed.alpn_list) |list| {
-        if (list.len != 0) allocator.free(@constCast(list));
+        if (list.len != 0) allocator.free(list);
     }
 }
 
@@ -418,11 +424,17 @@ pub const HandshakeState = struct {
                 .supported_versions = info.supported_versions,
                 .key_share = .{ .group = info.key_share.group, .key = info.key_share.key },
                 .quic_transport_parameters = info.quic_transport_parameters,
-                .alpn_list = info.alpn_list,
+                // [][]u8 -> []const []const u8: safe cast, same memory layout
+                .alpn_list = if (info.alpn_list) |list|
+                    @as([]const []const u8, @ptrCast(list))
+                else
+                    null,
                 .early_data = info.early_data,
                 .pre_shared_key = if (info.pre_shared_key) |psk| ClientHelloPreSharedKeyView{
-                    .identities = psk.identities,
-                    .binders = psk.binders,
+                    // []OwnedPskIdentity -> []const ClientHelloPskIdentityView: same layout
+                    .identities = @as([]const ClientHelloPskIdentityView, @ptrCast(psk.identities)),
+                    // [][]u8 -> []const []const u8: safe cast, same memory layout
+                    .binders = @as([]const []const u8, @ptrCast(psk.binders)),
                 } else null,
                 .psk_key_exchange_modes = info.psk_key_exchange_modes,
                 .raw = info.raw,

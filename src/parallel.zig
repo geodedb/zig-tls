@@ -50,6 +50,9 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
+const x509 = @import("x509");
+const sigmod = @import("sig");
+const ks = @import("quic_tls");
 
 const spice = if (build_options.enable_spice) @import("spice") else struct {
     pub const ThreadPool = void;
@@ -195,18 +198,40 @@ fn parallelCertValidateTask(t: *spice.Task, ctx: CertValidateContext) void {
 }
 
 fn validateCertificateChain(allocator: std.mem.Allocator, input: CertValidateInput) CertValidateResult {
-    _ = allocator;
-
     if (input.chain_der.len == 0) {
         return .{ .valid = false, .error_msg = "empty certificate chain" };
     }
 
-    // TODO(security): Implement real certificate chain validation using x509.zig.
-    // This stub currently accepts any non-empty chain without cryptographic verification.
-    // Do NOT use parallelCertificateValidate in production until this is implemented.
-    if (@import("builtin").mode != .Debug) {
-        @compileError("SECURITY: validateCertificateChain is a stub — must not be used in release builds");
-    }
+    // Delegate to x509.validateChain which performs full RFC 5280 chain validation:
+    // - Certificate parsing and structural validation
+    // - Time-based validity checking
+    // - Basic constraints and path length enforcement
+    // - Server name (SNI) matching via SubjectAltName/CN
+    // - Signature verification across the chain
+    // - Key usage and extended key usage checks
+    x509.validateChain(
+        allocator,
+        input.chain_der,
+        input.now_unix,
+        input.server_name orelse "",
+        input.allow_insecure,
+    ) catch |err| {
+        return .{
+            .valid = false,
+            .error_msg = switch (err) {
+                error.EmptyChain => "empty certificate chain",
+                error.PathLenExceeded => "certificate chain too deep",
+                error.Expired => "certificate expired",
+                error.NotYetValid => "certificate not yet valid",
+                error.NameMismatch => "server name mismatch",
+                error.InvalidSignature => "invalid certificate signature",
+                error.InvalidCert => "invalid certificate structure",
+                error.MissingServerAuth => "missing serverAuth EKU",
+                error.NotACa => "intermediate is not a CA",
+                else => "certificate validation failed",
+            },
+        };
+    };
 
     return .{ .valid = true, .error_msg = null };
 }
@@ -308,35 +333,119 @@ fn parallelSigVerifyTask(t: *spice.Task, ctx: SignatureVerifyContext) void {
 }
 
 fn verifySignature(input: SignatureVerifyInput) SignatureVerifyResult {
-    // Actual signature verification would use std.crypto here
-    // For now, basic validation of inputs
+    // Basic input validation
     if (input.public_key_der.len == 0 or input.signature.len == 0) {
         return .{ .valid = false, .error_code = 1 };
     }
 
+    // Use a stack-based allocator for SPKI parsing (ECDSA/RSA need allocation)
+    var stack_buf: [4096]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
+    const alloc = fba.allocator();
+
     switch (input.algorithm) {
-        .ecdsa_secp256r1_sha256 => {
-            if (input.signature.len < 64) return .{ .valid = false, .error_code = 2 };
-        },
-        .ecdsa_secp384r1_sha384 => {
-            if (input.signature.len < 96) return .{ .valid = false, .error_code = 2 };
-        },
-        .rsa_pss_rsae_sha256, .rsa_pss_rsae_sha384 => {
-            if (input.signature.len < 256) return .{ .valid = false, .error_code = 2 };
-        },
         .ed25519 => {
             if (input.signature.len != 64) return .{ .valid = false, .error_code = 2 };
+            // Parse Ed25519 public key from SPKI DER
+            const pubkey_bytes = sigmod.parseEd25519Spki(input.public_key_der) catch
+                return .{ .valid = false, .error_code = 3 };
+            const pubkey = std.crypto.sign.Ed25519.PublicKey.fromBytes(pubkey_bytes) catch
+                return .{ .valid = false, .error_code = 3 };
+            const signature = std.crypto.sign.Ed25519.Signature.fromBytes(input.signature[0..64].*);
+            signature.verify(input.signed_data, pubkey) catch
+                return .{ .valid = false, .error_code = 4 };
+            return .{ .valid = true, .error_code = null };
+        },
+        .ecdsa_secp256r1_sha256 => {
+            var spki = sigmod.parseEcdsaSpki(input.public_key_der, alloc) catch
+                return .{ .valid = false, .error_code = 3 };
+            defer spki.deinit();
+            if (!spki.curve_p256) return .{ .valid = false, .error_code = 3 };
+            const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, std.crypto.hash.sha2.Sha256);
+            const signature = Ecdsa.Signature.fromDer(input.signature) catch
+                return .{ .valid = false, .error_code = 2 };
+            const pubkey = Ecdsa.PublicKey.fromSec1(spki.sec1_uncompressed) catch
+                return .{ .valid = false, .error_code = 3 };
+            signature.verify(input.signed_data, pubkey) catch
+                return .{ .valid = false, .error_code = 4 };
+            return .{ .valid = true, .error_code = null };
+        },
+        .ecdsa_secp384r1_sha384 => {
+            var spki = sigmod.parseEcdsaSpki(input.public_key_der, alloc) catch
+                return .{ .valid = false, .error_code = 3 };
+            defer spki.deinit();
+            if (spki.curve_p256) return .{ .valid = false, .error_code = 3 }; // expect P-384
+            const Ecdsa384 = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, std.crypto.hash.sha2.Sha384);
+            const signature = Ecdsa384.Signature.fromDer(input.signature) catch
+                return .{ .valid = false, .error_code = 2 };
+            const pubkey = Ecdsa384.PublicKey.fromSec1(spki.sec1_uncompressed) catch
+                return .{ .valid = false, .error_code = 3 };
+            signature.verify(input.signed_data, pubkey) catch
+                return .{ .valid = false, .error_code = 4 };
+            return .{ .valid = true, .error_code = null };
+        },
+        .rsa_pss_rsae_sha256 => {
+            const rsa = std.crypto.Certificate.rsa;
+            var spki = sigmod.parseRsaSpki(input.public_key_der, alloc) catch
+                return .{ .valid = false, .error_code = 3 };
+            defer spki.deinit();
+            // Strip leading zero from modulus (ASN.1 sign padding)
+            const modulus_raw = spki.modulus;
+            const modulus_offset = for (modulus_raw, 0..) |byte, i| {
+                if (byte != 0) break i;
+            } else modulus_raw.len;
+            const modulus = modulus_raw[modulus_offset..];
+            var exp_buf: [8]u8 = undefined;
+            std.mem.writeInt(u64, &exp_buf, spki.exponent, .big);
+            const exp_offset = for (exp_buf, 0..) |byte, i| {
+                if (byte != 0) break i;
+            } else exp_buf.len - 1;
+            const exponent = exp_buf[exp_offset..];
+            if (exponent.len > modulus.len or input.signature.len != modulus.len) {
+                return .{ .valid = false, .error_code = 2 };
+            }
+            switch (modulus.len) {
+                inline 128, 256, 384, 512 => |modulus_len| {
+                    const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch
+                        return .{ .valid = false, .error_code = 3 };
+                    rsa.PSSSignature.verify(modulus_len, input.signature[0..modulus_len].*, input.signed_data, public_key, std.crypto.hash.sha2.Sha256) catch
+                        return .{ .valid = false, .error_code = 4 };
+                    return .{ .valid = true, .error_code = null };
+                },
+                else => return .{ .valid = false, .error_code = 2 },
+            }
+        },
+        .rsa_pss_rsae_sha384 => {
+            const rsa = std.crypto.Certificate.rsa;
+            var spki = sigmod.parseRsaSpki(input.public_key_der, alloc) catch
+                return .{ .valid = false, .error_code = 3 };
+            defer spki.deinit();
+            const modulus_raw = spki.modulus;
+            const modulus_offset = for (modulus_raw, 0..) |byte, i| {
+                if (byte != 0) break i;
+            } else modulus_raw.len;
+            const modulus = modulus_raw[modulus_offset..];
+            var exp_buf: [8]u8 = undefined;
+            std.mem.writeInt(u64, &exp_buf, spki.exponent, .big);
+            const exp_offset = for (exp_buf, 0..) |byte, i| {
+                if (byte != 0) break i;
+            } else exp_buf.len - 1;
+            const exponent = exp_buf[exp_offset..];
+            if (exponent.len > modulus.len or input.signature.len != modulus.len) {
+                return .{ .valid = false, .error_code = 2 };
+            }
+            switch (modulus.len) {
+                inline 128, 256, 384, 512 => |modulus_len| {
+                    const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch
+                        return .{ .valid = false, .error_code = 3 };
+                    rsa.PSSSignature.verify(modulus_len, input.signature[0..modulus_len].*, input.signed_data, public_key, std.crypto.hash.sha2.Sha384) catch
+                        return .{ .valid = false, .error_code = 4 };
+                    return .{ .valid = true, .error_code = null };
+                },
+                else => return .{ .valid = false, .error_code = 2 },
+            }
         },
     }
-
-    // TODO(security): Implement real signature verification using sig.zig.
-    // This stub currently accepts any well-formed input without cryptographic verification.
-    // Do NOT use parallelSignatureVerify in production until this is implemented.
-    if (@import("builtin").mode != .Debug) {
-        @compileError("SECURITY: verifySignature is a stub — must not be used in release builds");
-    }
-
-    return .{ .valid = true, .error_code = null };
 }
 
 // ============================================================================
@@ -586,26 +695,38 @@ fn parallelKeyDeriveTask(t: *spice.Task, ctx: KeyDeriveContext) void {
 }
 
 fn deriveKeyMaterial(secret: [32]u8, level: EncryptionLevel) KeyMaterial {
-    // TODO(security): Implement real HKDF-Expand-Label using key_schedule.zig.
-    // This stub currently copies the secret verbatim instead of proper key derivation.
-    // Do NOT use parallelKeyDerive in production until this is implemented.
-    if (@import("builtin").mode != .Debug) {
-        @compileError("SECURITY: deriveKeyMaterial is a stub — must not be used in release builds");
-    }
+    // Derive key, IV, and header protection key from the traffic secret
+    // using HKDF-Expand-Label per RFC 8446 Section 7.3 and RFC 9001 Section 5.1.
+    //
+    // key = HKDF-Expand-Label(secret, "quic key", "", key_length)
+    // iv  = HKDF-Expand-Label(secret, "quic iv", "", 12)
+    // hp  = HKDF-Expand-Label(secret, "quic hp", "", key_length)
+    const key_len: usize = switch (level) {
+        .initial => 16, // AES-128-GCM
+        .handshake, .application => 32, // AES-256-GCM
+    };
+
+    var wrapped_secret = ks.Secret.fromSlice(.sha256, &secret);
 
     var result = KeyMaterial{
         .key = undefined,
         .iv = undefined,
         .hp_key = undefined,
-        .key_len = switch (level) {
-            .initial => 16, // AES-128
-            .handshake, .application => 32, // AES-256
-        },
+        .key_len = key_len,
     };
 
-    @memcpy(&result.key, &secret);
-    @memset(&result.iv, 0);
-    @memcpy(&result.hp_key, &secret);
+    // SAFETY: QUIC labels ("quic key", "quic iv", "quic hp") are short strings
+    // (max 14 bytes with "tls13 " prefix) with empty context. The HkdfLabel
+    // encoding fits within the 256-byte fixed buffer. Allocation cannot fail.
+    ks.expandLabelHash(.sha256, &wrapped_secret, "quic key", &[_]u8{}, result.key[0..key_len]) catch unreachable;
+    ks.expandLabelHash(.sha256, &wrapped_secret, "quic iv", &[_]u8{}, &result.iv) catch unreachable;
+    ks.expandLabelHash(.sha256, &wrapped_secret, "quic hp", &[_]u8{}, result.hp_key[0..key_len]) catch unreachable;
+
+    // Zero-fill unused bytes in key and hp_key buffers beyond key_len
+    if (key_len < 32) {
+        @memset(result.key[key_len..], 0);
+        @memset(result.hp_key[key_len..], 0);
+    }
 
     return result;
 }
@@ -614,12 +735,36 @@ fn deriveKeyMaterial(secret: [32]u8, level: EncryptionLevel) KeyMaterial {
 // Tests
 // ============================================================================
 
-test "parallel certificate validate" {
+test "parallel certificate validate - insecure bypass" {
     if (!build_options.enable_spice) return error.SkipZigTest;
 
     var inputs: [4]CertValidateInput = undefined;
     var results: [4]CertValidateResult = undefined;
 
+    // With allow_insecure=true, any non-empty chain passes (x509.validateChain returns immediately)
+    for (&inputs) |*input| {
+        input.* = .{
+            .chain_der = &[_][]const u8{"cert"},
+            .server_name = "example.com",
+            .now_unix = 0,
+            .allow_insecure = true,
+        };
+    }
+
+    parallelCertificateValidate(std.testing.allocator, &inputs, &results);
+
+    for (results) |result| {
+        try std.testing.expect(result.valid);
+    }
+}
+
+test "parallel certificate validate - invalid DER rejected" {
+    if (!build_options.enable_spice) return error.SkipZigTest;
+
+    var inputs: [4]CertValidateInput = undefined;
+    var results: [4]CertValidateResult = undefined;
+
+    // With allow_insecure=false, invalid DER data should be rejected by real validation
     for (&inputs) |*input| {
         input.* = .{
             .chain_der = &[_][]const u8{"cert"},
@@ -632,16 +777,18 @@ test "parallel certificate validate" {
     parallelCertificateValidate(std.testing.allocator, &inputs, &results);
 
     for (results) |result| {
-        try std.testing.expect(result.valid);
+        try std.testing.expect(!result.valid);
+        try std.testing.expect(result.error_msg != null);
     }
 }
 
-test "parallel signature verify" {
+test "parallel signature verify - invalid SPKI rejected" {
     if (!build_options.enable_spice) return error.SkipZigTest;
 
     var inputs: [4]SignatureVerifyInput = undefined;
     var results: [4]SignatureVerifyResult = undefined;
 
+    // Invalid SPKI DER (not valid ASN.1) should be rejected by real verification
     for (&inputs) |*input| {
         input.* = .{
             .algorithm = .ed25519,
@@ -653,8 +800,10 @@ test "parallel signature verify" {
 
     parallelSignatureVerify(&inputs, &results);
 
+    // With real crypto, invalid SPKI DER causes key parse failure (error_code 3)
     for (results) |result| {
-        try std.testing.expect(result.valid);
+        try std.testing.expect(!result.valid);
+        try std.testing.expect(result.error_code != null);
     }
 }
 
@@ -681,7 +830,22 @@ test "parallel certificate validate - empty chain" {
     }
 }
 
-test "parallel certificate validate - single item" {
+test "parallel certificate validate - single item insecure" {
+    var inputs: [1]CertValidateInput = undefined;
+    var results: [1]CertValidateResult = undefined;
+
+    inputs[0] = .{
+        .chain_der = &[_][]const u8{"cert"},
+        .server_name = "example.com",
+        .now_unix = 0,
+        .allow_insecure = true,
+    };
+
+    parallelCertificateValidate(std.testing.allocator, &inputs, &results);
+    try std.testing.expect(results[0].valid);
+}
+
+test "parallel certificate validate - single item invalid DER" {
     var inputs: [1]CertValidateInput = undefined;
     var results: [1]CertValidateResult = undefined;
 
@@ -693,7 +857,7 @@ test "parallel certificate validate - single item" {
     };
 
     parallelCertificateValidate(std.testing.allocator, &inputs, &results);
-    try std.testing.expect(results[0].valid);
+    try std.testing.expect(!results[0].valid);
 }
 
 test "parallel signature verify - invalid inputs" {
@@ -718,15 +882,15 @@ test "parallel signature verify - invalid inputs" {
         .signature = &[_]u8{},
     };
 
-    // Short ECDSA signature
+    // Short ECDSA signature (invalid SPKI DER)
     inputs[2] = .{
         .algorithm = .ecdsa_secp256r1_sha256,
         .public_key_der = &[_]u8{0} ** 32,
         .signed_data = "test",
-        .signature = &[_]u8{0} ** 32, // Too short
+        .signature = &[_]u8{0} ** 32,
     };
 
-    // Valid ed25519
+    // Invalid ed25519 SPKI DER (raw bytes, not valid ASN.1 SPKI)
     inputs[3] = .{
         .algorithm = .ed25519,
         .public_key_der = &[_]u8{0} ** 32,
@@ -736,10 +900,10 @@ test "parallel signature verify - invalid inputs" {
 
     parallelSignatureVerify(&inputs, &results);
 
-    try std.testing.expect(!results[0].valid);
-    try std.testing.expect(!results[1].valid);
-    try std.testing.expect(!results[2].valid);
-    try std.testing.expect(results[3].valid);
+    try std.testing.expect(!results[0].valid); // empty key
+    try std.testing.expect(!results[1].valid); // empty sig
+    try std.testing.expect(!results[2].valid); // invalid SPKI
+    try std.testing.expect(!results[3].valid); // invalid SPKI (not valid ASN.1 DER)
 }
 
 test "parallel aead seal - basic" {
@@ -832,4 +996,20 @@ test "parallel key derive" {
     try std.testing.expectEqual(@as(usize, 16), results[0].key_len);
     try std.testing.expectEqual(@as(usize, 32), results[1].key_len);
     try std.testing.expectEqual(@as(usize, 32), results[2].key_len);
+    try std.testing.expectEqual(@as(usize, 16), results[3].key_len);
+
+    // Verify real HKDF derivation: key MUST differ from raw secret (not just copied)
+    try std.testing.expect(!std.mem.eql(u8, results[0].key[0..16], secrets[0][0..16]));
+    try std.testing.expect(!std.mem.eql(u8, results[1].key[0..32], &secrets[1]));
+
+    // Verify IV is not all zeros (HKDF-Expand produces non-trivial output)
+    const zero_iv = [_]u8{0} ** 12;
+    try std.testing.expect(!std.mem.eql(u8, &results[0].iv, &zero_iv));
+
+    // Verify same secret + same level produces same key (deterministic)
+    try std.testing.expectEqualSlices(u8, &results[0].key, &results[3].key);
+    try std.testing.expectEqualSlices(u8, &results[0].iv, &results[3].iv);
+
+    // Verify different secrets produce different keys
+    try std.testing.expect(!std.mem.eql(u8, results[0].key[0..16], results[1].key[0..16]));
 }

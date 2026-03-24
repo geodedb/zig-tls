@@ -1,9 +1,9 @@
 # Gap Closure Completion Report
 
 > **Date:** 2026-03-24
-> **Scope:** TLS 1.3/QUIC Implementation in Zig -- Phases 1-4 gap closure
+> **Scope:** TLS 1.3/QUIC Implementation in Zig -- Phases 1-5 gap closure
 > **Repository:** gitlab.com/devnw/zig/tls
-> **Commits:** 0929ceb..f42ac0a (comprehensive remediation), 4d493a2, cf6586c (additional closures)
+> **Commits:** 0929ceb..f42ac0a (comprehensive remediation), 4d493a2, cf6586c (additional closures), HEAD (Phase 5: PSK, parallel crypto, supported_groups, @constCast cleanup)
 
 ---
 
@@ -11,12 +11,12 @@
 
 | File | Closed | Blocked | Won't Do | By Design | Deferred | Remaining Open | Total |
 |------|--------|---------|----------|-----------|----------|----------------|-------|
-| GAP_ANALYSIS.md | 73 | 0 | 0 | 0 | 0 | 8 | 81 |
+| GAP_ANALYSIS.md | 77 | 0 | 2 | 0 | 0 | 2 | 81 |
 | SECURITY_GAP_ANALYSIS.md | 20 | 0 | 0 | 0 | 0 | 7 | 27 |
-| QUALITY_GAP_ANALYSIS.md | 16 | 0 | 0 | 2 | 3 | 4 | 25 |
+| QUALITY_GAP_ANALYSIS.md | 18 | 0 | 0 | 2 | 3 | 2 | 25 |
 | PERF_GAP_ANALYSIS.md | 15 | 0 | 1 | 0 | 0 | 11 | 27 |
 
-**Overall (deduplicated across files):** 44 items closed in Phases 1-4, 3 deferred, 2 by-design, 1 won't-do out of 50 items addressed. Remaining open items are strategic/feature-level work or informational/by-design findings.
+**Overall (deduplicated across files):** 49 items closed in Phases 1-5, 3 deferred, 2 by-design, 3 won't-do out of 57 items addressed. Remaining open items are strategic/feature-level work or informational/by-design findings.
 
 ---
 
@@ -63,6 +63,11 @@
 | PERF-011 | PERF | Benchmark suite zig build bench | `build.zig`, `tests/bench.zig` |
 | PERF-024 | PERF | Allocation tracking TODO | Test infrastructure comment |
 | PERF-020 | PERF | Transcript copies accepted | Acceptable at current size |
+| GAP-0070 | GAP | External PSK support | `src/tls13/config.zig` (external_psk fields), `src/tls13/context.zig` (deriveBinderKey conditioned on external vs resumption), Tests 13-14 in `tests/conformance/boringssl/psk_handshake.zig` |
+| GAP-0071 | GAP | Functional NewSessionTicket | `src/tls13/engine.zig` -- derives PSK from resumption_master_secret via HKDF-Expand-Label("resumption", nonce); client extracts nonce |
+| GAP-0073 | GAP | parallel.zig real crypto | `src/parallel.zig` -- validateCertificateChain calls x509.validateChain, verifySignature does Ed25519/ECDSA/RSA-PSS, deriveKeyMaterial uses HKDF-Expand-Label |
+| GAP-0080 | GAP | Honor config.supported_groups | `src/tls13/context.zig` -- dynamic encoding from config, init-time validation |
+| QUAL-080 | QUALITY | @constCast cleanup (18 sites) | `src/tls13/context.zig`, `src/tls13/handshake_state.zig`, `src/quic_transport_params.zig` -- field types changed to mutable, zero @constCast remain |
 
 ---
 
@@ -72,7 +77,8 @@
 |--------|------|-------|--------|
 | PERF-021 | PERF | Negotiation loops O(n*m) | Acceptable at current sizes (TLS 1.3 defines only 5 cipher suites; lists are 3-5 items; ~10-50ns total) |
 | QUAL-093 | QUALITY | CI build caching | Infrastructure change outside scope of security audit |
-| GAP-0075 | GAP | AES-CCM cipher suites | Blocked by Zig stdlib (no AES-CCM implementation available) |
+| GAP-0072 | GAP | Post-handshake authentication | Forbidden by RFC 9001 Section 4.4 for QUIC; extension type retained for protocol completeness |
+| GAP-0075 | GAP | AES-CCM cipher suites | Blocked by Zig stdlib (no std.crypto.aead.aes_ccm); AES-GCM/ChaCha20-Poly1305 cover all practical cases |
 | GAP-0076/SEC-007 | GAP/SECURITY | CRL checking | Architecture limitation; OCSP stapling available as alternative; documented |
 | GAP-0077 | GAP | Minimal CH/SH encoders | Engine deprecation path; will be removed when Engine is fully deprecated |
 
@@ -92,8 +98,8 @@
 | Gap-ID | File | Title | Blocker | Unblock Steps |
 |--------|------|-------|---------|---------------|
 | QUAL-091 | QUALITY | Legacy key schedule in engine.zig | Engine-to-Context migration not yet started | Complete Engine deprecation; migrate all callers to Context API |
-| QUAL-073 | QUALITY | ServerHello parse dedup | Different return types (?[32]u8 vs !void) | Unify error handling model between Engine and Context |
-| QUAL-080 | QUALITY | @constCast cleanup (32 sites) | Cascading type changes across 3 files | Change field types from []const u8 to []u8 internally; update all assignment sites |
+| QUAL-073 | QUALITY | ServerHello parse dedup | Different return types (?[32]u8 vs !void) | Unify error handling model between Engine and Context; best done during Engine deprecation |
+| QUAL-069 | QUALITY | context.zig file split (3581 lines) | High regression risk; tightly coupled state machine | Defer to Engine deprecation when module count decreases; Zig idiom tolerates large cohesive files |
 
 ---
 
@@ -123,8 +129,8 @@
 ## Remaining Blockers
 
 - **QUAL-091 (Legacy key schedule):** Requires Engine-to-Context migration. This is a strategic refactoring effort outside the scope of security audit remediation. No security impact.
-- **QUAL-073 (ServerHello parse dedup):** Blocked by different return type semantics between Engine and Context. No security impact.
-- **QUAL-080 (@constCast cleanup):** Requires cascading type changes. No security impact; cosmetic code quality issue.
+- **QUAL-073 (ServerHello parse dedup):** Blocked by different return type semantics between Engine and Context. Best done during Engine deprecation. No security impact.
+- **QUAL-069 (context.zig file split):** High regression risk for tightly coupled TLS 1.3 state machine. Zig idiom tolerates large cohesive files. Defer to Engine deprecation. No security impact.
 
 ---
 
@@ -169,21 +175,41 @@
 | PERF-011 | #64 | closed |
 | PERF-013 | #83 | commented (open -- perf optimization) |
 | PERF-015 | #89 | commented (open -- perf optimization) |
+| GAP-0073 | #55 | closed |
+| GAP-0080 | #78 | closed |
+| QUAL-080 | #75 | closed |
+| GAP-0072 | #54 | closed (won't do -- RFC 9001 S4.4) |
+| GAP-0075 | #8 | closed (won't do -- Zig stdlib) |
+| QUAL-069 | #65 | commented (deferred) |
+| QUAL-073 | #69 | commented (deferred) |
 
-**Total: 35 issues closed, 2 issues commented (remain open)**
+**Total: 40 issues closed, 4 issues commented (remain open)**
 
 ---
 
 ## Summary
 
-Across 4 implementation phases and 103 files changed (5,043 insertions, 5,748 deletions):
+Across 5 implementation phases:
 
-- **44 gap items closed** with code changes and verification
+- **49 gap items closed** with code changes and verification
 - **3 items deferred** with documented blockers and unblock steps
 - **2 items accepted as by-design** with documented rationale
-- **1 item marked Won't Do** with justification
-- **35 GitLab issues closed** with evidence comments
-- **502/504 tests passing** (2 skipped)
+- **3 items marked Won't Do** with justification (GAP-0072 RFC 9001 forbidden, GAP-0075 Zig stdlib blocked, PERF-021 acceptable)
+- **40 GitLab issues closed** with evidence comments
 - **0 High-severity security items remaining open**
+
+### Phase 5 Closures (2026-03-24)
+
+5 items closed, 2 marked Won't Do, 2 confirmed Deferred:
+
+1. **GAP-0070** -- External PSK support: config fields, deriveBinderKey conditioning, 2 new tests
+2. **GAP-0071** -- Functional NewSessionTicket: HKDF-Expand-Label("resumption", nonce) derivation per RFC 8446 S4.6.1
+3. **GAP-0073** -- parallel.zig real crypto: x509.validateChain, Ed25519/ECDSA/RSA-PSS verification, HKDF-Expand-Label key derivation
+4. **GAP-0080** -- Honor config.supported_groups: dynamic encoding, init-time validation
+5. **QUAL-080** -- @constCast cleanup: 18 instances eliminated, field types changed to mutable, zero remain
+6. **GAP-0072** -- Won't Do: Post-handshake auth forbidden by RFC 9001 S4.4 for QUIC
+7. **GAP-0075** -- Won't Do: AES-CCM blocked by Zig stdlib (no std.crypto.aead.aes_ccm)
+8. **QUAL-069** -- Deferred: context.zig file split (high regression risk, not idiomatic in Zig)
+9. **QUAL-073** -- Deferred: ServerHello parse dedup (different return types, best done during Engine deprecation)
 
 All gap tracking files (`GAP_ANALYSIS.md`, `SECURITY_GAP_ANALYSIS.md`, `QUALITY_GAP_ANALYSIS.md`, `PERF_GAP_ANALYSIS.md`) have been updated to reflect the final state. Platform issues match tracking file state.

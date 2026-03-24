@@ -351,19 +351,75 @@ pub const Engine = struct {
         }
     }
 
-    /// Queue a minimal NewSessionTicket (placeholder). Not yet used for PSK resumption.
+    /// Queue a NewSessionTicket derived from the resumption_master_secret (RFC 8446 Section 4.6.1).
+    ///
+    /// This generates a proper ticket by:
+    /// 1. Computing resumption_master_secret from master_secret + transcript hash
+    /// 2. Generating a random ticket nonce
+    /// 3. Deriving PSK = HKDF-Expand-Label(resumption_master_secret, "resumption", ticket_nonce, Hash.length)
+    /// 4. Generating a random ticket identifier (opaque token)
+    /// 5. Storing PSK in the TicketStore keyed by the ticket identifier
+    /// 6. Sending the ticket with nonce to the client
+    ///
+    /// Falls back to queueNewSessionTicketWithParams with a caller-provided ticket
+    /// if master_secret is not yet available.
     pub fn queueNewSessionTicket(self: *Engine) !void {
-        try self.queueNewSessionTicketWithParams(3600, "test_ticket");
+        const master = self.master_secret orelse {
+            traceHandshake("TLS: Cannot derive session ticket: master_secret not available\n", .{});
+            return;
+        };
+
+        // 1. Derive resumption_master_secret
+        var transcript_snapshot = self.transcript;
+        const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
+        var master_local = master;
+        const res_master = ks.deriveSecretHash(self.hash_kind, &master_local, "res master", transcript_hash.slice());
+
+        // 2. Generate random ticket nonce (8 bytes per common practice)
+        var ticket_nonce: [8]u8 = undefined;
+        std.crypto.random.bytes(&ticket_nonce);
+
+        // 3. Derive PSK from resumption_master_secret using nonce
+        // RFC 8446 Section 4.6.1:
+        //   PSK = HKDF-Expand-Label(resumption_master_secret, "resumption", ticket_nonce, Hash.length)
+        const digest_len = ks.digestLength(self.hash_kind);
+        var psk = ks.Secret.empty();
+        psk.len = @intCast(digest_len);
+        ks.expandLabelHash(self.hash_kind, &res_master, "resumption", &ticket_nonce, psk.sliceMut()) catch {
+            traceHandshake("TLS: Failed to derive resumption PSK\n", .{});
+            return;
+        };
+
+        // 4. Generate random ticket identifier (32 bytes)
+        var ticket_id: [32]u8 = undefined;
+        std.crypto.random.bytes(&ticket_id);
+
+        const lifetime: u32 = 3600; // 1 hour
+
+        // 5. Store PSK in ticket store keyed by ticket_id
+        self.tickets.store(&ticket_id, psk, lifetime) catch |err| {
+            traceHandshake("TLS: Failed to store derived session ticket: {}\n", .{err});
+            return;
+        };
+
+        // 6. Build and send NewSessionTicket message
+        try self.queueNewSessionTicketWithNonce(lifetime, &ticket_id, &ticket_nonce);
+        traceHandshake("TLS: Queued NewSessionTicket with derived PSK (nonce_len=8, ticket_len=32)\n", .{});
     }
 
-    /// Queue a NewSessionTicket with specific parameters.
+    /// Queue a NewSessionTicket with specific parameters (for direct use or fallback).
     pub fn queueNewSessionTicketWithParams(self: *Engine, lifetime: u32, ticket: []const u8) !void {
+        try self.queueNewSessionTicketWithNonce(lifetime, ticket, &[_]u8{});
+    }
+
+    /// Internal: Build and queue a NewSessionTicket message with optional nonce.
+    fn queueNewSessionTicketWithNonce(self: *Engine, lifetime: u32, ticket: []const u8, nonce: []const u8) !void {
         var body = std.ArrayList(u8){};
         defer body.deinit(self.allocator);
         // struct {
         //   uint32 ticket_lifetime;
         //   uint32 ticket_age_add;
-        //   opaque ticket_nonce<0..255>; (len=0)
+        //   opaque ticket_nonce<0..255>;
         //   opaque ticket<1..2^16-1>;
         //   Extension extensions<0..2^16-2> (len=0)
         // }
@@ -373,7 +429,11 @@ pub const Engine = struct {
         try body.appendSlice(self.allocator, &be4);
         std.mem.writeInt(u32, &be4, std.crypto.random.int(u32), .big); // RFC 8446 §4.6.1: random ticket_age_add
         try body.appendSlice(self.allocator, &be4);
-        try body.append(self.allocator, 0); // nonce length 0
+        // ticket_nonce
+        try body.append(self.allocator, @intCast(nonce.len));
+        if (nonce.len > 0) {
+            try body.appendSlice(self.allocator, nonce);
+        }
         std.mem.writeInt(u16, &be2, @intCast(ticket.len), .big);
         try body.appendSlice(self.allocator, &be2);
         try body.appendSlice(self.allocator, ticket);
@@ -887,10 +947,11 @@ pub const Engine = struct {
                         const lifetime: u32 = (@as(u32, b[0]) << 24) | (@as(u32, b[1]) << 16) | (@as(u32, b[2]) << 8) | @as(u32, b[3]);
                         pos = 4 + 4; // skip age_add as well
                         if (pos >= b.len) continue;
-                        if (pos >= b.len) continue;
+                        // Parse ticket_nonce
                         const nonce_len: usize = b[pos];
                         pos += 1;
-                        if (pos + nonce_len > b.len) continue; // skip nonce
+                        if (pos + nonce_len > b.len) continue;
+                        const ticket_nonce = b[pos .. pos + nonce_len];
                         pos += nonce_len;
                         if (pos + 2 > b.len) continue;
                         const ticket_len: usize = (@as(usize, b[pos]) << 8) | b[pos + 1];
@@ -902,19 +963,30 @@ pub const Engine = struct {
                         const ext_len: usize = (@as(usize, b[pos]) << 8) | b[pos + 1];
                         pos += 2;
                         if (pos + ext_len > b.len) continue;
-                        // Compute resumption_secret if we have master_secret stored
+                        // Compute resumption PSK if we have master_secret stored
                         if (self.master_secret) |ms| {
-                            // RFC 8446 Section 4.6.1: resumption_master_secret = HKDF-Expand-Label(
-                            //     master_secret, "res master", transcript_hash)
+                            // RFC 8446 Section 4.6.1:
+                            //   resumption_master_secret = Derive-Secret(master_secret, "res master", transcript_hash)
+                            //   PSK = HKDF-Expand-Label(resumption_master_secret, "resumption", ticket_nonce, Hash.length)
                             var transcript_snapshot = self.transcript;
                             const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
                             var master_local = ms;
-                            const res_secret = ks.deriveSecretHash(self.hash_kind, &master_local, "res master", transcript_hash.slice());
+                            const res_master = ks.deriveSecretHash(self.hash_kind, &master_local, "res master", transcript_hash.slice());
+
+                            // Derive the actual PSK from the resumption_master_secret and ticket_nonce
+                            const digest_len = ks.digestLength(self.hash_kind);
+                            var psk = ks.Secret.empty();
+                            psk.len = @intCast(digest_len);
+                            ks.expandLabelHash(self.hash_kind, &res_master, "resumption", ticket_nonce, psk.sliceMut()) catch {
+                                traceHandshake("TLS: Failed to derive resumption PSK from ticket nonce\n", .{});
+                                continue;
+                            };
+
                             // CWE-391: Log ticket store errors instead of silently ignoring them.
-                            self.tickets.store(ticket_bytes, res_secret, lifetime) catch |err| {
+                            self.tickets.store(ticket_bytes, psk, lifetime) catch |err| {
                                 traceHandshake("TLS: Failed to store session ticket: {}\n", .{err});
                             };
-                            traceHandshake("TLS: Stored session ticket (len={}, lifetime={})\n", .{ ticket_bytes.len, lifetime });
+                            traceHandshake("TLS: Stored session ticket with derived PSK (len={}, lifetime={}, nonce_len={})\n", .{ ticket_bytes.len, lifetime, nonce_len });
                         } else {
                             traceHandshake("TLS: Received ticket before master_secret ready; ignoring\n", .{});
                         }

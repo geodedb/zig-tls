@@ -78,7 +78,7 @@ pub const ClientHello = struct {
     signature_algorithms: ?[]core_types.SignatureScheme = null, // RFC 8446 §4.2.3: Signature algorithms
     supported_versions: ?[]const u8 = null, // RFC 8446 §4.2.1: TLS version list (REQUIRED)
     key_share: ?KeyShareEntry = null, // RFC 8446 §4.2.8: ECDHE public key
-    alpn_list: ?[]const []const u8 = null, // RFC 7301: Application protocols
+    alpn_list: ?[][]const u8 = null, // RFC 7301: Application protocols
     quic_transport_parameters: ?[]const u8 = null, // RFC 9001 §8.2: QUIC parameters
     psk_key_exchange_modes: ?[]const u8 = null, // RFC 8446 §4.2.9: PSK modes (psk_ke, psk_dhe_ke)
     pre_shared_key: ?PreSharedKey = null, // RFC 8446 §4.2.11: PSK identities (MUST be last extension)
@@ -163,7 +163,7 @@ pub const PskIdentity = struct {
 /// - Binder covers all preceding extensions (prevents tampering)
 pub const PreSharedKey = struct {
     identities: []PskIdentity, // RFC 8446 §4.2.11: List of offered PSK identities
-    binders: []const []const u8, // RFC 8446 §4.2.11: HMAC binders for each identity
+    binders: [][]const u8, // RFC 8446 §4.2.11: HMAC binders for each identity
 };
 
 /// Parse a full TLS 1.3 ClientHello message (RFC 8446 §4.1.2).

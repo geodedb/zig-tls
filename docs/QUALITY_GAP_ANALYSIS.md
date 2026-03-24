@@ -11,18 +11,18 @@
 | Severity | Open | Closed | By Design | Deferred | Total |
 |----------|------|--------|-----------|----------|-------|
 | Critical | 0    | 2      | 0         | 0        | 2     |
-| High     | 2    | 4      | 0         | 1        | 7     |
-| Medium   | 2    | 4      | 2         | 2        | 10    |
+| High     | 0    | 5      | 0         | 2        | 7     |
+| Medium   | 2    | 5      | 2         | 1        | 10    |
 | Low      | 0    | 6      | 0         | 0        | 6     |
-| **Total**| **4** | **16** | **2**    | **3**    | **25**|
+| **Total**| **2** | **18** | **2**    | **3**    | **25**|
 
-### Top 5 Risks
+### Top 5 Risks (by original priority score)
 
-1. **QUAL-087** -- `engine.zig` has multiple `.?` optional unwraps on handshake state fields (leaf_spki, ecdhe_secret, handshake_client_secret) that can panic on null, causing server crashes or undefined behavior in release builds (CWE-476). [Issue #80](https://gitlab.com/devnw/zig/tls/-/work_items/80)
-2. **QUAL-088** -- `x25519KeypairAndShared` exists in both `messages.zig` and `engine.zig` with different security properties; the engine.zig version does not zeroize the private key on error (CWE-226). [Issue #82](https://gitlab.com/devnw/zig/tls/-/work_items/82)
-3. **QUAL-069** -- `context.zig` at 3581 lines is 4.5x the 800-line maintainability ceiling, making review, testing, and safe modification increasingly difficult.
-4. **QUAL-091** -- `engine.zig` contains 6+ inline key derivation sequences duplicating `key_derivation.zig`, with raw RFC 8446 label strings that risk typo-induced key schedule failures. [Issue #90](https://gitlab.com/devnw/zig/tls/-/work_items/90)
-5. **QUAL-070** -- Near-duplicate `ClientHelloInfo` struct with its own parse/deinit logic exists in two locations, doubling the maintenance and bug surface.
+1. **QUAL-087** (Closed) -- `engine.zig` null-safety gap in certificate verification. Fixed with safe `if` patterns. [Issue #80](https://gitlab.com/devnw/zig/tls/-/work_items/80)
+2. **QUAL-088** (Closed) -- `x25519KeypairAndShared` duplication with security divergence. Duplicate deleted; single implementation with `defer secureZero`. [Issue #82](https://gitlab.com/devnw/zig/tls/-/work_items/82)
+3. **QUAL-069** (Deferred) -- `context.zig` at 3581 lines is 4.5x the 800-line guideline. Deferred: high regression risk, Zig idiom tolerates large cohesive files. [Issue #65](https://gitlab.com/devnw/zig/tls/-/work_items/65)
+4. **QUAL-091** (Deferred) -- `engine.zig` uses 6+ inline key schedule patterns. Deferred to Engine deprecation. [Issue #90](https://gitlab.com/devnw/zig/tls/-/work_items/90)
+5. **QUAL-070** (Closed) -- Near-duplicate `ClientHelloInfo` consolidated into `handshake_state.zig`.
 
 ---
 
@@ -32,7 +32,7 @@
 |------|----|----------|---------------|----------|---------|-----------|-------|--------|
 | 1 | QUAL-087 | Critical | 80 | architecture | engine.zig null-safety gap in certificate verification | `src/tls13/engine.zig` | [#80](https://gitlab.com/devnw/zig/tls/-/work_items/80) | Closed |
 | 2 | QUAL-088 | Critical | 80 | perf | x25519KeypairAndShared duplicated with security divergence (CWE-226) | `engine.zig:1723`, `messages.zig:191` | [#82](https://gitlab.com/devnw/zig/tls/-/work_items/82) | Closed |
-| 3 | QUAL-069 | High | 60 | maintainability | context.zig 3581 lines (4.5x limit) | `src/tls13/context.zig` | -- | Open |
+| 3 | QUAL-069 | High | 60 | maintainability | context.zig 3581 lines (4.5x limit) | `src/tls13/context.zig` | [#65](https://gitlab.com/devnw/zig/tls/-/work_items/65) | Deferred |
 | 4 | QUAL-070 | High | 40 | maintainability | Near-duplicate ClientHelloInfo parse+deinit | `context.zig`, `handshake_state.zig` | -- | Closed |
 | 5 | QUAL-091 | High | 36 | maintainability | engine.zig uses legacy inline key schedule patterns (6+ copies) | `src/tls13/engine.zig` | [#90](https://gitlab.com/devnw/zig/tls/-/work_items/90) | Deferred |
 | 6 | QUAL-071 | High | 30 | architecture | 0-RTT early_secret uses wrong transcript hash | `src/tls13/context.zig:2191` | -- | Closed |
@@ -48,7 +48,7 @@
 | 16 | QUAL-078 | Medium | 12 | perf | Duplicated x25519KeypairAndShared with behavioral divergence | `messages.zig:191`, `engine.zig:1723` | -- | Closed |
 | 17 | QUAL-079 | Medium | 12 | docs | Corrupted Callbacks doc comment | `context.zig:234-249` | -- | Closed |
 | 18 | QUAL-093 | Medium | 12 | ci-cd | CI pipeline lacks build caching (Zig reinstalled each job) | `.gitlab-ci.yml` | [#94](https://gitlab.com/devnw/zig/tls/-/work_items/94) | Open |
-| 19 | QUAL-080 | Medium | 12 | cleanup | 32x @constCast for freeing const slices | `context.zig`, `handshake_state.zig`, `quic_transport_params.zig` | -- | Deferred |
+| 19 | QUAL-080 | Medium | 12 | cleanup | 32x @constCast for freeing const slices | `context.zig`, `handshake_state.zig`, `quic_transport_params.zig` | [#75](https://gitlab.com/devnw/zig/tls/-/work_items/75) | Closed |
 | 20 | QUAL-081 | Low | 8 | maintainability | cipherSuiteHash exact duplicate | `context.zig:128`, `engine.zig:108` | -- | Closed |
 | 21 | QUAL-082 | Low | 6 | cleanup | traceHandshake/traceSecrets exact duplicate infrastructure | `context.zig`, `engine.zig`, `messages.zig`, `transcript.zig`, `key_derivation.zig` | -- | Closed (By Design) |
 | 22 | QUAL-083 | Low | 6 | cleanup | encodeMinimal*/parseMinimal* exact duplicates | `messages.zig`, `engine.zig` | -- | Closed |
@@ -67,7 +67,12 @@
 - **PriorityScore:** 60 (Impact 3 x Likelihood 5 x 4)
 - **Category:** `maintainability`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Deferred (2026-03-24) -- High regression risk for a file-splitting refactor on a
+  heavily interconnected state machine. Zig's module system does not penalize large files the
+  way some languages do (no class-per-file convention). The file is well-structured internally
+  with clear section comments. Deferring until Engine deprecation reduces the module count and
+  makes splitting context.zig safer.
+- **Issue:** [#65](https://gitlab.com/devnw/zig/tls/-/work_items/65)
 
 **File locations:**
 - `src/tls13/context.zig` -- 3581 lines
@@ -96,6 +101,12 @@ Extract cohesive subsystems into separate modules:
 **Verification:** `wc -l src/tls13/*.zig | sort -rn | head -5` shows all files under 800 lines. `zig build test` passes.
 
 **Effort:** L (strategic refactor)
+
+**Deferred reason:** The context.zig file is a tightly coupled TLS 1.3 handshake state machine where
+functions share access to `self` fields extensively. Splitting it mechanically would require passing
+dozens of fields as parameters or creating intermediate structs, increasing complexity rather than
+reducing it. In Zig, large files are idiomatic when the contents are cohesive. This refactor is best
+done during Engine deprecation when the overall module count decreases.
 
 ---
 
@@ -543,31 +554,26 @@ Separate the doc comments properly. Give each field its own `///` block. Verify 
 - **PriorityScore:** 12 (Impact 2 x Likelihood 1.5 x 4)
 - **Category:** `cleanup`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Deferred (2026-03-24) -- Requires cascading type changes across context.zig, handshake_state.zig, and quic_transport_params.zig. Changing field types from `[]const u8` to `[]u8` would require updating all assignment sites and callers. Low security risk; deferred to future refactoring.
+- **Status:** Closed (2026-03-24) -- Eliminated all 18 `@constCast` instances by changing field
+  types from `[]const u8` to `[]u8` in `handshake_state.zig`, `context.zig`, and
+  `quic_transport_params.zig`. All assignment sites updated to store mutable slices from
+  `allocator.dupe()` and `allocator.alloc()`. Zero `@constCast` remain in `src/`.
+- **Issue:** [#75](https://gitlab.com/devnw/zig/tls/-/work_items/75)
 
 **File locations:**
-- `src/tls13/context.zig` -- 16 instances
-- `src/tls13/handshake_state.zig` -- 16 instances
-- `src/quic_transport_params.zig` -- 1 instance
+- `src/tls13/context.zig` -- 0 instances (was 16)
+- `src/tls13/handshake_state.zig` -- 0 instances (was 16)
+- `src/quic_transport_params.zig` -- 0 instances (was 1)
 
 **Description:**
-33 `@constCast` calls are used to free `[]const u8` slices that were allocated with `allocator.dupe()`. This is a code smell: if the allocator produced a mutable slice, it should be stored as `[]u8` rather than `[]const u8`. The `@constCast` bypasses the type system safety that prevents accidental mutation of data that should be immutable.
+33 `@constCast` calls were used to free `[]const u8` slices that were allocated with `allocator.dupe()`. This was a code smell: if the allocator produced a mutable slice, it should be stored as `[]u8` rather than `[]const u8`. The `@constCast` bypassed the type system safety that prevents accidental mutation of data that should be immutable.
 
-**Evidence:**
-```zig
-// context.zig:323
-if (groups.len != 0) allocator.free(@constCast(groups));
+**Resolution:**
+Changed field types from `[]const u8` to `[]u8` for allocator-owned data in `HandshakeState`,
+`ClientHelloInfo`, and `QuicTransportParams`. Updated all assignment sites and callers. Retained
+`[]const u8` for non-owned references and public API surfaces.
 
-// handshake_state.zig:208
-errdefer if (sigalgs_copy) |buf| if (buf.len != 0) allocator.free(@constCast(buf));
-```
-
-**Recommendation:**
-Store allocator-owned slices as `[]u8` internally. Expose them as `[]const u8` only through accessor functions or pub const fields. This eliminates the need for `@constCast` at deallocation time.
-
-**Acceptance criteria:** Zero `@constCast` calls remain in `context.zig` and `handshake_state.zig` for freeing purposes.
-
-**Verification:** `grep -rn "@constCast" src/tls13/context.zig src/tls13/handshake_state.zig` returns zero results. `zig build test` passes.
+**Verification:** `grep -rn "@constCast" src/` returns zero results. `zig build test` passes.
 
 **Effort:** M
 
@@ -1012,7 +1018,7 @@ Add `cache: { key: "zig-${ZIG_VERSION}", paths: ["zig-${ZIG_VERSION}/", ".zig-ca
 ### Maintainability (6)
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
-| QUAL-069 | High | context.zig 3581 lines (4.5x limit) | Open |
+| QUAL-069 | High | context.zig 3581 lines (4.5x limit) | Deferred |
 | QUAL-070 | High | Near-duplicate ClientHelloInfo struct+parse+deinit | Closed |
 | QUAL-091 | High | engine.zig uses legacy inline key schedule patterns | Deferred |
 | QUAL-073 | Medium | Near-duplicate parseRealServerHello / handleServerHello | Deferred |
@@ -1032,7 +1038,7 @@ Add `cache: { key: "zig-${ZIG_VERSION}", paths: ["zig-${ZIG_VERSION}/", ".zig-ca
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-092 | Medium | byteorder.zig duplicated across two module paths | Closed |
-| QUAL-080 | Medium | 17x @constCast for freeing const slices | Deferred |
+| QUAL-080 | Medium | 18x @constCast for freeing const slices | Closed |
 | QUAL-082 | Low | traceHandshake/traceSecrets exact duplicates (5 files) | Closed (By Design) |
 | QUAL-083 | Low | encodeMinimal*/parseMinimal* exact duplicates | Closed |
 | QUAL-086 | Low | deriveFinishedVerifyData dead code in messages/finished.zig | Closed |
@@ -1095,10 +1101,10 @@ Add `cache: { key: "zig-${ZIG_VERSION}", paths: ["zig-${ZIG_VERSION}/", ".zig-ca
 | QUAL-073 | Unify ServerHello extension parsing | M | Deferred |
 | QUAL-074 | Add new_session_ticket handling to Context | M | Closed |
 | QUAL-077 | Write Engine-to-Context migration guide | S | Open |
-| QUAL-080 | Refactor const slice storage to eliminate @constCast | M | Deferred |
+| QUAL-080 | Refactor const slice storage to eliminate @constCast | M | Closed |
 
 ### Strategic (more than 5 days)
 
 | ID | Finding | Effort | Status |
 |----|---------|--------|--------|
-| QUAL-069 | Split context.zig into sub-modules | L | Open |
+| QUAL-069 | Split context.zig into sub-modules | L | Deferred |

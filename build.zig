@@ -188,6 +188,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "x509", .module = x509_mod },
             .{ .name = "sig", .module = sig_mod },
             .{ .name = "record", .module = record_mod },
+            .{ .name = "quic_tls", .module = key_schedule_mod },
         },
     });
     if (spice_mod) |sm| {

@@ -77,6 +77,7 @@ const std = @import("std");
 const testing = std.testing;
 const tls13 = @import("tls13");
 const ks = @import("quic_tls"); // key_schedule module
+const Secret = ks.Secret;
 
 // Import PSK-related types
 const ClientHello = tls13.ClientHello;
@@ -622,4 +623,77 @@ test "PSK: handshake mode selection (PSK vs ECDHE)" {
     const client_offers_psk_3 = false;
     const selected_mode_ecdhe_only = !client_offers_psk_3;
     try testing.expect(selected_mode_ecdhe_only); // ECDHE-only mode selected
+}
+
+// ============================================================================
+// Test 13: External PSK binder key uses "ext binder" label (GAP-0070)
+// ============================================================================
+
+test "PSK: external PSK uses ext binder label, resumption uses res binder" {
+    // RFC 8446 Section 7.1:
+    //   binder_key = Derive-Secret(early_secret, "ext binder" | "res binder", "")
+    //
+    // External PSKs (provisioned out-of-band) MUST use "ext binder".
+    // Resumption PSKs (from NewSessionTicket) MUST use "res binder".
+    // Using the wrong label is a protocol violation and interop failure.
+
+    const psk = [_]u8{0xAB} ** 32;
+
+    // Derive early secret from the same PSK
+    const early_secret = tls13.deriveEarlySecret(.sha256, &psk);
+
+    // Derive binder key with external=true ("ext binder")
+    const ext_binder_key = tls13.deriveBinderKey(.sha256, &early_secret, true);
+
+    // Derive binder key with external=false ("res binder")
+    const res_binder_key = tls13.deriveBinderKey(.sha256, &early_secret, false);
+
+    // They MUST be different because the labels differ
+    try testing.expect(!std.mem.eql(u8, ext_binder_key.slice(), res_binder_key.slice()));
+
+    // Both must be non-zero (proper derivation, not default)
+    const zero_secret = ks.zeroSecret(.sha256);
+    try testing.expect(!std.mem.eql(u8, ext_binder_key.slice(), zero_secret.slice()));
+    try testing.expect(!std.mem.eql(u8, res_binder_key.slice(), zero_secret.slice()));
+
+    // Verify deterministic: same input produces same output
+    const ext_binder_key2 = tls13.deriveBinderKey(.sha256, &early_secret, true);
+    try testing.expectEqualSlices(u8, ext_binder_key.slice(), ext_binder_key2.slice());
+
+    // Verify with SHA-384 as well
+    const early_384 = tls13.deriveEarlySecret(.sha384, &psk);
+    const ext_384 = tls13.deriveBinderKey(.sha384, &early_384, true);
+    const res_384 = tls13.deriveBinderKey(.sha384, &early_384, false);
+    try testing.expect(!std.mem.eql(u8, ext_384.slice(), res_384.slice()));
+    // SHA-384 produces 48-byte keys
+    try testing.expectEqual(@as(usize, 48), ext_384.slice().len);
+}
+
+// ============================================================================
+// Test 14: External PSK config fields (GAP-0070)
+// ============================================================================
+
+test "PSK: external PSK config fields default to null" {
+    // Verify that Config has the external_psk fields and they default to null
+    const config = tls13.Config{
+        .allocator = testing.allocator,
+        .role = .Client,
+    };
+
+    try testing.expect(config.external_psk == null);
+    try testing.expect(config.external_psk_identity == null);
+
+    // Verify that setting them works
+    const ext_psk = [_]u8{0x01} ** 32;
+    const ext_identity = "my-external-psk-id";
+    const config2 = tls13.Config{
+        .allocator = testing.allocator,
+        .role = .Client,
+        .external_psk = &ext_psk,
+        .external_psk_identity = ext_identity,
+    };
+
+    try testing.expect(config2.external_psk != null);
+    try testing.expectEqualSlices(u8, &ext_psk, config2.external_psk.?);
+    try testing.expectEqualStrings(ext_identity, config2.external_psk_identity.?);
 }

@@ -238,7 +238,8 @@ pub const PreferredAddress = struct {
     /// IPv6 port advertised by the server.
     ipv6_port: u16 = 0,
     /// Connection ID associated with the preferred address (sequence number 1).
-    connection_id: []const u8,
+    /// When owns_connection_id is true, this slice was allocated and must be freed on deinit.
+    connection_id: []u8,
     /// Stateless reset token corresponding to the connection ID.
     stateless_reset_token: [16]u8,
     /// Whether the connection_id slice is owned and should be freed on deinit.
@@ -290,7 +291,7 @@ pub const PreferredAddress = struct {
             .ipv4_port = 0,
             .ipv6_address = undefined,
             .ipv6_port = 0,
-            .connection_id = &[_]u8{},
+            .connection_id = undefined,
             .stateless_reset_token = undefined,
         };
 
@@ -332,8 +333,8 @@ pub const PreferredAddress = struct {
     /// Release any heap allocations owned by the preferred address.
     pub fn deinit(self: *PreferredAddress, allocator: std.mem.Allocator) void {
         if (self.owns_connection_id and self.connection_id.len != 0) {
-            allocator.free(@constCast(self.connection_id));
-            self.connection_id = &[_]u8{};
+            allocator.free(self.connection_id);
+            self.connection_id.len = 0;
         }
         self.owns_connection_id = false;
     }
@@ -787,7 +788,7 @@ test "RFC 9000 §18.2 - flow control parameters" {
 }
 
 test "RFC 9000 §18.2 - preferred_address encode/decode" {
-    const connection_id = [_]u8{ 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6 };
+    var connection_id = [_]u8{ 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6 };
     const reset_token = [16]u8{
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
         0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
@@ -801,7 +802,7 @@ test "RFC 9000 §18.2 - preferred_address encode/decode" {
             0,    0,    0,    0,    0, 0, 0, 1,
         },
         .ipv6_port = 8443,
-        .connection_id = connection_id[0..],
+        .connection_id = &connection_id,
         .stateless_reset_token = reset_token,
     };
 
@@ -827,29 +828,30 @@ test "RFC 9000 §18.2 - preferred_address encode/decode" {
 test "RFC 9000 §18.2 - preferred_address validation" {
     const reset_token = [_]u8{0} ** 16;
 
+    var empty_cid = [_]u8{};
     const zero_length = PreferredAddress{
-        .connection_id = &[_]u8{},
+        .connection_id = &empty_cid,
         .stateless_reset_token = reset_token,
     };
     try testing.expectError(error.InvalidParameter, zero_length.encode(testing.allocator));
 
-    const big_cid_buf = [_]u8{0xaa} ** (PreferredAddress.max_connection_id_length + 1);
+    var big_cid_buf = [_]u8{0xaa} ** (PreferredAddress.max_connection_id_length + 1);
     const too_long = PreferredAddress{
-        .connection_id = big_cid_buf[0..],
+        .connection_id = &big_cid_buf,
         .stateless_reset_token = reset_token,
     };
     try testing.expectError(error.InvalidParameter, too_long.encode(testing.allocator));
 
-    const oversized_buf = [_]u8{0xbb} ** 256;
+    var oversized_buf = [_]u8{0xbb} ** 256;
     const over_byte = PreferredAddress{
-        .connection_id = oversized_buf[0..],
+        .connection_id = &oversized_buf,
         .stateless_reset_token = reset_token,
     };
     try testing.expectError(error.InvalidParameter, over_byte.encode(testing.allocator));
 }
 
 test "RFC 9000 §18.2 - preferred_address layout matches wire format" {
-    const connection_id = [_]u8{ 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6 };
+    var connection_id = [_]u8{ 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6 };
     const reset_token = [16]u8{
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
         0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
@@ -863,7 +865,7 @@ test "RFC 9000 §18.2 - preferred_address layout matches wire format" {
             0,    0,    0,    0,    0, 0, 0, 1,
         },
         .ipv6_port = 8443,
-        .connection_id = connection_id[0..],
+        .connection_id = &connection_id,
         .stateless_reset_token = reset_token,
     };
 

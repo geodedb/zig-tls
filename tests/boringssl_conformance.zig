@@ -969,7 +969,7 @@ test "QUIC transport parameters - forward compatibility (unknown parameters)" {
 }
 
 test "Preferred address transport parameter encoding" {
-    const connection_id = [_]u8{ 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6 };
+    var connection_id = [_]u8{ 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6 };
     const reset_token = [16]u8{
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
         0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
@@ -983,7 +983,7 @@ test "Preferred address transport parameter encoding" {
             0,    0,    0,    0,    0, 0, 0, 1,
         },
         .ipv6_port = 8443,
-        .connection_id = connection_id[0..],
+        .connection_id = &connection_id,
         .stateless_reset_token = reset_token,
     };
 
