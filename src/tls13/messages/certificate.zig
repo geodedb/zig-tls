@@ -190,7 +190,8 @@ pub fn parseCertificate(
     if (pos + list_len > data.len) return error.MalformedCertificateList;
     const list_end = pos + list_len;
 
-    var entries = try std.ArrayList(CertificateEntryData).initCapacity(allocator, 0);
+    // PERF-031: Pre-size for typical certificate chains (2-4 entries).
+    var entries = try std.ArrayList(CertificateEntryData).initCapacity(allocator, 4);
     errdefer entries.deinit(allocator);
 
     while (pos < list_end) {
@@ -325,13 +326,6 @@ pub fn buildCertificate(
 ) ![]u8 {
     if (context.len > 255) return error.CertificateContextTooLong;
 
-    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer msg.deinit(allocator);
-
-    // certificate_request_context length (1 byte) + value
-    try msg.append(allocator, @intCast(context.len));
-    if (context.len > 0) try msg.appendSlice(allocator, context);
-
     // Precompute certificate_list length to encode as u24
     var total_len: usize = 0;
     for (entries) |entry| {
@@ -354,6 +348,15 @@ pub fn buildCertificate(
 
         total_len += 3 + cert_len + 2 + ext_len;
     }
+
+    // PERF-031: Pre-size for context (1+ctx) + list_len (3) + entry overhead.
+    // Estimate: 4 + total_len covers the full message without resizing.
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 4 + total_len);
+    defer msg.deinit(allocator);
+
+    // certificate_request_context length (1 byte) + value
+    try msg.append(allocator, @intCast(context.len));
+    if (context.len > 0) try msg.appendSlice(allocator, context);
 
     if (total_len > 0xFFFFFF) return error.CertificateListTooLarge;
     try msg.appendSlice(allocator, &[_]u8{

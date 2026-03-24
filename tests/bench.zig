@@ -66,7 +66,7 @@ fn benchAeadSeal() void {
     var cipher = record.AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null) catch return;
     var plaintext = [_]u8{0x03} ** 128;
     var out: [128 + 16]u8 = undefined; // plaintext + tag
-    const aad = [_]u8{0x17, 0x03, 0x03, 0x00, 0x90}; // TLS record header
+    const aad = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x90 }; // TLS record header
     cipher.sealBuf(&out, 0, &aad, &plaintext) catch return;
     std.mem.doNotOptimizeAway(&out);
 }

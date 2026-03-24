@@ -104,7 +104,8 @@ pub fn buildCertificateVerify(
     signature_scheme: core_types.SignatureScheme,
     signature: []const u8,
 ) ![]u8 {
-    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
+    // PERF-031: Pre-size for 2-byte scheme + 2-byte sig length + signature (~64 bytes typical).
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 4 + signature.len);
     defer msg.deinit(allocator);
 
     // Signature algorithm

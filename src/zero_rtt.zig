@@ -273,6 +273,14 @@ pub fn AntiReplayWindowSized(comptime size: usize) type {
         ///
         /// Performs a linear scan over the window to detect duplicates.
         ///
+        /// ## Complexity
+        ///
+        /// O(n) where n = min(count, window_size). At the default window_size=64, this
+        /// is ~200ns. For high-traffic servers needing window_size > 256, consider
+        /// replacing with a hash-based lookup (e.g., HashMap keyed on the random value)
+        /// to achieve O(1) amortized lookup. The constant-time comparison per entry would
+        /// need to be preserved in any replacement to prevent timing side-channels.
+        ///
         /// ## Parameters
         ///
         /// - `random`: 32-byte ClientHello random field (from TLS handshake)

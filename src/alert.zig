@@ -125,6 +125,7 @@ pub fn fromHandshakeError(err: anyerror) AlertDescription {
         error.UnexpectedPskExtension => .illegal_parameter,
         error.PskIndexOutOfRange => .illegal_parameter,
         error.CryptoError => .internal_error,
+        error.MissingServerName => .handshake_failure,
         error.OutOfMemory => .internal_error,
         else => .internal_error,
     };

@@ -92,13 +92,6 @@
 //! - QUIC transport parameters placed in EncryptedExtensions per RFC 9001 §8.2
 //! - Extension parsing is additive: unsupported extensions are silently skipped
 
-const std = @import("std");
-const ks = @import("quic_tls");
-const x509 = @import("x509");
-const sig = @import("sig");
-const logger = @import("quic_logger");
-const H = ks.H; // SHA-256
-
 // Import modular TLS 1.3 message parsing and building functions
 const core_types = @import("tls13/messages/core_types.zig");
 const helpers_mod = @import("tls13/messages/helpers.zig");

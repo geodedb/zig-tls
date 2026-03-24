@@ -42,7 +42,7 @@
 //! };
 //!
 //! // Initialize TLS context
-//! var ctx = try ztls.Context.init(allocator, config, callbacks);
+//! var ctx = try ztls.Context.init(config, callbacks);
 //! defer ctx.deinit();
 //!
 //! // Process incoming CRYPTO frames from QUIC

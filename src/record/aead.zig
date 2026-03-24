@@ -574,7 +574,9 @@ pub const AeadCipher = struct {
     ///
     /// ## RFC References
     /// - RFC 8446 §5.3 - Per-Record Nonce construction
-    fn deriveNonce(self: *const AeadCipher, seq: u64) [MaxNonceLength]u8 {
+    // PERF-035: Inline hint ensures this small function is inlined even in Debug builds.
+    // In ReleaseFast/ReleaseSafe, LLVM likely inlines it regardless, but this is defense-in-depth.
+    inline fn deriveNonce(self: *const AeadCipher, seq: u64) [MaxNonceLength]u8 {
         var tmp: [MaxNonceLength]u8 = [_]u8{0} ** MaxNonceLength;
         const nonce_len: usize = @intCast(self.nonce_len);
         // SAFETY: nonce_len is validated at construction (init) to equal the suite's nonce_length

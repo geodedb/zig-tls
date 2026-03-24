@@ -79,10 +79,14 @@ pub const Config = struct {
     /// Cipher suites offered (client) or accepted (server) in preference order.
     /// RFC 8446 §4.1.2: ClientHello cipher_suites, §4.1.3: ServerHello cipher_suite.
     ///
-    /// Negotiation: First match between client offer and server preference wins.
-    /// Supports TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, and TLS_CHACHA20_POLY1305_SHA256.
+    /// **Role:** Both (client offers, server selects).
     ///
-    /// Default: [TLS_AES_128_GCM_SHA256]
+    /// **Valid values:** TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
+    /// TLS_CHACHA20_POLY1305_SHA256. Slice must be non-empty.
+    ///
+    /// Negotiation: First match between client offer and server preference wins.
+    ///
+    /// **Default:** [TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256]
     supported_cipher_suites: []const tls13_full.CipherSuite = &.{
         tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256,
         tls13_full.CipherSuite.TLS_AES_256_GCM_SHA384,
@@ -92,51 +96,66 @@ pub const Config = struct {
     /// Named groups advertised for ECDHE key agreement (RFC 8446 §4.2.7).
     /// Used in supported_groups and key_share extensions.
     ///
-    /// Negotiation: Client sends key_share for preferred groups; server selects one.
-    /// Currently focused on X25519 for QUIC implementations.
+    /// **Role:** Both (client advertises, server selects).
     ///
-    /// Default: [x25519]
+    /// **Valid values:** x25519 (currently the only implemented group).
+    /// Slice must be non-empty.
+    ///
+    /// Negotiation: Client sends key_share for preferred groups; server selects one.
+    ///
+    /// **Default:** [x25519]
     supported_groups: []const tls13_full.NamedGroup = &.{tls13_full.NamedGroup.x25519},
 
     /// Signature algorithms allowed for certificate authentication (RFC 8446 §4.2.3).
     /// Sent in signature_algorithms extension, used to verify CertificateVerify.
     ///
-    /// Common schemes: ed25519, ecdsa_secp256r1_sha256, rsa_pss_rsae_sha256.
-    /// Server selects one supported by both peers for signing transcript.
+    /// **Role:** Both (client advertises, server selects for signing).
     ///
-    /// Default: [ed25519]
+    /// **Valid values:** ed25519, ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384,
+    /// rsa_pss_rsae_sha256. Slice must be non-empty. The selected scheme must
+    /// be compatible with the certificate key type (server_cert_der / client_cert_der).
+    ///
+    /// **Default:** [ed25519]
     supported_signature_schemes: []const tls13_full.SignatureScheme = &.{tls13_full.SignatureScheme.ed25519},
 
     /// Ordered list of ALPN protocol identifiers to negotiate (RFC 7301).
     /// Sent in application_layer_protocol_negotiation extension.
     ///
-    /// Server selects first match in its preference order from client's list.
-    /// Common values: ["h3"] for HTTP/3, ["h2"] for HTTP/2.
+    /// **Role:** Both (client offers list, server selects one).
     ///
-    /// null = ALPN not negotiated (acceptable for some QUIC applications).
+    /// **Valid values:** Each protocol name is 1-255 bytes (RFC 7301 length constraint).
+    /// Common values: ["h3"] for HTTP/3, ["h2"] for HTTP/2.
+    /// Server selects first match in its preference order from client's list.
+    ///
+    /// **Default:** null (ALPN not negotiated; acceptable for some QUIC applications).
     alpn_protocols: ?[]const []const u8 = null,
 
     /// Raw QUIC transport parameters to advertise (RFC 9001 §8.2).
     /// Carried in quic_transport_parameters extension (0x0039).
     ///
-    /// - Client: Sent in ClientHello extensions
-    /// - Server: Sent in EncryptedExtensions
+    /// **Role:** Both.
+    /// - Client: Sent in ClientHello extensions.
+    /// - Server: Sent in EncryptedExtensions.
     ///
-    /// Format: Opaque binary blob parsed by QUIC layer (not TLS).
+    /// **Valid values:** Opaque binary blob in RFC 9000 §18 encoding.
     /// Contains max_idle_timeout, initial_max_data, etc.
+    /// Maximum length bounded by ClientHello / EncryptedExtensions size limits.
     ///
-    /// null = No transport parameters (will cause handshake failure in QUIC).
+    /// **Default:** null (no transport parameters; will cause handshake failure in QUIC).
     quic_transport_parameters: ?[]const u8 = null,
 
     /// Enable receipt and processing of 0-RTT early data (RFC 8446 §4.2.10).
     /// When true, server accepts early_data extension and processes 0-RTT packets.
     ///
-    /// Requires:
-    /// - PSK resumption with compatible cipher suite
+    /// **Role:** Server only (client 0-RTT is controlled by resumption_psk presence).
+    ///
+    /// **Requires:**
+    /// - PSK resumption with compatible cipher suite (resumption_psk on client)
     /// - Anti-replay protection (zero_rtt.zig)
     /// - Application-level replay safety
+    /// - `zero_rtt_limits` should be configured to bound early data volume
     ///
-    /// Default: false (0-RTT disabled)
+    /// **Default:** false (0-RTT disabled)
     enable_early_data: bool = false,
 
     /// Limits for 0-RTT early data (RFC 8446 §4.2.10, CWE-400 prevention).
@@ -159,24 +178,35 @@ pub const Config = struct {
     /// Default: 16KB max_early_data_size
     zero_rtt_limits: zero_rtt.ZeroRttLimits = .{},
 
-    /// DER-encoded server certificate (leaf) for authentication (Server role only).
+    /// DER-encoded server certificate (leaf) for authentication.
     /// RFC 8446 §4.4.2: Certificate message contains certificate_list.
+    ///
+    /// **Role:** Server only.
+    ///
+    /// **Requires:** `server_key_der` must also be set (the private key that
+    /// corresponds to this certificate's public key).
     ///
     /// Must be valid X.509v3 certificate with:
     /// - digitalSignature key usage
     /// - serverAuth extended key usage
-    /// - Valid subject alternative names for SNI matching
+    /// - Valid subject alternative names matching peer's SNI
     ///
-    /// null = No certificate (client role or testing).
+    /// **Default:** null (no certificate; client role or testing).
     server_cert_der: ?[]const u8 = null,
 
     /// DER-encoded private key (PKCS#8 format) for server authentication.
     /// Used to generate CertificateVerify signature over transcript hash (RFC 8446 §4.4.3).
     ///
-    /// Must correspond to public key in server_cert_der.
-    /// Supported key types: Ed25519, ECDSA P-256/P-384, RSA-PSS.
+    /// **Role:** Server only.
     ///
-    /// null = No private key (client role or testing).
+    /// **Requires:** `server_cert_der` must also be set (the certificate whose
+    /// public key corresponds to this private key).
+    ///
+    /// **Valid values:** PKCS#8 DER-encoded private key. Supported key types:
+    /// Ed25519, ECDSA P-256/P-384, RSA-PSS. Must match the key type used in
+    /// `supported_signature_schemes`.
+    ///
+    /// **Default:** null (no private key; client role or testing).
     server_key_der: ?[]const u8 = null,
 
     /// Server secret for HelloRetryRequest cookie generation (Server role only).
@@ -236,38 +266,66 @@ pub const Config = struct {
     /// an external OCSP client.
     require_ocsp: bool = false,
 
-    /// Require Signed Certificate Timestamps (SCTs). When true, the handshake
-    /// aborts if no SCT list is present or if the list is empty or rejected by
-    /// `on_sct_list`.
+    /// Require Signed Certificate Timestamps (SCTs) (RFC 6962).
+    /// When true, the handshake aborts if no SCT list is present or if the list
+    /// is empty or rejected by `on_sct_list`.
+    ///
+    /// **Role:** Client only (validates server certificate transparency).
+    ///
+    /// **Interactions:** When `on_sct_list` is also set, the callback is invoked
+    /// for additional validation or logging. If `on_sct_list` returns an error,
+    /// the handshake aborts regardless of this field's value.
+    ///
+    /// **Default:** false (SCTs not required).
     require_scts: bool = false,
 
     /// Optional callback invoked with the parsed SCT list for additional
     /// validation or telemetry. The callback must not retain references to the
     /// provided slice beyond its lifetime.
+    ///
+    /// **Role:** Client only.
+    ///
+    /// **Interactions:** Called when SCT data is present in the Certificate message,
+    /// regardless of `require_scts` setting. If the callback returns an error,
+    /// the handshake aborts.
+    ///
+    /// **Default:** null (no SCT callback).
     on_sct_list: ?*const fn ([]const sct.SignedCertificateTimestamp) anyerror!void = null,
 
-    /// Server name (SNI) for certificate hostname validation (Client role only).
+    /// Server name (SNI) for certificate hostname validation.
     /// RFC 6066 §3: Server Name Indication extension.
+    ///
+    /// **Role:** Client only.
     ///
     /// When set, the client will:
     /// - Include SNI extension in ClientHello
     /// - Validate server certificate against this hostname (RFC 5280 §4.2.1.6)
     ///
-    /// Example: "example.com"
+    /// **Valid values:** DNS hostname (e.g., "example.com"). Must not be an IP address.
+    /// Supports wildcard matching against certificate SANs (e.g., "*.example.com").
     ///
-    /// null = No SNI extension (hostname validation skipped).
+    /// **Security:** Setting this to null skips hostname validation, allowing any
+    /// valid certificate to be accepted (MITM risk, see SEC-029).
+    ///
+    /// **Default:** null (no SNI extension; hostname validation skipped).
     server_name: ?[]const u8 = null,
 
     /// Skip certificate validation for testing purposes.
     /// **WARNING**: Setting this to true disables ALL certificate validation!
     /// Only use for testing with self-signed certificates.
     ///
+    /// **Role:** Both (affects validation of peer's certificate).
+    ///
     /// When true:
     /// - Certificate chain validation is skipped
     /// - Hostname/SNI validation is skipped
     /// - Expiry checks are skipped
+    /// - EKU and KeyUsage checks are skipped
     ///
-    /// Default: false (full validation required)
+    /// **Security:** This is a **DANGEROUS** option. In release builds,
+    /// `setAllowInsecure` will `@panic` to prevent accidental use.
+    ///
+    /// **Default:** false (full validation required).
     allow_insecure: bool = false,
 
     /// Server: request client certificate during handshake (RFC 8446 §4.3.2).
@@ -282,61 +340,103 @@ pub const Config = struct {
     /// Default: false (no client certificate requested)
     request_client_cert: bool = false,
 
-    /// Client: DER-encoded client certificate for mutual TLS authentication.
+    /// DER-encoded client certificate for mutual TLS authentication.
     /// Sent in the Certificate message when the server requests client auth.
     /// Must be valid X.509v3 certificate.
     ///
-    /// null = No client certificate (will send empty Certificate if requested).
+    /// **Role:** Client only (sent in response to server's CertificateRequest).
+    ///
+    /// **Requires:** `client_key_der` must also be set (the private key that
+    /// corresponds to this certificate's public key).
+    ///
+    /// **Default:** null (no client certificate; will send empty Certificate if requested).
     client_cert_der: ?[]const u8 = null,
 
-    /// Client: DER-encoded private key (PKCS#8 format) for client authentication.
+    /// DER-encoded private key (PKCS#8 format) for client authentication.
     /// Used to generate CertificateVerify signature when server requests client auth.
-    /// Must correspond to public key in client_cert_der.
     ///
-    /// null = No client private key.
+    /// **Role:** Client only.
+    ///
+    /// **Requires:** `client_cert_der` must also be set (the certificate whose
+    /// public key corresponds to this private key).
+    ///
+    /// **Default:** null (no client private key).
     client_key_der: ?[]const u8 = null,
 
-    /// Server: trusted CA certificates for client certificate validation (optional).
+    /// Trusted CA certificates for client certificate validation (optional).
     /// If set, included in the certificate_authorities extension of CertificateRequest.
     ///
-    /// null = No certificate_authorities extension sent.
+    /// **Role:** Server only (sent in CertificateRequest message).
+    ///
+    /// **Interactions:** Only relevant when `request_client_cert` is true.
+    /// Each entry is a DER-encoded X.509 distinguished name.
+    ///
+    /// **Default:** null (no certificate_authorities extension sent).
     client_auth_ca_certs: ?[]const []const u8 = null,
 
     /// External pre-shared key bytes for out-of-band PSK authentication (RFC 8446 §4.2.11).
     /// When set, the client will offer this PSK in the ClientHello using the "ext binder" label.
     /// External PSKs are provisioned out-of-band (not via NewSessionTicket).
     ///
+    /// **Role:** Client only.
+    ///
+    /// **Requires:** `external_psk_identity` must also be set.
+    ///
+    /// **Valid values:** Arbitrary byte slice (typically 32 bytes for SHA-256 based suites).
     /// RFC 8446 §7.1: External PSKs use "ext binder" label for binder key derivation,
     /// while resumption PSKs use "res binder". This distinction is critical for security.
     ///
-    /// Note: If both external_psk and resumption_psk are set, resumption_psk takes priority
-    /// (resumption is preferred over external PSK per common practice).
+    /// **Interactions:** If both `external_psk` and `resumption_psk` are set,
+    /// `resumption_psk` takes priority (resumption is preferred over external PSK).
     ///
-    /// null = No external PSK configured.
+    /// **Default:** null (no external PSK configured).
     external_psk: ?[]const u8 = null,
 
     /// Identity to advertise for the external PSK (RFC 8446 §4.2.11).
-    /// Required if external_psk is set. This is the opaque identity sent in the
-    /// PskIdentity structure in the ClientHello pre_shared_key extension.
+    /// This is the opaque identity sent in the PskIdentity structure in
+    /// the ClientHello pre_shared_key extension.
     ///
+    /// **Role:** Client only.
+    ///
+    /// **Requires:** `external_psk` must also be set.
     /// For external PSKs, the identity format is application-defined (not a ticket).
     ///
-    /// null = No external PSK identity.
+    /// **Default:** null (no external PSK identity).
     external_psk_identity: ?[]const u8 = null,
 
-    /// Pre-shared key for session resumption (Client role only).
+    /// Pre-shared key for session resumption (RFC 8446 §4.2.11).
     /// If set, the client will offer this PSK in the ClientHello.
-    /// RFC 8446 §4.2.11: pre_shared_key extension.
+    ///
+    /// **Role:** Client only.
+    ///
+    /// **Requires:** `resumption_ticket` and `resumption_ticket_age_add` must also be set.
+    ///
+    /// **Valid values:** The PSK derived from NewSessionTicket's nonce and resumption_master_secret
+    /// (typically 32 bytes for SHA-256 based suites).
+    ///
+    /// **Interactions:** Takes priority over `external_psk` if both are set.
+    ///
+    /// **Default:** null (no resumption PSK).
     resumption_psk: ?[]const u8 = null,
 
-    /// Session ticket identity for resumption (Client role only).
+    /// Session ticket identity for resumption (RFC 8446 §4.6.1).
     /// This is the opaque ticket value received from the server in NewSessionTicket.
-    /// Required if resumption_psk is set.
-    /// RFC 8446 §4.6.1: ticket field from NewSessionTicket message.
+    ///
+    /// **Role:** Client only.
+    ///
+    /// **Requires:** `resumption_psk` must also be set.
+    ///
+    /// **Default:** null (no resumption ticket).
     resumption_ticket: ?[]const u8 = null,
 
-    /// Obfuscated ticket age add value from NewSessionTicket (Client role only).
-    /// Required if resumption_psk is set.
-    /// RFC 8446 §4.6.1: ticket_age_add field from NewSessionTicket message.
+    /// Obfuscated ticket age add value from NewSessionTicket (RFC 8446 §4.6.1).
+    ///
+    /// **Role:** Client only.
+    ///
+    /// **Requires:** `resumption_psk` and `resumption_ticket` must also be set.
+    ///
+    /// **Valid range:** 0 to 2^32-1 (u32). Value received from server's NewSessionTicket.
+    ///
+    /// **Default:** 0 (no obfuscated ticket age).
     resumption_ticket_age_add: u32 = 0,
 };

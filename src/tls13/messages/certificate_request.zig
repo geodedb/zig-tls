@@ -74,20 +74,23 @@ pub fn buildCertificateRequest(
     sig_schemes: []const core_types.SignatureScheme,
     ca_certs: ?[]const []const u8,
 ) ![]u8 {
-    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
+    // PERF-031: Pre-size for context(1) + ext_len(2) + sig_algs extension (~32 bytes typical).
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 64);
     defer msg.deinit(allocator);
 
     // certificate_request_context: empty for initial handshake (RFC 8446 §4.3.2)
     try msg.append(allocator, 0); // context length = 0
 
     // Build extensions
-    var exts = try std.ArrayList(u8).initCapacity(allocator, 0);
+    // PERF-031: Pre-size for sig_algs extension header(4) + list_len(2) + schemes + optional CA ext.
+    var exts = try std.ArrayList(u8).initCapacity(allocator, 64);
     defer exts.deinit(allocator);
 
     // signature_algorithms extension (0x000d) - REQUIRED
     // Format: [list_len:2][scheme1:2][scheme2:2]...
     {
-        var sig_data = try std.ArrayList(u8).initCapacity(allocator, 0);
+        // PERF-031: Pre-size for list_len(2) + 2 bytes per scheme.
+        var sig_data = try std.ArrayList(u8).initCapacity(allocator, 2 + sig_schemes.len * 2);
         defer sig_data.deinit(allocator);
 
         const list_len: u16 = @intCast(sig_schemes.len * 2);
@@ -109,14 +112,15 @@ pub fn buildCertificateRequest(
     // certificate_authorities extension (0x002f) - OPTIONAL
     if (ca_certs) |certs| {
         if (certs.len > 0) {
-            var ca_data = try std.ArrayList(u8).initCapacity(allocator, 0);
-            defer ca_data.deinit(allocator);
-
             // Compute total length of DN list
             var total_len: usize = 0;
             for (certs) |cert| {
                 total_len += 2 + cert.len; // 2-byte length prefix + cert data
             }
+
+            // PERF-031: Pre-size for DN list length(2) + all DN entries.
+            var ca_data = try std.ArrayList(u8).initCapacity(allocator, 2 + total_len);
+            defer ca_data.deinit(allocator);
 
             // Write DN list length (2 bytes)
             try ca_data.appendSlice(allocator, &[_]u8{
@@ -188,7 +192,8 @@ pub fn parseCertificateRequest(
     const ext_end = pos + ext_len;
 
     // Parse extensions to find signature_algorithms
-    var sig_algs = try std.ArrayList(core_types.SignatureScheme).initCapacity(allocator, 0);
+    // PERF-031: Pre-size for typical signature algorithm count (4-8 schemes).
+    var sig_algs = try std.ArrayList(core_types.SignatureScheme).initCapacity(allocator, 8);
     errdefer sig_algs.deinit(allocator);
 
     while (pos + 4 <= ext_end) {

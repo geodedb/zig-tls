@@ -308,10 +308,11 @@ fn toU8(v: usize) u8 {
 /// RFC 8446 §7.1 - Key Schedule and HKDF-Expand-Label definition
 fn hkdfLabel(alloc: std.mem.Allocator, label: []const u8, context: []const u8, out_len: u16) ![]u8 {
     // RFC 8446 §7.1 - HkdfLabel structure encoding
+    // PERF-034: Write "tls13 " prefix directly into the output buffer instead of
+    // using std.mem.concat which does an intermediate allocation (even on FixedBufferAllocator).
     const prefix = "tls13 ";
-    const full_label = try std.mem.concat(alloc, u8, &[_][]const u8{ prefix, label });
-    defer alloc.free(full_label);
-    const total = 2 + 1 + full_label.len + 1 + context.len;
+    const full_label_len = prefix.len + label.len;
+    const total = 2 + 1 + full_label_len + 1 + context.len;
     var out = try alloc.alloc(u8, total);
     var i: usize = 0;
     // RFC 8446 §7.1 - Length field (big-endian uint16)
@@ -319,11 +320,13 @@ fn hkdfLabel(alloc: std.mem.Allocator, label: []const u8, context: []const u8, o
     i += 1;
     out[i] = @as(u8, @truncate(out_len));
     i += 1;
-    // RFC 8446 §7.1 - Label length and value
-    out[i] = toU8(full_label.len);
+    // RFC 8446 §7.1 - Label length and value ("tls13 " prefix + label written inline)
+    out[i] = toU8(full_label_len);
     i += 1;
-    @memcpy(out[i .. i + full_label.len], full_label);
-    i += full_label.len;
+    @memcpy(out[i .. i + prefix.len], prefix);
+    i += prefix.len;
+    @memcpy(out[i .. i + label.len], label);
+    i += label.len;
     // RFC 8446 §7.1 - Context length and value
     out[i] = toU8(context.len);
     i += 1;

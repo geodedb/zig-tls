@@ -43,7 +43,6 @@
 //    (Section 17.1), and the length of connection IDs in long header
 //    packets (Section 17.2) are described using integers but do not use
 //    this encoding.
-const std = @import("std");
 const byteorder = @import("byteorder");
 
 /// Errors for varint encoding/decoding.

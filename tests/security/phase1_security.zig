@@ -220,7 +220,7 @@ test "Security: empty certificate chain rejected" {
     const empty_chain = [_][]const u8{};
     const now = std.time.timestamp();
 
-    const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false);
+    const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 }
 
@@ -235,7 +235,7 @@ test "Security: excessive certificate chain length rejected" {
     const empty_chain = [_][]const u8{};
     const now = std.time.timestamp();
 
-    const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false);
+    const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 
     // Future test: Create chain with 11+ certificates
@@ -252,7 +252,7 @@ test "Security: certificate with future notBefore rejected" {
     const empty_chain = [_][]const u8{};
     const now = std.time.timestamp();
 
-    const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false);
+    const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 
     // Future test: Create cert with notBefore = now + 1 day
@@ -267,7 +267,7 @@ test "Security: certificate with past notAfter rejected" {
     const empty_chain = [_][]const u8{};
     const now = std.time.timestamp();
 
-    const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false);
+    const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 
     // Future test: Create cert with notAfter = now - 1 day

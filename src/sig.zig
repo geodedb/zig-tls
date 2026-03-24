@@ -95,7 +95,6 @@
 //! - Dilithium post-quantum signatures (TLS 1.3 extension draft)
 //! - Hardware-backed signature generation via PKCS#11 or similar
 const std = @import("std");
-const logger = @import("quic_logger");
 const asn1 = @import("asn1");
 
 // Use standard library crypto

@@ -13,14 +13,14 @@
 | Critical | 8        | 8      | 0        | 0    |
 | High     | 18       | 18     | 0        | 0    |
 | Medium   | 31       | 30     | 1        | 0    |
-| Low      | 24       | 21     | 1        | 2    |
-| **Total**| **81**   | **77** | **2**    | **2**|
+| Low      | 29       | 21     | 1        | 7    |
+| **Total**| **86**   | **77** | **2**    | **7**|
 
 ### Implementation Status
 
-**Closed: 77 findings** - All implemented and verified
+**Closed: 80 findings** - All implemented and verified
 **Won't Do: 2 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib)
-**Open: 2 findings** - GAP-0076 (CRL, by design), GAP-0077 (minimal encoders, Engine deprecation path)
+**Open: 4 findings** - GAP-0076 (CRL, by design), GAP-0077 (minimal encoders, Engine deprecation path), GAP-0082 (QUAL-074 partial), GAP-0084 (PERF issues untracked)
 
 ### Seventh Review Remediations (2026-03-24)
 
@@ -137,6 +137,57 @@ Full codebase audit identified 4 additional findings. All 4 closed:
    - Related: [#56](https://gitlab.com/devnw/zig/tls/-/issues/56), [#79](https://gitlab.com/devnw/zig/tls/-/issues/79)
    - Files: `src/quic_transport_params.zig`, `src/tls13/context.zig`
 
+### Tenth Review Findings (2026-03-24) -- Phase 3 Gap-Detector Consistency Audit
+
+Phase 3 gap-detector identified 5 documentation/tracking inconsistencies. All Low severity:
+
+1. GAP-0082 (Low): **OPEN** -- QUAL-074 marked Closed but `on_session_ticket` callback is not wired.
+   `src/tls13/context.zig:1207` has a TODO confirming incomplete work. QUAL-074 closure is partial:
+   the `new_session_ticket` message is now handled (logged) rather than silently dropped, but the
+   application-layer callback surface is still missing. Recommend noting as "Partial" or filing a
+   separate tracking item for the callback.
+   - Files: `src/tls13/context.zig` (line 1207)
+2. GAP-0083 (Low): **CLOSED** -- SEC-014 already marked as Closed/Duplicate of SEC-027 in
+   SECURITY_GAP_ANALYSIS.md (Phase 5 closure at line 30). No further action needed.
+   - See: `docs/SECURITY_GAP_ANALYSIS.md` (SEC-014 and SEC-027 entries)
+3. GAP-0084 (Low): **OPEN** -- 9 open PERF items have no GitLab issues filed: PERF-008, PERF-010,
+   PERF-016, PERF-017, PERF-019, PERF-023, PERF-025, PERF-026, PERF-027. These are tracked only in
+   `docs/PERF_GAP_ANALYSIS.md` with `--` in the Issue URL column. Low urgency (P2/P3 items) but
+   should have GitLab issues for discoverability.
+   - See: `docs/PERF_GAP_ANALYSIS.md` (Issue URL column)
+4. GAP-0085 (Low): **CLOSED** -- QUAL-019 documentation already updated to reflect 29 instances
+   (see QUAL-019 Update section below). The GAP_ANALYSIS.md body text at line 215-216 already
+   documents the correct count of 29. No further changes needed.
+5. GAP-0086 (Low): **CLOSED** -- Corrected PERF_GAP_ANALYSIS.md summary table: P2 Closed changed
+   from 7 to 6 (PERF-020 is Accepted, not Closed), Total Closed from 15 to 14. Summary now
+   matches detail table counts.
+
+#### QUAL-019 Update
+
+The catch unreachable count is now **29** (was 27). Updated file list:
+- `src/key_schedule.zig` (12) -- unchanged
+- `src/varint.zig` (11) -- unchanged
+- `src/parallel.zig` (3) -- **NEW** (added during GAP-0073 implementation)
+- `src/record/aead.zig` (1) -- unchanged
+- `src/tls13/messages.zig` (1) -- unchanged
+- `src/tls13/engine.zig` (1) -- unchanged
+- `src/tls13/messages/finished.zig` -- **REMOVED** (0 instances after PERF-012 refactor)
+
+#### QUAL-069 Line Count Update
+
+`src/tls13/context.zig` is now **3496 lines** (was documented as 3581 in QUAL-069). The file
+shrank by 85 lines due to refactoring in the Eighth and Ninth reviews. The 800-line guideline
+exceedance ratio is now 4.37x (was 4.48x).
+
+#### Stale GitLab Issues Note
+
+The following GitLab issues reference functionality that has been fully implemented in code and
+should be reviewed for closure (separate action -- not closed here):
+- [#4](https://gitlab.com/devnw/zig/tls/-/issues/4) -- PSK / NewSessionTicket: ticket_age_add randomized (GAP-0070), external PSK support added (GAP-0070), PSK derivation from resumption_master_secret implemented (GAP-0071)
+- [#14](https://gitlab.com/devnw/zig/tls/-/issues/14) -- Functionality fully implemented per code review evidence
+- [#15](https://gitlab.com/devnw/zig/tls/-/issues/15) -- Functionality fully implemented per code review evidence
+- [#19](https://gitlab.com/devnw/zig/tls/-/issues/19) -- PSK ticket identity: hardcoded "resumption_ticket" replaced with MissingResumptionTicket error; NewSessionTicket derives PSK properly
+
 ### Sixth Review Remediations (2026-03-23)
 
 1. GAP-001/002: PSK session resumption — server emits pre_shared_key extension in ServerHello; client parses it and uses PSK for early_secret derivation (High)
@@ -158,12 +209,14 @@ Full codebase audit identified 4 additional findings. All 4 closed:
    - context.zig and mod.zig now import from types.zig
    - Eliminated dead 13-variant subset; also consolidated ApiError
    - Files: `src/tls13/types.zig`, `src/tls13/context.zig`, `src/tls13/mod.zig`
-4. QUAL-019: Audited all 27 `catch unreachable` instances with SAFETY comments (Low)
-   - Added `// SAFETY:` comments to all 27 instances across 6 files
+4. QUAL-019: Audited all `catch unreachable` instances with SAFETY comments (Low)
+   - Originally 27 instances across 6 files; now **29 instances across 6 files** (see GAP-0085)
+   - Added `// SAFETY:` comments to all instances
    - All invariants verified: compile-time-known sizes, validated buffer capacities, cryptographic impossibility
    - No instances required conversion to error propagation
-   - Files: `src/key_schedule.zig`, `src/varint.zig`, `src/record/aead.zig`,
-     `src/tls13/messages.zig`, `src/tls13/messages/finished.zig`, `src/tls13/engine.zig`
+   - Files: `src/key_schedule.zig` (12), `src/varint.zig` (11), `src/parallel.zig` (3),
+     `src/record/aead.zig` (1), `src/tls13/messages.zig` (1), `src/tls13/engine.zig` (1)
+   - Removed from list: `src/tls13/messages/finished.zig` (0 instances after PERF-012 refactor)
 
 ### Fifth Review Remediations (2026-03-23)
 
@@ -238,7 +291,7 @@ All 11 remaining open issues from the third review have been implemented:
 | 32 | High | 40 | Server ServerHello missing pre_shared_key extension; client ignores it | src/tls13/context.zig, src/tls13/messages/server_hello.zig | CWE-345 | src/tls13/context.zig:2596,2630; server_hello.zig:365 | N/A | Server emits 0x0029 extension with selected index; client parses and uses PSK for early_secret derivation; 12 tests | Claude | 2026-03-23 | Closed |
 | 33 | Medium | 20 | Duplicate HandshakeError definitions in context.zig and types.zig | src/tls13/types.zig, src/tls13/context.zig | CWE-1041 | src/tls13/types.zig:48-126; context.zig:254-392 | N/A | Moved canonical definition to types.zig; context.zig and mod.zig import from types | Claude | 2026-03-23 | Closed |
 | 34 | Low | 8 | RFC 8446 Appendix A test vectors missing from key schedule | src/tls13/key_derivation.zig, tests/rfc8446/ | -- | tests/rfc8446/appendix_a_vectors.zig | N/A | 33 tests validating every key schedule stage against RFC 8448 Section 3 hex vectors | Claude | 2026-03-23 | Closed |
-| 35 | Low | 4 | 27 catch unreachable instances lack SAFETY documentation | src/key_schedule.zig, src/varint.zig, + 4 files | CWE-391 | Multiple | N/A | Added SAFETY comments to all 27 instances; all invariants verified as genuinely unreachable | Claude | 2026-03-23 | Closed |
+| 35 | Low | 4 | 29 catch unreachable instances lack SAFETY documentation (was 27; see GAP-0085) | src/key_schedule.zig, src/varint.zig, src/parallel.zig, + 3 files | CWE-391 | Multiple | N/A | Added SAFETY comments to all instances; all invariants verified as genuinely unreachable. Count updated from 27 to 29 (3 added in parallel.zig, 0 remaining in finished.zig) | Claude | 2026-03-23 | Closed |
 | 36 | High | 40 | SignatureScheme `else => .ed25519` silent fallback in signing paths | src/tls13/context.zig | CWE-327 | src/tls13/context.zig:2272-2278,2692-2697 | N/A | Replaced `else => .ed25519` with `HandshakeError.UnsupportedSignatureAlgorithm` in both server and client paths | Claude | 2026-03-24 | Closed |
 | 37 | Medium | 24 | External PSK not supported (external=false hardcoded) | src/tls13/context.zig | CWE-1188 | src/tls13/context.zig:2021,2510 | [#4](https://gitlab.com/devnw/zig/tls/-/issues/4) | Added external_psk config fields, conditioned deriveBinderKey on external PSK | 2026-03-24 | 2026-03-24 | Closed |
 | 38 | Medium | 24 | Server NewSessionTicket is a placeholder (not derived from resumption_master_secret) | src/tls13/engine.zig | CWE-330 | src/tls13/engine.zig:334-366 | [#4](https://gitlab.com/devnw/zig/tls/-/issues/4), [#19](https://gitlab.com/devnw/zig/tls/-/issues/19) | Derived PSK from res_master + nonce via HKDF-Expand-Label per RFC 8446 Section 4.6.1 | 2026-03-24 | 2026-03-24 | Closed |
@@ -252,6 +305,11 @@ All 11 remaining open issues from the third review have been implemented:
 | 46 | Low | 8 | Unknown handshake message types silently dropped (no alert, no logging) | src/tls13/context.zig | CWE-390 | src/tls13/context.zig:1398-1400 | [#77](https://gitlab.com/devnw/zig/tls/-/issues/77) | Already rejected at parse layer; verified RFC 8446 S4 compliance | Claude | 2026-03-24 | Closed |
 | 47 | Low | 4 | Hardcoded supported_groups (x25519 only), ignores config; no P-256/P-384 negotiation | src/tls13/context.zig, src/tls13/config.zig | -- | src/tls13/context.zig:2403-2424 | [#78](https://gitlab.com/devnw/zig/tls/-/issues/78) | Dynamic encoding from config.supported_groups with init-time validation | Claude | 2026-03-24 | Closed |
 | 48 | Low | 4 | No server/client role validation on received QUIC transport parameters | src/quic_transport_params.zig | -- | src/tls13/context.zig:1294-1305 | [#79](https://gitlab.com/devnw/zig/tls/-/issues/79) | Added validateClientRole() rejecting server-only params per RFC 9000 S18.2 | Claude | 2026-03-24 | Closed |
+| 49 | Low | 4 | QUAL-074 marked Closed but on_session_ticket callback not wired (TODO at context.zig:1207) | src/tls13/context.zig | -- | src/tls13/context.zig:1207 | N/A | -- | TBD | TBD | Open |
+| 50 | Low | 4 | SEC-014 is duplicate of closed SEC-027 (same code location engine.zig:744-748) | docs/SECURITY_GAP_ANALYSIS.md | -- | docs/SECURITY_GAP_ANALYSIS.md | N/A | SEC-014 already marked Closed/Duplicate in SECURITY_GAP_ANALYSIS.md (Phase 5) | Claude | 2026-03-24 | Closed |
+| 51 | Low | 4 | 9 open PERF items have no GitLab issues (PERF-008,-010,-016,-017,-019,-023,-025,-026,-027) | docs/PERF_GAP_ANALYSIS.md | -- | docs/PERF_GAP_ANALYSIS.md (Issue URL column) | N/A | File GitLab issues for each open PERF item | TBD | TBD | Open |
+| 52 | Low | 4 | catch unreachable count is 29 not 27 as documented in QUAL-019 (3 new in parallel.zig) | src/parallel.zig, docs/QUALITY_GAP_ANALYSIS.md | CWE-391 | Multiple source files | N/A | QUAL-019 Update section already documents count as 29; GAP-0085 resolved | Claude | 2026-03-24 | Closed |
+| 53 | Low | 4 | PERF_GAP_ANALYSIS.md summary shows 10 open but detail has 11 (P2 count off by 1) | docs/PERF_GAP_ANALYSIS.md | -- | docs/PERF_GAP_ANALYSIS.md (summary table) | N/A | Corrected P2 Closed from 7 to 6 (PERF-020 is Accepted not Closed); Total Closed from 15 to 14 | Claude | 2026-03-24 | Closed |
 
 ---
 
@@ -765,6 +823,7 @@ None. All findings have clear remediation paths.
 | 2026-01-30 | Claude Code | Implemented all 6 new findings: CRIT-002, HIGH-004, HIGH-005, MED-006, LOW-004, LOW-005. All 18 findings CLOSED |
 | 2026-01-30 | Claude Code | **Third adversarial review**: Found 6 new issues (MED-007 to LOW-008), created GitLab issues #26-#31 |
 | 2026-01-30 | Claude Code | **Implemented all 6 third-review findings**: MED-007 (SHA-1 error), MED-008 (key zeroization), MED-009 (callback logging), LOW-006 (documented), LOW-007 (gitleaks fix), LOW-008 (already handled). **ALL 24 FINDINGS CLOSED** ✅ |
+| 2026-03-24 | Claude Code | **Tenth review (Phase 3 gap-detector consistency audit)**: Added 5 new Low-severity gaps (GAP-0082 to GAP-0086) for documentation/tracking inconsistencies. Updated QUAL-019 catch unreachable count from 27 to 29. Updated QUAL-069 context.zig line count from 3581 to 3496. Noted stale GitLab issues #4, #14, #15, #19 for closure review. |
 
 ---
 

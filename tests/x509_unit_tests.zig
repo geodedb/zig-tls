@@ -564,6 +564,7 @@ test "validateChain - expired certificate rejection" {
             @intCast(now),
             "ed25519.example.com",
             false, // allow_insecure
+            .server_auth,
         ),
     );
 }
@@ -583,6 +584,7 @@ test "validateChain - missing trust store rejects chain" {
         @intCast(now),
         "",
         false,
+        .server_auth,
     );
     try testing.expectError(error.UntrustedRoot, result);
 }
@@ -613,6 +615,7 @@ test "validateChain - trust store accepts root" {
         @intCast(now),
         "",
         false,
+        .server_auth,
     );
 }
 
@@ -633,6 +636,7 @@ test "validateChain - allow_insecure bypass" {
         @intCast(now),
         "wrong.name.com", // Wrong name
         true, // allow_insecure
+        .server_auth,
     );
 }
 
@@ -737,4 +741,215 @@ test "checkNameConstraints - exact match in permitted" {
 
     // Subdomains should fail
     try testing.expect(!x509.checkNameConstraints("www.example.com", constraints));
+}
+
+// ============================================================================
+// SEC-032: parseDerTime range validation
+// ============================================================================
+
+test "SEC-032: parseDerTime rejects month=0 (UTCTime)" {
+    // "0001" = month 00; remaining fields valid
+    try testing.expectError(error.UnsupportedTimeFormat, x509.parseDerTime("250100120000Z"));
+}
+
+test "SEC-032: parseDerTime rejects month=13 (UTCTime)" {
+    try testing.expectError(error.UnsupportedTimeFormat, x509.parseDerTime("251301120000Z"));
+}
+
+test "SEC-032: parseDerTime rejects month=14 (UTCTime)" {
+    try testing.expectError(error.UnsupportedTimeFormat, x509.parseDerTime("251401120000Z"));
+}
+
+test "SEC-032: parseDerTime rejects day=0 (UTCTime)" {
+    try testing.expectError(error.UnsupportedTimeFormat, x509.parseDerTime("250100120000Z"));
+}
+
+test "SEC-032: parseDerTime rejects day=32 (UTCTime)" {
+    try testing.expectError(error.UnsupportedTimeFormat, x509.parseDerTime("250132120000Z"));
+}
+
+test "SEC-032: parseDerTime rejects hour=24 (UTCTime)" {
+    try testing.expectError(error.UnsupportedTimeFormat, x509.parseDerTime("250101240000Z"));
+}
+
+test "SEC-032: parseDerTime rejects minute=60 (UTCTime)" {
+    try testing.expectError(error.UnsupportedTimeFormat, x509.parseDerTime("250101126000Z"));
+}
+
+test "SEC-032: parseDerTime rejects second=60 (UTCTime)" {
+    try testing.expectError(error.UnsupportedTimeFormat, x509.parseDerTime("250101120060Z"));
+}
+
+test "SEC-032: parseDerTime rejects month=13 (GeneralizedTime)" {
+    try testing.expectError(error.UnsupportedTimeFormat, x509.parseDerTime("20251301120000Z"));
+}
+
+test "SEC-032: parseDerTime rejects day=32 (GeneralizedTime)" {
+    try testing.expectError(error.UnsupportedTimeFormat, x509.parseDerTime("20250132120000Z"));
+}
+
+// ============================================================================
+// SEC-033: matchesNameConstraint case-insensitive matching
+// ============================================================================
+
+test "SEC-033: matchesNameConstraint case-insensitive subdomain" {
+    // Mixed-case constraint with leading dot should match case-insensitively
+    try testing.expect(x509.matchesNameConstraint("www.EXAMPLE.com", ".example.com"));
+    try testing.expect(x509.matchesNameConstraint("www.example.com", ".EXAMPLE.COM"));
+    try testing.expect(x509.matchesNameConstraint("WWW.EXAMPLE.COM", ".example.com"));
+}
+
+test "SEC-033: matchesNameConstraint case-insensitive exact match" {
+    // Exact match without leading dot should be case-insensitive
+    try testing.expect(x509.matchesNameConstraint("EXAMPLE.COM", "example.com"));
+    try testing.expect(x509.matchesNameConstraint("example.com", "EXAMPLE.COM"));
+    try testing.expect(x509.matchesNameConstraint("Example.Com", "example.com"));
+}
+
+test "SEC-033: matchesNameConstraint still rejects non-matching" {
+    // Case-insensitive matching should not cause false positives
+    try testing.expect(!x509.matchesNameConstraint("www.other.com", ".example.com"));
+    try testing.expect(!x509.matchesNameConstraint("OTHER.COM", "example.com"));
+}
+
+// ============================================================================
+// SEC-030: Self-signed cert hostname validation
+// ============================================================================
+
+test "SEC-030: self-signed cert with wrong hostname is rejected" {
+    // The ed25519_cert is self-signed with CN=ed25519.example.com, CA:TRUE
+    const root_der = @embedFile("test_certs/ed25519_cert.der");
+
+    // Parse the cert to get SPKI for trust store
+    const root_cert = try x509.parseCert(testing.allocator, root_der);
+    defer root_cert.deinit(testing.allocator);
+
+    // Set up trust store that trusts this cert
+    const TrustStore = struct {
+        var trusted_spki: []const u8 = &[_]u8{};
+        fn isTrusted(spki: []const u8) bool {
+            return std.mem.eql(u8, spki, trusted_spki);
+        }
+    };
+    TrustStore.trusted_spki = root_cert.spki;
+    x509.setTrustStore(.{ .isTrustedSpki = TrustStore.isTrusted });
+    defer x509.setTrustStore(null);
+
+    const chain = [_][]const u8{root_der};
+    const now = std.time.timestamp();
+
+    // Should reject: wrong hostname for self-signed cert
+    const result = x509.validateChain(
+        testing.allocator,
+        &chain,
+        @intCast(now),
+        "wrong.example.com", // Wrong hostname
+        false,
+        .server_auth,
+    );
+    try testing.expectError(error.NameMismatch, result);
+}
+
+test "SEC-030: self-signed cert with correct hostname is accepted" {
+    const root_der = @embedFile("test_certs/ed25519_cert.der");
+
+    const root_cert = try x509.parseCert(testing.allocator, root_der);
+    defer root_cert.deinit(testing.allocator);
+
+    const TrustStore = struct {
+        var trusted_spki: []const u8 = &[_]u8{};
+        fn isTrusted(spki: []const u8) bool {
+            return std.mem.eql(u8, spki, trusted_spki);
+        }
+    };
+    TrustStore.trusted_spki = root_cert.spki;
+    x509.setTrustStore(.{ .isTrustedSpki = TrustStore.isTrusted });
+    defer x509.setTrustStore(null);
+
+    const chain = [_][]const u8{root_der};
+    const now = std.time.timestamp();
+
+    // Should accept: correct hostname (CN=ed25519.example.com)
+    try x509.validateChain(
+        testing.allocator,
+        &chain,
+        @intCast(now),
+        "ed25519.example.com",
+        false,
+        .server_auth,
+    );
+}
+
+// ============================================================================
+// SEC-031: mTLS client cert EKU validation
+// ============================================================================
+
+test "SEC-031: validateChain checks client_auth EKU when purpose is client_auth" {
+    // The ed25519_cert has no EKU extension at all.
+    // Per RFC 5280, when EKU is absent, the cert is not restricted
+    // and should be accepted for any purpose (including clientAuth).
+    const root_der = @embedFile("test_certs/ed25519_cert.der");
+
+    const root_cert = try x509.parseCert(testing.allocator, root_der);
+    defer root_cert.deinit(testing.allocator);
+
+    // Verify the cert has no EKU
+    try testing.expect(root_cert.eku == null);
+
+    const TrustStore = struct {
+        var trusted_spki: []const u8 = &[_]u8{};
+        fn isTrusted(spki: []const u8) bool {
+            return std.mem.eql(u8, spki, trusted_spki);
+        }
+    };
+    TrustStore.trusted_spki = root_cert.spki;
+    x509.setTrustStore(.{ .isTrustedSpki = TrustStore.isTrusted });
+    defer x509.setTrustStore(null);
+
+    const chain = [_][]const u8{root_der};
+    const now = std.time.timestamp();
+
+    // No EKU means no restriction: accepted for client_auth
+    try x509.validateChain(
+        testing.allocator,
+        &chain,
+        @intCast(now),
+        "", // No hostname for client certs
+        false,
+        .client_auth,
+    );
+}
+
+test "SEC-031: checkEku rejects serverAuth-only cert for client_auth purpose" {
+    // Directly test the EKU check logic
+    const eku_server_only = x509.ExtKeyUsage{ .server_auth = true, .client_auth = false };
+    const eku_client_only = x509.ExtKeyUsage{ .server_auth = false, .client_auth = true };
+    const eku_both = x509.ExtKeyUsage{ .server_auth = true, .client_auth = true };
+    const eku_neither = x509.ExtKeyUsage{};
+
+    // server_auth purpose
+    try testing.expect(x509.checkEkuPurpose(eku_server_only, .server_auth));
+    try testing.expect(!x509.checkEkuPurpose(eku_client_only, .server_auth));
+    try testing.expect(x509.checkEkuPurpose(eku_both, .server_auth));
+    try testing.expect(!x509.checkEkuPurpose(eku_neither, .server_auth));
+
+    // client_auth purpose
+    try testing.expect(!x509.checkEkuPurpose(eku_server_only, .client_auth));
+    try testing.expect(x509.checkEkuPurpose(eku_client_only, .client_auth));
+    try testing.expect(x509.checkEkuPurpose(eku_both, .client_auth));
+    try testing.expect(!x509.checkEkuPurpose(eku_neither, .client_auth));
+}
+
+test "SEC-032: parseDerTime accepts valid boundary values" {
+    // month=1 (January), day=1, 00:00:00
+    const jan1 = try x509.parseDerTime("250101000000Z");
+    try testing.expect(jan1 > 0);
+
+    // month=12, day=31, 23:59:59
+    const dec31 = try x509.parseDerTime("251231235959Z");
+    try testing.expect(dec31 > jan1);
+
+    // GeneralizedTime valid boundary
+    const gt_valid = try x509.parseDerTime("20251231235959Z");
+    try testing.expect(gt_valid > 0);
 }

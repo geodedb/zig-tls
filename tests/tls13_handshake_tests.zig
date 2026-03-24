@@ -279,6 +279,128 @@ test "TLS 1.3 PSK without ticket returns MissingResumptionTicket error" {
     );
 }
 
+// ============================================================================
+// SEC-028: Client validates server-selected cipher suite was offered
+// ============================================================================
+
+test "SEC-028: client rejects unoffered cipher suite from ServerHello" {
+    // Create client offering ONLY TLS_AES_128_GCM_SHA256 (0x1301)
+    const client_callbacks = tls13.Callbacks{};
+    const client_config = tls13.Config{
+        .allocator = testing.allocator,
+        .role = .Client,
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .quic_transport_parameters = &[_]u8{ 0x00, 0x01 },
+        .server_name = "test.example.com",
+    };
+
+    var client_ctx = try tls13.Context.init(client_config, client_callbacks);
+    defer client_ctx.deinit();
+    try client_ctx.startClientHandshake();
+
+    // Construct a ServerHello body with TLS_AES_256_GCM_SHA384 (0x1302) which was NOT offered.
+    // Body format: legacy_version(2) + random(32) + session_id_len(1) + cipher_suite(2) +
+    //              compression(1) + extensions_length(2) + extensions
+    var sh_body: [128]u8 = undefined;
+    var pos: usize = 0;
+
+    // legacy_version = 0x0303
+    sh_body[pos] = 0x03;
+    sh_body[pos + 1] = 0x03;
+    pos += 2;
+
+    // random (32 bytes) - NOT HRR random and NOT downgrade sentinel
+    @memset(sh_body[pos .. pos + 32], 0xAA);
+    pos += 32;
+
+    // session_id_len = 0
+    sh_body[pos] = 0;
+    pos += 1;
+
+    // cipher_suite = 0x1302 (TLS_AES_256_GCM_SHA384) - NOT offered by client
+    sh_body[pos] = 0x13;
+    sh_body[pos + 1] = 0x02;
+    pos += 2;
+
+    // compression = 0
+    sh_body[pos] = 0;
+    pos += 1;
+
+    // Extensions: supported_versions(0x002b) + key_share(0x0033)
+    const ext_supported_versions = [_]u8{
+        0x00, 0x2b, // extension type: supported_versions
+        0x00, 0x02, // extension length: 2
+        0x03, 0x04, // TLS 1.3 (0x0304)
+    };
+    const key_share_data = [_]u8{
+        0x00, 0x33, // extension type: key_share
+        0x00, 0x24, // extension length: 36 (2+2+32)
+        0x00, 0x1d, // group: x25519
+        0x00, 0x20, // key_exchange length: 32
+    } ++ [_]u8{0xBB} ** 32; // dummy public key
+
+    const exts_len: u16 = ext_supported_versions.len + key_share_data.len;
+    sh_body[pos] = @intCast((exts_len >> 8) & 0xff);
+    sh_body[pos + 1] = @intCast(exts_len & 0xff);
+    pos += 2;
+
+    @memcpy(sh_body[pos .. pos + ext_supported_versions.len], &ext_supported_versions);
+    pos += ext_supported_versions.len;
+    @memcpy(sh_body[pos .. pos + key_share_data.len], &key_share_data);
+    pos += key_share_data.len;
+
+    // Wrap in handshake framing: type(1) + length(3)
+    const body_len = pos;
+    var sh_msg: [132]u8 = undefined;
+    sh_msg[0] = 0x02; // ServerHello
+    sh_msg[1] = 0;
+    sh_msg[2] = @intCast((body_len >> 8) & 0xff);
+    sh_msg[3] = @intCast(body_len & 0xff);
+    @memcpy(sh_msg[4 .. 4 + body_len], sh_body[0..body_len]);
+
+    // Client should reject with NoCipherSuite since 0x1302 was not offered
+    try testing.expectError(
+        tls13.HandshakeError.NoCipherSuite,
+        client_ctx.processCrypto(.Initial, sh_msg[0 .. 4 + body_len]),
+    );
+}
+
+// ============================================================================
+// SEC-029: Client rejects null server_name without allow_insecure
+// ============================================================================
+
+test "SEC-029: client rejects null server_name for certificate validation" {
+    // MissingServerName is returned during CertificateVerify processing, which
+    // requires a full handshake to reach. Instead, test by verifying the error
+    // exists and maps to the correct alert.
+    const err_alert = alert.fromHandshakeError(tls13.HandshakeError.MissingServerName);
+    try testing.expectEqual(alert.AlertDescription.handshake_failure, err_alert);
+}
+
+test "SEC-029: client with null server_name and allow_insecure succeeds init" {
+    // When allow_insecure is true, null server_name should not prevent
+    // handshake initiation (the check occurs during CertificateVerify).
+    const client_callbacks = tls13.Callbacks{};
+    const client_config = tls13.Config{
+        .allocator = testing.allocator,
+        .role = .Client,
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .quic_transport_parameters = &[_]u8{ 0x00, 0x01 },
+        .server_name = null,
+        .allow_insecure = true,
+    };
+
+    var client_ctx = try tls13.Context.init(client_config, client_callbacks);
+    defer client_ctx.deinit();
+
+    // Client can start handshake; the MissingServerName check only happens
+    // during CertificateVerify processing (when server_name is actually needed).
+    try client_ctx.startClientHandshake();
+}
+
 test "TLS 1.3 PSK with ticket succeeds" {
     // Complementary test: when both resumption_psk and resumption_ticket are set,
     // startClientHandshake should succeed.

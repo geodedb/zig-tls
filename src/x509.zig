@@ -307,10 +307,31 @@ pub const ExtKeyUsage = struct {
     /// RFC 5280 §4.2.1.12 - TLS WWW server authentication
     server_auth: bool = false,
 
+    /// True if id-kp-clientAuth (1.3.6.1.5.5.7.3.2) is present.
+    /// RFC 5280 §4.2.1.12 - TLS WWW client authentication (mTLS)
+    client_auth: bool = false,
+
     /// True if id-kp-OCSPSigning (1.3.6.1.5.5.7.3.9) is present.
     /// RFC 6960 §4.2.2.2 - Delegated OCSP responder signing
     ocsp_signing: bool = false,
 };
+
+/// SEC-031: EKU purpose for certificate validation.
+/// Allows callers to specify which EKU purpose to check (server or client auth).
+pub const EkuPurpose = enum {
+    /// id-kp-serverAuth (1.3.6.1.5.5.7.3.1) - TLS server certificates
+    server_auth,
+    /// id-kp-clientAuth (1.3.6.1.5.5.7.3.2) - TLS client certificates (mTLS)
+    client_auth,
+};
+
+/// SEC-031: Check if an ExtKeyUsage satisfies the given purpose.
+pub fn checkEkuPurpose(eku: ExtKeyUsage, purpose: EkuPurpose) bool {
+    return switch (purpose) {
+        .server_auth => eku.server_auth,
+        .client_auth => eku.client_auth,
+    };
+}
 
 /// Name Constraints extension restricting valid subject names.
 ///
@@ -559,6 +580,9 @@ pub fn parseDerTime(bytes: []const u8) !i64 {
         const hh = try std.fmt.parseInt(u8, bytes[6..8], 10);
         const mm = try std.fmt.parseInt(u8, bytes[8..10], 10);
         const ss = try std.fmt.parseInt(u8, bytes[10..12], 10);
+        // SEC-032: Validate field ranges to prevent OOB on mdays array and
+        // reject nonsensical dates (RFC 5280 §4.1.2.5).
+        try validateTimeFields(month, day, hh, mm, ss);
         return unixSecondsFromYMDHMS(year, month, day, hh, mm, ss);
     }
     if (bytes.len == 15 and bytes[14] == 'Z') {
@@ -568,9 +592,23 @@ pub fn parseDerTime(bytes: []const u8) !i64 {
         const hh = try std.fmt.parseInt(u8, bytes[8..10], 10);
         const mm = try std.fmt.parseInt(u8, bytes[10..12], 10);
         const ss = try std.fmt.parseInt(u8, bytes[12..14], 10);
+        // SEC-032: Validate field ranges to prevent OOB on mdays array and
+        // reject nonsensical dates (RFC 5280 §4.1.2.5).
+        try validateTimeFields(month, day, hh, mm, ss);
         return unixSecondsFromYMDHMS(year, month, day, hh, mm, ss);
     }
     return error.UnsupportedTimeFormat;
+}
+
+/// SEC-032: Validate month/day/hour/minute/second ranges for DER time fields.
+/// Prevents out-of-bounds access on the mdays array in daysBeforeMonth and
+/// rejects nonsensical date values per RFC 5280 §4.1.2.5.
+fn validateTimeFields(month: u8, day: u8, hh: u8, mm: u8, ss: u8) !void {
+    if (month < 1 or month > 12) return error.UnsupportedTimeFormat;
+    if (day < 1 or day > 31) return error.UnsupportedTimeFormat;
+    if (hh > 23) return error.UnsupportedTimeFormat;
+    if (mm > 59) return error.UnsupportedTimeFormat;
+    if (ss > 59) return error.UnsupportedTimeFormat;
 }
 
 fn unwrapExtnValueToBytes(extn_val_or_octets: []const u8) []const u8 {
@@ -849,16 +887,24 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
                 const seq2 = ed2.readSequence() catch continue;
                 var e2 = asn1.Decoder.init(seq2);
                 var server_auth = false;
+                var client_auth = false;
                 var ocsp_signing = false;
                 while (true) {
                     const oid2 = e2.readOID() catch break;
+                    // id-kp-serverAuth = 1.3.6.1.5.5.7.3.1
                     if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01 })) {
                         server_auth = true;
-                    } else if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x09 })) {
+                    }
+                    // SEC-031: id-kp-clientAuth = 1.3.6.1.5.5.7.3.2
+                    if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02 })) {
+                        client_auth = true;
+                    }
+                    // id-kp-OCSPSigning = 1.3.6.1.5.5.7.3.9
+                    if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x09 })) {
                         ocsp_signing = true;
                     }
                 }
-                eku_res = .{ .server_auth = server_auth, .ocsp_signing = ocsp_signing };
+                eku_res = .{ .server_auth = server_auth, .client_auth = client_auth, .ocsp_signing = ocsp_signing };
             }
 
             // id-ce-nameConstraints = 2.5.29.30
@@ -1151,15 +1197,17 @@ fn wildcardMatch(host: []const u8, pattern: []const u8) bool {
 /// ```
 pub fn matchesNameConstraint(name: []const u8, constraint: []const u8) bool {
     // Constraint with leading dot: subdomain matching
+    // SEC-033: Use case-insensitive comparison per RFC 5280 §4.2.1.10
+    // and RFC 4343 (DNS case insensitivity).
     if (constraint.len > 0 and constraint[0] == '.') {
-        // name must end with constraint
+        // name must end with constraint (case-insensitive)
         // e.g., "www.example.com" ends with ".example.com"
         if (name.len < constraint.len) return false;
         const suffix = name[name.len - constraint.len ..];
-        return std.mem.eql(u8, suffix, constraint);
+        return eqlAsciiCI(suffix, constraint);
     } else {
-        // Constraint without leading dot: exact match required
-        return std.mem.eql(u8, name, constraint);
+        // Constraint without leading dot: exact match required (case-insensitive)
+        return eqlAsciiCI(name, constraint);
     }
 }
 
@@ -1477,7 +1525,16 @@ pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oi
 /// - Short-lived certificates (< 24 hours)
 /// - Internal/controlled PKI with strong key protection
 /// - Environments with other out-of-band revocation mechanisms
-pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, allow_insecure: bool) !void {
+///
+/// ## DoS Protection (PERF-027)
+///
+/// No explicit timeout mechanism is used. Instead, the `max_chain_depth=10` limit
+/// (SEC-024) serves as the primary defense against pathological certificate chains.
+/// ASN.1 DER parsing has bounded complexity per certificate (each field is length-
+/// prefixed with no recursion beyond extension parsing), so the total work is
+/// O(chain_length * cert_size) which is bounded by max_chain_depth * max_cert_size.
+/// A timeout is unnecessary given these structural bounds.
+pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, allow_insecure: bool, eku_purpose: EkuPurpose) !void {
     if (allow_insecure) return;
     if (chain_der.len == 0) return error.EmptyChain;
 
@@ -1504,12 +1561,18 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
     const is_single_self_signed = chain_der.len == 1 and
         std.mem.eql(u8, certs[0].subject_der, certs[0].issuer_der);
 
-    // Leaf checks (skip for single self-signed certs which are trust anchors)
+    // Leaf validity period check applies to all certificates
     try checkValidity(now_unix, &certs[0]);
 
+    // SEC-030: Hostname and EKU validation apply to ALL leaf certs, including
+    // self-signed. Only the chain-walk logic (intermediate CA checks, pathLen
+    // constraints) is skipped for single self-signed certs.
+    if (server_name.len != 0 and !matchDnsName(&certs[0], server_name)) return error.NameMismatch;
+    if (certs[0].eku) |eku| {
+        if (!checkEkuPurpose(eku, eku_purpose)) return error.EkuNotAllowed;
+    }
+
     if (!is_single_self_signed) {
-        if (server_name.len != 0 and !matchDnsName(&certs[0], server_name)) return error.NameMismatch;
-        if (certs[0].eku) |eku| if (!eku.server_auth) return error.EkuNotAllowed;
         if (certs[0].ku) |ku| {
             // Require digitalSignature bit when KeyUsage present (RFC 5280 §4.2.1.3)
             if (!keyUsageHas(ku, key_usage_digital_signature)) return error.KuNotAllowed;

@@ -215,6 +215,7 @@ fn validateCertificateChain(allocator: std.mem.Allocator, input: CertValidateInp
         input.now_unix,
         input.server_name orelse "",
         input.allow_insecure,
+        .server_auth,
     ) catch |err| {
         return .{
             .valid = false,

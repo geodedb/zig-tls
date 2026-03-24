@@ -52,7 +52,6 @@ const sig = @import("sig");
 const tls13_full = @import("tls13_full");
 const ocsp = @import("ocsp");
 const sct = @import("sct");
-const alert_mod = @import("alert");
 const zero_rtt_mod = @import("zero_rtt");
 const logger = @import("quic_logger");
 const transport_params = @import("quic_transport_params");
@@ -1204,8 +1203,9 @@ pub const Context = struct {
 
                 // Parse and log the ticket for debugging. Full session resumption
                 // storage is handled by the QUIC layer via engine.zig.
-                // TODO(QUAL-074): Surface via an on_session_ticket callback for
-                // application-layer session ticket management.
+                // QUAL-074/QUAL-109: NewSessionTicket is accepted and not silently
+                // dropped. An on_session_ticket callback for application-layer
+                // session ticket management is deferred as a future enhancement.
                 logger.debugPrint("[TLS] Context: Received NewSessionTicket ({} bytes)\n", .{parsed.body.len});
             },
             // GAP-0079: Note — unknown handshake message types are rejected at the parsing
@@ -1450,8 +1450,10 @@ pub const Context = struct {
         var pos: usize = 2 + 32; // skip legacy_version + random
 
         // Skip session_id
+        // SEC-035: Bounds-check sid_len before advancing pos
         if (pos >= body.len) return HandshakeError.UnexpectedMessage;
         const sid_len: usize = body[pos];
+        if (pos + 1 + sid_len > body.len) return HandshakeError.UnexpectedMessage;
         pos += 1 + sid_len;
 
         // Skip cipher_suite + compression
@@ -1529,8 +1531,22 @@ pub const Context = struct {
             return HandshakeError.UnsupportedKeyShareGroup;
         }
 
+        // SEC-036: Securely zeroize old private key before generating new one.
+        // Prevents stale key material from remaining in memory on HRR rekey.
+        if (self.client_priv) |*priv| {
+            std.crypto.secureZero(u8, priv);
+            self.client_priv = null;
+        }
+
         var priv: [32]u8 = undefined;
         std.crypto.random.bytes(&priv);
+        // SEC-037: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
+        // Zig's X25519 internally clamps during DH computation, but we clamp here
+        // too for consistency with engine.zig's ensureKeypair() and to ensure the
+        // stored private key bytes are canonical.
+        priv[0] &= 248;
+        priv[31] &= 127;
+        priv[31] |= 64;
         const pub_key = std.crypto.dh.X25519.recoverPublicKey(priv) catch {
             return HandshakeError.UnsupportedKeyShareGroup;
         };
@@ -2491,6 +2507,21 @@ pub const Context = struct {
         if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
         const suite_value: u16 = readU16(body[pos .. pos + 2]);
         const cipher_suite = std.meta.intToEnum(tls13_full.CipherSuite, suite_value) catch return HandshakeError.NoCipherSuite;
+
+        // SEC-028: Verify the server-selected cipher suite was in our offered list.
+        // RFC 8446 §4.1.3: Server MUST select from the client's cipher_suites.
+        var cipher_suite_offered = false;
+        for (self.config.supported_cipher_suites) |offered| {
+            if (offered == cipher_suite) {
+                cipher_suite_offered = true;
+                break;
+            }
+        }
+        if (!cipher_suite_offered) {
+            traceHandshake("Client: Server selected cipher suite {x} not in offered list\\n", .{suite_value});
+            return HandshakeError.NoCipherSuite;
+        }
+
         self.negotiated_cipher_suite = cipher_suite;
         self.hash_kind = cipherSuiteHash(cipher_suite);
         // PERF-004: Lock transcript to the negotiated hash; subsequent updates
@@ -2655,8 +2686,11 @@ pub const Context = struct {
     fn notifyMetadata(self: *Context) void {
         if (self.flags.metadata_notified) return;
         if (self.callbacks.on_handshake_metadata) |cb| {
-            // CWE-391: Log callback errors instead of silently ignoring them.
-            // Callback errors shouldn't fail the handshake, but should be visible for debugging.
+            // QUAL-110 (by-design): Metadata callback errors are intentionally logged
+            // and not propagated. The on_handshake_metadata callback is informational --
+            // a failure to process metadata (e.g., ALPN logging) should not abort a
+            // valid handshake. This differs from security-critical callbacks like
+            // on_sct_list which correctly propagate errors.
             cb(self, self.metadataView()) catch |err| {
                 logger.debugPrint("[TLS] on_handshake_metadata callback error: {}\n", .{err});
             };
@@ -2837,22 +2871,6 @@ pub const Context = struct {
         return true; // Key update was triggered
     }
 
-    /// Handle received KeyUpdate message (RFC 8446 §4.6.3).
-    ///
-    /// Updates the local receiving traffic secret and optionally sends a
-    /// KeyUpdate in response if the peer requested it.
-    ///
-    /// # Parameters
-    /// - request: The KeyUpdateRequest from peer (update_not_requested or update_requested)
-    ///
-    /// # Flow
-    /// 1. Update local receiving traffic secret
-    /// 2. Install new receiving secret via callback
-    /// 3. If peer requested update, send our own KeyUpdate
-    ///
-    /// # Notes
-    /// - Automatically called when KeyUpdate message is received
-    /// - Private method, not intended for direct use by application
     /// RFC 8446 §4.4.2: Parse and store server Certificate message.
     /// The certificate chain will be validated when CertificateVerify is processed.
     fn handleCertificate(self: *Context, body: []const u8) !void {
@@ -2930,6 +2948,13 @@ pub const Context = struct {
         // Get current time for certificate validity checking
         const now_unix = std.time.timestamp();
 
+        // SEC-029: Require server_name for hostname validation unless allow_insecure.
+        // Without a server_name, any valid cert from any CA would be accepted (MITM risk).
+        if (self.config.server_name == null and !self.config.allow_insecure) {
+            traceHandshake("Client: ERROR - server_name is null and allow_insecure is false\\n", .{});
+            return HandshakeError.MissingServerName;
+        }
+
         // Get server name from SNI for hostname validation
         const server_name = if (self.config.server_name) |sni| sni else "";
 
@@ -2946,6 +2971,7 @@ pub const Context = struct {
             now_unix,
             server_name,
             self.config.allow_insecure,
+            .server_auth,
         ) catch |err| {
             traceHandshake("Client: Certificate chain validation failed: {}\\n", .{err});
             return HandshakeError.CertificateValidationFailed;
@@ -3136,12 +3162,14 @@ pub const Context = struct {
             // RFC 5280 §6: Validate client certificate chain
             // Skip hostname validation for client certs (no SNI to match against)
             const now_unix = std.time.timestamp();
+            // SEC-031: Pass client_auth EKU purpose for mTLS client certs
             x509.validateChain(
                 self.allocator,
                 chain,
                 now_unix,
                 "", // No hostname validation for client certs
                 false, // Don't skip validation
+                .client_auth,
             ) catch |err| {
                 traceHandshake("Server: Client certificate chain validation failed: {}\n", .{err});
                 return HandshakeError.CertificateValidationFailed;
@@ -3223,6 +3251,22 @@ pub const Context = struct {
         logger.debugPrint("handleEncryptedExtensions: Extracted {} bytes of transport params, ALPN={s}\n", .{ if (parsed.quic_transport_parameters) |tp| tp.len else 0, if (parsed.alpn) |alpn| alpn else "none" });
     }
 
+    /// Handle received KeyUpdate message (RFC 8446 §4.6.3).
+    ///
+    /// Updates the local receiving traffic secret and optionally sends a
+    /// KeyUpdate in response if the peer requested it.
+    ///
+    /// # Parameters
+    /// - request: The KeyUpdateRequest from peer (update_not_requested or update_requested)
+    ///
+    /// # Flow
+    /// 1. Update local receiving traffic secret
+    /// 2. Install new receiving secret via callback
+    /// 3. If peer requested update, send our own KeyUpdate
+    ///
+    /// # Notes
+    /// - Automatically called when KeyUpdate message is received
+    /// - Private method, not intended for direct use by application
     fn handleKeyUpdateMessage(self: *Context, request: KeyUpdateRequest) !void {
         // RFC 8446 §7.2: Update receiving traffic secret
         const recv_slot = self.secrets.slot(.Application, .recv);

@@ -112,12 +112,14 @@ pub fn buildEncryptedExtensions(
     alpn: ?[]const u8,
     quic_params: ?[]const u8,
 ) ![]u8 {
-    var exts = try std.ArrayList(u8).initCapacity(allocator, 0);
+    // PERF-031: Pre-size for typical extension data (~64 bytes for ALPN + QUIC params).
+    var exts = try std.ArrayList(u8).initCapacity(allocator, 64);
     defer exts.deinit(allocator);
 
     // ALPN
     if (alpn) |proto| {
-        var alpn_data = try std.ArrayList(u8).initCapacity(allocator, 0);
+        // PERF-031: Pre-size for ALPN list: 2-byte list_len + 1-byte proto_len + proto bytes.
+        var alpn_data = try std.ArrayList(u8).initCapacity(allocator, 3 + proto.len);
         defer alpn_data.deinit(allocator);
 
         const alpn_list_len = 1 + proto.len;
@@ -137,7 +139,8 @@ pub fn buildEncryptedExtensions(
     }
 
     // Build the message
-    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
+    // PERF-031: Pre-size for 2-byte extensions length + extension data.
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 2 + exts.items.len);
     defer msg.deinit(allocator);
 
     // Extensions length

@@ -11,7 +11,6 @@
 //! and error types.
 
 const tls13_full = @import("tls13_full");
-const sct = @import("sct");
 const ks = @import("quic_tls");
 
 /// Map a TLS 1.3 CipherSuite to its associated hash algorithm (RFC 8446 Appendix B.4).
@@ -211,4 +210,10 @@ pub const HandshakeError = error{
     /// RFC 9000 §18.2: original_destination_connection_id, preferred_address,
     /// retry_source_connection_id, and stateless_reset_token MUST NOT be sent by clients.
     InvalidTransportParameters,
+
+    /// SEC-029: Client did not configure server_name (SNI) for hostname validation.
+    /// Without a server_name, any valid certificate from any CA would be accepted,
+    /// enabling man-in-the-middle attacks. Either set config.server_name or
+    /// set config.allow_insecure=true for test environments.
+    MissingServerName,
 };

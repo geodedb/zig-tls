@@ -39,16 +39,12 @@ const ks = @import("quic_tls");
 const x509 = @import("x509");
 const sig = @import("sig");
 const tls13_full = @import("tls13_full");
-const alert_mod = @import("alert");
 const logger = @import("quic_logger");
 const ocsp = @import("ocsp");
 const sct = @import("sct");
 
 // Import modularized tls13 types
 const types = @import("types.zig");
-const config_mod = @import("config.zig");
-const handshake_state_mod = @import("handshake_state.zig");
-const secrets_mod = @import("secrets.zig");
 const transcript_mod = @import("transcript.zig");
 const key_derivation_mod = @import("key_derivation.zig");
 const messages_mod = @import("messages.zig");
@@ -168,6 +164,15 @@ pub const TicketStore = struct {
     /// return) to avoid leaking which position matched. Length
     /// comparison is non-constant-time, which is acceptable since PSK
     /// identity lengths are sent in cleartext in the ClientHello.
+    ///
+    /// ## Complexity
+    ///
+    /// O(n) where n = number of stored tickets (max 16 via SEC-017 cap).
+    /// The linear scan with constant-time compare is intentional for security:
+    /// a hash-based lookup would leak timing information about which bucket
+    /// matched. At max_tickets=16, this costs ~50-100ns which is acceptable.
+    /// If max_tickets is increased beyond ~100, consider a timing-safe
+    /// hash table or bucketed approach.
     pub fn lookup(self: *const TicketStore, identity: []const u8) ?TicketEntryView {
         var result: ?TicketEntryView = null;
         for (self.tickets.items) |*t| {
@@ -260,7 +265,47 @@ pub const Engine = struct {
 
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
-        return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = false, .peer_cert_ok = false, .hash_kind = .sha256, .finished_sent = false, .finished_verified = false, .ee_sent = false, .server_handshake_flight_enqueued = false, .handshake_secret = null, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .cached_app_client = null, .cached_app_server = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
+        return .{
+            .role = role,
+            .allocator = alloc,
+            .transcript = Transcript.init(),
+            .ecdhe_secret = null,
+            .ecdhe_buf = undefined,
+            .my_priv = null,
+            .my_pub = null,
+            .peer_pub = null,
+            .client_session_id = null,
+            .outbox = std.ArrayList(u8){},
+            .inbox = std.ArrayList(u8){},
+            .handshake_failed = false,
+            .ch_sent = false,
+            .ch_recv = false,
+            .sh_seen = false,
+            .allow_insecure = false,
+            .peer_cert_ok = false,
+            .hash_kind = .sha256,
+            .finished_sent = false,
+            .finished_verified = false,
+            .ee_sent = false,
+            .server_handshake_flight_enqueued = false,
+            .handshake_secret = null,
+            .handshake_client_secret = null,
+            .handshake_server_secret = null,
+            .leaf_spki = null,
+            .local_tp = null,
+            .peer_tp = null,
+            .alpn = null,
+            .server_name = null,
+            .server_cert_der = null,
+            .server_priv_key = null,
+            .server_sig_alg = null,
+            .master_secret = null,
+            .cached_app_client = null,
+            .cached_app_server = null,
+            .tickets = .{},
+            .peer_finished_cb = null,
+            .peer_finished_ctx = null,
+        };
     }
 
     /// SEC-019: Set allow_insecure with release-mode guard.
@@ -526,7 +571,7 @@ pub const Engine = struct {
         // Process complete messages from the buffered data
         var off: usize = 0;
         while (true) {
-            const parsed = parseHandshakeOne(self.inbox.items[off..]) catch null;
+            const parsed = try parseHandshakeOne(self.inbox.items[off..]);
             if (parsed) |p| {
                 traceHandshake("TLS: Parsed handshake message type={} len={}\n", .{ p.typ, p.body.len });
 
@@ -595,7 +640,7 @@ pub const Engine = struct {
                     switch (p.typ) {
                         .client_hello => {
                             traceHandshake("TLS: Calling parseRealClientHello with {} bytes\n", .{p.body.len});
-                            extracted = parseRealClientHello(p.body, self);
+                            extracted = try parseRealClientHello(p.body, self);
                             if (extracted != null) {
                                 traceHandshake("TLS: parseRealClientHello SUCCESS - extracted key\n", .{});
                             } else {
@@ -623,7 +668,7 @@ pub const Engine = struct {
                             .client_hello => if (self.role == .Server) {
                                 traceHandshake("Server: Will compute ECDHE when generating ServerHello\n", .{});
                                 // Extract ALPN from ClientHello
-                                self.extractAlpnFromClientHello(p.body);
+                                try self.extractAlpnFromClientHello(p.body);
                             },
                             else => {},
                         }
@@ -634,7 +679,7 @@ pub const Engine = struct {
 
                 // Also extract ALPN even if key extraction failed (ALPN is independent of key)
                 if (p.typ == .client_hello and self.role == .Server) {
-                    self.extractAlpnFromClientHello(p.body);
+                    try self.extractAlpnFromClientHello(p.body);
                 }
 
                 // RFC 9001 Section 8.2: Validate that transport parameters extension is present
@@ -671,7 +716,7 @@ pub const Engine = struct {
                                                     const name_len = edata[2];
                                                     if (3 + name_len <= edata.len and name_len > 0) {
                                                         if (self.alpn) |old| self.allocator.free(old);
-                                                        self.alpn = self.allocator.dupe(u8, edata[3 .. 3 + name_len]) catch null;
+                                                        self.alpn = try self.allocator.dupe(u8, edata[3 .. 3 + name_len]);
                                                     }
                                                 }
                                             }
@@ -679,7 +724,7 @@ pub const Engine = struct {
                                     },
                                     0x0039 => { // QUIC TP
                                         if (self.peer_tp) |old| self.allocator.free(old);
-                                        self.peer_tp = self.allocator.dupe(u8, edata) catch null;
+                                        self.peer_tp = try self.allocator.dupe(u8, edata);
                                     },
                                     else => {},
                                 }
@@ -765,7 +810,7 @@ pub const Engine = struct {
                                     const now = std.time.timestamp();
                                     const server_name_slice: []const u8 = if (self.server_name) |sni| sni else &[_]u8{};
 
-                                    x509.validateChain(self.allocator, chain_der, now, server_name_slice, self.allow_insecure) catch |err| {
+                                    x509.validateChain(self.allocator, chain_der, now, server_name_slice, self.allow_insecure, .server_auth) catch |err| {
                                         traceHandshake("TLS: Certificate chain validation failed: {}\n", .{err});
                                         break :blk false;
                                     };
@@ -1022,7 +1067,7 @@ pub const Engine = struct {
         }
 
         // Transcript is now updated message-by-message in the loop above
-        self.maybeAutoProgress();
+        try self.maybeAutoProgress();
     }
 
     /// Provide ECDHE shared secret directly (used in tests after X25519 exchange).
@@ -1606,7 +1651,7 @@ pub const Engine = struct {
     }
 
     /// Extract ALPN from ClientHello for server
-    fn extractAlpnFromClientHello(self: *Engine, body: []const u8) void {
+    fn extractAlpnFromClientHello(self: *Engine, body: []const u8) !void {
         logger.debugPrint("extractAlpnFromClientHello: body_len={}\n", .{body.len});
         if (body.len < 35) return; // Minimum ClientHello size
         var pos: usize = 2 + 32; // Skip version + random
@@ -1640,10 +1685,8 @@ pub const Engine = struct {
                     const name_len = body[pos + 2];
                     if (3 + name_len <= elen and name_len > 0) {
                         if (self.alpn) |old| self.allocator.free(old);
-                        self.alpn = self.allocator.dupe(u8, body[pos + 3 .. pos + 3 + name_len]) catch null;
-                        if (self.alpn) |alpn_val| {
-                            logger.debugPrint("extractAlpnFromClientHello: Extracted ALPN: {s}\n", .{alpn_val});
-                        }
+                        self.alpn = try self.allocator.dupe(u8, body[pos + 3 .. pos + 3 + name_len]);
+                        logger.debugPrint("extractAlpnFromClientHello: Extracted ALPN: {s}\n", .{self.alpn.?});
                         return;
                     }
                 }
@@ -1653,8 +1696,9 @@ pub const Engine = struct {
         logger.debugPrint("extractAlpnFromClientHello: No ALPN found\n", .{});
     }
 
-    /// Internal: auto-send Finished when conditions satisfied
-    fn maybeAutoProgress(self: *Engine) void {
+    /// Internal: auto-send Finished when conditions satisfied.
+    /// Returns errors from queueFinished to allow callers to detect handshake failures.
+    fn maybeAutoProgress(self: *Engine) !void {
         if (self.finished_sent) return;
         if (self.ecdhe_secret == null) return;
 
@@ -1679,11 +1723,7 @@ pub const Engine = struct {
                     return; // wait for cert validation
                 }
                 logger.debugPrint("Client: Queueing Finished message in real mode\n", .{});
-                // CWE-391: Log queueFinished errors instead of silently ignoring them.
-                // A failure here means the handshake won't complete properly.
-                self.queueFinished(self.handshake_client_secret.?) catch |err| {
-                    logger.debugPrint("Client: Failed to queue Finished message: {}\n", .{err});
-                };
+                try self.queueFinished(self.handshake_client_secret.?);
             }
         }
     }
@@ -1725,7 +1765,7 @@ pub const Engine = struct {
     /// RFC 9001: These go to Handshake CRYPTO space (ServerHello goes to Initial)
     /// CRITICAL FIX: Insert a message boundary marker (0xFF) between each TLS message
     /// This allows the connection layer to send each message in a separate CRYPTO frame/packet
-    pub fn queueServerHandshakeFlight(self: *Engine) void {
+    pub fn queueServerHandshakeFlight(self: *Engine) !void {
         logger.debugPrint("[FLIGHT] queueServerHandshakeFlight CALLED: role={s}, finished_sent={}, ee_sent={}, has_server_secret={}, has_client_secret={}, has_cert={}, has_key={}, enqueued={}\n", .{
             if (self.role == .Server) "Server" else "Client",
             self.finished_sent,
@@ -1745,12 +1785,6 @@ pub const Engine = struct {
             logger.debugPrint("[FLIGHT] Early return: handshake flight already enqueued\n", .{});
             return;
         }
-        // FIXED: Don't check finished_sent here - let endpoint.zig control when to queue messages
-        // The flags should only be set after actual transmission, not after queuing
-        // if (self.finished_sent) {
-        //     logger.debugPrint("[FLIGHT] Early return: already sent finished\n", .{});
-        //     return; // already done
-        // }
 
         // Full handshake flight
         // Require that handshake_server_secret be present (after SH)
@@ -1767,48 +1801,31 @@ pub const Engine = struct {
             const alpn_for_ee = self.alpn orelse &[_]u8{};
             const tp_for_ee = self.local_tp orelse &[_]u8{};
             logger.debugPrint("Server: Queueing EncryptedExtensions to Handshake CRYPTO with ALPN={s} TP_len={}\n", .{ alpn_for_ee, tp_for_ee.len });
-            self.queueEncryptedExtensions(alpn_for_ee, tp_for_ee) catch |e| {
-                logger.debugPrint("Server: Failed to queue EncryptedExtensions: {}\n", .{e});
-                return;
-            };
+            try self.queueEncryptedExtensions(alpn_for_ee, tp_for_ee);
             appended_any = true;
         }
         // If we have a certificate configured, send Certificate + CertificateVerify.
         // Note: allow_insecure only affects peer certificate validation, not whether we send ours
         // RFC 8446 §4.4.1: Server must send Certificate and CertificateVerify before Finished
-        // CRITICAL FIX: Proper error handling - if Certificate/CertificateVerify fail, handshake fails
         if (self.server_cert_der != null and self.server_priv_key != null) {
             logger.debugPrint("Calling queueCertificate...\n", .{});
-            // FIXED: Properly handle errors instead of silently catching them
-            // If Certificate fails to queue, the handshake cannot proceed
-            self.queueCertificate(self.server_cert_der.?) catch |e| {
-                logger.debugPrint("[FLIGHT] queueCertificate FAILED: {}\n", .{e});
-                // Mark handshake as failed - endpoint will handle connection termination
-                self.handshake_failed = true;
-                return;
-            };
+            try self.queueCertificate(self.server_cert_der.?);
 
             // Ensure signature algorithm is set
             if (self.server_sig_alg == null) {
                 const cert_der = self.server_cert_der.?;
-                const detected = x509.inferSignatureAlgorithm(cert_der, self.allocator) catch |err| {
+                self.server_sig_alg = x509.inferSignatureAlgorithm(cert_der, self.allocator) catch |err| {
                     logger.debugPrint("[CERTVERIFY] Failed to infer signature algorithm from server cert: {} (defaulting to ECDSA P-256)\n", .{err});
                     self.server_sig_alg = .ecdsa_secp256r1_sha256;
-                    return; // Exit early if inference fails
+                    return err;
                 };
-                self.server_sig_alg = detected;
             }
 
             logger.debugPrint("[CERTVERIFY] About to queue CertificateVerify with alg={}, priv_key_len={}\n", .{ self.server_sig_alg.?, self.server_priv_key.?.len });
 
-            // FIXED: Use the existing queueCertificateVerify() helper which properly handles transcript timing
+            // Use the existing queueCertificateVerify() helper which properly handles transcript timing
             // This ensures CertificateVerify signature is computed over transcript that includes Certificate
-            self.queueCertificateVerify() catch |e| {
-                logger.debugPrint("[FLIGHT] queueCertificateVerify FAILED: {}\n", .{e});
-                // Mark handshake as failed - endpoint will handle connection termination
-                self.handshake_failed = true;
-                return;
-            };
+            try self.queueCertificateVerify();
 
             appended_any = true;
         } else {
@@ -1824,12 +1841,9 @@ pub const Engine = struct {
             self.finished_sent,
             self.handshake_server_secret != null,
         });
-        // FIXED: Always queue Finished if we have the secret and outbox contains our handshake messages
         if (self.handshake_server_secret != null) {
             logger.debugPrint("[FLIGHT] Calling queueFinished with server secret...\n", .{});
-            self.queueFinished(self.handshake_server_secret.?) catch |e| {
-                logger.debugPrint("[FLIGHT] queueFinished FAILED: {}\n", .{e});
-            };
+            try self.queueFinished(self.handshake_server_secret.?);
             logger.debugPrint("[FLIGHT] After queueFinished: finished_sent={}\n", .{self.finished_sent});
             appended_any = true;
             // Note: No boundary marker after Finished as it's the last message
@@ -1894,7 +1908,7 @@ const readU16 = tls13_full.readU16;
 /// Attempt to parse a real (spec-like) TLS 1.3 ClientHello and extract the first X25519 key share.
 /// Also stores the client's session ID for ServerHello echo (RFC 8446 requirement).
 /// Returns pubkey if successful; otherwise null. Does not perform deep validation beyond bounds.
-fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
+fn parseRealClientHello(body: []const u8, engine: *Engine) !?[32]u8 {
     logger.debugPrint("parseRealClientHello: body_len={}\n", .{body.len});
 
     // Use arena allocator for parsing (backed by engine's allocator)
@@ -1920,11 +1934,8 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
         }
 
         // Store a copy of the client's session ID
-        engine.client_session_id = engine.allocator.alloc(u8, ch.session_id.len) catch null;
-        if (engine.client_session_id) |new_id| {
-            @memcpy(new_id, ch.session_id);
-            logger.debugPrint("parseRealClientHello: stored client session_id len={}\n", .{ch.session_id.len});
-        }
+        engine.client_session_id = try engine.allocator.dupe(u8, ch.session_id);
+        logger.debugPrint("parseRealClientHello: stored client session_id len={}\n", .{ch.session_id.len});
     } else {
         logger.debugPrint("parseRealClientHello: client sent empty session_id\n", .{});
         engine.client_session_id = null;
@@ -1938,10 +1949,8 @@ fn parseRealClientHello(body: []const u8, engine: *Engine) ?[32]u8 {
             engine.allocator.free(old);
         }
         // Store a copy of the client's transport parameters
-        engine.peer_tp = engine.allocator.dupe(u8, tp) catch null;
-        if (engine.peer_tp != null) {
-            logger.debugPrint("parseRealClientHello: stored transport parameters\n", .{});
-        }
+        engine.peer_tp = try engine.allocator.dupe(u8, tp);
+        logger.debugPrint("parseRealClientHello: stored transport parameters\n", .{});
     } else {
         logger.debugPrint("parseRealClientHello: no transport parameters found in ClientHello\n", .{});
     }
