@@ -68,7 +68,8 @@ const finished_mod = @import("finished.zig");
 const cookie_mod = @import("messages/extensions/cookie.zig");
 
 // Note: ApiError and HandshakeError are now imported from types.zig (canonical source).
-// TrafficDirection, SecretSlot, etc. remain defined here pending further extraction.
+// TrafficDirection, BidirSecrets, etc. remain defined here pending further extraction.
+// SecretSlot is now imported from secrets.zig (QUAL-118).
 
 // Type aliases needed by extracted code (these are NOT defined in the extracted code)
 const Config = config_mod.Config;
@@ -86,7 +87,7 @@ const deriveHandshakeTraffic = key_derivation_mod.deriveHandshakeTraffic;
 const buildKeyUpdate = messages_mod.buildKeyUpdate;
 const parseKeyUpdate = messages_mod.parseKeyUpdate;
 const KeyUpdateRequest = messages_mod.KeyUpdateRequest;
-// Note: TrafficDirection, SecretSlot, BidirSecrets, CryptoBuffer are defined in the extracted code below
+// Note: TrafficDirection, BidirSecrets, CryptoBuffer are defined below; SecretSlot is imported from secrets.zig (QUAL-118)
 
 // Shared byte helpers (QUAL-084: prefer readU16 over inline bit-shift patterns).
 const readU16 = tls13_full.readU16;
@@ -116,6 +117,15 @@ const handshake_trace_enabled = false;
 /// This constant is compile-time checked and will cause a build error
 /// if enabled in ReleaseSafe/ReleaseFast/ReleaseSmall builds.
 const secret_trace_enabled = false;
+
+// SEC-039: Compile-time safety: prevent handshake trace logging in release builds.
+// Handshake traces can leak error details, cipher suite info, and other metadata
+// that aids attackers in fingerprinting or exploiting the TLS implementation.
+comptime {
+    if (handshake_trace_enabled and @import("builtin").mode != .Debug) {
+        @compileError("SECURITY: handshake_trace_enabled must be false in release builds - error details would be logged!");
+    }
+}
 
 // Compile-time safety: prevent secret logging in release builds
 comptime {
@@ -274,40 +284,8 @@ pub const TrafficDirection = enum {
     recv,
 };
 
-/// RFC 8446 §7.1–§7.5: individual traffic secret slot with epoch tracking for key updates.
-pub const SecretSlot = struct {
-    value: Secret = Secret.empty(),
-    hash: Hash = .sha256,
-    valid: bool = false,
-    epoch: EncryptionLevel = .Initial,
-    generation: u32 = 0,
-
-    const Self = @This();
-
-    /// Clear secret and reset to initial state (zeroize).
-    /// Security: Uses secureZero to prevent compiler from optimizing away
-    /// the zeroization of sensitive key material (CWE-226).
-    pub fn clear(self: *Self) void {
-        std.crypto.secureZero(u8, &self.value.bytes);
-        self.value = Secret.empty();
-        self.hash = .sha256;
-        self.valid = false;
-        self.generation = 0;
-        self.epoch = .Initial;
-    }
-
-    pub fn store(self: *Self, level: EncryptionLevel, hash: Hash, secret: Secret) void {
-        self.value = secret;
-        self.hash = hash;
-        self.valid = true;
-        self.epoch = level;
-        self.generation += 1;
-    }
-
-    pub fn slice(self: *const Self) []const u8 {
-        return self.value.slice();
-    }
-};
+/// QUAL-118: SecretSlot imported from secrets.zig (canonical source, no duplication).
+pub const SecretSlot = secrets_mod.SecretSlot;
 
 // QUAL-070: supportsTls13Version and freeParsedClientHello are now in
 // handshake_state.zig, used by the shared ClientHelloInfo.parse().
@@ -416,29 +394,8 @@ pub const SecretSchedule = struct {
     }
 };
 
-const HashDigestCache = struct {
-    sha256: ?Secret = null,
-    sha384: ?Secret = null,
-
-    pub fn set(self: *HashDigestCache, hash: Hash, digest: Secret) void {
-        switch (hash) {
-            .sha256 => self.sha256 = digest,
-            .sha384 => self.sha384 = digest,
-        }
-    }
-
-    pub fn get(self: *const HashDigestCache, hash: Hash) ?Secret {
-        return switch (hash) {
-            .sha256 => self.sha256,
-            .sha384 => self.sha384,
-        };
-    }
-
-    pub fn clear(self: *HashDigestCache) void {
-        self.sha256 = null;
-        self.sha384 = null;
-    }
-};
+// QUAL-125: HashDigestCache is imported from transcript.zig (canonical source).
+// The local duplicate has been removed; TranscriptSet already uses transcript_mod.HashDigestCache.
 
 /// RFC 8446 §4.4.1: transcripts and cached hashes used across handshake flights.
 pub const TranscriptSet = struct {
@@ -473,12 +430,19 @@ const ClientHelloInfo = handshake_state_mod.ClientHelloInfo;
 
 const HandshakeState = struct {
     client_hello: ?ClientHelloInfo = null,
+    /// SEC-045: Pre-converted PSK identity views for type-safe clientHello().
+    /// Allocated alongside ClientHelloInfo and freed in reset().
+    psk_identity_views: ?[]ClientHelloPskIdentityView = null,
 
     fn init() HandshakeState {
         return .{};
     }
 
     fn reset(self: *HandshakeState, allocator: std.mem.Allocator) void {
+        if (self.psk_identity_views) |views| {
+            allocator.free(views);
+            self.psk_identity_views = null;
+        }
         if (self.client_hello) |*info| {
             info.deinit(allocator);
             self.client_hello = null;
@@ -488,6 +452,21 @@ const HandshakeState = struct {
     fn setClientHello(self: *HandshakeState, allocator: std.mem.Allocator, body: []const u8) !void {
         if (self.client_hello != null) return HandshakeError.DuplicateClientHello;
         const info = try ClientHelloInfo.parse(allocator, body);
+        errdefer {
+            var info_copy = info;
+            info_copy.deinit(allocator);
+        }
+        // SEC-045: Pre-convert PSK identities field-by-field to avoid @ptrCast at view time.
+        if (info.pre_shared_key) |psk| {
+            const views = try allocator.alloc(ClientHelloPskIdentityView, psk.identities.len);
+            for (psk.identities, 0..) |ident, i| {
+                views[i] = .{
+                    .identity = ident.identity,
+                    .obfuscated_ticket_age = ident.obfuscated_ticket_age,
+                };
+            }
+            self.psk_identity_views = views;
+        }
         self.client_hello = info;
     }
 
@@ -501,17 +480,14 @@ const HandshakeState = struct {
                 .supported_versions = info.supported_versions,
                 .key_share = .{ .group = info.key_share.group, .key = info.key_share.key },
                 .quic_transport_parameters = info.quic_transport_parameters,
-                // [][]u8 -> []const []const u8: safe cast, same memory layout
-                .alpn_list = if (info.alpn_list) |list|
-                    @as([]const []const u8, @ptrCast(list))
-                else
-                    null,
+                // SEC-045: [][]u8 coerces to []const []const u8 without @ptrCast.
+                .alpn_list = info.alpn_list,
                 .early_data = info.early_data,
                 .pre_shared_key = if (info.pre_shared_key) |psk| ClientHelloPreSharedKeyView{
-                    // []OwnedPskIdentity -> []const ClientHelloPskIdentityView: same layout
-                    .identities = @as([]const ClientHelloPskIdentityView, @ptrCast(psk.identities)),
-                    // [][]u8 -> []const []const u8: safe cast, same memory layout
-                    .binders = @as([]const []const u8, @ptrCast(psk.binders)),
+                    // SEC-045: Use pre-converted identity views (field-by-field, no @ptrCast).
+                    .identities = self.psk_identity_views orelse &.{},
+                    // SEC-045: [][]u8 coerces to []const []const u8 without @ptrCast.
+                    .binders = psk.binders,
                 } else null,
                 .psk_key_exchange_modes = info.psk_key_exchange_modes,
                 .raw = info.raw,
@@ -1615,12 +1591,9 @@ pub const Context = struct {
         });
         defer self.allocator.free(ch_result.body);
 
-        // Encode as handshake message
-        const msg = try encodeHandshake(self.allocator, .client_hello, ch_result.body);
-        defer self.allocator.free(msg);
-
-        // Send ClientHello2 at Initial encryption level
-        try self.appendOutbound(.Initial, msg, true);
+        // PERF-019: Use appendOutboundFramed to write handshake header + body
+        // directly into the outbound buffer, avoiding encodeHandshake allocation.
+        try self.appendOutboundFramed(.Initial, .client_hello, ch_result.body, true);
     }
 
     /// Get or generate server secret for HRR cookie generation.
@@ -2394,9 +2367,9 @@ pub const Context = struct {
                 const cert_body = try tls13_full.buildCertificate(self.allocator, request_context, &cert_entries);
                 defer self.allocator.free(cert_body);
 
-                const cert_msg = try encodeHandshake(self.allocator, .certificate, cert_body);
-                defer self.allocator.free(cert_msg);
-                try self.appendOutbound(.Handshake, cert_msg, true);
+                // PERF-038: Use appendOutboundFramed to write handshake header + body
+                // directly into the outbound buffer, avoiding encodeHandshake allocation.
+                try self.appendOutboundFramed(.Handshake, .certificate, cert_body, true);
 
                 traceHandshake("Client: Sent Certificate message for mTLS\n", .{});
 
@@ -2428,9 +2401,8 @@ pub const Context = struct {
                     const cv_body = try tls13_full.buildCertificateVerify(self.allocator, sig_scheme, signature);
                     defer self.allocator.free(cv_body);
 
-                    const cv_msg = try encodeHandshake(self.allocator, .certificate_verify, cv_body);
-                    defer self.allocator.free(cv_msg);
-                    try self.appendOutbound(.Handshake, cv_msg, true);
+                    // PERF-038: Use appendOutboundFramed instead of encodeHandshake.
+                    try self.appendOutboundFramed(.Handshake, .certificate_verify, cv_body, true);
 
                     traceHandshake("Client: Sent CertificateVerify for mTLS\n", .{});
                 }
@@ -2439,9 +2411,8 @@ pub const Context = struct {
                 const cert_body = try tls13_full.buildCertificate(self.allocator, request_context, &[_]tls13_full.CertificateEntryData{});
                 defer self.allocator.free(cert_body);
 
-                const cert_msg = try encodeHandshake(self.allocator, .certificate, cert_body);
-                defer self.allocator.free(cert_msg);
-                try self.appendOutbound(.Handshake, cert_msg, true);
+                // PERF-038: Use appendOutboundFramed instead of encodeHandshake.
+                try self.appendOutboundFramed(.Handshake, .certificate, cert_body, true);
 
                 traceHandshake("Client: Sent empty Certificate (no client cert configured)\n", .{});
             }
@@ -2450,9 +2421,8 @@ pub const Context = struct {
         var transcript_snapshot = self.transcripts.handshake;
         const hash_before = transcript_snapshot.finalize(slot.hash);
         const verify_data = deriveFinishedVerifyData(slot.hash, &slot.value, hash_before);
-        const fin_msg = try encodeHandshake(self.allocator, .finished, verify_data.slice());
-        defer self.allocator.free(fin_msg);
-        try self.appendOutbound(.Handshake, fin_msg, true);
+        // PERF-038: Use appendOutboundFramed instead of encodeHandshake for Finished message.
+        try self.appendOutboundFramed(.Handshake, .finished, verify_data.slice(), true);
         try self.markLocalFinished();
     }
 
@@ -2755,7 +2725,15 @@ pub const Context = struct {
         };
 
         // RFC 6960 + RFC 8446 §4.4.2.1: OCSP stapling validation
+        // RFC 8446 §4.4.3: Verify CertificateVerify signature
+        // Both OCSP validation and signature verification need the parsed leaf cert,
+        // so we consolidate into a single block to avoid redundant parsing.
         if (!self.config.allow_insecure) {
+            // PERF-037: Parse the leaf certificate once and reuse for both
+            // OCSP validation and CertificateVerify signature verification.
+            var leaf_parsed = try x509.parseCert(self.allocator, chain[0]);
+            defer leaf_parsed.deinit(self.allocator);
+
             if (self.config.require_ocsp) {
                 // OCSP is required - fail if not present
                 if (self.peer_ocsp_response == null) {
@@ -2766,10 +2744,6 @@ pub const Context = struct {
 
             // Validate OCSP response if present
             if (self.peer_ocsp_response) |ocsp_bytes| {
-                // Parse leaf certificate to get issuer information
-                const leaf_parsed = try x509.parseCert(self.allocator, chain[0]);
-                defer leaf_parsed.deinit(self.allocator);
-
                 // Determine issuer info for OCSP validation
                 var issuer_parsed: x509.Certificate = undefined;
                 var has_issuer = false;
@@ -2828,11 +2802,8 @@ pub const Context = struct {
 
                 traceHandshake("Client: SCT list validated ({} SCTs)\\n", .{parsed_scts.len});
             }
-        }
 
-        // RFC 8446 §4.4.3: Verify CertificateVerify signature
-        // Skip signature verification when allow_insecure is set (testing only)
-        if (!self.config.allow_insecure) {
+            // RFC 8446 §4.4.3: Verify CertificateVerify signature
             // The signature is computed over the transcript hash up to (but not including) CertificateVerify
             const transcript_hash = self.transcripts.handshake.finalize(self.hash_kind);
 
@@ -2855,14 +2826,11 @@ pub const Context = struct {
                 return HandshakeError.UnsupportedSignatureAlgorithm;
             };
 
-            // Extract SPKI from leaf certificate for signature verification
-            const leaf_cert = try x509.parseCert(self.allocator, chain[0]);
-            defer leaf_cert.deinit(self.allocator);
-
+            // PERF-037: Reuse leaf_parsed from above instead of parsing chain[0] again.
             // Verify the signature using the leaf certificate's public key (SPKI)
             const verified = try sig.verifyCertificateVerify(
                 sig_alg,
-                leaf_cert.spki, // SPKI DER, not full certificate
+                leaf_parsed.spki, // SPKI DER, not full certificate
                 parsed.signature,
                 "TLS 1.3, server CertificateVerify", // RFC 8446 §4.4.3 context string
                 transcript_hash.slice(),

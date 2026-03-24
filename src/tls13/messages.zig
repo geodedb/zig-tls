@@ -215,17 +215,26 @@ pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
 /// # Usage
 /// ```zig
 /// // Generate keypair only
-/// var keys = x25519KeypairAndShared(null);
+/// var keys = try x25519KeypairAndShared(null);
 /// defer std.crypto.secureZero(u8, &keys.priv_key);
 ///
 /// // Generate keypair and compute shared secret
-/// var keys = x25519KeypairAndShared(peer_public_key);
+/// var keys = try x25519KeypairAndShared(peer_public_key);
 /// defer std.crypto.secureZero(u8, &keys.priv_key);
 /// if (keys.shared) |secret| {
 ///     // Use secret for key derivation
 /// }
 /// ```
-pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) struct { priv_key: [32]u8, pub_key: [32]u8, shared: ?[32]u8 } {
+pub const X25519Result = struct { priv_key: [32]u8, pub_key: [32]u8, shared: ?[32]u8 };
+
+/// SEC-009: X25519 errors surfaced to callers instead of silently returning zeroed keys.
+pub const X25519Error = error{
+    /// The peer's public key is a weak/low-order point (e.g. all-zeros),
+    /// producing an all-zero shared secret. Continuing would be insecure.
+    WeakPublicKey,
+};
+
+pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) X25519Error!X25519Result {
     var sk: [32]u8 = undefined;
     defer std.crypto.secureZero(u8, &sk);
     std.crypto.random.bytes(&sk);
@@ -237,7 +246,9 @@ pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) struct { priv_key: [32]u8, 
     if (peer_pub_opt) |peer_pub| {
         // Zig 0.15.1 API: scalarmult returns the shared secret directly
         const sh = std.crypto.dh.X25519.scalarmult(sk, peer_pub) catch {
-            return .{ .priv_key = [_]u8{0} ** 32, .pub_key = pk, .shared = null };
+            // SEC-009: Return an error instead of silently returning zeroed keys.
+            // The caller can decide how to handle a weak peer public key.
+            return X25519Error.WeakPublicKey;
         };
         shared = sh;
     }
@@ -511,4 +522,47 @@ test "PERF-013: encodeHandshakeBuf exact-fit buffer" {
     var buf: [14]u8 = undefined; // exactly 4 + 10
     const n = try encodeHandshakeBuf(&buf, .encrypted_extensions, &body);
     try std.testing.expectEqual(@as(usize, 14), n);
+}
+
+test "SEC-009: x25519KeypairAndShared returns error union — keypair-only succeeds" {
+    // Generating a keypair without a peer key should always succeed.
+    var result = try x25519KeypairAndShared(null);
+    defer std.crypto.secureZero(u8, &result.priv_key);
+    // shared must be null when no peer key provided
+    try std.testing.expect(result.shared == null);
+    // public key must not be all zeros (vanishingly unlikely from random)
+    const zero_key = [_]u8{0} ** 32;
+    try std.testing.expect(!std.mem.eql(u8, &result.pub_key, &zero_key));
+}
+
+test "SEC-009: x25519KeypairAndShared returns WeakPublicKey on all-zero peer key" {
+    // An all-zero public key is a low-order point; scalarmult must reject it.
+    const zero_peer = [_]u8{0} ** 32;
+    const result = x25519KeypairAndShared(zero_peer);
+    try std.testing.expectError(X25519Error.WeakPublicKey, result);
+}
+
+test "SEC-009: x25519KeypairAndShared computes shared secret with valid peer key" {
+    // Generate two keypairs and verify they can derive a shared secret.
+    var alice = try x25519KeypairAndShared(null);
+    defer std.crypto.secureZero(u8, &alice.priv_key);
+    var bob = try x25519KeypairAndShared(null);
+    defer std.crypto.secureZero(u8, &bob.priv_key);
+
+    // Alice computes shared secret using Bob's public key
+    var alice_shared = try x25519KeypairAndShared(bob.pub_key);
+    defer std.crypto.secureZero(u8, &alice_shared.priv_key);
+
+    try std.testing.expect(alice_shared.shared != null);
+}
+
+test "SEC-009: x25519KeypairAndShared return type is error union" {
+    // Verify at comptime that the return type is an error union.
+    comptime {
+        const F = @TypeOf(x25519KeypairAndShared);
+        const return_type = @typeInfo(F).@"fn".return_type.?;
+        if (@typeInfo(return_type) != .error_union) {
+            @compileError("x25519KeypairAndShared must return an error union");
+        }
+    }
 }

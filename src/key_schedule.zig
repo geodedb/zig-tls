@@ -131,12 +131,13 @@ pub fn extractHash(hash: Hash, salt: ?[]const u8, ikm: []const u8) Secret {
 }
 
 pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, context: []const u8, out: []u8) !void {
-    var fbb: [256]u8 = undefined;
-    defer std.crypto.secureZero(u8, &fbb);
-    var fba = std.heap.FixedBufferAllocator.init(&fbb);
-    const alloc = fba.allocator();
-    const info = try hkdfLabel(alloc, label, context, @as(u16, @intCast(out.len)));
-    defer alloc.free(info);
+    // PERF-045: Use a stack buffer directly instead of FixedBufferAllocator.
+    // Max HkdfLabel size: 2 + 1 + 6 + label.len + 1 + context.len.
+    // With SHA-384 (48-byte hash) and longest label (~12 bytes), this is ~70 bytes.
+    // 128 bytes provides comfortable headroom.
+    var label_buf: [128]u8 = undefined;
+    const info = try hkdfLabel(&label_buf, label, context, @as(u16, @intCast(out.len)));
+    defer std.crypto.secureZero(u8, &label_buf);
 
     const prk_slice = prk.slice();
     switch (hash) {
@@ -298,43 +299,47 @@ fn toU8(v: usize) u8 {
 ///
 /// The "tls13 " prefix is automatically prepended to the label parameter.
 ///
+/// PERF-045: Zero-allocation variant that writes into a caller-provided stack buffer
+/// instead of using an allocator. The max HkdfLabel size is bounded:
+/// 2 (length) + 1 (label_len) + 6 ("tls13 ") + label.len + 1 (ctx_len) + context.len.
+/// TLS 1.3 labels are at most ~12 bytes and context is at most 48 bytes (SHA-384),
+/// so 80 bytes is a safe upper bound. Callers use a 128-byte stack buffer.
+///
 /// ## Parameters
-/// - `alloc`: Allocator for the returned buffer
+/// - `buf`: Caller-provided output buffer (must be at least 2+1+6+label.len+1+context.len)
 /// - `label`: Label string (without "tls13 " prefix)
 /// - `context`: Context bytes (often a transcript hash)
 /// - `out_len`: Desired output length from HKDF-Expand
 ///
 /// ## Returns
-/// DER-like encoded HkdfLabel structure suitable for HKDF info parameter.
+/// Slice of `buf` containing the encoded HkdfLabel structure.
 ///
 /// ## RFC Reference
 /// RFC 8446 §7.1 - Key Schedule and HKDF-Expand-Label definition
-fn hkdfLabel(alloc: std.mem.Allocator, label: []const u8, context: []const u8, out_len: u16) ![]u8 {
+fn hkdfLabel(buf: []u8, label: []const u8, context: []const u8, out_len: u16) error{BufferTooSmall}![]u8 {
     // RFC 8446 §7.1 - HkdfLabel structure encoding
-    // PERF-034: Write "tls13 " prefix directly into the output buffer instead of
-    // using std.mem.concat which does an intermediate allocation (even on FixedBufferAllocator).
     const prefix = "tls13 ";
     const full_label_len = prefix.len + label.len;
     const total = 2 + 1 + full_label_len + 1 + context.len;
-    var out = try alloc.alloc(u8, total);
+    if (buf.len < total) return error.BufferTooSmall;
     var i: usize = 0;
     // RFC 8446 §7.1 - Length field (big-endian uint16)
-    out[i] = @as(u8, @truncate(out_len >> 8));
+    buf[i] = @as(u8, @truncate(out_len >> 8));
     i += 1;
-    out[i] = @as(u8, @truncate(out_len));
+    buf[i] = @as(u8, @truncate(out_len));
     i += 1;
     // RFC 8446 §7.1 - Label length and value ("tls13 " prefix + label written inline)
-    out[i] = toU8(full_label_len);
+    buf[i] = toU8(full_label_len);
     i += 1;
-    @memcpy(out[i .. i + prefix.len], prefix);
+    @memcpy(buf[i .. i + prefix.len], prefix);
     i += prefix.len;
-    @memcpy(out[i .. i + label.len], label);
+    @memcpy(buf[i .. i + label.len], label);
     i += label.len;
     // RFC 8446 §7.1 - Context length and value
-    out[i] = toU8(context.len);
+    buf[i] = toU8(context.len);
     i += 1;
-    if (context.len != 0) @memcpy(out[i .. i + context.len], context);
-    return out;
+    if (context.len != 0) @memcpy(buf[i .. i + context.len], context);
+    return buf[0..total];
 }
 
 /// Compute HMAC-SHA256 over data with the given key.

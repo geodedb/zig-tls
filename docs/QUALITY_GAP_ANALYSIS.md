@@ -19,7 +19,7 @@
 ### Top 5 Risks (by priority score, open items first)
 
 1. **QUAL-113** (Partial) -- 14 residual `.?` unwraps in engine.zig; 3 fixed (ecdhe_secret x2, leaf_spki x1), 11 remaining. PriorityScore 60. [Issue #117](https://gitlab.com/devnw/zig/tls/-/work_items/117)
-2. **QUAL-114** (Open) -- 22+ `allocator.dupe` without `errdefer` across 4 files. PriorityScore 36. Memory leaks on error paths. [Issue #119](https://gitlab.com/devnw/zig/tls/-/work_items/119)
+2. **QUAL-114** (Partial) -- 22+ `allocator.dupe` without `errdefer` across 4 files. PriorityScore 36. 3 of 4 files closed; context.zig pending. [Issue #119](https://gitlab.com/devnw/zig/tls/-/work_items/119)
 3. **QUAL-069** (Deferred) -- `context.zig` at 3431 lines is 4.3x the 800-line guideline. Deferred: high regression risk. [Issue #65](https://gitlab.com/devnw/zig/tls/-/work_items/65)
 4. **QUAL-116** (Open) -- 9 additional source files over 800 lines not previously tracked. PriorityScore 24.
 5. **QUAL-117** (Open) -- 14 functions over 100 lines (parseCert 396 lines). PriorityScore 20.
@@ -38,7 +38,7 @@
 | 6 | QUAL-095 | High | 48 | maintainability | driveServerHandshakeFlight 243 lines combining 6 concerns | `src/tls13/context.zig:1996-2237` | -- | Closed |
 | 7 | QUAL-096 | High | 48 | maintainability | ClientHello building duplicated 3 times (~500 lines) | `engine.zig`, `context.zig` | -- | Closed |
 | 8 | QUAL-070 | High | 40 | maintainability | Near-duplicate ClientHelloInfo parse+deinit | `context.zig`, `handshake_state.zig` | -- | Closed |
-| 9 | QUAL-114 | High | 36 | architecture | 22+ `allocator.dupe` without `errdefer` -- memory leaks on error paths | `engine.zig`, `context.zig`, `handshake_state.zig`, `quic_transport_params.zig` | [#119](https://gitlab.com/devnw/zig/tls/-/work_items/119) | Open |
+| 9 | QUAL-114 | High | 36 | architecture | 22+ `allocator.dupe` without `errdefer` -- memory leaks on error paths | `engine.zig`, `context.zig`, `handshake_state.zig`, `quic_transport_params.zig` | [#119](https://gitlab.com/devnw/zig/tls/-/work_items/119) | Partial |
 | 10 | QUAL-091 | High | 36 | maintainability | engine.zig uses legacy inline key schedule patterns (6+ copies) | `src/tls13/engine.zig` | [#90](https://gitlab.com/devnw/zig/tls/-/work_items/90) | Deferred |
 | 11 | QUAL-097 | High | 30 | architecture | parseHandshakeOne catch null wedges on invalid message type | `src/tls13/engine.zig:529` | -- | Closed |
 | 12 | QUAL-071 | High | 30 | architecture | 0-RTT early_secret uses wrong transcript hash | `src/tls13/context.zig:2191` | -- | Closed |
@@ -61,7 +61,7 @@
 | 29 | QUAL-077 | Medium | 16 | docs | No Engine-to-Context migration guide | `docs/` | -- | Closed |
 | 30 | QUAL-120 | Medium | 16 | architecture | quic_transport_params.zig `decode()` missing errdefer | `src/quic_transport_params.zig:559` | -- | Closed |
 | 31 | QUAL-121 | Medium | 16 | architecture | Engine cert handling now propagates OOM via `try` instead of converting to cert-invalid | `src/tls13/engine.zig:865-870` | -- | Closed |
-| 32 | QUAL-122 | Medium | 16 | architecture | Engine dupe calls at 9 sites lack errdefer | `src/tls13/engine.zig` | [#125](https://gitlab.com/devnw/zig/tls/-/work_items/125) | Open |
+| 32 | QUAL-122 | Medium | 16 | architecture | Engine dupe calls at 9 sites lack errdefer | `src/tls13/engine.zig` | [#125](https://gitlab.com/devnw/zig/tls/-/work_items/125) | Closed |
 | 33 | QUAL-102 | Medium | 16 | architecture | 6x allocator.dupe catch null silently swallow OOM | `src/tls13/engine.zig:674,682,1643,1923,1941` | -- | Closed |
 | 34 | QUAL-103 | Medium | 16 | api-contract | maybeAutoProgress swallows queueFinished error | `src/tls13/engine.zig:1684` | -- | Closed |
 | 35 | QUAL-104 | Low | 15 | readability | Magic hex constants for extension types instead of ExtensionType enum | `engine.zig`, `context.zig` | -- | Open |
@@ -84,10 +84,10 @@
 | 52 | QUAL-108 | Low | 6 | cleanup | 14 unused imports across 7 files | `varint.zig`, `tls13_full.zig`, `sig.zig`, `tls13.zig`, `context.zig`, `engine.zig`, `types.zig` | -- | Closed |
 | 53 | QUAL-109 | Low | 6 | architecture | TODO in context.zig:1207 -- QUAL-074 callback not wired (status inconsistent) | `src/tls13/context.zig:1207` | -- | Closed |
 | 54 | QUAL-110 | Low | 6 | api-contract | notifyMetadata callback error logged but not propagated | `src/tls13/context.zig:2660` | -- | Closed (by-design) |
-| 55 | QUAL-126 | Low | 4 | architecture | quic_transport_params.zig only 2 of 4 dupe sites have errdefer | `src/quic_transport_params.zig:645,649,653` | -- | Open |
-| 56 | QUAL-127 | Low | 4 | maintainability | handshake_state.zig 13 dupe sites -- only 1 has errdefer | `src/tls13/handshake_state.zig` | -- | Open |
+| 55 | QUAL-126 | Low | 4 | architecture | quic_transport_params.zig only 2 of 4 dupe sites have errdefer | `src/quic_transport_params.zig:645,649,653` | -- | Closed |
+| 56 | QUAL-127 | Low | 4 | maintainability | handshake_state.zig 13 dupe sites -- only 1 has errdefer | `src/tls13/handshake_state.zig` | -- | Closed |
 | 57 | QUAL-128 | Low | 4 | maintainability | context.zig 11 dupe sites without errdefer | `src/tls13/context.zig` | -- | Open |
-| 58 | QUAL-129 | Low | 4 | readability | Engine zero errdefer usage across all allocator.dupe calls | `src/tls13/engine.zig` | -- | Open |
+| 58 | QUAL-129 | Low | 4 | readability | Engine zero errdefer usage across all allocator.dupe calls | `src/tls13/engine.zig` | -- | Closed |
 | 59 | QUAL-130 | Low | 4 | cleanup | Stale line counts in QUAL-069 (3581 vs actual 3431) | `docs/QUALITY_GAP_ANALYSIS.md` | -- | Open |
 | 60 | QUAL-086 | Low | 4 | cleanup | deriveFinishedVerifyData in messages/finished.zig is unused dead code | `src/tls13/messages/finished.zig:155` | -- | Closed |
 | 61 | QUAL-111 | Low | 4 | docs | handleKeyUpdateMessage doc comment misplaced onto handleCertificate | `src/tls13/context.zig` | -- | Closed |
@@ -1719,35 +1719,33 @@ Replace all remaining `.?` unwraps with `orelse return error.InvalidState` or `i
 - **PriorityScore:** 36 (Impact 3 x Likelihood 3 x 4)
 - **Category:** `architecture`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Partial (3 of 4 files closed; context.zig pending separate work)
 - **Issue:** [#119](https://gitlab.com/devnw/zig/tls/-/work_items/119)
 
 **File locations:**
-- `src/tls13/engine.zig` -- 12 sites without errdefer
-- `src/tls13/context.zig` -- 11 sites without errdefer
-- `src/tls13/handshake_state.zig` -- 13 sites (only 1 has errdefer at line 319)
-- `src/quic_transport_params.zig` -- 4 sites (only 2 have errdefer)
+- `src/tls13/engine.zig` -- 12 sites: all covered (see QUAL-122/QUAL-129)
+- `src/tls13/context.zig` -- 11 sites: pending (handled separately, see QUAL-128)
+- `src/tls13/handshake_state.zig` -- 13 sites: all covered (see QUAL-127)
+- `src/quic_transport_params.zig` -- 4 sites: all covered (see QUAL-126)
 
-**Description:**
-Sequential `try allocator.dupe` calls allocate memory but lack `errdefer allocator.free(...)` guards. If a subsequent operation fails, previously allocated memory leaks. This is systematic across 4 key files totaling 40+ sites.
+**Resolution (partial):**
+Comprehensive audit of all `allocator.dupe` sites in engine.zig, handshake_state.zig, and
+quic_transport_params.zig. Findings:
 
-**Evidence:**
-```zig
-// handshake_state.zig:255-278 -- multiple sequential dupes, no errdefer
-const session_id_copy = try allocator.dupe(u8, parsed.session_id);
-const cipher_suites_copy = try allocator.dupe(tls13_full.CipherSuite, parsed.cipher_suites);
-// If any subsequent dupe fails, all previous copies leak
-const versions_copy = try allocator.dupe(u8, versions);
-const key_bytes = try allocator.dupe(u8, key_share.key_exchange);
-const raw_copy = try allocator.dupe(u8, body);
-```
+- **handshake_state.zig:** 12 of 13 sites already had errdefer from prior commits. Fixed the
+  one remaining gap: `psk_copy` at line 352 lacked errdefer for the owned identities and binders
+  arrays. Added explicit errdefer + two new tests. (QUAL-127 Closed)
+- **quic_transport_params.zig:** 3 connection ID dupe sites at lines 646/650/654 are covered by
+  the top-level `errdefer params.deinit(allocator)` at line 561 which frees all three via
+  `deinit()`. No code change needed. (QUAL-126 Closed)
+- **engine.zig:** All 12 dupe sites use the "store into self field immediately" pattern where
+  Engine.deinit() handles cleanup. TicketStore.store has explicit errdefer.
+  setServerCertificate has manual catch-free. No additional errdefer needed. (QUAL-122/129 Closed)
+- **context.zig:** Out of scope for this round (handled separately per QUAL-128).
 
-**Recommendation:**
-Add `errdefer allocator.free(...)` after each `try allocator.dupe`. For functions with many sequential dupes, consider arena allocator.
+**Acceptance criteria:** Every `try allocator.dupe` has a corresponding `errdefer allocator.free(...)` or equivalent coverage.
 
-**Acceptance criteria:** Every `try allocator.dupe` has a corresponding `errdefer allocator.free(...)`.
-
-**Verification:** Audit each dupe site. `zig build test` passes.
+**Verification:** `zig build test` passes (551/553, 2 skipped). `zig fmt --check src/` clean.
 
 **Effort:** M
 
@@ -2018,32 +2016,33 @@ OOM now propagates as `error.OutOfMemory` instead of silently rejecting valid ce
 - **PriorityScore:** 16 (Impact 2 x Likelihood 2 x 4)
 - **Category:** `architecture`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed (already handled)
 - **Issue:** [#125](https://gitlab.com/devnw/zig/tls/-/work_items/125)
 - **Cross-reference:** QUAL-114 (umbrella issue)
 
-**File locations:**
-- `src/tls13/engine.zig` -- lines 152, 772, 780, 1170, 1176, 1662, 1733, 1734, 1911, 1926
+**Resolution:**
+Comprehensive audit of all 12 `allocator.dupe` sites in engine.zig found that no additional
+errdefer is needed:
 
-**Description:**
-Subset of QUAL-114 focused on engine.zig. 9 `try allocator.dupe` calls lack `errdefer` guards. Zero `errdefer` statements exist anywhere in engine.zig.
+1. **TicketStore.store (line 187):** Already has `errdefer self.allocator.free(ident_copy)` at
+   line 188. COVERED.
+2. **handleReceivedEncryptedExtensions ALPN (line 809):** Result stored immediately into
+   `self.alpn`. Engine.deinit() frees it. COVERED by ownership transfer.
+3. **handleReceivedEncryptedExtensions QUIC TP (line 819):** Same pattern -- stored into
+   `self.peer_tp`. COVERED.
+4. **handleReceivedCertificate leaf_spki (line 896):** Stored into `self.leaf_spki`. COVERED.
+5. **setLocalTransportParameters (line 1211):** Stored into `self.local_tp`. COVERED.
+6. **setServerName (line 1219):** Stored into `self.server_name`. COVERED.
+7. **extractAlpnFromClientHello (line 1714):** Stored into `self.alpn`. COVERED.
+8. **setServerCertificate (lines 1789-1793):** Two dupes with manual catch-free on second
+   failure. COVERED by explicit error handling.
+9. **parseRealClientHello session_id (line 1971):** Stored into `engine.client_session_id`.
+   COVERED.
+10. **parseRealClientHello peer_tp (line 1986):** Stored into `engine.peer_tp`. COVERED.
 
-**Evidence:**
-```zig
-// engine.zig:1733-1734 -- two sequential dupes, no errdefer
-self.server_cert_der = try self.allocator.dupe(u8, cert_der);
-self.server_priv_key = try self.allocator.dupe(u8, priv_key);
-// If 1734 fails, 1733's allocation leaks
-```
-
-`grep -c errdefer src/tls13/engine.zig` returns 0.
-
-**Recommendation:**
-Add errdefer after each dupe. Consider arena allocator for multi-allocation functions.
-
-**Acceptance criteria:** Every `try allocator.dupe` in engine.zig has errdefer.
-
-**Verification:** `zig build test` passes.
+Engine dupe sites use the "store into self field immediately" pattern where Engine.deinit()
+handles cleanup. This is a valid alternative to errdefer when the allocation is immediately
+transferred to a struct that has a comprehensive deinit(). No code change needed.
 
 **Effort:** S
 
@@ -2136,19 +2135,16 @@ Delete `HashDigestCache` from `context.zig`. Use `transcript_mod.HashDigestCache
 - **PriorityScore:** 4 (Impact 2 x Likelihood 0.5 x 4)
 - **Category:** `architecture`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed (already handled)
 - **Cross-reference:** QUAL-114 (umbrella), QUAL-120 (decode-specific)
 
-**File locations:**
-- `src/quic_transport_params.zig:645,649,653` -- dupe calls without errdefer
-
-**Description:**
-In `decode()`, three `allocator.dupe` calls for connection IDs (original, stateless_reset_token handling) lack errdefer. This is a subset of the QUAL-120 finding providing granular location tracking.
-
-**Recommendation:**
-Add errdefer guards.
-
-**Acceptance criteria:** All dupe sites in quic_transport_params.zig have errdefer.
+**Resolution:**
+The three connection ID dupe sites at lines 646, 650, 654 in `decode()` do NOT need individual
+errdefer because they are already covered by the top-level `errdefer params.deinit(allocator)` at
+line 561. The `deinit()` method (lines 704-712) frees all three connection ID fields
+(`initial_source_connection_id`, `original_destination_connection_id`,
+`retry_source_connection_id`) plus `preferred_address`. Each dupe stores its result immediately
+into the `params` struct, so the top-level errdefer covers all error paths. No code change needed.
 
 **Effort:** S
 
@@ -2161,21 +2157,18 @@ Add errdefer guards.
 - **PriorityScore:** 4 (Impact 2 x Likelihood 0.5 x 4)
 - **Category:** `maintainability`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed
 - **Cross-reference:** QUAL-114 (umbrella)
 
-**File locations:**
-- `src/tls13/handshake_state.zig:255,258,263,267,270,273,278,297,327,347,357`
+**Resolution:**
+Audit found that 12 of 13 dupe sites already had errdefer (added in prior commits). The one
+remaining gap was `psk_copy`: after the PSK `if` block at line 352, the owned identities and
+binders arrays had no errdefer, so a failure in the subsequent `psk_modes_copy` dupe would leak
+them. Added an explicit errdefer at line 353 that frees all owned identity/binder data. Two new
+tests added: an OOM resilience test exercising all failure points and a happy-path leak-detection
+test. All 551 tests pass.
 
-**Description:**
-`setClientHello` performs 13 sequential `try allocator.dupe` calls to copy ClientHello fields. Only 1 site (line 319, in a sub-function) has errdefer. If the 10th dupe fails, the 9 previous allocations leak.
-
-**Recommendation:**
-Add errdefer for each allocation, or refactor to use an arena allocator that can be freed atomically on error.
-
-**Acceptance criteria:** All dupe sites have errdefer or arena pattern.
-
-**Effort:** M
+**Effort:** S
 
 ---
 
@@ -2211,21 +2204,19 @@ Add errdefer after each dupe call.
 - **PriorityScore:** 4 (Impact 1 x Likelihood 1 x 4)
 - **Category:** `readability`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed (already handled)
 - **Cross-reference:** QUAL-114 (umbrella), QUAL-122 (engine-specific)
 
-**File locations:**
-- `src/tls13/engine.zig`
+**Resolution:**
+Audit found that engine.zig now has 1 errdefer (TicketStore.store line 188, added in prior
+commit). The remaining dupe sites use the "store into self field immediately" pattern where
+Engine.deinit() handles cleanup. This is architecturally sound: every dupe result is stored into
+an Engine field before any subsequent fallible operation, and Engine.deinit() frees all owned
+fields. Adding redundant errdefer would be incorrect (double-free) since the allocation is
+already owned by the struct. setServerCertificate handles its two-dupe case with an explicit
+catch-free block. No further errdefer additions needed.
 
-**Description:**
-engine.zig contains zero `errdefer` statements anywhere in the file (2148 lines). This is a code smell indicating systematic lack of error-path resource cleanup across the entire Engine implementation.
-
-**Recommendation:**
-Audit all allocation/resource acquisition sites in engine.zig and add errdefer cleanup.
-
-**Acceptance criteria:** All allocation sites have errdefer.
-
-**Effort:** M
+**Effort:** S
 
 ---
 
@@ -2260,15 +2251,15 @@ Update QUAL-069 description to reflect current 3431-line count.
 |----|----------|---------|--------|
 | QUAL-087 | Critical | engine.zig null-safety gap in certificate verification | Closed |
 | QUAL-113 | High | 14 residual `.?` unwraps in engine.zig (QUAL-087 incomplete); 3 fixed, 11 remaining | Partial |
-| QUAL-114 | High | 22+ allocator.dupe without errdefer -- memory leaks on error paths | Open |
+| QUAL-114 | High | 22+ allocator.dupe without errdefer -- memory leaks on error paths | Partial |
 | QUAL-097 | High | parseHandshakeOne catch null wedges on invalid message type | Closed |
 | QUAL-071 | High | 0-RTT early_secret uses wrong transcript hash (server side) | Closed |
 | QUAL-120 | Medium | quic_transport_params.zig decode() missing errdefer | Closed |
 | QUAL-121 | Medium | Engine cert handling converts OOM to cert-invalid | Closed |
-| QUAL-122 | Medium | Engine dupe calls at 9 sites lack errdefer | Open |
+| QUAL-122 | Medium | Engine dupe calls at 9 sites lack errdefer | Closed |
 | QUAL-102 | Medium | 6x allocator.dupe catch null silently swallow OOM | Closed |
 | QUAL-074 | Medium | new_session_ticket silently dropped in Context path | Closed |
-| QUAL-126 | Low | quic_transport_params.zig only 2 of 4 dupe sites have errdefer | Open |
+| QUAL-126 | Low | quic_transport_params.zig only 2 of 4 dupe sites have errdefer | Closed |
 | QUAL-109 | Low | TODO in context.zig:1207 -- QUAL-074 callback not wired (status inconsistent) | Closed |
 
 ### Maintainability (18)
@@ -2290,7 +2281,7 @@ Update QUAL-069 description to reflect current 3431-line count.
 | QUAL-123 | Low | build.zig at 1112 lines exceeds 800-line guideline | Open |
 | QUAL-124 | Low | readU16 helper duplicated between sct.zig and messages/helpers.zig | Open |
 | QUAL-125 | Low | HashDigestCache duplicated between context.zig and transcript.zig | Open |
-| QUAL-127 | Low | handshake_state.zig 13 dupe sites -- only 1 has errdefer | Open |
+| QUAL-127 | Low | handshake_state.zig 13 dupe sites -- only 1 has errdefer | Closed |
 | QUAL-128 | Low | context.zig 11 dupe sites without errdefer | Open |
 | QUAL-081 | Low | cipherSuiteHash exact duplicate | Closed |
 
@@ -2350,7 +2341,7 @@ Update QUAL-069 description to reflect current 3431-line count.
 | QUAL-119 | Medium | Deep nesting in client_hello.zig (10) and x509.zig (9) | Open |
 | QUAL-084 | Low | 13x inline u16 big-endian read instead of readU16 helper | Closed |
 | QUAL-104 | Low | Magic hex constants for extension types instead of ExtensionType enum | Open |
-| QUAL-129 | Low | Engine zero errdefer usage across all allocator.dupe calls | Open |
+| QUAL-129 | Low | Engine zero errdefer usage across all allocator.dupe calls | Closed |
 | QUAL-112 | Low | Engine.init is a single 262-character line | Closed |
 
 ---
@@ -2365,10 +2356,10 @@ Update QUAL-069 description to reflect current 3431-line count.
 | QUAL-118 | Delete SecretSlot from context.zig, import from secrets.zig | S | Open |
 | QUAL-120 | Add errdefer guards in quic_transport_params.zig decode() | S | Closed |
 | QUAL-121 | Propagate OOM in engine.zig cert handling instead of cert-invalid | S | Closed |
-| QUAL-122 | Add errdefer to 9 engine.zig dupe sites | S | Open |
+| QUAL-122 | Add errdefer to 9 engine.zig dupe sites | S | Closed |
 | QUAL-124 | Delete readU16 from sct.zig, import from helpers.zig | S | Open |
 | QUAL-125 | Delete HashDigestCache from context.zig, import from transcript.zig | S | Open |
-| QUAL-126 | Add errdefer to quic_transport_params.zig dupe sites | S | Open |
+| QUAL-126 | Add errdefer to quic_transport_params.zig dupe sites | S | Closed |
 | QUAL-128 | Add errdefer to 11 context.zig dupe sites | S | Open |
 | QUAL-130 | Update stale line counts in QUAL-069 | S | Open |
 | QUAL-123 | Evaluate build.zig for extraction | S | Open |
@@ -2408,10 +2399,10 @@ Update QUAL-069 description to reflect current 3431-line count.
 | ID | Finding | Effort | Status |
 |----|---------|--------|--------|
 | QUAL-113 | Replace 14 residual .? unwraps with safe patterns in engine.zig (3 done, 11 remaining) | M | Partial |
-| QUAL-114 | Add errdefer to 22+ allocator.dupe sites across 4 files | M | Open |
+| QUAL-114 | Add errdefer to 22+ allocator.dupe sites across 4 files | M | Partial |
 | QUAL-119 | Reduce nesting depth in client_hello.zig and x509.zig | M | Open |
-| QUAL-127 | Add errdefer to 13 handshake_state.zig dupe sites | M | Open |
-| QUAL-129 | Systematic errdefer audit for all engine.zig allocations | M | Open |
+| QUAL-127 | Add errdefer to 13 handshake_state.zig dupe sites | S | Closed |
+| QUAL-129 | Systematic errdefer audit for all engine.zig allocations | S | Closed |
 | QUAL-094 | Decompose onCryptoRecv into 6 handler methods | M | Closed |
 | QUAL-095 | Extract driveServerHandshakeFlight into sub-functions | M | Closed |
 | QUAL-099 | Add HRR test coverage for Context | M | Closed |
