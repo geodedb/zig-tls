@@ -209,37 +209,6 @@ pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) struct { priv_key: [32]u8, 
     return .{ .priv_key = sk, .pub_key = pk, .shared = shared };
 }
 
-/// Encode a minimalistic ClientHello body carrying an X25519 key share only (non-interoperable placeholder).
-///
-/// This creates a minimal "CH1" format for testing. For real TLS 1.3 interoperability,
-/// use tls13_full.buildClientHello() instead.
-///
-/// Format: "CH1" || client_pub[32]
-pub fn encodeMinimalClientHello(alloc: std.mem.Allocator, client_pub: [32]u8) ![]u8 {
-    // Body: "CH1" || client_pub
-    var body: [3 + 32]u8 = undefined;
-    body[0] = 'C';
-    body[1] = 'H';
-    body[2] = '1';
-    @memcpy(body[3..], &client_pub);
-    return encodeHandshake(alloc, .client_hello, body[0..]);
-}
-
-/// Encode a minimalistic ServerHello body carrying an X25519 key share only (non-interoperable placeholder).
-///
-/// This creates a minimal "SH1" format for testing. For real TLS 1.3 interoperability,
-/// use tls13_full.buildServerHello() instead.
-///
-/// Format: "SH1" || server_pub[32]
-pub fn encodeMinimalServerHello(alloc: std.mem.Allocator, server_pub: [32]u8) ![]u8 {
-    var body: [3 + 32]u8 = undefined;
-    body[0] = 'S';
-    body[1] = 'H';
-    body[2] = '1';
-    @memcpy(body[3..], &server_pub);
-    return encodeHandshake(alloc, .server_hello, body[0..]);
-}
-
 /// Attempt to parse minimal CH/SH and return pubkeys if present.
 ///
 /// Recognizes the minimal "CH1" and "SH1" test formats. Returns null if

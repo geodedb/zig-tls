@@ -202,10 +202,10 @@ pub const parseHandshakeOne = messages.parseHandshakeOne;
 pub const x25519KeypairAndShared = messages.x25519KeypairAndShared;
 
 /// Encode minimal ClientHello (testing).
-pub const encodeMinimalClientHello = messages.encodeMinimalClientHello;
+pub const encodeMinimalClientHello = engine.encodeMinimalClientHello;
 
 /// Encode minimal ServerHello (testing).
-pub const encodeMinimalServerHello = messages.encodeMinimalServerHello;
+pub const encodeMinimalServerHello = engine.encodeMinimalServerHello;
 
 /// Parse minimal Hello public key (testing).
 pub const parseMinimalHelloPub = messages.parseMinimalHelloPub;

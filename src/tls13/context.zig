@@ -231,6 +231,11 @@ pub const Callbacks = struct {
     /// null = Not notified of completion.
     on_handshake_complete: ?*const fn (ctx: *Context) anyerror!void = null,
 
+    /// Called when the server receives a pre_shared_key extension.
+    /// The application should look up the PSK associated with the ticket identity.
+    /// Returns the PSK if found, or null if not found.
+    on_ticket_lookup: ?*const fn (ctx: *Context, identity: []const u8) ?[]const u8 = null,
+
     /// Called to fetch certificate chain for local authentication (Server role).
     /// RFC 8446 §4.4.2: Certificate message contains certificate_list.
     ///
@@ -239,13 +244,7 @@ pub const Callbacks = struct {
     /// - Subsequent certificates: Intermediates (optional)
     ///
     /// Currently only leaf certificate used; full chain validation planned.
-    ///
     /// null = Use Config.server_cert_der directly (no dynamic fetch).
-    /// Called when the server receives a pre_shared_key extension.
-    /// The application should look up the PSK associated with the ticket identity.
-    /// Returns the PSK if found, or null if not found.
-    on_ticket_lookup: ?*const fn (ctx: *Context, identity: []const u8) ?[]const u8 = null,
-
     fetch_certificate_chain: ?*const fn (ctx: *Context) anyerror![]const u8 = null,
 };
 
@@ -282,7 +281,11 @@ pub const SecretSlot = struct {
 
     const Self = @This();
 
+    /// Clear secret and reset to initial state (zeroize).
+    /// Security: Uses secureZero to prevent compiler from optimizing away
+    /// the zeroization of sensitive key material (CWE-226).
     pub fn clear(self: *Self) void {
+        std.crypto.secureZero(u8, &self.value.bytes);
         self.value = Secret.empty();
         self.hash = .sha256;
         self.valid = false;
@@ -881,6 +884,12 @@ pub const Context = struct {
         // then explicitly call startClientHandshake(). If we call it here, the ClientHello
         // will be generated without transport parameters.
 
+        // SEC-005: Prevent allow_insecure from being used in release builds.
+        // This disables ALL certificate validation — only safe in Debug/testing.
+        if (config.allow_insecure and @import("builtin").mode != .Debug) {
+            @panic("SECURITY: allow_insecure=true is forbidden in release builds — it disables all certificate validation");
+        }
+
         return ctx;
     }
 
@@ -1061,7 +1070,7 @@ pub const Context = struct {
     /// Produce outbound CRYPTO payload for the given encryption level when available.
     pub fn pollCrypto(self: *Context, allocator: std.mem.Allocator, level: EncryptionLevel) ![]u8 {
         var stream = self.streams.buffer(level);
-        if (stream.outbound.items.len == 0) return ApiError.Unimplemented;
+        if (stream.outbound.items.len == 0) return ApiError.NothingToRead;
         const view = stream.outbound.items;
         const out = try allocator.dupe(u8, view);
         stream.outbound.clearRetainingCapacity();
@@ -1326,6 +1335,20 @@ pub const Context = struct {
                     null;
 
                 self.client_cert_requested = true;
+
+                // RFC 8446 §4.4.3: Client selects a signature scheme from the
+                // CertificateRequest's signature_algorithms that it supports.
+                self.negotiated_signature = null;
+                for (self.config.supported_signature_schemes) |ours| {
+                    for (cr_parsed.signature_algorithms) |theirs| {
+                        if (ours == theirs) {
+                            self.negotiated_signature = ours;
+                            break;
+                        }
+                    }
+                    if (self.negotiated_signature != null) break;
+                }
+
                 traceHandshake("Client: Received CertificateRequest from server\n", .{});
             },
             .finished => {
@@ -2170,6 +2193,10 @@ pub const Context = struct {
         for (sh_msg) |b| traceHandshake("{X:0>2}", .{b});
         traceHandshake("\n", .{});
 
+        // RFC 8446 §7.1: Snapshot transcript hash of ClientHello ONLY (before
+        // ServerHello) — needed for client_early_traffic_secret derivation.
+        const ch_only_hash = self.transcripts.handshake.finalize(self.hash_kind);
+
         try self.appendOutbound(.Initial, sh_msg, true);
 
         const transcript_after_sh = self.transcripts.handshake.finalize(self.hash_kind);
@@ -2187,9 +2214,8 @@ pub const Context = struct {
 
             if (accept_early) {
                 // Derive and install 0-RTT client early traffic secret
-                // Use transcript hash of ClientHello (before ServerHello)
-                const ch_hash = self.transcripts.handshake.finalize(self.hash_kind);
-                const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(self.hash_kind, &early_secret, ch_hash.slice());
+                // RFC 8446 §7.1: client_early_traffic_secret uses Transcript-Hash(ClientHello)
+                const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(self.hash_kind, &early_secret, ch_only_hash.slice());
 
                 // Install as receiving secret (server receives 0-RTT from client)
                 // NOTE: QUIC uses EarlyData encryption level, but we may need to map to Initial
@@ -2260,13 +2286,10 @@ pub const Context = struct {
             // Signature is over transcript hash including Certificate message we just added
             const hash_for_sig = self.transcripts.handshake.finalize(self.hash_kind);
 
-            // Infer signature algorithm from certificate if not explicitly configured
-            // First get the SignatureScheme, then convert to SigAlg
-            const sig_scheme = self.negotiated_signature orelse blk: {
-                // Try to detect from certificate, but this returns SigAlg not SignatureScheme
-                // For now, default to ed25519 which is in our supported schemes
-                break :blk .ed25519;
-            };
+            // RFC 8446 §4.4.3: Server MUST have negotiated a signature scheme
+            // during ClientHello processing via selectServerSignatureScheme.
+            const sig_scheme = self.negotiated_signature orelse
+                return HandshakeError.NoSignatureScheme;
 
             // Convert SignatureScheme to SigAlg
             const sig_alg: sig.SigAlg = switch (sig_scheme) {
@@ -2274,7 +2297,7 @@ pub const Context = struct {
                 .ecdsa_secp384r1_sha384 => .ecdsa_secp384r1_sha384,
                 .rsa_pss_rsae_sha256 => .rsa_pss_sha256,
                 .ed25519 => .ed25519,
-                else => .ed25519, // Default fallback
+                else => return HandshakeError.UnsupportedSignatureAlgorithm,
             };
 
             traceHandshake("Server: Signing CertificateVerify with algorithm: {s}\n", .{@tagName(sig_alg)});
@@ -2687,14 +2710,16 @@ pub const Context = struct {
                 if (self.config.client_key_der) |priv_key| {
                     const hash_for_sig = self.transcripts.handshake.finalize(self.hash_kind);
 
-                    // Use the negotiated signature scheme or default to ed25519
-                    const sig_scheme = self.negotiated_signature orelse .ed25519;
+                    // RFC 8446 §4.4.3: Client MUST use a scheme from the server's
+                    // CertificateRequest signature_algorithms extension.
+                    const sig_scheme = self.negotiated_signature orelse
+                        return HandshakeError.NoSignatureScheme;
                     const sig_alg: sig.SigAlg = switch (sig_scheme) {
                         .ecdsa_secp256r1_sha256 => .ecdsa_secp256r1_sha256,
                         .ecdsa_secp384r1_sha384 => .ecdsa_secp384r1_sha384,
                         .rsa_pss_rsae_sha256 => .rsa_pss_sha256,
                         .ed25519 => .ed25519,
-                        else => .ed25519,
+                        else => return HandshakeError.UnsupportedSignatureAlgorithm,
                     };
 
                     const signature = try sig.signCertificateVerify(

@@ -160,7 +160,6 @@ pub const parseCertificateRequest = certificate_request_mod.parseCertificateRequ
 
 // Re-export Finished functions for backward compatibility
 pub const buildFinished = finished_mod.buildFinished;
-pub const deriveFinishedVerifyData = finished_mod.deriveFinishedVerifyData;
 
 // NOTE: TLS 1.3 message parsing and building functions have been extracted to:
 // - src/tls13/messages/core_types.zig (ExtensionType, NamedGroup, SignatureScheme, CipherSuite)

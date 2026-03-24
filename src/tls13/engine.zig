@@ -1722,12 +1722,14 @@ pub const Engine = struct {
 /// Returns (priv, pub, shared) where shared may be null if peer_pub is null.
 pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) struct { priv_key: [32]u8, pub_key: [32]u8, shared: ?[32]u8 } {
     var sk: [32]u8 = undefined;
+    defer std.crypto.secureZero(u8, &sk);
     var pk: [32]u8 = undefined;
     std.crypto.random.bytes(&sk);
     std.crypto.dh.X25519.scalarmultBase(&pk, sk);
     var shared: ?[32]u8 = null;
     if (peer_pub_opt) |peer_pub| {
         var sh: [32]u8 = undefined;
+        defer std.crypto.secureZero(u8, &sh);
         if (std.crypto.dh.X25519.scalarmult(&sh, sk, peer_pub)) {
             shared = sh;
         } else shared = null;

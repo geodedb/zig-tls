@@ -48,6 +48,8 @@ pub const SignatureScheme = tls13_full.SignatureScheme;
 pub const ApiError = error{
     /// Requested operation not yet implemented.
     Unimplemented,
+    /// No outbound data available at the requested encryption level.
+    NothingToRead,
 };
 
 /// Errors surfaced during TLS 1.3 handshake message parsing and validation.

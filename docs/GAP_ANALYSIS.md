@@ -11,15 +11,15 @@
 | Severity | Original | Closed | Open |
 |----------|----------|--------|------|
 | Critical | 8        | 8      | 0    |
-| High     | 17       | 17     | 0    |
-| Medium   | 26       | 26     | 0    |
-| Low      | 17       | 17     | 0    |
-| **Total**| **68**   | **68** | **0**|
+| High     | 18       | 18     | 0    |
+| Medium   | 30       | 26     | 4    |
+| Low      | 21       | 18     | 3    |
+| **Total**| **77**   | **70** | **7**|
 
 ### Implementation Status
 
-**Closed: 68 findings** - All implemented and verified
-**Open: 0 findings** - All gaps remediated
+**Closed: 70 findings** - All implemented and verified
+**Open: 7 findings** - From Eighth Review (2026-03-24)
 
 ### Seventh Review Remediations (2026-03-24)
 
@@ -53,6 +53,46 @@ Fresh full codebase audit identified 9 additional findings. All closed:
    - Files: `src/logger.zig` (removed)
 9. GAP-0068 (Low): Remaining audit findings (DRY violations, encodePlaintext variant, ensureTotalCapacity)
    deferred to future work — cosmetic/optimization items with no security impact.
+
+### Eighth Review Findings (2026-03-24)
+
+Fresh full codebase audit identified 9 additional findings. 2 closed, 7 open:
+
+1. GAP-0069 (High): **CLOSED** -- SignatureScheme `else => .ed25519` silent fallback in signing paths.
+   Replaced `else => .ed25519` with `HandshakeError.UnsupportedSignatureAlgorithm` in both server
+   and client CertificateVerify paths in context.zig.
+   - Files: `src/tls13/context.zig` (lines ~2272-2278, ~2692-2697)
+2. GAP-0070 (Medium): External PSK not supported -- context.zig:2021 and 2510 hardcode
+   `external=false` in deriveBinderKey calls. No config surface for external PSK identity/key
+   pairs.
+   - Related: [#4](https://gitlab.com/devnw/zig/tls/-/issues/4)
+   - Files: `src/tls13/context.zig` (lines ~2021, ~2510)
+3. GAP-0071 (Medium): Server NewSessionTicket is a placeholder -- engine.zig:334-366 uses
+   caller-provided ticket value ("test_ticket"), not cryptographically derived from
+   resumption_master_secret.
+   - Related: [#4](https://gitlab.com/devnw/zig/tls/-/issues/4), [#19](https://gitlab.com/devnw/zig/tls/-/issues/19)
+   - Files: `src/tls13/engine.zig` (lines ~334-366)
+4. GAP-0072 (Medium): Post-handshake authentication not implemented -- extension type and
+   error variant exist but no handler. Forbidden for QUIC (RFC 9001 S4.4).
+   - Related: [#54](https://gitlab.com/devnw/zig/tls/-/issues/54)
+   - Files: `src/tls13/context.zig`, `src/tls13/engine.zig`
+5. GAP-0073 (Medium): parallel.zig crypto stubs are debug-only -- 3 stub functions guarded
+   by @compileError in release. Need real implementations.
+   - Related: [#55](https://gitlab.com/devnw/zig/tls/-/issues/55)
+   - Files: `src/parallel.zig`
+6. GAP-0074 (Low): **CLOSED** -- SHA-1 OCSP SingleResponses silently skipped. Added OCSP trace
+   diagnostic flag and SHA-1 trace message in ocsp.zig so skipped responses are visible in debug.
+   - Files: `src/ocsp.zig` (lines ~87-93)
+7. GAP-0075 (Low, Blocked): AES-CCM cipher suites defined but non-functional -- enum values
+   exist but no AEAD implementation. Blocked by Zig stdlib.
+   - Related: [#8](https://gitlab.com/devnw/zig/tls/-/issues/8)
+   - Files: `src/tls13/types.zig`, `src/record/aead.zig`
+8. GAP-0076 (Low, Design Decision): CRL distribution point checking absent -- x509.zig
+   explicitly documents omission. OCSP stapling available as alternative.
+   - Files: `src/x509.zig`
+9. GAP-0077 (Low): Minimal ClientHello/ServerHello encoders in production Engine path --
+   messages.zig:212-268 has non-interoperable placeholders exposed as public Engine API.
+   - Files: `src/tls13/messages.zig` (lines ~212-268)
 
 ### Sixth Review Remediations (2026-03-23)
 
@@ -156,6 +196,15 @@ All 11 remaining open issues from the third review have been implemented:
 | 33 | Medium | 20 | Duplicate HandshakeError definitions in context.zig and types.zig | src/tls13/types.zig, src/tls13/context.zig | CWE-1041 | src/tls13/types.zig:48-126; context.zig:254-392 | N/A | Moved canonical definition to types.zig; context.zig and mod.zig import from types | Claude | 2026-03-23 | Closed |
 | 34 | Low | 8 | RFC 8446 Appendix A test vectors missing from key schedule | src/tls13/key_derivation.zig, tests/rfc8446/ | -- | tests/rfc8446/appendix_a_vectors.zig | N/A | 33 tests validating every key schedule stage against RFC 8448 Section 3 hex vectors | Claude | 2026-03-23 | Closed |
 | 35 | Low | 4 | 27 catch unreachable instances lack SAFETY documentation | src/key_schedule.zig, src/varint.zig, + 4 files | CWE-391 | Multiple | N/A | Added SAFETY comments to all 27 instances; all invariants verified as genuinely unreachable | Claude | 2026-03-23 | Closed |
+| 36 | High | 40 | SignatureScheme `else => .ed25519` silent fallback in signing paths | src/tls13/context.zig | CWE-327 | src/tls13/context.zig:2272-2278,2692-2697 | N/A | Replaced `else => .ed25519` with `HandshakeError.UnsupportedSignatureAlgorithm` in both server and client paths | Claude | 2026-03-24 | Closed |
+| 37 | Medium | 24 | External PSK not supported (external=false hardcoded) | src/tls13/context.zig | CWE-1188 | src/tls13/context.zig:2021,2510 | [#4](https://gitlab.com/devnw/zig/tls/-/issues/4) | -- | TBD | TBD | Open |
+| 38 | Medium | 24 | Server NewSessionTicket is a placeholder (not derived from resumption_master_secret) | src/tls13/engine.zig | CWE-330 | src/tls13/engine.zig:334-366 | [#4](https://gitlab.com/devnw/zig/tls/-/issues/4), [#19](https://gitlab.com/devnw/zig/tls/-/issues/19) | -- | TBD | TBD | Open |
+| 39 | Medium | 24 | Post-handshake authentication not implemented (forbidden for QUIC per RFC 9001 S4.4) | src/tls13/context.zig, src/tls13/engine.zig | CWE-287 | N/A | [#54](https://gitlab.com/devnw/zig/tls/-/issues/54) | -- | TBD | TBD | Open |
+| 40 | Medium | 20 | parallel.zig crypto stubs are debug-only (@compileError in release) | src/parallel.zig | CWE-1188 | src/parallel.zig | [#55](https://gitlab.com/devnw/zig/tls/-/issues/55) | -- | TBD | TBD | Open |
+| 41 | Low | 8 | SHA-1 OCSP SingleResponses silently skipped without diagnostic | src/ocsp.zig | CWE-328 | src/ocsp.zig:87-93 | N/A | Added OCSP trace diagnostic flag and SHA-1 trace message | Claude | 2026-03-24 | Closed |
+| 42 | Low | 8 | AES-CCM cipher suites defined but non-functional (blocked by Zig stdlib) | src/tls13/types.zig, src/record/aead.zig | -- | N/A | [#8](https://gitlab.com/devnw/zig/tls/-/issues/8) | -- | TBD | TBD | Open |
+| 43 | Low | 4 | CRL distribution point checking absent (design decision; OCSP stapling alternative) | src/x509.zig | CWE-299 | src/x509.zig | N/A | -- | TBD | TBD | Open |
+| 44 | Low | 4 | Minimal ClientHello/ServerHello encoders are non-interoperable placeholders in Engine API | src/tls13/messages.zig | CWE-1188 | src/tls13/messages.zig:212-268 | N/A | -- | TBD | TBD | Open |
 
 ---
 

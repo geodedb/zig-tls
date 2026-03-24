@@ -18,6 +18,8 @@
 //! (client-driven OCSP) are out of scope.
 const std = @import("std");
 const asn1 = @import("asn1");
+
+const ocsp_trace_enabled = false;
 const x509 = @import("x509");
 
 /// Maximum allowed clock skew (seconds) when validating OCSP timestamps.
@@ -90,6 +92,7 @@ pub fn computeDigest(alg: HashAlg, data: []const u8, out: *[64]u8) ComputeDigest
             // Returning an error instead of an incorrect hash prevents silent
             // security failures when encountering legacy SHA-1 OCSP responses.
             // Servers should upgrade to SHA-256 per RFC 6960 recommendations.
+            if (ocsp_trace_enabled) std.debug.print("[OCSP] SHA-1 hash algorithm encountered in OCSP response — rejected (CWE-328). Server should use SHA-256 per RFC 6960 §4.3.\n", .{});
             return ComputeDigestError.Sha1NotSupported;
         },
         .sha256 => {

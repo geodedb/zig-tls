@@ -541,7 +541,8 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
     switch (alg) {
         .ed25519 => {
             // Parse Ed25519 private key from PKCS#8
-            const seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
+            var seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
+            defer std.crypto.secureZero(u8, &seed);
             // Use standard library Ed25519 - generate keypair from seed
             const kp = try Ed25519.KeyPair.generateDeterministic(seed);
             // Build TLS 1.3 signed content
@@ -557,6 +558,7 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
         .ecdsa_secp256r1_sha256 => {
             // Preferred: parse PKCS#8 -> ECPrivateKey -> scalar. Fallback to legacy pattern scan.
             var sk: [32]u8 = undefined;
+            defer std.crypto.secureZero(u8, &sk);
             if (sig_trace_enabled) std.debug.print("[SIG] Starting ECDSA P-256 signature, privkey_der len={d}\n", .{privkey_der.len});
             if (parsePkcs8EcdsaP256PrivateKey(privkey_der, &sk)) |ok| {
                 _ = ok; // already written into sk
