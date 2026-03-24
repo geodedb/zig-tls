@@ -254,14 +254,14 @@ pub const PreferredAddress = struct {
         var out = try allocator.alloc(u8, total_len);
         var idx: usize = 0;
 
-        std.mem.copyForwards(u8, out[idx .. idx + 4], self.ipv4_address[0..]);
+        @memcpy(out[idx .. idx + 4], self.ipv4_address[0..]);
         idx += 4;
 
         out[idx] = @as(u8, @intCast(self.ipv4_port >> 8));
         out[idx + 1] = @as(u8, @intCast(self.ipv4_port & 0xff));
         idx += 2;
 
-        std.mem.copyForwards(u8, out[idx .. idx + 16], self.ipv6_address[0..]);
+        @memcpy(out[idx .. idx + 16], self.ipv6_address[0..]);
         idx += 16;
 
         out[idx] = @as(u8, @intCast(self.ipv6_port >> 8));
@@ -271,10 +271,10 @@ pub const PreferredAddress = struct {
         out[idx] = @as(u8, @intCast(cid_len));
         idx += 1;
 
-        std.mem.copyForwards(u8, out[idx .. idx + cid_len], self.connection_id);
+        @memcpy(out[idx .. idx + cid_len], self.connection_id);
         idx += cid_len;
 
-        std.mem.copyForwards(u8, out[idx .. idx + 16], self.stateless_reset_token[0..]);
+        @memcpy(out[idx .. idx + 16], self.stateless_reset_token[0..]);
 
         return out;
     }
@@ -294,13 +294,13 @@ pub const PreferredAddress = struct {
             .stateless_reset_token = undefined,
         };
 
-        std.mem.copyForwards(u8, addr.ipv4_address[0..], data[idx .. idx + 4]);
+        @memcpy(addr.ipv4_address[0..], data[idx .. idx + 4]);
         idx += 4;
 
         addr.ipv4_port = (@as(u16, data[idx]) << 8) | data[idx + 1];
         idx += 2;
 
-        std.mem.copyForwards(u8, addr.ipv6_address[0..], data[idx .. idx + 16]);
+        @memcpy(addr.ipv6_address[0..], data[idx .. idx + 16]);
         idx += 16;
 
         addr.ipv6_port = (@as(u16, data[idx]) << 8) | data[idx + 1];
@@ -319,7 +319,7 @@ pub const PreferredAddress = struct {
         addr.connection_id = conn_id_buf;
         idx += conn_id_len;
 
-        std.mem.copyForwards(u8, addr.stateless_reset_token[0..], data[idx .. idx + 16]);
+        @memcpy(addr.stateless_reset_token[0..], data[idx .. idx + 16]);
         idx += 16;
 
         if (idx != data.len) return error.InvalidParameter;
@@ -671,6 +671,25 @@ pub const TransportParameters = struct {
         }
 
         return params;
+    }
+
+    /// GAP-0081: Validate that transport parameters do not contain server-only
+    /// parameters when received from a client (RFC 9000 §18.2).
+    ///
+    /// RFC 9000 §18.2: "A client MUST NOT include any server-only transport
+    /// parameter: original_destination_connection_id, preferred_address,
+    /// retry_source_connection_id, or stateless_reset_token."
+    ///
+    /// ## Parameters
+    /// - `self`: Decoded transport parameters to validate
+    ///
+    /// ## Errors
+    /// - `InvalidParameter`: Client sent a server-only parameter
+    pub fn validateClientRole(self: *const TransportParameters) !void {
+        if (self.original_destination_connection_id != null) return error.InvalidParameter;
+        if (self.preferred_address != null) return error.InvalidParameter;
+        if (self.retry_source_connection_id != null) return error.InvalidParameter;
+        if (self.stateless_reset_token != null) return error.InvalidParameter;
     }
 
     /// Free allocated memory for variable-length fields.

@@ -54,6 +54,9 @@ pub const HandshakeMetadata = types.HandshakeMetadata;
 /// TLS 1.3 signature scheme (RFC 8446 §4.2.3).
 pub const SignatureScheme = types.SignatureScheme;
 
+/// Map CipherSuite to its associated hash algorithm (RFC 8446 Appendix B.4).
+pub const cipherSuiteHash = types.cipherSuiteHash;
+
 // ============================================================================
 // Transcript Management
 // ============================================================================

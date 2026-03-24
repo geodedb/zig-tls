@@ -67,16 +67,25 @@ const spice = if (build_options.enable_spice) @import("spice") else struct {
 
 var global_pool: if (build_options.enable_spice) ?spice.ThreadPool else void = if (build_options.enable_spice) null else {};
 var pool_mutex: std.Thread.Mutex = .{};
+/// Atomic flag for lock-free fast path on pool initialization check (PERF-005).
+var pool_initialized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
 pub fn getPool() if (build_options.enable_spice) *spice.ThreadPool else void {
     if (!build_options.enable_spice) return;
 
+    // Fast path: if already initialized, return without acquiring mutex (PERF-005).
+    if (pool_initialized.load(.acquire)) {
+        return &global_pool.?;
+    }
+
+    // Slow path: acquire mutex for initialization (double-checked locking).
     pool_mutex.lock();
     defer pool_mutex.unlock();
 
     if (global_pool == null) {
         global_pool = spice.ThreadPool.init(std.heap.page_allocator);
         global_pool.?.start(.{});
+        pool_initialized.store(true, .release);
     }
     return &global_pool.?;
 }
@@ -90,6 +99,7 @@ pub fn deinitPool() void {
     if (global_pool) |*pool| {
         pool.deinit();
         global_pool = null;
+        pool_initialized.store(false, .release);
     }
 }
 

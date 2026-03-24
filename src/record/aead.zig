@@ -73,6 +73,16 @@ pub const RecordError = plaintext_mod.RecordError;
 /// - RFC 8446 §5.1 - TLS 1.3 cipher suites
 /// - RFC 5116 - AEAD interface specification
 /// - RFC 9001 §5 - QUIC packet protection uses same AEAD algorithms
+///
+/// ## Design Note (QUAL-075)
+///
+/// This is intentionally a separate type from `tls13/messages/core_types.CipherSuite`.
+/// The core_types enum is a u16-tagged wire-format enum used in handshake message
+/// parsing, including CCM variants recognized for parsing but not implemented for
+/// AEAD. This record-layer enum covers only the 3 AEAD algorithms with concrete
+/// encrypt/decrypt implementations. Keeping them separate enforces layer isolation:
+/// handshake negotiation uses wire-format values, while AEAD operations use this
+/// implementation-focused enum.
 pub const CipherSuite = enum {
     TLS_AES_128_GCM_SHA256,
     TLS_AES_256_GCM_SHA384,
@@ -198,17 +208,17 @@ pub const AeadCipher = struct {
         const key_material = switch (suite) {
             .TLS_AES_128_GCM_SHA256 => blk: {
                 var arr: [Aes128Gcm.key_length]u8 = undefined;
-                std.mem.copyForwards(u8, arr[0..], key[0..Aes128Gcm.key_length]);
+                @memcpy(arr[0..], key[0..Aes128Gcm.key_length]);
                 break :blk KeyMaterial{ .aes128 = arr };
             },
             .TLS_AES_256_GCM_SHA384 => blk: {
                 var arr: [Aes256Gcm.key_length]u8 = undefined;
-                std.mem.copyForwards(u8, arr[0..], key[0..Aes256Gcm.key_length]);
+                @memcpy(arr[0..], key[0..Aes256Gcm.key_length]);
                 break :blk KeyMaterial{ .aes256 = arr };
             },
             .TLS_CHACHA20_POLY1305_SHA256 => blk: {
                 var arr: [ChaCha20Poly1305.key_length]u8 = undefined;
-                std.mem.copyForwards(u8, arr[0..], key[0..ChaCha20Poly1305.key_length]);
+                @memcpy(arr[0..], key[0..ChaCha20Poly1305.key_length]);
                 break :blk KeyMaterial{ .chacha20 = arr };
             },
         };
@@ -221,7 +231,7 @@ pub const AeadCipher = struct {
             .tag_len = @intCast(spec.tag_len),
             .usage = .{ .encrypted = 0, .auth_failures = 0, .limits = limits },
         };
-        std.mem.copyForwards(u8, cipher.base_iv[0..spec.nonce_len], iv);
+        @memcpy(cipher.base_iv[0..spec.nonce_len], iv);
         return cipher;
     }
 
@@ -284,24 +294,24 @@ pub const AeadCipher = struct {
         switch (self.key_material) {
             .aes128 => |key| {
                 var nonce_arr: [Aes128Gcm.nonce_length]u8 = undefined;
-                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..Aes128Gcm.nonce_length]);
+                @memcpy(nonce_arr[0..], nonce_full[0..Aes128Gcm.nonce_length]);
                 var tag_arr: [Aes128Gcm.tag_length]u8 = undefined;
                 Aes128Gcm.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
-                std.mem.copyForwards(u8, tag_slice, tag_arr[0..tag_len]);
+                @memcpy(tag_slice, tag_arr[0..tag_len]);
             },
             .aes256 => |key| {
                 var nonce_arr: [Aes256Gcm.nonce_length]u8 = undefined;
-                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..Aes256Gcm.nonce_length]);
+                @memcpy(nonce_arr[0..], nonce_full[0..Aes256Gcm.nonce_length]);
                 var tag_arr: [Aes256Gcm.tag_length]u8 = undefined;
                 Aes256Gcm.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
-                std.mem.copyForwards(u8, tag_slice, tag_arr[0..tag_len]);
+                @memcpy(tag_slice, tag_arr[0..tag_len]);
             },
             .chacha20 => |key| {
                 var nonce_arr: [ChaCha20Poly1305.nonce_length]u8 = undefined;
-                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..ChaCha20Poly1305.nonce_length]);
+                @memcpy(nonce_arr[0..], nonce_full[0..ChaCha20Poly1305.nonce_length]);
                 var tag_arr: [ChaCha20Poly1305.tag_length]u8 = undefined;
                 ChaCha20Poly1305.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
-                std.mem.copyForwards(u8, tag_slice, tag_arr[0..tag_len]);
+                @memcpy(tag_slice, tag_arr[0..tag_len]);
             },
         }
 
@@ -409,7 +419,7 @@ pub const AeadCipher = struct {
         const ct = ciphertext[0..ct_len];
         const pt_out = out[0..ct_len];
         var tag_buf: [MaxTagLength]u8 = [_]u8{0} ** MaxTagLength;
-        std.mem.copyForwards(u8, tag_buf[0..tag_len], ciphertext[ct_len..]);
+        @memcpy(tag_buf[0..tag_len], ciphertext[ct_len..][0..tag_len]);
         // RFC 8446 §5.3 - Derive per-record nonce: base_iv XOR seq
         var nonce_full = self.deriveNonce(seq);
         defer {
@@ -423,9 +433,9 @@ pub const AeadCipher = struct {
         switch (self.key_material) {
             .aes128 => |key| {
                 var nonce_arr: [Aes128Gcm.nonce_length]u8 = undefined;
-                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..Aes128Gcm.nonce_length]);
+                @memcpy(nonce_arr[0..], nonce_full[0..Aes128Gcm.nonce_length]);
                 var tag_arr: [Aes128Gcm.tag_length]u8 = undefined;
-                std.mem.copyForwards(u8, tag_arr[0..], tag_buf[0..Aes128Gcm.tag_length]);
+                @memcpy(tag_arr[0..], tag_buf[0..Aes128Gcm.tag_length]);
                 Aes128Gcm.decrypt(pt_out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
                     switch (err) {
                         // RFC 8446 §5.2 - Authentication failure indicates tampering
@@ -435,9 +445,9 @@ pub const AeadCipher = struct {
             },
             .aes256 => |key| {
                 var nonce_arr: [Aes256Gcm.nonce_length]u8 = undefined;
-                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..Aes256Gcm.nonce_length]);
+                @memcpy(nonce_arr[0..], nonce_full[0..Aes256Gcm.nonce_length]);
                 var tag_arr: [Aes256Gcm.tag_length]u8 = undefined;
-                std.mem.copyForwards(u8, tag_arr[0..], tag_buf[0..Aes256Gcm.tag_length]);
+                @memcpy(tag_arr[0..], tag_buf[0..Aes256Gcm.tag_length]);
                 Aes256Gcm.decrypt(pt_out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
                     switch (err) {
                         AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
@@ -446,9 +456,9 @@ pub const AeadCipher = struct {
             },
             .chacha20 => |key| {
                 var nonce_arr: [ChaCha20Poly1305.nonce_length]u8 = undefined;
-                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..ChaCha20Poly1305.nonce_length]);
+                @memcpy(nonce_arr[0..], nonce_full[0..ChaCha20Poly1305.nonce_length]);
                 var tag_arr: [ChaCha20Poly1305.tag_length]u8 = undefined;
-                std.mem.copyForwards(u8, tag_arr[0..], tag_buf[0..ChaCha20Poly1305.tag_length]);
+                @memcpy(tag_arr[0..], tag_buf[0..ChaCha20Poly1305.tag_length]);
                 ChaCha20Poly1305.decrypt(pt_out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
                     switch (err) {
                         AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
@@ -820,7 +830,7 @@ pub fn xorNonce(out: []u8, base_iv: []const u8, seq: u64) RecordError!void {
     // RFC 8446 §5.3 - IV must be at least 8 bytes to accommodate sequence number
     if (out.len != base_iv.len or out.len < 8) return RecordError.InvalidIvLength;
     // RFC 8446 §5.3 - Start with static IV
-    std.mem.copyForwards(u8, out, base_iv);
+    @memcpy(out, base_iv);
     // RFC 8446 §5.3 - Encode sequence number as big-endian u64
     var seq_bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &seq_bytes, seq, .big);

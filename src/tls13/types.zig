@@ -12,6 +12,19 @@
 
 const tls13_full = @import("tls13_full");
 const sct = @import("sct");
+const ks = @import("quic_tls");
+
+/// Map a TLS 1.3 CipherSuite to its associated hash algorithm (RFC 8446 Appendix B.4).
+///
+/// This is the canonical mapping used by both Context and Engine during key
+/// derivation. All SHA-256-based suites (AES-128-GCM, ChaCha20-Poly1305,
+/// AES-128-CCM variants) return `.sha256`; AES-256-GCM returns `.sha384`.
+pub fn cipherSuiteHash(suite: tls13_full.CipherSuite) ks.Hash {
+    return switch (suite) {
+        .TLS_AES_128_GCM_SHA256, .TLS_CHACHA20_POLY1305_SHA256, .TLS_AES_128_CCM_SHA256, .TLS_AES_128_CCM_8_SHA256 => .sha256,
+        .TLS_AES_256_GCM_SHA384 => .sha384,
+    };
+}
 
 /// TLS endpoint role (RFC 8446 §4).
 pub const Role = enum {
@@ -193,4 +206,9 @@ pub const HandshakeError = error{
     /// Server selected a PSK identity index that exceeds the number of identities offered.
     /// RFC 8446 §4.2.11: selected_identity MUST be in range [0, num_identities).
     PskIndexOutOfRange,
+
+    /// Client sent server-only transport parameters or transport params failed validation.
+    /// RFC 9000 §18.2: original_destination_connection_id, preferred_address,
+    /// retry_source_connection_id, and stateless_reset_token MUST NOT be sent by clients.
+    InvalidTransportParameters,
 };

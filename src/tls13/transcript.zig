@@ -98,9 +98,17 @@ inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
 /// Maintains both SHA-256 and SHA-384 hash states concurrently to support
 /// multiple cipher suites without knowing which hash algorithm will be used
 /// until cipher suite negotiation completes.
+///
+/// After cipher suite negotiation (ServerHello), callers SHOULD call `lockHash`
+/// to skip updates to the unused hash algorithm. This avoids wasting cycles on
+/// the hash that will never be finalized (PERF-004).
 pub const Transcript = struct {
     sha256: Sha256,
     sha384: Sha384,
+    /// After cipher suite negotiation selects a hash, this field is set so that
+    /// `update()` skips the unused algorithm.  Before negotiation (pre-ServerHello)
+    /// this is `null` and both hashes are updated.
+    locked_hash: ?Hash = null,
 
     /// Initialize a new transcript hash helper.
     /// RFC 8446 §4.4.1: Transcript hash begins empty
@@ -108,17 +116,37 @@ pub const Transcript = struct {
         return .{
             .sha256 = Sha256.init(.{}),
             .sha384 = Sha384.init(.{}),
+            .locked_hash = null,
         };
+    }
+
+    /// Lock the transcript to a single hash algorithm after cipher suite negotiation.
+    ///
+    /// Once locked, `update()` will only feed data into the selected hash,
+    /// saving redundant computation for every subsequent handshake message.
+    ///
+    /// Must be called AFTER ServerHello processing when the cipher suite (and
+    /// therefore the hash) is known.  Calling `lockHash` before ServerHello
+    /// would break `snapshot()` and `finalize()` for the other hash.
+    pub fn lockHash(self: *Transcript, hash: Hash) void {
+        self.locked_hash = hash;
     }
 
     /// Update transcript with raw bytes (handshake messages).
     /// RFC 8446 §4.4.1: Messages MUST be included in order sent/received
     ///
-    /// This updates both SHA-256 and SHA-384 states. The negotiated cipher suite
-    /// determines which hash is finalized for secret derivation.
+    /// When `locked_hash` is set (post-negotiation), only the selected hash
+    /// is updated.  Before negotiation both SHA-256 and SHA-384 are updated.
     pub fn update(self: *Transcript, msg: []const u8) void {
-        self.sha256.update(msg);
-        self.sha384.update(msg);
+        if (self.locked_hash) |h| {
+            switch (h) {
+                .sha256 => self.sha256.update(msg),
+                .sha384 => self.sha384.update(msg),
+            }
+        } else {
+            self.sha256.update(msg);
+            self.sha384.update(msg);
+        }
 
         // Debug: log what's being added to transcript
         if (handshake_trace_enabled and msg.len >= 4) {
@@ -207,9 +235,11 @@ pub const Transcript = struct {
     }
 
     /// Reset transcript to initial empty state.
+    /// Also clears `locked_hash` so both hashes resume being updated.
     pub fn reset(self: *Transcript) void {
         self.sha256 = Sha256.init(.{});
         self.sha384 = Sha384.init(.{});
+        self.locked_hash = null;
     }
 
     /// Handle HelloRetryRequest by replacing transcript with synthetic message_hash.
@@ -662,4 +692,43 @@ test "Transcript basic update and finalize - no HRR" {
         }
     }
     try testing.expect(!all_zero_384);
+}
+
+test "Transcript.lockHash - only updates locked algorithm" {
+    const testing = std.testing;
+
+    // Build a reference transcript without locking
+    var ref = Transcript.init();
+    ref.update("ClientHello");
+    ref.update("ServerHello");
+    ref.update("EncryptedExtensions");
+
+    // Build a transcript that locks after ServerHello
+    var locked = Transcript.init();
+    locked.update("ClientHello");
+    locked.update("ServerHello");
+    locked.lockHash(.sha256);
+    locked.update("EncryptedExtensions");
+
+    // The SHA-256 finalize should match the reference (both saw all messages)
+    const ref_256 = ref.finalize(.sha256);
+    const locked_256 = locked.finalize(.sha256);
+    try testing.expectEqualSlices(u8, ref_256.slice(), locked_256.slice());
+
+    // The SHA-384 should NOT match because the locked transcript skipped
+    // updating SHA-384 for "EncryptedExtensions"
+    const ref_384 = ref.finalize(.sha384);
+    const locked_384 = locked.finalize(.sha384);
+    try testing.expect(!std.mem.eql(u8, ref_384.slice(), locked_384.slice()));
+}
+
+test "Transcript.lockHash - reset clears lock" {
+    const testing = std.testing;
+
+    var transcript = Transcript.init();
+    transcript.lockHash(.sha256);
+    try testing.expect(transcript.locked_hash != null);
+
+    transcript.reset();
+    try testing.expect(transcript.locked_hash == null);
 }

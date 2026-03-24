@@ -88,6 +88,9 @@ const parseKeyUpdate = messages_mod.parseKeyUpdate;
 const KeyUpdateRequest = messages_mod.KeyUpdateRequest;
 // Note: TrafficDirection, SecretSlot, BidirSecrets, CryptoBuffer are defined in the extracted code below
 
+// Shared byte helpers (QUAL-084: prefer readU16 over inline bit-shift patterns).
+const readU16 = tls13_full.readU16;
+
 // Local type aliases
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const Hash = ks.Hash;
@@ -96,7 +99,11 @@ const max_digest_length = ks.max_digest_length;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const Sha384 = std.crypto.hash.sha2.Sha384;
 
-// Debug tracing (disabled in production)
+// Debug tracing (disabled in production).
+// QUAL-082: Per-file trace constants are intentionally NOT extracted to a shared
+// module. Each file keeps its own toggle so developers can enable tracing for a
+// single module during debugging without flooding output. The compile-time
+// @compileError guards also rely on file-local constants.
 const handshake_trace_enabled = false;
 
 /// Secret tracing - logs cryptographic secrets for debugging.
@@ -125,12 +132,8 @@ inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
     if (secret_trace_enabled) logger.debugPrint(fmt, args);
 }
 
-fn cipherSuiteHash(suite: tls13_full.CipherSuite) Hash {
-    return switch (suite) {
-        .TLS_AES_128_GCM_SHA256, .TLS_CHACHA20_POLY1305_SHA256, .TLS_AES_128_CCM_SHA256, .TLS_AES_128_CCM_8_SHA256 => .sha256,
-        .TLS_AES_256_GCM_SHA384 => .sha384,
-    };
-}
+// cipherSuiteHash is now shared via types.cipherSuiteHash (QUAL-081 dedup).
+const cipherSuiteHash = types.cipherSuiteHash;
 
 /// Callback hooks for QUIC integration and handshake lifecycle events.
 ///
@@ -306,36 +309,8 @@ pub const SecretSlot = struct {
     }
 };
 
-fn supportsTls13Version(encoded: []const u8) bool {
-    if (encoded.len < 1) return false;
-    const list_len = encoded[0];
-    const byte_count: usize = list_len;
-    if (encoded.len < 1 + byte_count) return false;
-    if ((byte_count & 1) != 0) return false;
-    var offset: usize = 1;
-    while (offset + 1 < 1 + byte_count) : (offset += 2) {
-        const version = (@as(u16, encoded[offset]) << 8) | @as(u16, encoded[offset + 1]);
-        if (version == 0x0304) return true;
-    }
-    return false;
-}
-
-fn freeParsedClientHello(allocator: std.mem.Allocator, parsed: *tls13_full.ClientHello) void {
-    if (parsed.cipher_suites.len != 0) allocator.free(parsed.cipher_suites);
-    if (parsed.supported_groups) |groups| {
-        if (groups.len != 0) allocator.free(@constCast(groups));
-    }
-    if (parsed.signature_algorithms) |algs| {
-        if (algs.len != 0) allocator.free(@constCast(algs));
-    }
-    if (parsed.pre_shared_key) |psk| {
-        if (psk.identities.len != 0) allocator.free(psk.identities);
-        if (psk.binders.len != 0) allocator.free(@constCast(psk.binders));
-    }
-    if (parsed.alpn_list) |list| {
-        if (list.len != 0) allocator.free(@constCast(list));
-    }
-}
+// QUAL-070: supportsTls13Version and freeParsedClientHello are now in
+// handshake_state.zig, used by the shared ClientHelloInfo.parse().
 
 /// Bidirectional secret pair (send/recv) for a single packet number space (RFC 9001 §4.1.4).
 pub const BidirSecrets = struct {
@@ -487,225 +462,14 @@ pub const TranscriptSet = struct {
 /// High-level handshake lifecycle position for progress tracking (RFC 8446 §4).
 pub const HandshakePhase = handshake_state_mod.HandshakePhase;
 
-/// View into the stored ClientHello key share for downstream consumers.
-pub const ClientHelloKeyShareView = struct {
-    group: tls13_full.NamedGroup,
-    key: []const u8,
-};
+// QUAL-070: ClientHello types consolidated in handshake_state.zig (canonical source).
+pub const ClientHelloKeyShareView = handshake_state_mod.ClientHelloKeyShareView;
+pub const ClientHelloPskIdentityView = handshake_state_mod.ClientHelloPskIdentityView;
+pub const ClientHelloPreSharedKeyView = handshake_state_mod.ClientHelloPreSharedKeyView;
+pub const ClientHelloView = handshake_state_mod.ClientHelloView;
 
-/// View of a pre-shared key identity advertised by the client.
-pub const ClientHelloPskIdentityView = struct {
-    identity: []const u8,
-    obfuscated_ticket_age: u32,
-};
-
-/// View of the pre_shared_key extension contents.
-pub const ClientHelloPreSharedKeyView = struct {
-    identities: []const ClientHelloPskIdentityView,
-    binders: []const []const u8,
-};
-
-/// Immutable view returned by `Context.clientHello()` describing the parsed ClientHello.
-pub const ClientHelloView = struct {
-    random: [32]u8,
-    session_id: []const u8,
-    cipher_suites: []const tls13_full.CipherSuite,
-    signature_algorithms: ?[]const tls13_full.SignatureScheme,
-    supported_versions: []const u8,
-    key_share: ClientHelloKeyShareView,
-    quic_transport_parameters: ?[]const u8,
-    alpn_list: ?[]const []const u8,
-    early_data: bool,
-    pre_shared_key: ?ClientHelloPreSharedKeyView,
-    psk_key_exchange_modes: ?[]const u8, // RFC 8446 §4.2.9: Required when using PSK
-    raw: []const u8,
-};
-
-const PreSharedKeyInfo = struct {
-    identities: []ClientHelloPskIdentityView,
-    binders: []const []const u8,
-};
-
-const ClientHelloInfo = struct {
-    random: [32]u8,
-    session_id: []u8,
-    cipher_suites: []tls13_full.CipherSuite,
-    signature_algorithms: ?[]const tls13_full.SignatureScheme,
-    supported_versions: []u8,
-    key_share: struct {
-        group: tls13_full.NamedGroup,
-        key: []u8,
-    },
-    quic_transport_parameters: ?[]u8,
-    alpn_list: ?[]const []const u8,
-    early_data: bool,
-    pre_shared_key: ?PreSharedKeyInfo,
-    psk_key_exchange_modes: ?[]u8, // RFC 8446 §4.2.9
-    raw: []u8,
-
-    fn parse(allocator: std.mem.Allocator, body: []const u8) !ClientHelloInfo {
-        var parsed = try tls13_full.parseClientHello(allocator, body);
-        errdefer freeParsedClientHello(allocator, &parsed);
-
-        if (parsed.cipher_suites.len == 0) return HandshakeError.NoCipherSuite;
-        const versions = parsed.supported_versions orelse return HandshakeError.UnsupportedVersion;
-        if (!supportsTls13Version(versions)) return HandshakeError.UnsupportedVersion;
-
-        const key_share = parsed.key_share orelse return HandshakeError.MissingKeyShare;
-        if (key_share.group != .x25519) return HandshakeError.UnsupportedKeyShareGroup;
-
-        const session_id_copy = try allocator.dupe(u8, parsed.session_id);
-        errdefer if (session_id_copy.len != 0) allocator.free(session_id_copy);
-
-        const cipher_suites_copy = try allocator.dupe(tls13_full.CipherSuite, parsed.cipher_suites);
-        errdefer if (cipher_suites_copy.len != 0) allocator.free(cipher_suites_copy);
-
-        var sigalgs_copy: ?[]const tls13_full.SignatureScheme = null;
-        if (parsed.signature_algorithms) |algs| {
-            sigalgs_copy = try allocator.dupe(tls13_full.SignatureScheme, algs);
-        }
-        errdefer if (sigalgs_copy) |buf| if (buf.len != 0) allocator.free(@constCast(buf));
-
-        const versions_copy = try allocator.dupe(u8, versions);
-        errdefer if (versions_copy.len != 0) allocator.free(versions_copy);
-
-        const key_bytes = try allocator.dupe(u8, key_share.key_exchange);
-        errdefer if (key_bytes.len != 0) allocator.free(key_bytes);
-
-        const raw_copy = try allocator.dupe(u8, body);
-        errdefer if (raw_copy.len != 0) allocator.free(raw_copy);
-
-        var tp_copy: ?[]u8 = null;
-        if (parsed.quic_transport_parameters) |tp| {
-            tp_copy = try allocator.dupe(u8, tp);
-        }
-        errdefer if (tp_copy) |buf| if (buf.len != 0) allocator.free(buf);
-
-        var alpn_copy: ?[]const []const u8 = null;
-        if (parsed.alpn_list) |list| {
-            const dest = try allocator.alloc([]const u8, list.len);
-            errdefer allocator.free(dest);
-
-            var copied_count: usize = 0;
-            errdefer {
-                while (copied_count != 0) {
-                    copied_count -= 1;
-                    const proto = dest[copied_count];
-                    if (proto.len != 0) allocator.free(@constCast(proto));
-                }
-            }
-
-            while (copied_count < list.len) : (copied_count += 1) {
-                const proto_copy = try allocator.dupe(u8, list[copied_count]);
-                dest[copied_count] = proto_copy;
-            }
-
-            alpn_copy = dest;
-        }
-        errdefer if (alpn_copy) |list| {
-            if (list.len != 0) {
-                for (list) |proto| {
-                    if (proto.len != 0) allocator.free(@constCast(proto));
-                }
-                allocator.free(@constCast(list));
-            }
-        };
-
-        var psk_copy: ?PreSharedKeyInfo = null;
-        if (parsed.pre_shared_key) |psk_ext| {
-            const ids = try allocator.alloc(ClientHelloPskIdentityView, psk_ext.identities.len);
-            var ids_filled: usize = 0;
-            errdefer {
-                while (ids_filled != 0) {
-                    ids_filled -= 1;
-                    const ident = ids[ids_filled];
-                    if (ident.identity.len != 0) allocator.free(@constCast(ident.identity));
-                }
-                allocator.free(ids);
-            }
-
-            while (ids_filled < psk_ext.identities.len) : (ids_filled += 1) {
-                const src = psk_ext.identities[ids_filled];
-                const dup = try allocator.dupe(u8, src.identity);
-                ids[ids_filled] = .{
-                    .identity = dup,
-                    .obfuscated_ticket_age = src.obfuscated_ticket_age,
-                };
-            }
-
-            const binders = try allocator.alloc([]const u8, psk_ext.binders.len);
-            var binders_filled: usize = 0;
-            errdefer {
-                while (binders_filled != 0) {
-                    binders_filled -= 1;
-                    const binder = binders[binders_filled];
-                    if (binder.len != 0) allocator.free(@constCast(binder));
-                }
-                allocator.free(binders);
-            }
-
-            while (binders_filled < psk_ext.binders.len) : (binders_filled += 1) {
-                const src = psk_ext.binders[binders_filled];
-                const dup = try allocator.dupe(u8, src);
-                binders[binders_filled] = dup;
-            }
-
-            psk_copy = .{ .identities = ids, .binders = binders };
-        }
-
-        // RFC 8446 §4.2.9: Copy psk_key_exchange_modes if present
-        var psk_modes_copy: ?[]u8 = null;
-        if (parsed.psk_key_exchange_modes) |modes| {
-            psk_modes_copy = try allocator.dupe(u8, modes);
-        }
-        errdefer if (psk_modes_copy) |buf| if (buf.len != 0) allocator.free(buf);
-
-        const info = ClientHelloInfo{
-            .random = parsed.random,
-            .session_id = session_id_copy,
-            .cipher_suites = cipher_suites_copy,
-            .signature_algorithms = sigalgs_copy,
-            .supported_versions = versions_copy,
-            .key_share = .{ .group = key_share.group, .key = key_bytes },
-            .quic_transport_parameters = tp_copy,
-            .alpn_list = alpn_copy,
-            .early_data = parsed.early_data,
-            .pre_shared_key = psk_copy,
-            .psk_key_exchange_modes = psk_modes_copy,
-            .raw = raw_copy,
-        };
-
-        freeParsedClientHello(allocator, &parsed);
-        return info;
-    }
-
-    fn deinit(self: *ClientHelloInfo, allocator: std.mem.Allocator) void {
-        if (self.session_id.len != 0) allocator.free(self.session_id);
-        if (self.cipher_suites.len != 0) allocator.free(self.cipher_suites);
-        if (self.signature_algorithms) |list| if (list.len != 0) allocator.free(@constCast(list));
-        if (self.supported_versions.len != 0) allocator.free(self.supported_versions);
-        if (self.key_share.key.len != 0) allocator.free(self.key_share.key);
-        if (self.quic_transport_parameters) |buf| if (buf.len != 0) allocator.free(buf);
-        if (self.alpn_list) |list| {
-            for (list) |proto| {
-                if (proto.len != 0) allocator.free(@constCast(proto));
-            }
-            if (list.len != 0) allocator.free(@constCast(list));
-        }
-        if (self.pre_shared_key) |psk| {
-            for (psk.identities) |ident| {
-                if (ident.identity.len != 0) allocator.free(@constCast(ident.identity));
-            }
-            if (psk.identities.len != 0) allocator.free(psk.identities);
-            for (psk.binders) |binder| {
-                if (binder.len != 0) allocator.free(@constCast(binder));
-            }
-            if (psk.binders.len != 0) allocator.free(@constCast(psk.binders));
-        }
-        if (self.psk_key_exchange_modes) |buf| if (buf.len != 0) allocator.free(buf);
-        if (self.raw.len != 0) allocator.free(self.raw);
-    }
-};
+// QUAL-070: ClientHelloInfo consolidated in handshake_state.zig (canonical source).
+const ClientHelloInfo = handshake_state_mod.ClientHelloInfo;
 
 const HandshakeState = struct {
     client_hello: ?ClientHelloInfo = null,
@@ -854,10 +618,20 @@ pub const Context = struct {
     client_cert_requested: bool = false, // Client: tracks that server sent CertificateRequest
     client_cert_request_context: ?[]u8 = null, // Client: stores request context from CertificateRequest
     // 0-RTT state (server role)
-    anti_replay: zero_rtt_mod.AntiReplayWindow, // Anti-replay window for 0-RTT detection
+    // PERF-002: Lazy-allocated anti-replay window.  Only heap-allocated when the
+    // context is a server with enable_early_data=true.  Saves ~2KB inline for
+    // clients and servers that do not use 0-RTT.
+    anti_replay: ?*zero_rtt_mod.AntiReplayWindow = null,
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) !Context {
+        // PERF-002: Only allocate anti-replay window for servers with 0-RTT enabled.
+        const anti_replay: ?*zero_rtt_mod.AntiReplayWindow = if (config.role == .Server and config.enable_early_data) blk: {
+            const ptr = try config.allocator.create(zero_rtt_mod.AntiReplayWindow);
+            ptr.* = zero_rtt_mod.AntiReplayWindow.init(config.allocator);
+            break :blk ptr;
+        } else null;
+
         const ctx = Context{
             .config = config,
             .callbacks = callbacks,
@@ -876,7 +650,7 @@ pub const Context = struct {
             .handshake_secret = null,
             .client_priv = null,
             .client_pub = null,
-            .anti_replay = zero_rtt_mod.AntiReplayWindow.init(config.allocator),
+            .anti_replay = anti_replay,
         };
 
         // NOTE: For clients, DO NOT automatically call startClientHandshake() here!
@@ -938,8 +712,12 @@ pub const Context = struct {
             self.client_cert_request_context = null;
         }
         self.client_cert_requested = false;
-        // Clean up 0-RTT anti-replay window
-        self.anti_replay.deinit();
+        // PERF-002: Free heap-allocated anti-replay window (only if allocated)
+        if (self.anti_replay) |ar| {
+            ar.deinit();
+            self.allocator.destroy(ar);
+            self.anti_replay = null;
+        }
         self.negotiated_signature = null;
         self.negotiated_cipher_suite = null;
         // CWE-226: Zeroize sensitive keying material before freeing
@@ -1030,6 +808,14 @@ pub const Context = struct {
     pub fn processCrypto(self: *Context, level: EncryptionLevel, data: []const u8) !void {
         logger.debugPrint("Context.processCrypto: role={s}, level={s}, data_len={}\n", .{ if (self.config.role == .Server) "Server" else "Client", @tagName(level), data.len });
         var stream = self.streams.buffer(level);
+
+        // SEC-018: Enforce maximum CRYPTO buffer size per RFC 9001 §7.5 recommendation.
+        // Prevents memory exhaustion from excessively large or fragmented handshake messages.
+        const max_crypto_buffer = 65536; // 64KB per RFC 9001 §7.5
+        if (stream.inbound.items.len + data.len > max_crypto_buffer) {
+            return HandshakeError.UnexpectedMessage;
+        }
+
         try stream.inbound.appendSlice(self.allocator, data);
 
         // Process all complete messages in buffer
@@ -1071,10 +857,8 @@ pub const Context = struct {
     pub fn pollCrypto(self: *Context, allocator: std.mem.Allocator, level: EncryptionLevel) ![]u8 {
         var stream = self.streams.buffer(level);
         if (stream.outbound.items.len == 0) return ApiError.NothingToRead;
-        const view = stream.outbound.items;
-        const out = try allocator.dupe(u8, view);
-        stream.outbound.clearRetainingCapacity();
-        return out;
+        // PERF-018: Use toOwnedSlice to transfer ownership without copying.
+        return stream.outbound.toOwnedSlice(allocator);
     }
 
     /// Check if TLS handshake has completed successfully.
@@ -1180,22 +964,19 @@ pub const Context = struct {
     }
 
     /// Mark that our Finished flight has been transmitted (§4.4.4) and update phase state.
-    pub fn markLocalFinished(self: *Context) void {
+    pub fn markLocalFinished(self: *Context) !void {
         self.flags.local_finished_sent = true;
-        self.bumpPhaseAfterFinished();
+        try self.bumpPhaseAfterFinished();
     }
 
     /// Mark that the peer Finished verified successfully (§4.4.4) and update phase state.
-    pub fn confirmPeerFinished(self: *Context) void {
+    /// QUAL-072: Callback errors are now propagated to the caller instead of being swallowed.
+    pub fn confirmPeerFinished(self: *Context) !void {
         self.flags.peer_finished_verified = true;
         if (self.callbacks.on_peer_finished) |cb| {
-            // CWE-391: Log callback errors instead of silently ignoring them.
-            // Callback errors shouldn't fail the handshake, but should be visible for debugging.
-            cb(self) catch |err| {
-                logger.debugPrint("[TLS] on_peer_finished callback error: {}\n", .{err});
-            };
+            try cb(self);
         }
-        self.bumpPhaseAfterFinished();
+        try self.bumpPhaseAfterFinished();
     }
 
     /// Get current key generation number for a traffic direction (RFC 8446 §4.6.3).
@@ -1242,15 +1023,12 @@ pub const Context = struct {
         return self.secrets.getBidirGenerations(level);
     }
 
-    fn bumpPhaseAfterFinished(self: *Context) void {
+    /// QUAL-072: Callback errors are now propagated to the caller instead of being swallowed.
+    fn bumpPhaseAfterFinished(self: *Context) !void {
         if (self.flags.peer_finished_verified and self.flags.local_finished_sent) {
             self.phase = .application_ready;
             if (self.callbacks.on_handshake_complete) |cb| {
-                // CWE-391: Log callback errors instead of silently ignoring them.
-                // Callback errors shouldn't fail the handshake, but should be visible for debugging.
-                cb(self) catch |err| {
-                    logger.debugPrint("[TLS] on_handshake_complete callback error: {}\n", .{err});
-                };
+                try cb(self);
             }
         }
     }
@@ -1296,6 +1074,16 @@ pub const Context = struct {
                 // Client sends its transport parameters in ClientHello extension
                 if (self.state.clientHello()) |ch| {
                     if (ch.quic_transport_parameters) |tp| {
+                        // GAP-0081: Validate client transport params don't contain
+                        // server-only parameters per RFC 9000 §18.2.
+                        var decoded_tp = transport_params.TransportParameters.decode(tp, self.allocator) catch {
+                            return HandshakeError.InvalidTransportParameters;
+                        };
+                        defer decoded_tp.deinit(self.allocator);
+                        decoded_tp.validateClientRole() catch {
+                            return HandshakeError.InvalidTransportParameters;
+                        };
+
                         // Store peer (client) transport parameters
                         const tp_copy = try self.allocator.dupe(u8, tp);
                         if (self.peer_quic_transport_parameters) |old| {
@@ -1395,9 +1183,22 @@ pub const Context = struct {
                     return HandshakeError.UnexpectedMessage;
                 }
             },
-            else => {
-                // Other messages processed implicitly via transcript updates
+            .new_session_ticket => {
+                // QUAL-074: RFC 8446 §4.6.1: NewSessionTicket is a post-handshake message
+                // sent by the server to the client. It MUST only be accepted by clients
+                // at the Application encryption level after the handshake completes.
+                if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
+                if (level != .Application) return HandshakeError.UnexpectedMessage;
+
+                // Parse and log the ticket for debugging. Full session resumption
+                // storage is handled by the QUIC layer via engine.zig.
+                // TODO(QUAL-074): Surface via an on_session_ticket callback for
+                // application-layer session ticket management.
+                logger.debugPrint("[TLS] Context: Received NewSessionTicket ({} bytes)\n", .{parsed.body.len});
             },
+            // GAP-0079: Note — unknown handshake message types are rejected at the parsing
+            // layer in parseHandshakeOne() with error.UnknownHandshakeType (RFC 8446 §4).
+            // All defined HsType variants are handled above, so no else branch is needed.
         }
     }
 
@@ -1495,7 +1296,7 @@ pub const Context = struct {
         }
 
         // Mark peer Finished as verified and invoke callback
-        self.confirmPeerFinished();
+        try self.confirmPeerFinished();
 
         // RFC 8446 §4.4: Client sends Finished after verifying server Finished
         if (self.config.role == .Client and !self.flags.local_finished_sent) {
@@ -1647,7 +1448,7 @@ pub const Context = struct {
 
         // Parse extensions
         if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
-        const exts_len: usize = (@as(usize, body[pos]) << 8) | @as(usize, body[pos + 1]);
+        const exts_len: usize = readU16(body[pos .. pos + 2]);
         pos += 2;
         if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
 
@@ -1656,8 +1457,8 @@ pub const Context = struct {
         var selected_group: ?tls13_full.NamedGroup = null;
 
         while (pos + 4 <= exts_end) {
-            const etype = (@as(u16, body[pos]) << 8) | body[pos + 1];
-            const elen = (@as(usize, body[pos + 2]) << 8) | body[pos + 3];
+            const etype = readU16(body[pos .. pos + 2]);
+            const elen: usize = readU16(body[pos + 2 .. pos + 4]);
             pos += 4;
             if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
 
@@ -1668,7 +1469,7 @@ pub const Context = struct {
             // RFC 8446 §4.2.8: key_share extension with selected_group (2 bytes)
             else if (etype == 0x0033) {
                 if (elen == 2) {
-                    const group_val = (@as(u16, body[pos]) << 8) | body[pos + 1];
+                    const group_val = readU16(body[pos .. pos + 2]);
                     selected_group = std.meta.intToEnum(tls13_full.NamedGroup, group_val) catch null;
                 }
             }
@@ -2130,6 +1931,11 @@ pub const Context = struct {
         const cipher_suite = self.chooseCipherSuite(ch_view.cipher_suites) orelse return HandshakeError.NoCipherSuite;
         self.hash_kind = cipherSuiteHash(cipher_suite);
         self.negotiated_cipher_suite = cipher_suite;
+        // PERF-004: Lock transcript to the negotiated hash for the server path.
+        // Note: this is set before ServerHello is sent, but the lock only
+        // affects subsequent update() calls; the pre-negotiation messages
+        // (ClientHello) were already fed into both hashes.
+        self.transcripts.handshake.lockHash(self.hash_kind);
         _ = try self.selectServerSignatureScheme(ch_view);
 
         // RFC 8446 §4.1.4: Check if client's key_share group is supported
@@ -2151,6 +1957,7 @@ pub const Context = struct {
         std.crypto.random.bytes(&server_random);
 
         var server_priv: [32]u8 = undefined;
+        defer std.crypto.secureZero(u8, &server_priv);
         std.crypto.random.bytes(&server_priv);
 
         const server_pub = std.crypto.dh.X25519.recoverPublicKey(server_priv) catch {
@@ -2160,9 +1967,10 @@ pub const Context = struct {
         var client_pub: [32]u8 = undefined;
         @memcpy(&client_pub, ch_view.key_share.key[0..32]);
 
-        const shared = std.crypto.dh.X25519.scalarmult(server_priv, client_pub) catch {
+        var shared = std.crypto.dh.X25519.scalarmult(server_priv, client_pub) catch {
             return HandshakeError.UnsupportedKeyShareGroup;
         };
+        defer std.crypto.secureZero(u8, &shared);
 
         const session_id_opt: ?[]const u8 = if (ch_view.session_id.len != 0) ch_view.session_id else null;
 
@@ -2206,11 +2014,18 @@ pub const Context = struct {
             // Anti-replay check: verify ClientHello random hasn't been seen before
             const client_random = ch_view.random;
             var accept_early = true;
-            self.anti_replay.add(client_random) catch |err| {
-                // Replay detected - reject 0-RTT, continue with 1-RTT handshake
-                traceHandshake("Server: 0-RTT anti-replay detected ({}), rejecting early data\\n", .{err});
+            // PERF-002: anti_replay is only allocated for servers with early data
+            if (self.anti_replay) |ar| {
+                ar.add(client_random) catch |err| {
+                    // Replay detected - reject 0-RTT, continue with 1-RTT handshake
+                    traceHandshake("Server: 0-RTT anti-replay detected ({}), rejecting early data\\n", .{err});
+                    accept_early = false;
+                };
+            } else {
+                // No anti-replay window — should not happen when enable_early_data
+                // is true (init allocates the window), but reject defensively.
                 accept_early = false;
-            };
+            }
 
             if (accept_early) {
                 // Derive and install 0-RTT client early traffic secret
@@ -2348,7 +2163,7 @@ pub const Context = struct {
         defer self.allocator.free(fin_msg);
         try self.appendOutbound(.Handshake, fin_msg, true);
 
-        self.markLocalFinished();
+        try self.markLocalFinished();
     }
 
     /// Construct and queue a ClientHello with QUIC extensions when acting as the client.
@@ -2610,14 +2425,17 @@ pub const Context = struct {
         const sid_len: usize = body[pos];
         pos += 1 + sid_len;
         if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
-        const suite_value: u16 = (@as(u16, body[pos]) << 8) | @as(u16, body[pos + 1]);
+        const suite_value: u16 = readU16(body[pos .. pos + 2]);
         const cipher_suite = std.meta.intToEnum(tls13_full.CipherSuite, suite_value) catch return HandshakeError.NoCipherSuite;
         self.negotiated_cipher_suite = cipher_suite;
         self.hash_kind = cipherSuiteHash(cipher_suite);
+        // PERF-004: Lock transcript to the negotiated hash; subsequent updates
+        // skip the unused algorithm.
+        self.transcripts.handshake.lockHash(self.hash_kind);
         pos += 2; // cipher_suite
         pos += 1; // compression
         if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
-        const exts_len: usize = (@as(usize, body[pos]) << 8) | @as(usize, body[pos + 1]);
+        const exts_len: usize = readU16(body[pos .. pos + 2]);
         pos += 2;
         if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
         const exts_end = pos + exts_len;
@@ -2625,21 +2443,21 @@ pub const Context = struct {
         var found_supported_versions = false;
         var server_selected_psk_index: ?u16 = null;
         while (pos + 4 <= exts_end) {
-            const etype = (@as(u16, body[pos]) << 8) | body[pos + 1];
-            const elen = (@as(usize, body[pos + 2]) << 8) | body[pos + 3];
+            const etype = readU16(body[pos .. pos + 2]);
+            const elen: usize = readU16(body[pos + 2 .. pos + 4]);
             pos += 4;
             if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
             if (etype == @intFromEnum(tls13_full.ExtensionType.supported_versions)) {
                 // RFC 8446 §4.2.1: In ServerHello, supported_versions contains
                 // the single selected version (2 bytes). Must be 0x0304 (TLS 1.3).
                 if (elen != 2) return HandshakeError.UnsupportedVersion;
-                const selected_version = (@as(u16, body[pos]) << 8) | body[pos + 1];
+                const selected_version = readU16(body[pos .. pos + 2]);
                 if (selected_version != 0x0304) return HandshakeError.UnsupportedVersion;
                 found_supported_versions = true;
             } else if (etype == 0x0033) { // key_share
                 if (elen < 4 + 32) return HandshakeError.MissingKeyShare;
-                const group = (@as(u16, body[pos]) << 8) | body[pos + 1];
-                const klen = (@as(u16, body[pos + 2]) << 8) | body[pos + 3];
+                const group = readU16(body[pos .. pos + 2]);
+                const klen = readU16(body[pos + 2 .. pos + 4]);
                 if (group != 0x001d or klen != 32 or pos + 4 + 32 > pos + elen) return HandshakeError.UnsupportedKeyShareGroup;
                 var kp: [32]u8 = undefined;
                 @memcpy(&kp, body[pos + 4 .. pos + 4 + 32]);
@@ -2648,7 +2466,7 @@ pub const Context = struct {
                 // RFC 8446 §4.2.11: Server's pre_shared_key extension contains
                 // a single selected_identity value (u16).
                 if (elen != 2) return HandshakeError.UnexpectedMessage;
-                server_selected_psk_index = (@as(u16, body[pos]) << 8) | body[pos + 1];
+                server_selected_psk_index = readU16(body[pos .. pos + 2]);
             }
             pos += elen;
         }
@@ -2674,7 +2492,8 @@ pub const Context = struct {
             break :blk key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
         };
 
-        const shared = std.crypto.dh.X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
+        var shared = std.crypto.dh.X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
+        defer std.crypto.secureZero(u8, &shared);
         const sh_snapshot = self.transcripts.handshake.finalize(self.hash_kind);
         const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], sh_snapshot, &early_secret);
         self.handshake_secret = hs.handshake;
@@ -2759,7 +2578,7 @@ pub const Context = struct {
         const fin_msg = try encodeHandshake(self.allocator, .finished, verify_data.slice());
         defer self.allocator.free(fin_msg);
         try self.appendOutbound(.Handshake, fin_msg, true);
-        self.markLocalFinished();
+        try self.markLocalFinished();
     }
 
     fn notifyMetadata(self: *Context) void {
@@ -3390,13 +3209,13 @@ fn validateServerHelloSupportedVersions(body: []const u8, ext_start: usize, exts
     var found = false;
     var version: u16 = 0;
     while (pos + 4 <= exts_end) {
-        const etype = (@as(u16, body[pos]) << 8) | body[pos + 1];
-        const elen = (@as(usize, body[pos + 2]) << 8) | body[pos + 3];
+        const etype = readU16(body[pos .. pos + 2]);
+        const elen: usize = readU16(body[pos + 2 .. pos + 4]);
         pos += 4;
         if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
         if (etype == @intFromEnum(tls13_full.ExtensionType.supported_versions)) {
             if (elen != 2) return HandshakeError.UnsupportedVersion;
-            version = (@as(u16, body[pos]) << 8) | body[pos + 1];
+            version = readU16(body[pos .. pos + 2]);
             if (version != 0x0304) return HandshakeError.UnsupportedVersion;
             found = true;
         }
@@ -3485,19 +3304,19 @@ fn parseServerHelloPskExtension(body: []const u8) !?u16 {
     pos += 2; // cipher_suite
     pos += 1; // compression
     if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
-    const exts_len: usize = (@as(usize, body[pos]) << 8) | @as(usize, body[pos + 1]);
+    const exts_len: usize = readU16(body[pos .. pos + 2]);
     pos += 2;
     if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
     const exts_end = pos + exts_len;
     var selected_psk_index: ?u16 = null;
     while (pos + 4 <= exts_end) {
-        const etype = (@as(u16, body[pos]) << 8) | body[pos + 1];
-        const elen = (@as(usize, body[pos + 2]) << 8) | body[pos + 3];
+        const etype = readU16(body[pos .. pos + 2]);
+        const elen: usize = readU16(body[pos + 2 .. pos + 4]);
         pos += 4;
         if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
         if (etype == @intFromEnum(tls13_full.ExtensionType.pre_shared_key)) {
             if (elen != 2) return HandshakeError.UnexpectedMessage;
-            selected_psk_index = (@as(u16, body[pos]) << 8) | body[pos + 1];
+            selected_psk_index = readU16(body[pos .. pos + 2]);
         }
         pos += elen;
     }

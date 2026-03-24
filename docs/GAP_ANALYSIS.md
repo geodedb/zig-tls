@@ -12,14 +12,14 @@
 |----------|----------|--------|------|
 | Critical | 8        | 8      | 0    |
 | High     | 18       | 18     | 0    |
-| Medium   | 30       | 26     | 4    |
-| Low      | 21       | 18     | 3    |
-| **Total**| **77**   | **70** | **7**|
+| Medium   | 31       | 27     | 4    |
+| Low      | 24       | 20     | 4    |
+| **Total**| **81**   | **73** | **8**|
 
 ### Implementation Status
 
-**Closed: 70 findings** - All implemented and verified
-**Open: 7 findings** - From Eighth Review (2026-03-24)
+**Closed: 73 findings** - All implemented and verified
+**Open: 8 findings** - 5 from Eighth Review + 3 from Ninth Review (remaining strategic/deferred items)
 
 ### Seventh Review Remediations (2026-03-24)
 
@@ -93,6 +93,33 @@ Fresh full codebase audit identified 9 additional findings. 2 closed, 7 open:
 9. GAP-0077 (Low): Minimal ClientHello/ServerHello encoders in production Engine path --
    messages.zig:212-268 has non-interoperable placeholders exposed as public Engine API.
    - Files: `src/tls13/messages.zig` (lines ~212-268)
+
+### Ninth Review Findings (2026-03-24)
+
+Full codebase audit identified 4 additional findings. 3 closed, 1 open:
+
+1. GAP-0078 (Medium): **CLOSED** -- x25519KeypairAndShared in messages.zig lacked `defer secureZero`
+   on success path for the stack-local private key `sk`. Fixed: added `defer secureZero(u8, &sk)`
+   on all paths (success and error) in messages.zig. Engine.zig duplicate deleted; imports from
+   messages.zig. Also covers SEC-023.
+   - Related: [#28](https://gitlab.com/devnw/zig/tls/-/issues/28), [#76](https://gitlab.com/devnw/zig/tls/-/issues/76)
+   - Files: `src/tls13/messages.zig`, `src/tls13/engine.zig`
+2. GAP-0079 (Low): **CLOSED** -- Unknown handshake message types are already rejected at the
+   handshake parse layer before reaching `handleHandshakeMessage`. The `else` branch in context.zig
+   handles only known-but-unprocessed types (e.g., new_session_ticket). Verified parse-layer
+   rejection covers RFC 8446 S4 `unexpected_message` requirement.
+   - Files: `src/tls13/context.zig`
+3. GAP-0080 (Low): Hardcoded `supported_groups` extension advertises only x25519 -- ignores
+   `config.supported_groups`. No P-256/P-384 negotiation despite config field existing.
+   secp256r1 is mandatory-to-implement per RFC 8446 S9.1.
+   - Related: [#12](https://gitlab.com/devnw/zig/tls/-/issues/12) (Additional Key Exchange Groups)
+   - Files: `src/tls13/context.zig` (lines ~2403-2424), `src/tls13/config.zig` (line 99)
+4. GAP-0081 (Low): **CLOSED** -- Added `validateClientRole()` function to reject server-only
+   transport parameters (original_destination_connection_id, preferred_address, retry_source_cid,
+   stateless_reset_token) when received from a client. Returns TRANSPORT_PARAMETER_ERROR per
+   RFC 9000 S18.2.
+   - Related: [#56](https://gitlab.com/devnw/zig/tls/-/issues/56), [#79](https://gitlab.com/devnw/zig/tls/-/issues/79)
+   - Files: `src/quic_transport_params.zig`, `src/tls13/context.zig`
 
 ### Sixth Review Remediations (2026-03-23)
 
@@ -205,6 +232,10 @@ All 11 remaining open issues from the third review have been implemented:
 | 42 | Low | 8 | AES-CCM cipher suites defined but non-functional (blocked by Zig stdlib) | src/tls13/types.zig, src/record/aead.zig | -- | N/A | [#8](https://gitlab.com/devnw/zig/tls/-/issues/8) | -- | TBD | TBD | Open |
 | 43 | Low | 4 | CRL distribution point checking absent (design decision; OCSP stapling alternative) | src/x509.zig | CWE-299 | src/x509.zig | N/A | -- | TBD | TBD | Open |
 | 44 | Low | 4 | Minimal ClientHello/ServerHello encoders are non-interoperable placeholders in Engine API | src/tls13/messages.zig | CWE-1188 | src/tls13/messages.zig:212-268 | N/A | -- | TBD | TBD | Open |
+| 45 | Medium | 20 | x25519KeypairAndShared missing defer secureZero on success path for stack-local private key | src/tls13/messages.zig | CWE-226 | src/tls13/messages.zig:191-210 | [#76](https://gitlab.com/devnw/zig/tls/-/issues/76) | Added `defer secureZero(u8, &sk)` on all paths; engine.zig duplicate deleted | Claude | 2026-03-24 | Closed |
+| 46 | Low | 8 | Unknown handshake message types silently dropped (no alert, no logging) | src/tls13/context.zig | CWE-390 | src/tls13/context.zig:1398-1400 | [#77](https://gitlab.com/devnw/zig/tls/-/issues/77) | Already rejected at parse layer; verified RFC 8446 S4 compliance | Claude | 2026-03-24 | Closed |
+| 47 | Low | 4 | Hardcoded supported_groups (x25519 only), ignores config; no P-256/P-384 negotiation | src/tls13/context.zig, src/tls13/config.zig | -- | src/tls13/context.zig:2403-2424 | [#78](https://gitlab.com/devnw/zig/tls/-/issues/78) | -- | TBD | TBD | Open |
+| 48 | Low | 4 | No server/client role validation on received QUIC transport parameters | src/quic_transport_params.zig | -- | src/tls13/context.zig:1294-1305 | [#79](https://gitlab.com/devnw/zig/tls/-/issues/79) | Added validateClientRole() rejecting server-only params per RFC 9000 S18.2 | Claude | 2026-03-24 | Closed |
 
 ---
 

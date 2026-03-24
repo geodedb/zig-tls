@@ -66,8 +66,9 @@ const HsType = messages_mod.HsType;
 const deriveHandshakeTraffic = key_derivation_mod.deriveHandshakeTraffic;
 const deriveApplicationTraffic = key_derivation_mod.deriveApplicationTraffic;
 const deriveFinishedVerifyData = finished_mod.deriveFinishedVerifyData;
-// Note: x25519KeypairAndShared, encodeMinimalClientHello, encodeMinimalServerHello,
-// and parseMinimalHelloPub are defined in the extracted code below
+// Note: encodeMinimalClientHello, encodeMinimalServerHello,
+// and parseMinimalHelloPub are defined in the extracted code below.
+// x25519KeypairAndShared is provided by messages_mod (QUAL-088: deduplication).
 
 // Standard library type aliases
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
@@ -76,7 +77,9 @@ const Secret = ks.Secret;
 const max_digest_length = ks.max_digest_length;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
-// Debug tracing (disabled in production)
+// Debug tracing (disabled in production).
+// QUAL-082: Per-file trace constants are intentionally NOT extracted to a shared
+// module. See context.zig for rationale.
 const handshake_trace_enabled = false;
 
 /// Secret tracing - logs cryptographic secrets for debugging.
@@ -105,12 +108,8 @@ inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
     if (secret_trace_enabled) logger.debugPrint(fmt, args);
 }
 
-fn cipherSuiteHash(suite: tls13_full.CipherSuite) Hash {
-    return switch (suite) {
-        .TLS_AES_128_GCM_SHA256, .TLS_CHACHA20_POLY1305_SHA256, .TLS_AES_128_CCM_SHA256, .TLS_AES_128_CCM_8_SHA256 => .sha256,
-        .TLS_AES_256_GCM_SHA384 => .sha384,
-    };
-}
+// cipherSuiteHash is now shared via types.cipherSuiteHash (QUAL-081 dedup).
+const cipherSuiteHash = types.cipherSuiteHash;
 
 // Helper types (may be referenced by Engine)
 pub const TicketEntry = struct {
@@ -126,6 +125,9 @@ pub const TicketEntryView = struct {
 };
 
 pub const TicketStore = struct {
+    /// SEC-017: Maximum number of stored tickets to prevent OOM from malicious peers.
+    const max_tickets: usize = 16;
+
     tickets: ArrayListUnmanaged(TicketEntry) = .{},
     allocator: std.mem.Allocator = undefined,
 
@@ -142,6 +144,15 @@ pub const TicketStore = struct {
     }
 
     pub fn store(self: *TicketStore, identity: []const u8, secret: Secret, lifetime: u32) !void {
+        // SEC-017: FIFO eviction when at capacity to prevent unbounded growth / OOM.
+        if (self.tickets.items.len >= max_tickets) {
+            // Evict oldest entry (index 0): zeroize secret, free identity, then shift.
+            var oldest = &self.tickets.items[0];
+            std.crypto.secureZero(u8, oldest.secret.bytes[0..oldest.secret.len]);
+            self.allocator.free(oldest.identity);
+            // Remove index 0 by using orderedRemove which shifts elements left.
+            _ = self.tickets.orderedRemove(0);
+        }
         const ident_copy = try self.allocator.dupe(u8, identity);
         try self.tickets.append(self.allocator, .{
             .identity = ident_copy,
@@ -250,6 +261,15 @@ pub const Engine = struct {
     /// Initialize a TLS 1.3 Engine with allocator and role.
     pub fn init(alloc: std.mem.Allocator, role: Role) Engine {
         return .{ .role = role, .allocator = alloc, .transcript = Transcript.init(), .ecdhe_secret = null, .ecdhe_buf = undefined, .my_priv = null, .my_pub = null, .peer_pub = null, .client_session_id = null, .outbox = std.ArrayList(u8){}, .inbox = std.ArrayList(u8){}, .handshake_failed = false, .ch_sent = false, .ch_recv = false, .sh_seen = false, .allow_insecure = false, .peer_cert_ok = false, .hash_kind = .sha256, .finished_sent = false, .finished_verified = false, .ee_sent = false, .server_handshake_flight_enqueued = false, .handshake_secret = null, .handshake_client_secret = null, .handshake_server_secret = null, .leaf_spki = null, .local_tp = null, .peer_tp = null, .alpn = null, .server_name = null, .server_cert_der = null, .server_priv_key = null, .server_sig_alg = null, .master_secret = null, .cached_app_client = null, .cached_app_server = null, .tickets = .{}, .peer_finished_cb = null, .peer_finished_ctx = null };
+    }
+
+    /// SEC-019: Set allow_insecure with release-mode guard.
+    /// Panics if called with `true` in non-Debug builds, matching Context behavior.
+    pub fn setAllowInsecure(self: *Engine, value: bool) void {
+        if (value and @import("builtin").mode != .Debug) {
+            @panic("SECURITY: allow_insecure=true is forbidden in release builds");
+        }
+        self.allow_insecure = value;
     }
     /// Release any owned resources and buffers.
     /// Security: Zeroizes sensitive keying material (CWE-226) before freeing.
@@ -372,10 +392,8 @@ pub const Engine = struct {
 
     /// Flush and return the outbox contents, transferring ownership to caller.
     pub fn flushCrypto(self: *Engine, alloc: std.mem.Allocator) ![]u8 {
-        const result = try alloc.alloc(u8, self.outbox.items.len);
-        @memcpy(result, self.outbox.items);
-        self.outbox.clearRetainingCapacity();
-        return result;
+        // PERF-022: Use toOwnedSlice to transfer ownership without copying.
+        return self.outbox.toOwnedSlice(alloc);
     }
 
     /// Ingest CRYPTO data from peer and parse handshake messages.
@@ -432,6 +450,13 @@ pub const Engine = struct {
     /// to update simple state, but always feeds the transcript with raw bytes.
     pub fn onCryptoRecv(self: *Engine, data: []const u8) !void {
         traceHandshake("TLS: onCryptoRecv called with {} bytes, inbox already has {} bytes\n", .{ data.len, self.inbox.items.len });
+
+        // SEC-018: Enforce maximum CRYPTO buffer size per RFC 9001 §7.5 recommendation.
+        // Prevents memory exhaustion from excessively large or fragmented handshake messages.
+        const max_crypto_buffer = 65536; // 64KB per RFC 9001 §7.5
+        if (self.inbox.items.len + data.len > max_crypto_buffer) {
+            return error.CryptoBufferOverflow;
+        }
 
         // Append new data to inbox buffer
         try self.inbox.appendSlice(self.allocator, data);
@@ -690,6 +715,11 @@ pub const Engine = struct {
                                             traceHandshake("TLS: Leaf certificate missing serverAuth EKU\n", .{});
                                             break :blk false;
                                         }
+                                    } else {
+                                        // SEC-025: RFC 5280 Section 4.2.1.12 -- when EKU extension
+                                        // is absent, the certificate is unrestricted (all usages
+                                        // are permitted). This is standards-compliant behavior.
+                                        traceHandshake("TLS: Leaf certificate has no EKU extension (RFC 5280: unrestricted usage)\n", .{});
                                     }
 
                                     if (leaf_entry.ocsp_response) |ocsp_bytes| {
@@ -736,15 +766,17 @@ pub const Engine = struct {
                             if (4 + sig_len <= p.body.len) {
                                 const signature = p.body[4 .. 4 + sig_len];
                                 const th = th_before; // transcript up to CertificateVerify
+                                // SEC-027: Unknown signature schemes skip verification
+                                // entirely -- no dead fallback assignment.
                                 const alg: sig.SigAlg = switch (scheme_value) {
                                     0x0403 => .ecdsa_secp256r1_sha256, // RFC 8446 SignatureScheme values
                                     0x0503 => .ecdsa_secp384r1_sha384,
                                     0x0804 => .rsa_pss_sha256,
                                     0x0807 => .ed25519,
-                                    else => blk: {
-                                        traceHandshake("TLS: Unknown SignatureScheme: 0x{X:0>4}\n", .{scheme_value});
+                                    else => {
+                                        traceHandshake("TLS: Unknown SignatureScheme: 0x{X:0>4}, rejecting CertificateVerify\n", .{scheme_value});
                                         self.peer_cert_ok = false;
-                                        break :blk .rsa_pss_sha256;
+                                        continue; // skip verification for unknown schemes
                                     },
                                 };
                                 if (self.peer_cert_ok) { // Only verify if not already failed
@@ -791,9 +823,17 @@ pub const Engine = struct {
                     traceHandshake("TLS: Finished verification result: {}\n", .{ok});
                     self.updateFinishedVerified(ok);
 
+                    // SEC-020: Abort handshake immediately if Finished verification fails.
+                    // A failed Finished means the peer cannot prove possession of the
+                    // handshake traffic secret -- continuing would allow MITM attacks.
+                    if (!ok) {
+                        self.handshake_failed = true;
+                        return error.HandshakeFailure;
+                    }
+
                     // RFC 8446 §7.1: Application traffic secrets must be derived from transcript
                     // hash "ClientHello...server Finished" (NOT including client Finished).
-                    if (ok) {
+                    {
                         // Get the Finished message bytes
                         const finished_msg = data[off - p.n .. off];
 
@@ -834,11 +874,16 @@ pub const Engine = struct {
                     }
                 }
                 // NewSessionTicket parsing (client side only for now)
+                // QUAL-090: Malformed tickets are logged and dropped (not fatal per RFC 8446 §4.6.1).
+                // Store errors are propagated via logging since tickets are non-critical post-handshake data.
                 if (p.typ == .new_session_ticket and self.role == .Client) {
                     const b = p.body;
                     var pos: usize = 0;
                     if (b.len >= 4) {
-                        if (b.len < 4 + 4) continue; // need lifetime + age_add
+                        if (b.len < 4 + 4) {
+                            traceHandshake("TLS: Malformed NewSessionTicket: too short for lifetime+age_add (len={})\n", .{b.len});
+                            continue;
+                        }
                         const lifetime: u32 = (@as(u32, b[0]) << 24) | (@as(u32, b[1]) << 16) | (@as(u32, b[2]) << 8) | @as(u32, b[3]);
                         pos = 4 + 4; // skip age_add as well
                         if (pos >= b.len) continue;
@@ -1303,6 +1348,12 @@ pub const Engine = struct {
     /// Compute application traffic secrets from current transcript and ECDHE.
     /// CRITICAL: Caches the result on first call to prevent recomputation with wrong transcript.
     /// The first call happens when processing peer Finished (BEFORE adding it to transcript).
+    ///
+    /// QUAL-091: The inline ks.deriveSecretHash / ks.extractHash calls below (and in
+    /// NewSessionTicket handling at ~line 909) use raw RFC label strings ("derived",
+    /// "c ap traffic", "s ap traffic", "res master"). These should be migrated to
+    /// key_derivation_mod wrapper functions for consistency, but are left as-is to
+    /// avoid breaking the RFC 8448 test vectors. Tracked for future refactoring.
     pub fn computeApplicationSecrets(self: *Engine) ?struct { client: Secret, server: Secret } {
         if (self.cached_app_client) |client| {
             if (self.cached_app_server) |server| {
@@ -1518,7 +1569,9 @@ pub const Engine = struct {
                     if (3 + name_len <= elen and name_len > 0) {
                         if (self.alpn) |old| self.allocator.free(old);
                         self.alpn = self.allocator.dupe(u8, body[pos + 3 .. pos + 3 + name_len]) catch null;
-                        logger.debugPrint("extractAlpnFromClientHello: Extracted ALPN: {s}\n", .{self.alpn.?});
+                        if (self.alpn) |alpn_val| {
+                            logger.debugPrint("extractAlpnFromClientHello: Extracted ALPN: {s}\n", .{alpn_val});
+                        }
                         return;
                     }
                 }
@@ -1562,13 +1615,16 @@ pub const Engine = struct {
             }
         }
     }
-    /// Public: handshake complete when both sides' Finished exchanged.
+    /// Public: handshake complete when both sides' Finished exchanged AND peer cert valid.
+    /// SEC-021: Certificate/CertificateVerify failures (peer_cert_ok=false) prevent
+    /// handshake completion, ensuring that callers cannot use a connection where the
+    /// peer's identity was not verified.
     pub fn handshakeComplete(self: *Engine) bool {
         // In insecure mode on server side, we don't require client certificates
         // The handshake is complete once Finished messages are exchanged
         const cert_ok = if (self.role == .Server and self.allow_insecure) true else self.peer_cert_ok;
 
-        const result = self.finished_sent and self.finished_verified;
+        const result = self.finished_sent and self.finished_verified and cert_ok;
         if (!result) {
             logger.debugPrint("[TLS HANDSHAKE] NOT COMPLETE - role={s}, finished_sent={}, finished_verified={}, ecdhe_secret={}, handshake_client_secret={}, handshake_server_secret={}, peer_cert_ok={}, allow_insecure={}\n", .{
                 if (self.role == .Server) "Server" else "Client",
@@ -1718,24 +1774,8 @@ pub const Engine = struct {
     // Messages are sent together in proper TLS stream format
 };
 
-/// Generate an X25519 keypair and compute a shared secret given peer public.
-/// Returns (priv, pub, shared) where shared may be null if peer_pub is null.
-pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) struct { priv_key: [32]u8, pub_key: [32]u8, shared: ?[32]u8 } {
-    var sk: [32]u8 = undefined;
-    defer std.crypto.secureZero(u8, &sk);
-    var pk: [32]u8 = undefined;
-    std.crypto.random.bytes(&sk);
-    std.crypto.dh.X25519.scalarmultBase(&pk, sk);
-    var shared: ?[32]u8 = null;
-    if (peer_pub_opt) |peer_pub| {
-        var sh: [32]u8 = undefined;
-        defer std.crypto.secureZero(u8, &sh);
-        if (std.crypto.dh.X25519.scalarmult(&sh, sk, peer_pub)) {
-            shared = sh;
-        } else shared = null;
-    }
-    return .{ .priv_key = sk, .pub_key = pk, .shared = shared };
-}
+// QUAL-088: x25519KeypairAndShared removed -- use messages_mod.x25519KeypairAndShared instead.
+// The duplicate had different security properties (missing proper error handling, older API).
 
 /// Encode a minimalistic ClientHello body carrying an X25519 key share only (non-interoperable placeholder).
 pub fn encodeMinimalClientHello(alloc: std.mem.Allocator, client_pub: [32]u8) ![]u8 {

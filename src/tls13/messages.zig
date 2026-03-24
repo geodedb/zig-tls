@@ -190,6 +190,7 @@ pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
 /// ```
 pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) struct { priv_key: [32]u8, pub_key: [32]u8, shared: ?[32]u8 } {
     var sk: [32]u8 = undefined;
+    defer std.crypto.secureZero(u8, &sk);
     std.crypto.random.bytes(&sk);
     // SAFETY: recoverPublicKey only fails when the private key is the all-zero point (producing
     // a weak public key). Since sk is filled from std.crypto.random.bytes, the probability of
@@ -199,9 +200,6 @@ pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) struct { priv_key: [32]u8, 
     if (peer_pub_opt) |peer_pub| {
         // Zig 0.15.1 API: scalarmult returns the shared secret directly
         const sh = std.crypto.dh.X25519.scalarmult(sk, peer_pub) catch {
-            // CWE-226: Zeroize private key on error before returning
-            // to prevent key leakage if caller doesn't handle error properly
-            std.crypto.secureZero(u8, &sk);
             return .{ .priv_key = [_]u8{0} ** 32, .pub_key = pk, .shared = null };
         };
         shared = sh;

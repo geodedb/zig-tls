@@ -316,7 +316,8 @@ pub fn buildServerHello(
     quic_params: ?[]const u8,
     selected_psk_index: ?u16,
 ) ![]u8 {
-    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
+    // PERF-007: Pre-allocate with typical ServerHello size (~128 bytes body).
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 128);
     defer msg.deinit(allocator);
 
     // Legacy version (TLS 1.2 for compatibility)
@@ -346,7 +347,8 @@ pub fn buildServerHello(
     try msg.append(allocator, 0);
 
     // Extensions
-    var exts = try std.ArrayList(u8).initCapacity(allocator, 0);
+    // PERF-007: Pre-allocate with typical extensions size (~64 bytes).
+    var exts = try std.ArrayList(u8).initCapacity(allocator, 64);
     defer exts.deinit(allocator);
 
     // CRITICAL: Extension order must match BoringSSL/Quiche for interoperability.
@@ -374,7 +376,8 @@ pub fn buildServerHello(
     }
 
     // key_share (mandatory for ECDHE) - MUST BE AFTER pre_shared_key (if present)
-    var ks_data = try std.ArrayList(u8).initCapacity(allocator, 0);
+    // PERF-007: Pre-allocate with typical key share size (36 bytes for X25519).
+    var ks_data = try std.ArrayList(u8).initCapacity(allocator, 36);
     defer ks_data.deinit(allocator);
     const group_value = @intFromEnum(key_share_group);
     try ks_data.appendSlice(allocator, &[_]u8{
@@ -503,7 +506,8 @@ pub fn buildHelloRetryRequest(
     cookie: []const u8,
     client_session_id: ?[]const u8,
 ) ![]u8 {
-    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
+    // PERF-007: Pre-allocate with typical HRR size (~128 bytes).
+    var msg = try std.ArrayList(u8).initCapacity(allocator, 128);
     defer msg.deinit(allocator);
 
     // Legacy version (TLS 1.2 for compatibility)
@@ -528,7 +532,8 @@ pub fn buildHelloRetryRequest(
     try msg.append(allocator, 0);
 
     // Extensions
-    var exts = try std.ArrayList(u8).initCapacity(allocator, 0);
+    // PERF-007: Pre-allocate with typical HRR extensions size (~64 bytes).
+    var exts = try std.ArrayList(u8).initCapacity(allocator, 64);
     defer exts.deinit(allocator);
 
     // RFC 8446 §4.1.4: Extension order for HRR:

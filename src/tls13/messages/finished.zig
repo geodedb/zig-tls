@@ -94,8 +94,5 @@ pub fn buildFinished(
     allocator: std.mem.Allocator,
     verify_data: []const u8,
 ) ![]u8 {
-    var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer msg.deinit(allocator);
-    try msg.appendSlice(allocator, verify_data);
-    return msg.toOwnedSlice(allocator);
+    return allocator.dupe(u8, verify_data);
 }

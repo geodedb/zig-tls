@@ -161,8 +161,10 @@ test "TLS 1.3 server rejects 0-RTT replay (no early secret installed)" {
     defer server_ctx.deinit();
 
     // Preload anti-replay window with the same random used by the incoming ClientHello.
+    // PERF-002: anti_replay is now an optional pointer, allocated for server+early_data.
     try testing.expect(client_ctx.client_random != null);
-    try server_ctx.anti_replay.add(client_ctx.client_random.?);
+    try testing.expect(server_ctx.anti_replay != null);
+    try server_ctx.anti_replay.?.add(client_ctx.client_random.?);
 
     try server_ctx.processCrypto(.Initial, ch_msg);
 

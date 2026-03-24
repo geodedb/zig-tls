@@ -64,6 +64,40 @@ const ks = @import("quic_tls");
 pub const Hash = ks.Hash;
 pub const Secret = ks.Secret;
 
+/// Pre-computed empty hash constants (Hash("") for each supported algorithm).
+/// These are deterministic values that never change, so we compute them once
+/// at comptime instead of calling ks.hashBytes(hash, &[_]u8{}) at runtime
+/// on every handshake (PERF-009).
+const empty_hash_sha256: Secret = computeEmptyHash(.sha256);
+const empty_hash_sha384: Secret = computeEmptyHash(.sha384);
+
+fn computeEmptyHash(comptime hash: Hash) Secret {
+    const digest = switch (hash) {
+        .sha256 => blk: {
+            @setEvalBranchQuota(10000);
+            var out: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(&[_]u8{}, &out, .{});
+            break :blk out;
+        },
+        .sha384 => blk: {
+            @setEvalBranchQuota(10000);
+            var out: [std.crypto.hash.sha2.Sha384.digest_length]u8 = undefined;
+            std.crypto.hash.sha2.Sha384.hash(&[_]u8{}, &out, .{});
+            break :blk out;
+        },
+    };
+    return Secret.fromSlice(hash, &digest);
+}
+
+/// Return the pre-computed empty hash for the given algorithm.
+/// Replaces runtime `ks.hashBytes(hash, &[_]u8{})` calls.
+fn emptyHash(hash: Hash) Secret {
+    return switch (hash) {
+        .sha256 => empty_hash_sha256,
+        .sha384 => empty_hash_sha384,
+    };
+}
+
 /// Debug tracing for secrets (disabled in production builds).
 const secret_trace_enabled = false;
 
@@ -120,8 +154,8 @@ pub fn deriveEarlySecret(hash: Hash, psk: ?[]const u8) Secret {
 /// Used to compute the HMAC binder in the pre_shared_key extension.
 pub fn deriveBinderKey(hash: Hash, early_secret: *const Secret, external: bool) Secret {
     const label = if (external) "ext binder" else "res binder";
-    const empty_hash = ks.hashBytes(hash, &[_]u8{});
-    return ks.deriveSecretHash(hash, early_secret, label, empty_hash.slice());
+    const eh = emptyHash(hash);
+    return ks.deriveSecretHash(hash, early_secret, label, eh.slice());
 }
 
 /// Derive 0-RTT early traffic secret for client early data (RFC 8446 §7.1, §4.2.10).
@@ -181,8 +215,8 @@ pub fn deriveHandshakeTraffic(hash: Hash, ecdhe_secret: []const u8, transcript_h
         traceSecrets("\n", .{});
     }
 
-    const empty_hash = ks.hashBytes(hash, &[_]u8{});
-    const derived = ks.deriveSecretHash(hash, early_secret, "derived", empty_hash.slice());
+    const eh = emptyHash(hash);
+    const derived = ks.deriveSecretHash(hash, early_secret, "derived", eh.slice());
     const handshake_secret = ks.extractHash(hash, derived.slice(), ecdhe_secret);
     const client_hs = ks.deriveSecretHash(hash, &handshake_secret, "c hs traffic", transcript_hash.slice());
     const server_hs = ks.deriveSecretHash(hash, &handshake_secret, "s hs traffic", transcript_hash.slice());
@@ -194,7 +228,7 @@ pub fn deriveHandshakeTraffic(hash: Hash, ecdhe_secret: []const u8, transcript_h
         traceSecrets("\n", .{});
 
         traceSecrets("[TLS_KEY_SCHEDULE_DEBUG] Empty hash: ", .{});
-        for (empty_hash.slice()) |b| traceSecrets("{X:0>2}", .{b});
+        for (eh.slice()) |b| traceSecrets("{X:0>2}", .{b});
         traceSecrets("\n", .{});
 
         traceSecrets("[TLS_KEY_SCHEDULE_DEBUG] Derived: ", .{});
@@ -303,8 +337,8 @@ pub fn deriveApplicationTraffic(hash: Hash, handshake_secret: *const Secret, tra
         traceSecrets("\n", .{});
     }
 
-    const empty_hash = ks.hashBytes(hash, &[_]u8{});
-    const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", empty_hash.slice());
+    const eh = emptyHash(hash);
+    const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", eh.slice());
     // RFC 8446 §7.1: IKM is Hash.length zeros (32 for SHA-256, 48 for SHA-384)
     const zero_ikm = ks.zeroSecret(hash);
     if (secret_trace_enabled) {

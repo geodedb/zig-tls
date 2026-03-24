@@ -140,8 +140,14 @@ pub fn extractCertFromSequence(seq: []const u8) OcspError!?[]const u8 {
     return cert_tlv.val[0..cert_tlv.val.len]; // value already sequence content
 }
 
+/// SEC-026: Defense-in-depth constant-time comparison for OCSP data matching.
+/// While serial/issuer data is not secret, using constant-time comparison
+/// prevents any potential timing oracle from leaking structural information.
 pub fn compareSlices(expected: []const u8, actual: []const u8) bool {
-    return expected.len == actual.len and std.mem.eql(u8, expected, actual);
+    // Length difference is safe to check early -- lengths are not secret
+    // and timing_safe.compare requires same-length slices.
+    if (expected.len != actual.len) return false;
+    return std.crypto.timing_safe.compare(u8, expected, actual, .big) == .eq;
 }
 
 /// Validate a stapled OCSP response for the provided certificate chain.

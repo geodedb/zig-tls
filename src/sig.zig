@@ -544,7 +544,8 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
             var seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
             defer std.crypto.secureZero(u8, &seed);
             // Use standard library Ed25519 - generate keypair from seed
-            const kp = try Ed25519.KeyPair.generateDeterministic(seed);
+            var kp = try Ed25519.KeyPair.generateDeterministic(seed);
+            defer std.crypto.secureZero(u8, &kp.secret_key.bytes);
             // Build TLS 1.3 signed content
             const to_sign = try tls13_build_context_and_hash(alg, context, transcript_hash, alloc);
             defer alloc.free(to_sign);

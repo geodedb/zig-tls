@@ -230,6 +230,13 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
     // Unit Tests - Test each module independently
     // ========================================================================
+    //
+    // TODO(PERF-024): Add a CountingAllocator wrapper for debug/benchmark builds
+    // to measure allocations per handshake. This would enable automated regression
+    // detection for allocation-related performance findings (PERF-001, PERF-003,
+    // PERF-007, PERF-012, PERF-013). Implementation: wrap std.testing.allocator
+    // in a struct that tracks total_allocs, total_frees, peak_bytes, current_bytes.
+    // Add assertions like: assert(alloc_count_per_handshake < 50).
 
     const test_step = b.step("test", "Run all unit tests");
 
@@ -1058,4 +1065,29 @@ pub fn build(b: *std.Build) void {
 
     // Note: conformance tests require OpenSSL/BoringSSL development libraries
     // They are not included in the default test step
+
+    // ========================================================================
+    // Benchmark Suite (PERF-011)
+    // ========================================================================
+    //
+    // Run with: zig build bench -Doptimize=ReleaseFast
+    // Measures key derivation, transcript hashing, and AEAD throughput.
+
+    const bench_step = b.step("bench", "Run performance benchmarks");
+
+    const bench_exe = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/bench.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+                .{ .name = "record", .module = record_mod },
+            },
+        }),
+    });
+
+    const run_bench = b.addRunArtifact(bench_exe);
+    bench_step.dependOn(&run_bench.step);
 }

@@ -1481,6 +1481,12 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
     if (allow_insecure) return;
     if (chain_der.len == 0) return error.EmptyChain;
 
+    // SEC-024: Hard cap on certificate chain depth before parsing.
+    // Prevents resource exhaustion from pathologically deep chains.
+    // 10 is generous; typical chains are 2-4 certificates.
+    const max_chain_depth = 10;
+    if (chain_der.len > max_chain_depth) return error.PathLenExceeded;
+
     // Parse all certs
     var certs = try alloc.alloc(Certificate, chain_der.len);
     var parsed_count: usize = 0;

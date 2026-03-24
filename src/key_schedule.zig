@@ -52,7 +52,7 @@ pub const H = struct {
         var digest: [Sha256.digest_length]u8 = undefined;
         hasher.final(&digest);
         std.debug.assert(out.len >= digest.len);
-        std.mem.copyForwards(u8, out[0..digest.len], &digest);
+        @memcpy(out[0..digest.len], &digest);
     }
 };
 
@@ -84,7 +84,7 @@ pub const Secret = struct {
         std.debug.assert(src.len == digestLength(hash));
         var out = Secret.empty();
         out.len = @intCast(src.len);
-        std.mem.copyForwards(u8, out.bytes[0..src.len], src);
+        @memcpy(out.bytes[0..src.len], src);
         return out;
     }
 
@@ -141,12 +141,12 @@ pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, contex
     switch (hash) {
         .sha256 => {
             var arr: [Sha256.digest_length]u8 = undefined;
-            std.mem.copyForwards(u8, arr[0..], prk_slice);
+            @memcpy(arr[0..], prk_slice);
             HkdfSha256.expand(out, info, arr);
         },
         .sha384 => {
             var arr: [Sha384.digest_length]u8 = undefined;
-            std.mem.copyForwards(u8, arr[0..], prk_slice);
+            @memcpy(arr[0..], prk_slice);
             HkdfSha384.expand(out, info, arr);
         },
     }
@@ -349,14 +349,14 @@ fn hkdfLabel(alloc: std.mem.Allocator, label: []const u8, context: []const u8, o
 pub fn hmacSha256(key: []const u8, data: []const u8) [Sha256.digest_length]u8 {
     const secret = hmacHash(.sha256, key, data);
     var out: [Sha256.digest_length]u8 = undefined;
-    std.mem.copyForwards(u8, out[0..], secret.slice());
+    @memcpy(out[0..], secret.slice());
     return out;
 }
 
 fn hkdfExtractRaw(salt: ?[]const u8, ikm: []const u8) [Sha256.digest_length]u8 {
     const secret = extractHash(.sha256, salt, ikm);
     var out: [Sha256.digest_length]u8 = undefined;
-    std.mem.copyForwards(u8, out[0..], secret.slice());
+    @memcpy(out[0..], secret.slice());
     return out;
 }
 
@@ -587,7 +587,7 @@ pub fn updateTrafficSecret(current_secret: [Sha256.digest_length]u8) [Sha256.dig
     var secret_wrapper = Secret.fromSlice(.sha256, current_secret[0..]);
     const updated = updateTrafficSecretHash(.sha256, &secret_wrapper);
     var out: [Sha256.digest_length]u8 = undefined;
-    std.mem.copyForwards(u8, out[0..], updated.slice());
+    @memcpy(out[0..], updated.slice());
     return out;
 }
 
@@ -609,7 +609,7 @@ pub fn updateQuicSecret(current_secret: [Sha256.digest_length]u8) [Sha256.digest
     var secret_wrapper = Secret.fromSlice(.sha256, current_secret[0..]);
     const updated = updateQuicSecretHash(.sha256, &secret_wrapper);
     var out: [Sha256.digest_length]u8 = undefined;
-    std.mem.copyForwards(u8, out[0..], updated.slice());
+    @memcpy(out[0..], updated.slice());
     return out;
 }
 
@@ -637,7 +637,7 @@ pub fn deriveSecret(secret: [Sha256.digest_length]u8, label: []const u8, context
     var secret_wrapper = Secret.fromSlice(.sha256, secret[0..]);
     const derived = deriveSecretHash(.sha256, &secret_wrapper, label, context);
     var out: [Sha256.digest_length]u8 = undefined;
-    std.mem.copyForwards(u8, out[0..], derived.slice());
+    @memcpy(out[0..], derived.slice());
     return out;
 }
 

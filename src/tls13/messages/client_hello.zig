@@ -267,7 +267,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     pos += 2;
     if (pos + cs_len > data.len) return error.TooShort;
 
-    var cipher_suites = try std.ArrayList(core_types.CipherSuite).initCapacity(allocator, 0);
+    var cipher_suites = try std.ArrayList(core_types.CipherSuite).initCapacity(allocator, 4);
     defer cipher_suites.deinit(allocator);
 
     var cs_pos: usize = 0;
@@ -344,7 +344,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                 if (ext_data.len >= 2) {
                     const groups_len = helpers.readU16(ext_data[0..2]);
                     if (2 + groups_len <= ext_data.len) {
-                        var groups = try std.ArrayList(core_types.NamedGroup).initCapacity(allocator, 0);
+                        var groups = try std.ArrayList(core_types.NamedGroup).initCapacity(allocator, 4);
                         defer groups.deinit(allocator);
 
                         var g_pos: usize = 2;
@@ -366,7 +366,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                 if (ext_data.len >= 2) {
                     const algs_len = helpers.readU16(ext_data[0..2]);
                     if (2 + algs_len <= ext_data.len) {
-                        var algs = try std.ArrayList(core_types.SignatureScheme).initCapacity(allocator, 0);
+                        var algs = try std.ArrayList(core_types.SignatureScheme).initCapacity(allocator, 8);
                         defer algs.deinit(allocator);
 
                         var a_pos: usize = 2;
@@ -421,7 +421,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                 if (ext_data.len >= 2) {
                     const list_len = helpers.readU16(ext_data[0..2]);
                     if (2 + list_len <= ext_data.len) {
-                        var alpn_list = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+                        var alpn_list = try std.ArrayList([]const u8).initCapacity(allocator, 4);
                         defer alpn_list.deinit(allocator);
 
                         var a_pos: usize = 2;
@@ -454,7 +454,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                 const identities_len = helpers.readU16(ext_data[0..2]);
                 if (identities_len + 2 > ext_data.len) return error.TooShort;
 
-                var identities = try std.ArrayList(PskIdentity).initCapacity(allocator, 0);
+                var identities = try std.ArrayList(PskIdentity).initCapacity(allocator, 2);
                 defer identities.deinit(allocator);
 
                 var id_pos: usize = 2;
@@ -481,7 +481,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                 id_pos += 2;
                 if (id_pos + binders_len > ext_data.len) return error.TooShort;
 
-                var binders = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+                var binders = try std.ArrayList([]const u8).initCapacity(allocator, 2);
                 defer binders.deinit(allocator);
 
                 var binder_pos: usize = 0;

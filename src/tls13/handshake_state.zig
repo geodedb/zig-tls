@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const tls13_full = @import("tls13_full");
+const readU16 = tls13_full.readU16;
 
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
@@ -146,6 +147,7 @@ pub const ClientHelloView = struct {
     alpn_list: ?[]const []const u8,
     early_data: bool,
     pre_shared_key: ?ClientHelloPreSharedKeyView,
+    psk_key_exchange_modes: ?[]const u8, // RFC 8446 §4.2.9: Required when using PSK
     raw: []const u8,
 };
 
@@ -170,6 +172,7 @@ pub const ClientHelloInfo = struct {
     alpn_list: ?[]const []const u8,
     early_data: bool,
     pre_shared_key: ?PreSharedKeyInfo,
+    psk_key_exchange_modes: ?[]u8, // RFC 8446 §4.2.9
     raw: []u8,
 
     /// Parse ClientHello message body and allocate owned copies.
@@ -294,6 +297,13 @@ pub const ClientHelloInfo = struct {
             psk_copy = .{ .identities = ids, .binders = binders };
         }
 
+        // RFC 8446 §4.2.9: Copy psk_key_exchange_modes if present
+        var psk_modes_copy: ?[]u8 = null;
+        if (parsed.psk_key_exchange_modes) |modes| {
+            psk_modes_copy = try allocator.dupe(u8, modes);
+        }
+        errdefer if (psk_modes_copy) |buf| if (buf.len != 0) allocator.free(buf);
+
         const info = ClientHelloInfo{
             .random = parsed.random,
             .session_id = session_id_copy,
@@ -305,6 +315,7 @@ pub const ClientHelloInfo = struct {
             .alpn_list = alpn_copy,
             .early_data = parsed.early_data,
             .pre_shared_key = psk_copy,
+            .psk_key_exchange_modes = psk_modes_copy,
             .raw = raw_copy,
         };
 
@@ -336,6 +347,7 @@ pub const ClientHelloInfo = struct {
             }
             if (psk.binders.len != 0) allocator.free(@constCast(psk.binders));
         }
+        if (self.psk_key_exchange_modes) |buf| if (buf.len != 0) allocator.free(buf);
         if (self.raw.len != 0) allocator.free(self.raw);
     }
 };
@@ -348,7 +360,7 @@ fn supportsTls13Version(encoded: []const u8) bool {
     if ((byte_count & 1) != 0) return false;
     var offset: usize = 1;
     while (offset + 1 < 1 + byte_count) : (offset += 2) {
-        const version = (@as(u16, encoded[offset]) << 8) | @as(u16, encoded[offset + 1]);
+        const version = readU16(encoded[offset .. offset + 2]);
         if (version == 0x0304) return true;
     }
     return false;
@@ -412,6 +424,7 @@ pub const HandshakeState = struct {
                     .identities = psk.identities,
                     .binders = psk.binders,
                 } else null,
+                .psk_key_exchange_modes = info.psk_key_exchange_modes,
                 .raw = info.raw,
             };
         }
