@@ -228,6 +228,13 @@
 //!   limitation - lacks std.crypto.aead.aes_ccm. Would require custom implementation
 //!   from scratch with extensive cryptographic validation. AES-CCM is less common
 //!   in modern QUIC deployments (most use AES-GCM or ChaCha20-Poly1305).
+//! - **Certificate Revocation Lists (CRL)**: CRL distribution point fetching and
+//!   validation per RFC 5280 Section 6.3 is not implemented. The `validateChain`
+//!   function in `x509.zig` does not check CRL status, so revoked certificates
+//!   may be accepted. **Mitigation:** Enable `require_ocsp = true` in `Config`
+//!   to require OCSP stapling (RFC 6960), which provides equivalent revocation
+//!   coverage without client-side CRL fetches. See `x509.zig` for detailed
+//!   documentation of this limitation and recommended workarounds.
 //!
 //! **Intentionally not supported:**
 //! - Post-handshake authentication: Forbidden by RFC 9001 §4.4 for QUIC
@@ -305,6 +312,12 @@ pub const record = @import("record");
 /// - Full certificate chain validation with path length constraints
 /// - OCSP stapling support (DER parsing, response verification)
 /// - SCT (Signed Certificate Timestamp) list parsing (RFC 6962)
+///
+/// **Revocation Checking (SEC-007):** CRL distribution point fetching and
+/// validation per RFC 5280 Section 6.3 is NOT implemented. `validateChain`
+/// does not check CRL status; revoked certificates may be accepted. Use
+/// `require_ocsp = true` in Config for revocation coverage via OCSP stapling.
+/// See the detailed limitation documentation in `x509.zig`.
 ///
 /// Migration to `std.crypto.x509` planned when stdlib API stabilizes.
 pub const x509 = @import("x509");

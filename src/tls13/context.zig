@@ -80,6 +80,7 @@ const HandshakeMessage = messages_mod.HandshakeMessage;
 const deriveFinishedVerifyData = finished_mod.deriveFinishedVerifyData;
 const deriveApplicationTraffic = key_derivation_mod.deriveApplicationTraffic;
 const encodeHandshake = messages_mod.encodeHandshake;
+const encodeHandshakeBuf = messages_mod.encodeHandshakeBuf;
 const HsType = messages_mod.HsType;
 const deriveHandshakeTraffic = key_derivation_mod.deriveHandshakeTraffic;
 const buildKeyUpdate = messages_mod.buildKeyUpdate;
@@ -1375,6 +1376,21 @@ pub const Context = struct {
         }
     }
 
+    /// PERF-013: Zero-allocation outbound framing.  Writes the 4-byte
+    /// handshake header + body directly into the outbound CryptoBuffer,
+    /// avoiding an intermediate `encodeHandshake` allocation.
+    fn appendOutboundFramed(self: *Context, level: EncryptionLevel, typ: HsType, body: []const u8, update_transcript: bool) !void {
+        const framed_len = 4 + body.len;
+        var stream = self.streams.buffer(level);
+        try stream.outbound.ensureUnusedCapacity(self.allocator, framed_len);
+        const old_len = stream.outbound.items.len;
+        stream.outbound.items.len = old_len + framed_len;
+        _ = encodeHandshakeBuf(stream.outbound.items[old_len..][0..framed_len], typ, body) catch unreachable;
+        if (update_transcript) {
+            self.transcripts.handshake.update(stream.outbound.items[old_len..][0..framed_len]);
+        }
+    }
+
     fn chooseCipherSuite(self: *const Context, offered: []const tls13_full.CipherSuite) ?tls13_full.CipherSuite {
         for (self.config.supported_cipher_suites) |supported| {
             for (offered) |candidate| {
@@ -1554,150 +1570,25 @@ pub const Context = struct {
         self.client_priv = priv;
         self.client_pub = pub_key;
 
-        // Build ClientHello2 (similar to initial ClientHello but with cookie)
-        var body = std.ArrayList(u8){};
-        defer body.deinit(self.allocator);
-
-        // legacy_version
-        try body.appendSlice(self.allocator, &.{ 0x03, 0x03 });
-
-        // RFC 8446 §4.1.4: MUST use same random as ClientHello1
+        // QUAL-096: Use shared ClientHello builder for ClientHello2.
+        // RFC 8446 §4.1.4: MUST use same random as ClientHello1.
         const rnd = self.client_random orelse return HandshakeError.UnexpectedMessage;
-        try body.appendSlice(self.allocator, &rnd);
 
-        // empty session id
-        try body.append(self.allocator, 0);
-
-        // RFC 8446 §4.1.2: Cipher suites from config (CWE-327 prevention)
-        // Build cipher suite list from config.supported_cipher_suites
-        const cipher_suites = if (self.config.supported_cipher_suites.len > 0)
-            self.config.supported_cipher_suites
-        else
-            // Default to TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256
-            &[_]tls13_full.CipherSuite{
-                .TLS_AES_128_GCM_SHA256,
-                .TLS_AES_256_GCM_SHA384,
-                .TLS_CHACHA20_POLY1305_SHA256,
-            };
-
-        const cipher_list_len: u16 = @intCast(cipher_suites.len * 2);
-        try body.appendSlice(self.allocator, &.{ @intCast(cipher_list_len >> 8), @intCast(cipher_list_len & 0xff) });
-        for (cipher_suites) |suite| {
-            const val: u16 = @intFromEnum(suite);
-            try body.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
-        }
-
-        // compression methods
-        try body.appendSlice(self.allocator, &.{ 0x01, 0x00 });
-
-        // Build extensions
-        var ext_buf = std.ArrayList(u8){};
-        defer ext_buf.deinit(self.allocator);
-
-        // supported_versions (REQUIRED)
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
-
-        // supported_groups (RFC 8446 Section 4.2.7) - dynamically encoded from config
-        {
-            const groups = self.config.supported_groups;
-            if (groups.len != 0) {
-                const group_list_len: u16 = @intCast(groups.len * 2);
-                const group_ext_len: u16 = group_list_len + 2;
-                try ext_buf.appendSlice(self.allocator, &.{
-                    0x00,
-                    0x0a,
-                    @intCast(group_ext_len >> 8),
-                    @intCast(group_ext_len & 0xff),
-                    @intCast(group_list_len >> 8),
-                    @intCast(group_list_len & 0xff),
-                });
-                for (groups) |group| {
-                    const gval: u16 = @intFromEnum(group);
-                    try ext_buf.appendSlice(self.allocator, &.{ @intCast(gval >> 8), @intCast(gval & 0xff) });
-                }
-            }
-        }
-
-        // signature_algorithms
-        const sigs = self.config.supported_signature_schemes;
-        if (sigs.len != 0) {
-            const list_len: u16 = @intCast(sigs.len * 2);
-            const ext_len: u16 = list_len + 2;
-            try ext_buf.appendSlice(self.allocator, &.{
-                0x00,
-                0x0d,
-                @intCast(ext_len >> 8),
-                @intCast(ext_len & 0xff),
-                @intCast(list_len >> 8),
-                @intCast(list_len & 0xff),
-            });
-            for (sigs) |scheme| {
-                const val: u16 = @intFromEnum(scheme);
-                try ext_buf.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
-            }
-        }
-
-        // key_share with the requested group
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x33 });
-        const key_share_len: u16 = 2 + 2 + 32;
-        const total_len: u16 = key_share_len + 2;
-        try ext_buf.appendSlice(self.allocator, &.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
-        try ext_buf.appendSlice(self.allocator, &.{ @intCast(key_share_len >> 8), @intCast(key_share_len & 0xff) });
-        const group_val = @intFromEnum(selected_group);
-        try ext_buf.appendSlice(self.allocator, &.{ @intCast(group_val >> 8), @intCast(group_val & 0xff) });
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 32 });
-        try ext_buf.appendSlice(self.allocator, &pub_key);
-
-        // cookie extension (if present in HRR)
-        if (cookie) |ck| {
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2c }); // cookie extension type
-            const ck_len: u16 = @intCast(ck.len);
-            try ext_buf.appendSlice(self.allocator, &.{ @intCast(ck_len >> 8), @intCast(ck_len & 0xff) });
-            try ext_buf.appendSlice(self.allocator, ck);
-        }
-
-        // ALPN
-        if (self.config.alpn_protocols) |alpn_list| if (alpn_list.len != 0) {
-            var names_len: usize = 0;
-            for (alpn_list) |p| names_len += 1 + p.len;
-            const list_len: u16 = @intCast(names_len);
-            const ext_len: u16 = list_len + 2;
-            try ext_buf.appendSlice(self.allocator, &.{
-                0x00,
-                0x10,
-                @intCast(ext_len >> 8),
-                @intCast(ext_len & 0xff),
-                @intCast(list_len >> 8),
-                @intCast(list_len & 0xff),
-            });
-            for (alpn_list) |p| {
-                try ext_buf.append(self.allocator, @intCast(p.len));
-                try ext_buf.appendSlice(self.allocator, p);
-            }
-        };
-
-        // QUIC transport parameters
-        // Check local_transport_parameters first (set via setTransportParameters), then fall back to config
-        const tp_bytes_hrr = self.local_transport_parameters orelse self.config.quic_transport_parameters;
-        if (tp_bytes_hrr) |tp| {
-            const tp_len: u16 = @intCast(tp.len);
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
-            try ext_buf.appendSlice(self.allocator, tp);
-        }
-
-        // Finalize extensions
-        const exts_len: u16 = @intCast(ext_buf.items.len);
-        try body.appendSlice(self.allocator, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
-        try body.appendSlice(self.allocator, ext_buf.items);
+        const ch_result = try tls13_full.buildClientHello(self.allocator, .{
+            .random = rnd,
+            .client_pub = pub_key,
+            .key_share_group = selected_group,
+            .cipher_suites = self.config.supported_cipher_suites,
+            .supported_groups = self.config.supported_groups,
+            .signature_algorithms = self.config.supported_signature_schemes,
+            .alpn_protocols = self.config.alpn_protocols,
+            .quic_transport_parameters = self.local_transport_parameters orelse self.config.quic_transport_parameters,
+            .cookie = cookie,
+        });
+        defer self.allocator.free(ch_result.body);
 
         // Encode as handshake message
-        const body_len: u32 = @intCast(body.items.len);
-        const msg = try self.allocator.alloc(u8, 4 + body.items.len);
-        msg[0] = @intFromEnum(HsType.client_hello);
-        msg[1] = @intCast((body_len >> 16) & 0xff);
-        msg[2] = @intCast((body_len >> 8) & 0xff);
-        msg[3] = @intCast(body_len & 0xff);
-        @memcpy(msg[4..], body.items);
+        const msg = try encodeHandshake(self.allocator, .client_hello, ch_result.body);
         defer self.allocator.free(msg);
 
         // Send ClientHello2 at Initial encryption level
@@ -1977,33 +1868,35 @@ pub const Context = struct {
         }
         return null;
     }
-    fn driveServerHandshakeFlight(self: *Context) !void {
-        if (self.config.role != .Server) return;
-        if (self.flags.local_finished_sent) return;
-        if (self.secrets.handshake.send.valid) return; // secrets already installed
+    // QUAL-095: Shared state produced by negotiateCipherAndKeys, consumed by
+    // the individual message builders and the flight emitter.
+    const ServerNegotiationResult = struct {
+        shared: [32]u8,
+        server_pub: [32]u8,
+        server_random: [32]u8,
+        early_secret: Secret,
+        selected_psk_index: ?u16,
+        psk_selected: bool,
+        ch_view: ClientHelloView,
+        session_id_opt: ?[]const u8,
+    };
 
+    /// QUAL-095 step 1: Negotiate cipher suite, key share, and PSK.
+    /// Returns null when an HRR was sent (caller should return immediately).
+    fn negotiateCipherAndKeys(self: *Context) !?ServerNegotiationResult {
         const ch_view = self.state.clientHello() orelse return HandshakeError.UnexpectedMessage;
         const cipher_suite = self.chooseCipherSuite(ch_view.cipher_suites) orelse return HandshakeError.NoCipherSuite;
         self.hash_kind = cipherSuiteHash(cipher_suite);
         self.negotiated_cipher_suite = cipher_suite;
         // PERF-004: Lock transcript to the negotiated hash for the server path.
-        // Note: this is set before ServerHello is sent, but the lock only
-        // affects subsequent update() calls; the pre-negotiation messages
-        // (ClientHello) were already fed into both hashes.
         self.transcripts.handshake.lockHash(self.hash_kind);
         _ = try self.selectServerSignatureScheme(ch_view);
 
         // RFC 8446 §4.1.4: Check if client's key_share group is supported
-        // If not supported and we haven't sent HRR yet, send HelloRetryRequest
         if (ch_view.key_share.group != .x25519) {
-            if (self.hrr_sent) {
-                // Client already received HRR but still sent wrong group
-                return HandshakeError.UnsupportedKeyShareGroup;
-            }
-
-            // Send HelloRetryRequest requesting x25519
+            if (self.hrr_sent) return HandshakeError.UnsupportedKeyShareGroup;
             try self.sendHelloRetryRequest(ch_view, .x25519);
-            return; // Don't continue with normal handshake
+            return null; // HRR sent; stop flight
         }
 
         if (ch_view.key_share.key.len != 32) return HandshakeError.UnsupportedKeyShareGroup;
@@ -2022,105 +1915,161 @@ pub const Context = struct {
         var client_pub: [32]u8 = undefined;
         @memcpy(&client_pub, ch_view.key_share.key[0..32]);
 
-        var shared = std.crypto.dh.X25519.scalarmult(server_priv, client_pub) catch {
+        const shared = std.crypto.dh.X25519.scalarmult(server_priv, client_pub) catch {
             return HandshakeError.UnsupportedKeyShareGroup;
         };
-        defer std.crypto.secureZero(u8, &shared);
 
         const session_id_opt: ?[]const u8 = if (ch_view.session_id.len != 0) ch_view.session_id else null;
 
-        // Select PSK and derive early secret BEFORE building ServerHello
-        // so we can include the pre_shared_key extension with the selected index.
-        // Track whether PSK authentication succeeded for certificate requirement enforcement.
         const psk_selection = try self.selectPsk(ch_view);
         const early_secret = if (psk_selection) |sel| sel.early_secret else key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
         const selected_psk_index: ?u16 = if (psk_selection) |sel| sel.selected_index else null;
 
-        const sh_body = try tls13_full.buildServerHello(
+        return .{
+            .shared = shared,
+            .server_pub = server_pub,
+            .server_random = server_random,
+            .early_secret = early_secret,
+            .selected_psk_index = selected_psk_index,
+            .psk_selected = psk_selection != null,
+            .ch_view = ch_view,
+            .session_id_opt = session_id_opt,
+        };
+    }
+
+    /// QUAL-095 step 2: Build ServerHello body (allocates; caller frees).
+    fn buildServerHelloMsg(self: *Context, neg: *const ServerNegotiationResult) ![]u8 {
+        return tls13_full.buildServerHello(
             self.allocator,
-            server_random,
-            cipher_suite,
-            ch_view.key_share.group,
-            server_pub[0..],
-            session_id_opt,
+            neg.server_random,
+            self.negotiated_cipher_suite.?,
+            neg.ch_view.key_share.group,
+            neg.server_pub[0..],
+            neg.session_id_opt,
             null,
-            selected_psk_index,
+            neg.selected_psk_index,
         );
+    }
+
+    /// QUAL-095 step 3: Build EncryptedExtensions body (allocates; caller frees).
+    fn buildEncryptedExtensionsMsg(self: *Context, ch_view: ClientHelloView) ![]u8 {
+        const server_tp = try self.ensureLocalTransportParameters();
+        const selected_alpn = try self.selectServerAlpn(ch_view);
+        self.notifyMetadata();
+        return tls13_full.buildEncryptedExtensions(self.allocator, selected_alpn, server_tp);
+    }
+
+    /// QUAL-095 step 4: Build Certificate body.  Returns null for PSK-only auth.
+    fn buildCertificateMsg(self: *Context, psk_selected: bool) !?[]u8 {
+        const cert_der = self.config.server_cert_der orelse {
+            if (!psk_selected) {
+                traceHandshake("Server: ERROR - Certificate required when not using PSK authentication\n", .{});
+                return HandshakeError.MissingCertificate;
+            }
+            traceHandshake("Server: Using PSK-only authentication, skipping Certificate/CertificateVerify\n", .{});
+            return null;
+        };
+        traceHandshake("Server: Sending Certificate message ({} bytes DER)\n", .{cert_der.len});
+        const cert_entries = [_]tls13_full.CertificateEntryData{.{ .cert = cert_der }};
+        const body = try tls13_full.buildCertificate(self.allocator, &[_]u8{}, &cert_entries);
+        return body;
+    }
+
+    /// QUAL-095 step 5: Build CertificateVerify body (allocates; caller frees).
+    fn buildCertificateVerifyMsg(self: *Context) ![]u8 {
+        const hash_for_sig = self.transcripts.handshake.finalize(self.hash_kind);
+
+        const sig_scheme = self.negotiated_signature orelse
+            return HandshakeError.NoSignatureScheme;
+
+        const sig_alg: sig.SigAlg = switch (sig_scheme) {
+            .ecdsa_secp256r1_sha256 => .ecdsa_secp256r1_sha256,
+            .ecdsa_secp384r1_sha384 => .ecdsa_secp384r1_sha384,
+            .rsa_pss_rsae_sha256 => .rsa_pss_sha256,
+            .ed25519 => .ed25519,
+            else => return HandshakeError.UnsupportedSignatureAlgorithm,
+        };
+
+        traceHandshake("Server: Signing CertificateVerify with algorithm: {s}\n", .{@tagName(sig_alg)});
+
+        const priv_key = self.config.server_key_der orelse {
+            traceHandshake("Server: ERROR - No private key configured!\n", .{});
+            return HandshakeError.UnexpectedMessage;
+        };
+
+        const signature = try sig.signCertificateVerify(
+            sig_alg,
+            priv_key,
+            "TLS 1.3, server CertificateVerify",
+            hash_for_sig.slice(),
+            self.allocator,
+        );
+        defer self.allocator.free(signature);
+
+        return tls13_full.buildCertificateVerify(self.allocator, sig_scheme, signature);
+    }
+
+    /// QUAL-095 step 6: Build Finished verify_data (stack-only, no allocation).
+    fn buildFinishedMsg(self: *Context, server_hs_secret: *const Secret) Secret {
+        const hash_before_finished = self.transcripts.handshake.finalize(self.hash_kind);
+        self.transcripts.finished_hash.set(self.hash_kind, hash_before_finished);
+        return deriveFinishedVerifyData(self.hash_kind, server_hs_secret, hash_before_finished);
+    }
+
+    /// QUAL-095 + PERF-013: Emit the complete server flight using zero-alloc
+    /// framing via appendOutboundFramed.  Message bodies are built by the
+    /// individual helpers; only the bodies allocate.
+    fn emitServerFlight(self: *Context, neg: *ServerNegotiationResult) !void {
+        // --- ServerHello (Initial level) ---
+        const sh_body = try self.buildServerHelloMsg(neg);
         defer self.allocator.free(sh_body);
 
-        const sh_msg = try encodeHandshake(self.allocator, .server_hello, sh_body);
-        defer self.allocator.free(sh_msg);
+        traceHandshake("[TRANSCRIPT_DEBUG] ServerHello body ({} bytes)\n", .{sh_body.len});
 
-        // Debug: Print ServerHello message hex dump
-        traceHandshake("[TRANSCRIPT_DEBUG] ServerHello message ({} bytes): ", .{sh_msg.len});
-        for (sh_msg) |b| traceHandshake("{X:0>2}", .{b});
-        traceHandshake("\n", .{});
-
-        // RFC 8446 §7.1: Snapshot transcript hash of ClientHello ONLY (before
-        // ServerHello) — needed for client_early_traffic_secret derivation.
+        // Snapshot ClientHello-only transcript before ServerHello touches it.
         const ch_only_hash = self.transcripts.handshake.finalize(self.hash_kind);
 
-        try self.appendOutbound(.Initial, sh_msg, true);
+        // ServerHello goes at the Initial encryption level (unencrypted).
+        // We must use appendOutbound here (not appendOutboundFramed) because
+        // buildServerHello already returns the body without the 4-byte header
+        // and appendOutbound is how the existing code sends it.
+        // Actually, use appendOutboundFramed for PERF-013 zero-alloc framing.
+        try self.appendOutboundFramed(.Initial, .server_hello, sh_body, true);
 
         const transcript_after_sh = self.transcripts.handshake.finalize(self.hash_kind);
 
-        // RFC 8446 §4.2.10 + RFC 9001 §4.6: Handle 0-RTT early data
-        if (ch_view.early_data and self.config.enable_early_data and early_secret.slice().len > 0) {
-            // Anti-replay check: verify ClientHello random hasn't been seen before
-            const client_random = ch_view.random;
+        // --- 0-RTT early data handling ---
+        if (neg.ch_view.early_data and self.config.enable_early_data and neg.early_secret.slice().len > 0) {
+            const client_random = neg.ch_view.random;
             var accept_early = true;
-            // PERF-002: anti_replay is only allocated for servers with early data
             if (self.anti_replay) |ar| {
                 ar.add(client_random) catch |err| {
-                    // Replay detected - reject 0-RTT, continue with 1-RTT handshake
                     traceHandshake("Server: 0-RTT anti-replay detected ({}), rejecting early data\\n", .{err});
                     accept_early = false;
                 };
             } else {
-                // No anti-replay window — should not happen when enable_early_data
-                // is true (init allocates the window), but reject defensively.
                 accept_early = false;
             }
-
             if (accept_early) {
-                // Derive and install 0-RTT client early traffic secret
-                // RFC 8446 §7.1: client_early_traffic_secret uses Transcript-Hash(ClientHello)
-                const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(self.hash_kind, &early_secret, ch_only_hash.slice());
-
-                // Install as receiving secret (server receives 0-RTT from client)
-                // NOTE: QUIC uses EarlyData encryption level, but we may need to map to Initial
-                // depending on how the QUIC layer handles it
+                const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(self.hash_kind, &neg.early_secret, ch_only_hash.slice());
                 try self.installTrafficSecret(.Initial, .recv, early_traffic_secret);
-
                 traceHandshake("Server: Installed 0-RTT early traffic secret for receiving\\n", .{});
             }
         }
 
-        const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], transcript_after_sh, &early_secret);
+        // --- Derive and install handshake traffic secrets ---
+        const hs = deriveHandshakeTraffic(self.hash_kind, neg.shared[0..], transcript_after_sh, &neg.early_secret);
         self.handshake_secret = hs.handshake;
-
         try self.installTrafficSecret(.Handshake, .send, hs.server_hs);
         try self.installTrafficSecret(.Handshake, .recv, hs.client_hs);
-        if (self.phase == .negotiating) {
-            self.phase = .keys_installed;
-        }
+        if (self.phase == .negotiating) self.phase = .keys_installed;
 
-        const server_tp = try self.ensureLocalTransportParameters();
-        const selected_alpn = try self.selectServerAlpn(ch_view);
-        self.notifyMetadata();
-        const ee_body = try tls13_full.buildEncryptedExtensions(
-            self.allocator,
-            selected_alpn,
-            server_tp,
-        );
+        // --- EncryptedExtensions (Handshake level) ---
+        const ee_body = try self.buildEncryptedExtensionsMsg(neg.ch_view);
         defer self.allocator.free(ee_body);
+        try self.appendOutboundFramed(.Handshake, .encrypted_extensions, ee_body, true);
 
-        const ee_msg = try encodeHandshake(self.allocator, .encrypted_extensions, ee_body);
-        defer self.allocator.free(ee_msg);
-        try self.appendOutbound(.Handshake, ee_msg, true);
-
-        // RFC 8446 §4.3.2: Send CertificateRequest if mTLS is configured
-        // Must be sent after EncryptedExtensions and before Certificate
+        // --- CertificateRequest (mTLS, optional) ---
         if (self.config.request_client_cert) {
             const cr_body = try tls13_full.buildCertificateRequest(
                 self.allocator,
@@ -2128,97 +2077,38 @@ pub const Context = struct {
                 self.config.client_auth_ca_certs,
             );
             defer self.allocator.free(cr_body);
-
-            const cr_msg = try encodeHandshake(self.allocator, .certificate_request, cr_body);
-            defer self.allocator.free(cr_msg);
-            try self.appendOutbound(.Handshake, cr_msg, true);
-
+            try self.appendOutboundFramed(.Handshake, .certificate_request, cr_body, true);
             traceHandshake("Server: Sent CertificateRequest message\n", .{});
         }
 
-        // CRITICAL: Send Certificate and CertificateVerify before Finished (RFC 8446 §4.4.1)
-        // Server must prove possession of private key corresponding to certificate
-        // RFC 8446 §4.4.1: Server MUST send Certificate unless using PSK-only authentication
-        if (self.config.server_cert_der) |cert_der| {
-            traceHandshake("Server: Sending Certificate message ({} bytes DER)\n", .{cert_der.len});
-
-            // Build Certificate message using tls13_full helper
-            // Convert single certificate to certificate chain
-            const cert_entries = [_]tls13_full.CertificateEntryData{.{ .cert = cert_der }};
-            const cert_body = try tls13_full.buildCertificate(self.allocator, &[_]u8{}, &cert_entries);
+        // --- Certificate + CertificateVerify (if not PSK-only) ---
+        if (try self.buildCertificateMsg(neg.psk_selected)) |cert_body| {
             defer self.allocator.free(cert_body);
+            try self.appendOutboundFramed(.Handshake, .certificate, cert_body, true);
 
-            const cert_msg = try encodeHandshake(self.allocator, .certificate, cert_body);
-            defer self.allocator.free(cert_msg);
-            try self.appendOutbound(.Handshake, cert_msg, true);
-
-            // Build CertificateVerify message
-            // Signature is over transcript hash including Certificate message we just added
-            const hash_for_sig = self.transcripts.handshake.finalize(self.hash_kind);
-
-            // RFC 8446 §4.4.3: Server MUST have negotiated a signature scheme
-            // during ClientHello processing via selectServerSignatureScheme.
-            const sig_scheme = self.negotiated_signature orelse
-                return HandshakeError.NoSignatureScheme;
-
-            // Convert SignatureScheme to SigAlg
-            const sig_alg: sig.SigAlg = switch (sig_scheme) {
-                .ecdsa_secp256r1_sha256 => .ecdsa_secp256r1_sha256,
-                .ecdsa_secp384r1_sha384 => .ecdsa_secp384r1_sha384,
-                .rsa_pss_rsae_sha256 => .rsa_pss_sha256,
-                .ed25519 => .ed25519,
-                else => return HandshakeError.UnsupportedSignatureAlgorithm,
-            };
-
-            traceHandshake("Server: Signing CertificateVerify with algorithm: {s}\n", .{@tagName(sig_alg)});
-
-            // Get private key from config
-            const priv_key = self.config.server_key_der orelse {
-                traceHandshake("Server: ERROR - No private key configured!\n", .{});
-                return HandshakeError.UnexpectedMessage; // Using this as a placeholder for config errors
-            };
-
-            // Sign the transcript hash with proper TLS 1.3 context string
-            const signature = try sig.signCertificateVerify(
-                sig_alg,
-                priv_key,
-                "TLS 1.3, server CertificateVerify",
-                hash_for_sig.slice(),
-                self.allocator,
-            );
-            defer self.allocator.free(signature);
-
-            // Build CertificateVerify message body (RFC 8446 §4.4.3)
-            const cv_body = try tls13_full.buildCertificateVerify(self.allocator, sig_scheme, signature);
+            const cv_body = try self.buildCertificateVerifyMsg();
             defer self.allocator.free(cv_body);
-
-            const cv_msg = try encodeHandshake(self.allocator, .certificate_verify, cv_body);
-            defer self.allocator.free(cv_msg);
-            try self.appendOutbound(.Handshake, cv_msg, true);
+            try self.appendOutboundFramed(.Handshake, .certificate_verify, cv_body, true);
 
             traceHandshake("Server: Certificate and CertificateVerify sent successfully\n", .{});
-        } else {
-            // No certificate configured - only acceptable if PSK authentication succeeded
-            // RFC 8446 §4.4.1: "The server MUST send this message in all handshakes
-            // except those using a PSK with key_exchange mode psk_ke"
-            if (psk_selection == null) {
-                // SECURITY: No PSK authentication and no certificate = unauthenticated server
-                // This prevents CWE-287: Improper Authentication
-                traceHandshake("Server: ERROR - Certificate required when not using PSK authentication\n", .{});
-                return HandshakeError.MissingCertificate;
-            }
-            traceHandshake("Server: Using PSK-only authentication, skipping Certificate/CertificateVerify\n", .{});
         }
 
-        const hash_before_finished = self.transcripts.handshake.finalize(self.hash_kind);
-        self.transcripts.finished_hash.set(self.hash_kind, hash_before_finished);
-        const verify_data = deriveFinishedVerifyData(self.hash_kind, &hs.server_hs, hash_before_finished);
-
-        const fin_msg = try encodeHandshake(self.allocator, .finished, verify_data.slice());
-        defer self.allocator.free(fin_msg);
-        try self.appendOutbound(.Handshake, fin_msg, true);
+        // --- Finished ---
+        const verify_data = self.buildFinishedMsg(&hs.server_hs);
+        try self.appendOutboundFramed(.Handshake, .finished, verify_data.slice(), true);
 
         try self.markLocalFinished();
+    }
+
+    /// QUAL-095: Concise orchestrator for the server handshake flight.
+    fn driveServerHandshakeFlight(self: *Context) !void {
+        if (self.config.role != .Server) return;
+        if (self.flags.local_finished_sent) return;
+        if (self.secrets.handshake.send.valid) return;
+
+        var neg = try self.negotiateCipherAndKeys() orelse return; // HRR sent
+        defer std.crypto.secureZero(u8, &neg.shared);
+        try self.emitServerFlight(&neg);
     }
 
     /// Construct and queue a ClientHello with QUIC extensions when acting as the client.
@@ -2232,251 +2122,89 @@ pub const Context = struct {
         // Generate X25519 key pair
         var priv: [32]u8 = undefined;
         std.crypto.random.bytes(&priv);
-        const server_pubkey = std.crypto.dh.X25519.recoverPublicKey(priv) catch return HandshakeError.UnsupportedKeyShareGroup;
+        const client_pubkey = std.crypto.dh.X25519.recoverPublicKey(priv) catch return HandshakeError.UnsupportedKeyShareGroup;
         self.client_priv = priv;
-        self.client_pub = server_pubkey;
-        // Build ClientHello using offered params
-        var body = std.ArrayList(u8){};
-        defer body.deinit(self.allocator);
-        try body.appendSlice(self.allocator, &.{ 0x03, 0x03 }); // legacy_version
+        self.client_pub = client_pubkey;
+
         var rnd: [32]u8 = undefined;
         std.crypto.random.bytes(&rnd);
         self.client_random = rnd; // Save for potential HRR handling
-        try body.appendSlice(self.allocator, &rnd);
-        try body.append(self.allocator, 0); // empty session id
 
-        // RFC 8446 §4.1.2: Cipher suites from config (CWE-327 prevention)
-        // Build cipher suite list from config.supported_cipher_suites
-        const cipher_suites = if (self.config.supported_cipher_suites.len > 0)
-            self.config.supported_cipher_suites
-        else
-            // Default to TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256
-            &[_]tls13_full.CipherSuite{
-                .TLS_AES_128_GCM_SHA256,
-                .TLS_AES_256_GCM_SHA384,
-                .TLS_CHACHA20_POLY1305_SHA256,
-            };
-
-        const cipher_list_len: u16 = @intCast(cipher_suites.len * 2);
-        try body.appendSlice(self.allocator, &.{ @intCast(cipher_list_len >> 8), @intCast(cipher_list_len & 0xff) });
-        for (cipher_suites) |suite| {
-            const val: u16 = @intFromEnum(suite);
-            try body.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
-        }
-
-        // compression methods
-        try body.appendSlice(self.allocator, &.{ 0x01, 0x00 });
-        var ext_buf = std.ArrayList(u8){};
-        defer ext_buf.deinit(self.allocator);
-        // supported_versions
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
-        // supported_groups (RFC 8446 Section 4.2.7) - dynamically encoded from config
-        {
-            const groups = self.config.supported_groups;
-            if (groups.len != 0) {
-                const group_list_len: u16 = @intCast(groups.len * 2);
-                const group_ext_len: u16 = group_list_len + 2;
-                try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0a, @intCast(group_ext_len >> 8), @intCast(group_ext_len & 0xff), @intCast(group_list_len >> 8), @intCast(group_list_len & 0xff) });
-                for (groups) |group| {
-                    const gval: u16 = @intFromEnum(group);
-                    try ext_buf.appendSlice(self.allocator, &.{ @intCast(gval >> 8), @intCast(gval & 0xff) });
-                }
-            }
-        }
-        // signature_algorithms
-        const sigs = self.config.supported_signature_schemes;
-        if (sigs.len != 0) {
-            const list_len: u16 = @intCast(sigs.len * 2);
-            const ext_len: u16 = list_len + 2;
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0d, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
-            for (sigs) |scheme| {
-                const val: u16 = @intFromEnum(scheme);
-                try ext_buf.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
-            }
-        }
-        // key_share
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x33 });
-        const key_share_len: u16 = 2 + 2 + 32;
-        const total_len: u16 = key_share_len + 2;
-        try ext_buf.appendSlice(self.allocator, &.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
-        try ext_buf.appendSlice(self.allocator, &.{ @intCast(key_share_len >> 8), @intCast(key_share_len & 0xff) });
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x1d });
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 32 });
-        try ext_buf.appendSlice(self.allocator, self.client_pub.?[0..]);
-        // ALPN
-        if (self.config.alpn_protocols) |alpn_list| if (alpn_list.len != 0) {
-            var names_len: usize = 0;
-            for (alpn_list) |p| names_len += 1 + p.len;
-            const list_len: u16 = @intCast(names_len);
-            const ext_len: u16 = list_len + 2;
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
-            for (alpn_list) |p| {
-                try ext_buf.append(self.allocator, @intCast(p.len));
-                try ext_buf.appendSlice(self.allocator, p);
-            }
-        };
-        // QUIC transport parameters (client sends its TP in CH)
-        // Check local_transport_parameters first (set via setTransportParameters), then fall back to config
-        const tp_bytes = self.local_transport_parameters orelse self.config.quic_transport_parameters;
-        if (tp_bytes) |tp| {
-            const tp_len: u16 = @intCast(tp.len);
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
-            try ext_buf.appendSlice(self.allocator, tp);
-        }
-
-        // Determine if we have any PSK to offer (resumption takes priority over external)
-        // RFC 8446 §4.2.11: Resumption PSKs and external PSKs use different binder labels.
+        // Determine PSK parameters
         const has_resumption_psk = self.config.resumption_psk != null;
         const has_external_psk = self.config.external_psk != null and self.config.external_psk_identity != null;
         const has_any_psk = has_resumption_psk or has_external_psk;
         const using_external_psk = has_external_psk and !has_resumption_psk;
 
-        // RFC 8446 §4.2.10 + RFC 9001 §4.6: Add early_data extension for 0-RTT
-        // Must be added BEFORE pre_shared_key extension (which must be last)
-        // Note: 0-RTT is only supported with resumption PSKs, not external PSKs
-        if (has_resumption_psk and self.config.enable_early_data) {
-            // early_data extension (type 0x002a, empty data)
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2a, 0x00, 0x00 });
-        }
-
-        // RFC 8446 §4.2.9: psk_key_exchange_modes extension (required when using PSK)
-        // Must be added BEFORE pre_shared_key extension (which must be last)
-        if (has_any_psk) {
-            // Extension type: psk_key_exchange_modes (0x002d)
-            // Extension length: 2 (list length + 1 mode)
-            // Modes list length: 1
-            // Mode: psk_dhe_ke (0x01) - PSK with (EC)DHE for forward secrecy
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2d, 0x00, 0x02, 0x01, 0x01 });
-        }
-
-        // RFC 8446 §4.2.11: pre_shared_key extension (MUST be last)
-        var psk_binder_placeholder_start: ?usize = null;
-        var binder_len: u8 = 0;
-        if (has_any_psk) {
-            // Extension type: pre_shared_key (0x0029)
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x29 });
-
-            const ext_data_start = ext_buf.items.len + 2; // After extension length field
-
-            // Reserve space for extension length (filled in later)
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x00 });
-
-            // PskIdentity list
-            // RFC 8446 §4.2.11: PSK identity is the ticket (resumption) or external identity
-            const identity = if (using_external_psk)
+        const psk_identity: ?[]const u8 = if (has_any_psk) blk: {
+            break :blk if (using_external_psk)
                 self.config.external_psk_identity.?
             else
                 (self.config.resumption_ticket orelse return HandshakeError.MissingResumptionTicket);
-            const identity_len: u16 = @intCast(identity.len);
+        } else null;
 
-            // Identities list length (2 + identity_len + 4 for obfuscated_ticket_age)
-            const identities_list_len: u16 = 2 + identity_len + 4;
-            try ext_buf.appendSlice(self.allocator, &.{ @intCast(identities_list_len >> 8), @intCast(identities_list_len & 0xff) });
+        // QUAL-096: Use shared ClientHello builder.
+        const ch_result = try tls13_full.buildClientHello(self.allocator, .{
+            .random = rnd,
+            .client_pub = client_pubkey,
+            .cipher_suites = self.config.supported_cipher_suites,
+            .supported_groups = self.config.supported_groups,
+            .signature_algorithms = self.config.supported_signature_schemes,
+            .alpn_protocols = self.config.alpn_protocols,
+            .quic_transport_parameters = self.local_transport_parameters orelse self.config.quic_transport_parameters,
+            .include_early_data = has_resumption_psk and self.config.enable_early_data,
+            .include_psk = has_any_psk,
+            .psk_identity = psk_identity,
+            .psk_ticket_age = if (using_external_psk) 0 else self.config.resumption_ticket_age_add,
+            .psk_binder_len = if (has_any_psk) @intCast(ks.digestLength(self.hash_kind)) else 0,
+        });
+        defer self.allocator.free(ch_result.body);
 
-            // Identity length + data
-            try ext_buf.appendSlice(self.allocator, &.{ @intCast(identity_len >> 8), @intCast(identity_len & 0xff) });
-            try ext_buf.appendSlice(self.allocator, identity);
-
-            // obfuscated_ticket_age (u32)
-            // RFC 8446 §4.2.11: For external PSKs, obfuscated_ticket_age SHOULD be 0.
-            const ticket_age: u32 = if (using_external_psk) 0 else self.config.resumption_ticket_age_add;
-            try ext_buf.appendSlice(self.allocator, &.{
-                @intCast((ticket_age >> 24) & 0xff),
-                @intCast((ticket_age >> 16) & 0xff),
-                @intCast((ticket_age >> 8) & 0xff),
-                @intCast(ticket_age & 0xff),
-            });
-
-            // Binders list
-            // Hash length depends on cipher suite
-            binder_len = @intCast(ks.digestLength(self.hash_kind));
-            const binders_list_len: u16 = 1 + binder_len;
-            try ext_buf.appendSlice(self.allocator, &.{ @intCast(binders_list_len >> 8), @intCast(binders_list_len & 0xff) });
-
-            // Binder length
-            try ext_buf.append(self.allocator, binder_len);
-
-            // Record where the binder placeholder starts
-            psk_binder_placeholder_start = ext_buf.items.len;
-
-            // Placeholder binder (will be computed and replaced)
-            var zeros: [ks.max_digest_length]u8 = [_]u8{0} ** ks.max_digest_length;
-            try ext_buf.appendSlice(self.allocator, zeros[0..binder_len]);
-
-            // Now fill in the extension length
-            const ext_data_len = ext_buf.items.len - ext_data_start;
-            ext_buf.items[ext_data_start - 2] = @intCast((ext_data_len >> 8) & 0xff);
-            ext_buf.items[ext_data_start - 1] = @intCast(ext_data_len & 0xff);
-        }
-
-        // finalize extensions
-        const exts_len: u16 = @intCast(ext_buf.items.len);
-        try body.appendSlice(self.allocator, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
-        try body.appendSlice(self.allocator, ext_buf.items);
+        // PERF-015: Build the full handshake message (header + body) in one allocation
+        // so PSK binder computation can hash the complete message in-place.
+        const body_len: u32 = @intCast(ch_result.body.len);
+        const msg = try self.allocator.alloc(u8, 4 + ch_result.body.len);
+        defer self.allocator.free(msg);
+        msg[0] = @intFromEnum(HsType.client_hello);
+        msg[1] = @intCast((body_len >> 16) & 0xff);
+        msg[2] = @intCast((body_len >> 8) & 0xff);
+        msg[3] = @intCast(body_len & 0xff);
+        @memcpy(msg[4..], ch_result.body);
 
         // Compute PSK binder if needed
-        if (psk_binder_placeholder_start) |binder_start| {
-            // Use the appropriate PSK based on whether it's external or resumption
-            const psk = if (using_external_psk) self.config.external_psk.? else self.config.resumption_psk.?;
+        if (ch_result.binder_offset) |body_binder_offset| {
+            const binder_len = ch_result.binder_len;
             if (binder_len == 0) return HandshakeError.CryptoError;
 
-            // Derive early_secret from PSK
+            const psk = if (using_external_psk) self.config.external_psk.? else self.config.resumption_psk.?;
             const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, psk);
-
-            // Derive binder_key with correct label for external vs resumption PSK
-            // RFC 8446 §7.1: "ext binder" for external PSKs, "res binder" for resumption
             const binder_key = key_derivation_mod.deriveBinderKey(self.hash_kind, &early_secret, using_external_psk);
 
-            // Compute transcript hash over ClientHello truncated before binders
-            // Calculate how many bytes to hash (everything except the binders list)
-            const binders_list_len: usize = 2 + 1 + binder_len; // list_len (2) + binder_len (1) + binder
-            const truncated_body_len = body.items.len - binders_list_len;
+            // Truncate before binders list (offset relative to full msg including header)
+            const truncated_len = msg.len - ch_result.binders_tail_len;
 
-            // Create handshake message header for hashing (full ClientHello length)
-            var header: [4]u8 = undefined;
-            header[0] = @intFromEnum(HsType.client_hello);
-            header[1] = @intCast((body.items.len >> 16) & 0xff);
-            header[2] = @intCast((body.items.len >> 8) & 0xff);
-            header[3] = @intCast(body.items.len & 0xff);
-
-            // Hash the truncated ClientHello
+            // Hash truncated message (header is at msg[0..4])
             var transcript = Transcript.init();
-            transcript.update(&header);
-            transcript.update(body.items[0..truncated_body_len]);
+            transcript.update(msg[0..truncated_len]);
             const transcript_hash = transcript.finalize(self.hash_kind);
 
-            // Compute binder: HMAC(binder_key, transcript_hash)
             const binder = finished_mod.deriveFinishedVerifyData(self.hash_kind, &binder_key, transcript_hash);
+            // Binder offset in body + 4 for the handshake header
+            const msg_binder_offset = body_binder_offset + 4;
+            @memcpy(msg[msg_binder_offset..][0..binder_len], binder.slice()[0..binder_len]);
 
-            // Replace placeholder with actual binder
-            const exts_start = body.items.len - ext_buf.items.len;
-            const binder_offset = exts_start + binder_start;
-            @memcpy(body.items[binder_offset..][0..binder_len], binder.slice()[0..binder_len]);
-
-            // RFC 8446 §4.2.10: Derive and install 0-RTT early traffic secret if enabled
             if (self.config.enable_early_data) {
-                // Derive 0-RTT client early traffic secret using ClientHello hash
                 const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(
                     self.hash_kind,
                     &early_secret,
                     transcript_hash.slice(),
                 );
-
-                // Install as sending secret (client sends 0-RTT to server)
                 try self.installTrafficSecret(.Initial, .send, early_traffic_secret);
-
                 traceHandshake("Client: Installed 0-RTT early traffic secret for sending\\n", .{});
             }
         }
 
-        const body_len: u32 = @intCast(body.items.len);
-        const msg = try self.allocator.alloc(u8, 4 + body.items.len);
-        msg[0] = @intFromEnum(HsType.client_hello);
-        msg[1] = @intCast((body_len >> 16) & 0xff);
-        msg[2] = @intCast((body_len >> 8) & 0xff);
-        msg[3] = @intCast(body_len & 0xff);
-        @memcpy(msg[4..], body.items);
-        defer self.allocator.free(msg);
+        // Send the complete framed message
         try self.appendOutbound(.Initial, msg, true);
         self.transcripts.client_hello_hash = self.transcripts.handshake.snapshot();
         if (self.phase == .initial) self.phase = .negotiating;
@@ -3537,4 +3265,167 @@ test "RFC 8446 §4.2.11: ServerHello PSK index non-zero round-trip" {
     const psk_idx = try parseServerHelloPskExtension(sh);
     try std.testing.expect(psk_idx != null);
     try std.testing.expectEqual(@as(u16, 5), psk_idx.?);
+}
+
+// ============================================================================
+// HRR (HelloRetryRequest) Tests (QUAL-099)
+// ============================================================================
+
+test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
+    // Exercises the full HRR code path through the Context API:
+    //   1. Client sends ClientHello1 (with x25519)
+    //   2. Server sends HRR requesting x25519 (with cookie)
+    //   3. Client handles HRR: updates transcript, generates ClientHello2
+    //   4. Verify: hrr_received flag, new outbound data, key regeneration
+    const allocator = std.testing.allocator;
+
+    const tp_bytes: []const u8 = &[_]u8{};
+
+    var config = Config{
+        .allocator = allocator,
+        .role = .Client,
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+        .supported_groups = &.{tls13_full.NamedGroup.x25519},
+        .supported_signature_schemes = &.{tls13_full.SignatureScheme.ed25519},
+        .quic_transport_parameters = tp_bytes,
+        .allow_insecure = true,
+    };
+    _ = &config;
+
+    var ctx = try Context.init(config, .{});
+    defer ctx.deinit();
+
+    try ctx.startClientHandshake();
+
+    const initial_buf = ctx.streams.buffer(.Initial);
+    try std.testing.expect(initial_buf.outbound.items.len > 0);
+
+    const original_pub = ctx.client_pub.?;
+
+    // Build a HelloRetryRequest asking for x25519 with a cookie
+    const cookie_data = "test_cookie_for_hrr_binding";
+    const hrr_body = try tls13_full.buildHelloRetryRequest(
+        allocator,
+        .x25519,
+        cookie_data,
+        null,
+    );
+    defer allocator.free(hrr_body);
+
+    // Verify the HRR body contains the special random value
+    try std.testing.expect(hrr_body.len >= 34);
+    var hrr_random: [32]u8 = undefined;
+    @memcpy(&hrr_random, hrr_body[2..34]);
+    try std.testing.expect(tls13_full.isHelloRetryRequest(hrr_random));
+
+    // Frame the HRR as a handshake message and feed it to the client
+    const hrr_msg = try encodeHandshake(allocator, .server_hello, hrr_body);
+    defer allocator.free(hrr_msg);
+
+    initial_buf.outbound.clearRetainingCapacity();
+
+    try ctx.processCrypto(.Initial, hrr_msg);
+
+    // Verify the client handled HRR correctly
+    try std.testing.expect(ctx.hrr_received);
+    try std.testing.expect(initial_buf.outbound.items.len > 0);
+    // First byte of outbound should be 0x01 (ClientHello message type)
+    try std.testing.expectEqual(@as(u8, 0x01), initial_buf.outbound.items[0]);
+
+    // Client must regenerate its key share
+    const new_pub = ctx.client_pub.?;
+    try std.testing.expect(!std.mem.eql(u8, &original_pub, &new_pub));
+}
+
+test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
+    // RFC 8446 §4.1.4: A client which receives a second HRR in the same
+    // connection MUST abort the handshake with an "unexpected_message" alert.
+    const allocator = std.testing.allocator;
+
+    const tp_bytes: []const u8 = &[_]u8{};
+
+    var config = Config{
+        .allocator = allocator,
+        .role = .Client,
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+        .supported_groups = &.{tls13_full.NamedGroup.x25519},
+        .supported_signature_schemes = &.{tls13_full.SignatureScheme.ed25519},
+        .quic_transport_parameters = tp_bytes,
+        .allow_insecure = true,
+    };
+    _ = &config;
+
+    var ctx = try Context.init(config, .{});
+    defer ctx.deinit();
+
+    try ctx.startClientHandshake();
+
+    // First HRR should succeed
+    const hrr_body = try tls13_full.buildHelloRetryRequest(allocator, .x25519, "cookie1", null);
+    defer allocator.free(hrr_body);
+
+    const hrr_msg = try encodeHandshake(allocator, .server_hello, hrr_body);
+    defer allocator.free(hrr_msg);
+
+    try ctx.processCrypto(.Initial, hrr_msg);
+    try std.testing.expect(ctx.hrr_received);
+
+    // Second HRR must be rejected
+    const hrr_body2 = try tls13_full.buildHelloRetryRequest(allocator, .x25519, "cookie2", null);
+    defer allocator.free(hrr_body2);
+
+    const hrr_msg2 = try encodeHandshake(allocator, .server_hello, hrr_body2);
+    defer allocator.free(hrr_msg2);
+
+    const result = ctx.processCrypto(.Initial, hrr_msg2);
+    try std.testing.expectError(HandshakeError.UnexpectedMessage, result);
+}
+
+test "QUAL-099: HRR transcript manipulation preserves integrity" {
+    // Verifies the transcript hash changes after HRR processing per
+    // RFC 8446 §4.4.1 (message_hash construct).
+    const allocator = std.testing.allocator;
+
+    const tp_bytes: []const u8 = &[_]u8{};
+
+    var config = Config{
+        .allocator = allocator,
+        .role = .Client,
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+        .supported_groups = &.{tls13_full.NamedGroup.x25519},
+        .supported_signature_schemes = &.{tls13_full.SignatureScheme.ed25519},
+        .quic_transport_parameters = tp_bytes,
+        .allow_insecure = true,
+    };
+    _ = &config;
+
+    var ctx = try Context.init(config, .{});
+    defer ctx.deinit();
+
+    try ctx.startClientHandshake();
+
+    // Snapshot transcript hash before HRR
+    const hash_before = ctx.transcripts.handshake.finalize(.sha256);
+
+    const hrr_body = try tls13_full.buildHelloRetryRequest(allocator, .x25519, "test_cookie", null);
+    defer allocator.free(hrr_body);
+
+    const hrr_msg = try encodeHandshake(allocator, .server_hello, hrr_body);
+    defer allocator.free(hrr_msg);
+
+    try ctx.processCrypto(.Initial, hrr_msg);
+
+    // Transcript hash must differ after HRR processing
+    const hash_after = ctx.transcripts.handshake.finalize(.sha256);
+    try std.testing.expect(!std.mem.eql(u8, hash_before.slice(), hash_after.slice()));
+
+    // Hash must not be all zeros
+    var all_zero = true;
+    for (hash_after.slice()) |b| {
+        if (b != 0) {
+            all_zero = false;
+            break;
+        }
+    }
+    try std.testing.expect(!all_zero);
 }

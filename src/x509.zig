@@ -501,6 +501,16 @@ pub const Certificate = struct {
     /// RFC 5280 §4.1.2.7 - Subject Public Key Info
     spki: []const u8,
 
+    /// PERF-017: Outer signatureAlgorithm OID bytes, extracted during parseCert
+    /// to avoid re-parsing in validateChain. Zero-copy slice into DER buffer.
+    /// RFC 5280 §4.1.1.2 - signatureAlgorithm
+    sig_algo_oid: []const u8 = &[_]u8{},
+
+    /// PERF-017: Outer signatureValue BIT STRING bytes, extracted during parseCert
+    /// to avoid re-parsing in validateChain. Zero-copy slice into DER buffer.
+    /// RFC 5280 §4.1.1.3 - signatureValue
+    sig_value: []const u8 = &[_]u8{},
+
     /// Free heap-allocated extension data (SAN DNS list, NameConstraints, PolicyMappings).
     ///
     /// Must be called when the Certificate is no longer needed if it was created
@@ -701,6 +711,26 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     const tbs_seq = cert_seq[ci.off..tbs_end];
     const tbs_bytes = cert_seq[tbs_start..tbs_end];
     ci.off = tbs_end;
+
+    // PERF-017: Extract outer signatureAlgorithm OID and signatureValue from the
+    // Certificate SEQUENCE so that validateChain can skip re-parsing via parseCertSignature.
+    var outer_sig_algo_oid: []const u8 = &[_]u8{};
+    var outer_sig_value: []const u8 = &[_]u8{};
+    {
+        // Save decoder position to restore if parsing fails (best-effort extraction)
+        const saved_off = ci.off;
+        if (ci.readSequence()) |sa_seq| {
+            var sa_dec = asn1.Decoder.init(sa_seq);
+            if (sa_dec.readOID()) |oid| {
+                outer_sig_algo_oid = oid;
+            } else |_| {}
+        } else |_| {
+            ci.off = saved_off;
+        }
+        if (ci.readBitString()) |sig_bits| {
+            outer_sig_value = sig_bits;
+        } else |_| {}
+    }
 
     var ti = asn1.Decoder.init(tbs_seq);
 
@@ -1056,6 +1086,8 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
         .not_before_unix = not_before,
         .not_after_unix = not_after,
         .spki = spki_bytes,
+        .sig_algo_oid = outer_sig_algo_oid,
+        .sig_value = outer_sig_value,
     };
 }
 
@@ -1496,22 +1528,27 @@ pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oi
 /// - Name constraints enforced per RFC 5280 §4.2.1.10
 /// - Policy mapping not supported (RFC 5280 §4.2.1.5)
 ///
-/// ## Revocation Checking Limitations (IMPORTANT)
+/// ## Revocation Checking Limitations -- SEC-007 (IMPORTANT)
 ///
 /// **This function does NOT perform certificate revocation checking.**
 ///
-/// Specifically, it does NOT:
+/// CRL checking per RFC 5280 §6.3 is NOT implemented. Specifically, this
+/// function does NOT:
 /// - Fetch or validate Certificate Revocation Lists (CRLs) per RFC 5280 §6.3
 /// - Perform Online Certificate Status Protocol (OCSP) queries per RFC 6960
 /// - Check OCSP stapled responses (that's done separately in TLS handshake processing)
 ///
 /// **Security Impact:**
+/// - Revoked certificates may pass validation (CWE-299: Improper Check for
+///   Certificate Revocation)
 /// - A certificate that has been revoked by its CA may still pass validation
 /// - Compromised private keys that have been revoked will not be detected
-/// - This is a known limitation for simplicity and performance
+/// - This is a known limitation tracked as SEC-007
 ///
 /// **Mitigations:**
-/// 1. Enable `require_ocsp` in TLS config to require OCSP stapling (recommended)
+/// 1. Set `Config.require_ocsp = true` to require OCSP stapling (recommended).
+///    This ensures the server provides a fresh OCSP response during the TLS
+///    handshake, giving revocation coverage without client-side CRL fetches.
 /// 2. Implement external revocation checking in application layer
 /// 3. Use short-lived certificates that expire before revocation would be needed
 /// 4. Combine with Certificate Transparency (SCT) checking for additional assurance
@@ -1663,12 +1700,26 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
     }
 
     // Verify signatures along the chain
+    // PERF-017: Use pre-parsed sig_algo_oid/sig_value from parseCert instead of
+    // re-parsing each certificate via parseCertSignature.
     i = 0;
     while (i < certs.len) : (i += 1) {
         const issuer_index: usize = if (i + 1 < certs.len) i + 1 else i; // root self-signed
         const issuer_spki = certs[issuer_index].spki;
-        const parsed = parseCertSignature(chain_der[i]) catch return error.SignatureParse;
-        const ok = verifyCertSig(issuer_spki, certs[i].tbs, parsed.algo_oid, parsed.sig_der, alloc);
+        // Use pre-parsed fields; fall back to parseCertSignature if extraction failed
+        const algo_oid = if (certs[i].sig_algo_oid.len > 0)
+            certs[i].sig_algo_oid
+        else blk: {
+            const parsed_sig = parseCertSignature(chain_der[i]) catch return error.SignatureParse;
+            break :blk parsed_sig.algo_oid;
+        };
+        const sig_der = if (certs[i].sig_value.len > 0)
+            certs[i].sig_value
+        else blk: {
+            const parsed_sig = parseCertSignature(chain_der[i]) catch return error.SignatureParse;
+            break :blk parsed_sig.sig_der;
+        };
+        const ok = verifyCertSig(issuer_spki, certs[i].tbs, algo_oid, sig_der, alloc);
         if (!ok) return error.BadSignature;
         if (i == certs.len - 1) {
             // Root must be CA and trusted if trust store provided

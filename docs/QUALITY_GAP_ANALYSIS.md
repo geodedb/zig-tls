@@ -18,10 +18,10 @@
 
 ### Top 5 Risks (by priority score, open items first)
 
-1. **QUAL-094** (Open) -- `onCryptoRecv` is 516 lines with 14 nesting levels (engine.zig:511-1026). PriorityScore 75. Decompose into 6 handler methods.
+1. **QUAL-094** (Closed) -- `onCryptoRecv` is 516 lines with 14 nesting levels (engine.zig:511-1026). PriorityScore 75. Decomposed into 6 handler methods.
 2. **QUAL-069** (Deferred) -- `context.zig` at 3581 lines is 4.5x the 800-line guideline. Deferred: high regression risk, Zig idiom tolerates large cohesive files. [Issue #65](https://gitlab.com/devnw/zig/tls/-/work_items/65)
-3. **QUAL-095** (Open) -- `driveServerHandshakeFlight` is 243 lines combining 6 concerns (context.zig:1964-2206). PriorityScore 48.
-4. **QUAL-096** (Open) -- ClientHello building duplicated 3 times (~500 lines total). PriorityScore 48.
+3. **QUAL-095** (Closed) -- `driveServerHandshakeFlight` decomposed into sub-functions each under 80 lines (context.zig). PriorityScore 48.
+4. **QUAL-096** (Closed) -- ClientHello building unified via shared buildClientHello (client_hello.zig). PriorityScore 48.
 5. **QUAL-091** (Deferred) -- `engine.zig` uses 6+ inline key schedule patterns. Deferred to Engine deprecation. [Issue #90](https://gitlab.com/devnw/zig/tls/-/work_items/90)
 
 ---
@@ -32,10 +32,10 @@
 |------|----|----------|---------------|----------|---------|-----------|-------|--------|
 | 1 | QUAL-087 | Critical | 80 | architecture | engine.zig null-safety gap in certificate verification | `src/tls13/engine.zig` | [#80](https://gitlab.com/devnw/zig/tls/-/work_items/80) | Closed |
 | 2 | QUAL-088 | Critical | 80 | perf | x25519KeypairAndShared duplicated with security divergence (CWE-226) | `engine.zig:1723`, `messages.zig:191` | [#82](https://gitlab.com/devnw/zig/tls/-/work_items/82) | Closed |
-| 3 | QUAL-094 | High | 75 | maintainability | onCryptoRecv 516 lines / 14 nesting levels | `src/tls13/engine.zig:511-1026` | -- | Open |
+| 3 | QUAL-094 | High | 75 | maintainability | onCryptoRecv 516 lines / 14 nesting levels | `src/tls13/engine.zig:511-1026` | -- | Closed |
 | 4 | QUAL-069 | High | 60 | maintainability | context.zig 3581 lines (4.5x limit) | `src/tls13/context.zig` | [#65](https://gitlab.com/devnw/zig/tls/-/work_items/65) | Deferred |
-| 5 | QUAL-095 | High | 48 | maintainability | driveServerHandshakeFlight 243 lines combining 6 concerns | `src/tls13/context.zig:1964-2206` | -- | Open |
-| 6 | QUAL-096 | High | 48 | maintainability | ClientHello building duplicated 3 times (~500 lines) | `engine.zig`, `context.zig` | -- | Open |
+| 5 | QUAL-095 | High | 48 | maintainability | driveServerHandshakeFlight 243 lines combining 6 concerns | `src/tls13/context.zig:1996-2237` | -- | Closed |
+| 6 | QUAL-096 | High | 48 | maintainability | ClientHello building duplicated 3 times (~500 lines) | `engine.zig`, `context.zig` | -- | Closed |
 | 7 | QUAL-070 | High | 40 | maintainability | Near-duplicate ClientHelloInfo parse+deinit | `context.zig`, `handshake_state.zig` | -- | Closed |
 | 8 | QUAL-091 | High | 36 | maintainability | engine.zig uses legacy inline key schedule patterns (6+ copies) | `src/tls13/engine.zig` | [#90](https://gitlab.com/devnw/zig/tls/-/work_items/90) | Deferred |
 | 9 | QUAL-097 | High | 30 | architecture | parseHandshakeOne catch null wedges on invalid message type | `src/tls13/engine.zig:529` | -- | Closed |
@@ -43,7 +43,7 @@
 | 11 | QUAL-073 | Medium | 27 | maintainability | Near-duplicate parseRealServerHello / handleServerHello | `engine.zig:1851`, `context.zig:2567` | -- | Deferred |
 | 12 | QUAL-072 | High | 24 | api-contract | Callback errors logged but not propagated | `src/tls13/context.zig` | -- | Closed |
 | 13 | QUAL-098 | Medium | 24 | api-contract | queueServerHandshakeFlight returns void -- errors not propagated | `src/tls13/engine.zig:1728` | -- | Closed |
-| 14 | QUAL-099 | Medium | 24 | tests | No HRR test coverage in Context | `src/tls13/context.zig:1440-1521` | -- | Open |
+| 14 | QUAL-099 | Medium | 24 | tests | No HRR test coverage in Context | `src/tls13/context.zig` | -- | Closed |
 | 15 | QUAL-100 | Medium | 24 | docs | Config field constraints undocumented | `src/tls13/config.zig:68-342` | -- | Closed |
 | 16 | QUAL-074 | Medium | 24 | architecture | new_session_ticket silently dropped | `src/tls13/context.zig:1375` | -- | Closed |
 | 17 | QUAL-090 | High | 24 | api-contract | NewSessionTicket processing has incomplete error propagation | `src/tls13/engine.zig:836-877` | [#88](https://gitlab.com/devnw/zig/tls/-/work_items/88) | Closed |
@@ -1032,7 +1032,7 @@ Add `cache: { key: "zig-${ZIG_VERSION}", paths: ["zig-${ZIG_VERSION}/", ".zig-ca
 - **PriorityScore:** 75
 - **Category:** `maintainability`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed -- onCryptoRecv decomposed into 6 handler methods (engine.zig)
 
 **File locations:**
 - `src/tls13/engine.zig:511-1026` -- `onCryptoRecv` function
@@ -1086,10 +1086,10 @@ The dispatch `switch` remains in `onCryptoRecv` but delegates to these methods.
 - **PriorityScore:** 48
 - **Category:** `maintainability`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed
 
 **File locations:**
-- `src/tls13/context.zig:1964-2206` -- `driveServerHandshakeFlight` function
+- `src/tls13/context.zig:1996-2237` -- decomposed into sub-functions
 
 **Description:**
 `driveServerHandshakeFlight` handles the entire server-side handshake flight construction in a single 243-line function. It combines: (1) cipher suite selection, (2) key exchange computation, (3) ServerHello message building, (4) EncryptedExtensions, (5) Certificate + CertificateVerify, and (6) Finished message generation. These are logically independent steps that could be tested and reviewed individually.
@@ -1114,6 +1114,8 @@ Extract into sequential helper methods:
 
 **Effort:** M
 
+**Resolution:** Decomposed into `ServerNegotiationResult` struct, `negotiateCipherAndKeys` (53 lines), `buildServerHelloMsg` (12 lines), `buildEncryptedExtensionsMsg` (6 lines), `buildCertificateMsg` (14 lines), `buildCertificateVerifyMsg` (32 lines), `buildFinishedMsg` (5 lines), `emitServerFlight` (80 lines), and `driveServerHandshakeFlight` orchestrator (9 lines). All sub-functions are at or under 80 lines. All 538 tests pass.
+
 ---
 
 ### QUAL-096 -- ClientHello building duplicated 3 times (~500 lines total)
@@ -1123,7 +1125,7 @@ Extract into sequential helper methods:
 - **PriorityScore:** 48
 - **Category:** `maintainability`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed -- ClientHello building unified via shared buildClientHello (client_hello.zig)
 
 **File locations:**
 - `src/tls13/engine.zig` -- `startClientHandshake`
@@ -1205,10 +1207,10 @@ if (parsed == null) break;  // treats ALL parse failures as "need more data"
 - **PriorityScore:** 24
 - **Category:** `tests`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed
 
 **File locations:**
-- `src/tls13/context.zig:1440-1521` -- HRR handling code path
+- `src/tls13/context.zig` -- 3 HRR tests added at end of file
 
 **Description:**
 The HelloRetryRequest (HRR) code path in `Context` (lines 1440-1521) has no dedicated test coverage. HRR is triggered when the server rejects the client's initial key share and requests a different group. This is a critical TLS 1.3 feature for interoperability. Without test coverage, regressions in the HRR flow will go undetected.
@@ -1230,6 +1232,12 @@ Add integration tests that:
 **Verification:** `zig build test --summary all` shows HRR test passing.
 
 **Effort:** M
+
+**Resolution:** Added 3 HRR tests to `src/tls13/context.zig`:
+1. "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" -- exercises full HRR flow, verifies hrr_received flag, ClientHello2 emission, key regeneration
+2. "QUAL-099: Client rejects duplicate HelloRetryRequest" -- verifies RFC 8446 Section 4.1.4 duplicate HRR rejection
+3. "QUAL-099: HRR transcript manipulation preserves integrity" -- verifies transcript hash changes after HRR per RFC 8446 Section 4.4.1
+All 3 tests pass in `zig build test --summary all` (538/540 passed, 2 skipped).
 
 ---
 
@@ -1653,9 +1661,9 @@ Break the function signature across multiple lines, with one parameter per line.
 ### Maintainability (11)
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
-| QUAL-094 | High | onCryptoRecv 516 lines / 14 nesting levels | Open |
-| QUAL-095 | High | driveServerHandshakeFlight 243 lines combining 6 concerns | Open |
-| QUAL-096 | High | ClientHello building duplicated 3 times (~500 lines) | Open |
+| QUAL-094 | High | onCryptoRecv 516 lines / 14 nesting levels | Closed |
+| QUAL-095 | High | driveServerHandshakeFlight 243 lines combining 6 concerns | Closed |
+| QUAL-096 | High | ClientHello building duplicated 3 times (~500 lines) | Closed |
 | QUAL-069 | High | context.zig 3581 lines (4.5x limit) | Deferred |
 | QUAL-070 | High | Near-duplicate ClientHelloInfo struct+parse+deinit | Closed |
 | QUAL-091 | High | engine.zig uses legacy inline key schedule patterns | Deferred |
@@ -1696,7 +1704,7 @@ Break the function signature across multiple lines, with one parameter per line.
 ### Tests (1)
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
-| QUAL-099 | Medium | No HRR test coverage in Context | Open |
+| QUAL-099 | Medium | No HRR test coverage in Context | Closed |
 
 ### Docs (6)
 | ID | Severity | Finding | Status |
@@ -1763,9 +1771,9 @@ Break the function signature across multiple lines, with one parameter per line.
 
 | ID | Finding | Effort | Status |
 |----|---------|--------|--------|
-| QUAL-094 | Decompose onCryptoRecv into 6 handler methods | M | Open |
-| QUAL-095 | Extract driveServerHandshakeFlight into sub-functions | M | Open |
-| QUAL-099 | Add HRR test coverage for Context | M | Open |
+| QUAL-094 | Decompose onCryptoRecv into 6 handler methods | M | Closed |
+| QUAL-095 | Extract driveServerHandshakeFlight into sub-functions | M | Closed |
+| QUAL-099 | Add HRR test coverage for Context | M | Closed |
 | QUAL-101 | Write Engine-to-Context migration guide (with API mapping + examples) | M | Closed |
 | QUAL-087 | Replace .? unwraps with safe patterns in engine.zig | M | Closed |
 | QUAL-091 | Refactor engine.zig to use key_derivation_mod | M | Deferred |
@@ -1780,5 +1788,5 @@ Break the function signature across multiple lines, with one parameter per line.
 
 | ID | Finding | Effort | Status |
 |----|---------|--------|--------|
-| QUAL-096 | Extract shared ClientHelloBuilder for all 3 call sites | L | Open |
+| QUAL-096 | Extract shared ClientHelloBuilder for all 3 call sites | L | Closed |
 | QUAL-069 | Split context.zig into sub-modules | L | Deferred |

@@ -551,6 +551,7 @@ pub const Engine = struct {
         }
     }
 
+    /// QUAL-094: Decomposed dispatch loop for received CRYPTO handshake messages.
     /// Append received CRYPTO bytes into transcript. Attempts to parse handshake messages
     /// to update simple state, but always feeds the transcript with raw bytes.
     pub fn onCryptoRecv(self: *Engine, data: []const u8) !void {
@@ -602,441 +603,20 @@ pub const Engine = struct {
                         self.ch_recv = true;
                     }
                 }
-                // If we just processed a ServerHello, derive handshake secrets immediately (spec: hash includes CH+SH)
-                if (p.typ == .server_hello and self.handshake_client_secret == null and self.ecdhe_secret != null) {
-                    // Use the actual transcript that already contains ClientHello + ServerHello
-                    var snapshot = self.transcript;
-                    const th_secret = snapshot.finalize(self.hash_kind);
-                    const th_hash = th_secret.slice();
-                    if (secret_trace_enabled and th_hash.len >= 4) {
-                        traceSecrets("onCryptoRecv: Deriving handshake secrets after ServerHello\n", .{});
-                        traceSecrets("onCryptoRecv: Transcript hash for handshake: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 of {})\n", .{ th_hash[0], th_hash[1], th_hash[2], th_hash[3], th_hash.len });
-                        traceSecrets("onCryptoRecv: ECDHE secret first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3] });
-                    }
-                    // Engine doesn't support PSK yet, so use early_secret from null
-                    const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
-                    const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_secret, &early_secret);
-                    const client_slice = hs.client_hs.slice();
-                    const server_slice = hs.server_hs.slice();
-                    if (secret_trace_enabled and client_slice.len >= 4 and server_slice.len >= 4) {
-                        traceSecrets("onCryptoRecv: Derived client_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ client_slice[0], client_slice[1], client_slice[2], client_slice[3] });
-                        traceSecrets("onCryptoRecv: Derived server_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ server_slice[0], server_slice[1], server_slice[2], server_slice[3] });
-                    }
-                    self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
-                    self.handshake_client_secret = hs.client_hs;
-                    self.handshake_server_secret = hs.server_hs;
-                    // FIX: Removed premature computeApplicationSecrets() call
-                    // Per RFC 8446 Section 7.1 and RFC 9001, application secrets must be derived
-                    // AFTER both Finished messages are sent and verified, not after ServerHello.
-                    // Application secrets are now correctly derived at line ~753 after Finished verification.
+
+                // Dispatch to per-message-type handler methods
+                switch (p.typ) {
+                    .client_hello, .server_hello => try self.handleReceivedHello(p),
+                    .encrypted_extensions => try self.handleReceivedEncryptedExtensions(p),
+                    .certificate => try self.handleReceivedCertificate(p),
+                    .certificate_verify => self.handleReceivedCertificateVerify(p, th_before),
+                    .finished => try self.handleReceivedFinished(p, th_before, data, off),
+                    .new_session_ticket => self.handleReceivedNewSessionTicket(p),
+                    else => {},
                 }
 
-                // Only try to extract public keys from ClientHello and ServerHello
-                if (p.typ == .client_hello or p.typ == .server_hello) {
-                    traceHandshake("TLS: Processing hello message, typ={}\n", .{p.typ});
-                    var extracted: ?[32]u8 = null;
-                    // Try real TLS 1.3 parsing first
-                    traceHandshake("TLS: Trying real TLS 1.3 hello parsing\n", .{});
-                    switch (p.typ) {
-                        .client_hello => {
-                            traceHandshake("TLS: Calling parseRealClientHello with {} bytes\n", .{p.body.len});
-                            extracted = try parseRealClientHello(p.body, self);
-                            if (extracted != null) {
-                                traceHandshake("TLS: parseRealClientHello SUCCESS - extracted key\n", .{});
-                            } else {
-                                traceHandshake("TLS: parseRealClientHello FAILED - returned null\n", .{});
-                            }
-                        },
-                        .server_hello => extracted = parseRealServerHello(p.body),
-                        else => {},
-                    }
-                    // If real parsing failed, try minimal format as fallback
-                    if (extracted == null) {
-                        traceHandshake("TLS: Real parse failed, trying minimal parse as fallback\n", .{});
-                        extracted = parseMinimalHelloPub(p.typ, p.body);
-                        if (extracted == null) {
-                            traceHandshake("{s}: Failed to parse hello pub (typ={}, body_len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
-                        }
-                    }
-                    if (extracted) |pk| {
-                        traceHandshake("TLS: Setting peer_pub for {} (was null={})\n", .{ p.typ, self.peer_pub == null });
-                        self.peer_pub = pk;
-                        traceHandshake("TLS: peer_pub is now set (null={})\n", .{self.peer_pub == null});
-                        // Compute shared secret after receiving peer's public key
-                        switch (p.typ) {
-                            .server_hello => if (self.role == .Client) try self.tryComputeShared(),
-                            .client_hello => if (self.role == .Server) {
-                                traceHandshake("Server: Will compute ECDHE when generating ServerHello\n", .{});
-                                // Extract ALPN from ClientHello
-                                try self.extractAlpnFromClientHello(p.body);
-                            },
-                            else => {},
-                        }
-                    } else {
-                        traceHandshake("TLS: No key extracted from hello message\n", .{});
-                    }
-                }
-
-                // Also extract ALPN even if key extraction failed (ALPN is independent of key)
-                if (p.typ == .client_hello and self.role == .Server) {
-                    try self.extractAlpnFromClientHello(p.body);
-                }
-
-                // RFC 9001 Section 8.2: Validate that transport parameters extension is present
-                // "Endpoints MUST send the quic_transport_parameters extension"
-                // Skip validation in insecure/test mode to allow minimal test messages
-                if (p.typ == .client_hello and self.role == .Server and !self.allow_insecure) {
-                    // Server receiving ClientHello from client - TP MUST be present
-                    if (self.peer_tp == null) {
-                        traceHandshake("TLS: Missing transport parameters in ClientHello (RFC 9001 violation)\n", .{});
-                        // Mark connection as failed - upper layer should close connection
-                        self.handshake_failed = true;
-                        return;
-                    }
-                }
-
-                // Parse EncryptedExtensions
-                if (p.typ == .encrypted_extensions) {
-                    self.ee_sent = true; // mark seen (client)
-                    if (p.body.len >= 2) {
-                        const total = readU16(p.body[0..2]);
-                        if (2 + total <= p.body.len) {
-                            var pos2: usize = 2;
-                            while (pos2 + 4 <= 2 + total) : (pos2 += 4 + readU16(p.body[pos2 + 2 .. pos2 + 4])) {
-                                const etype = readU16(p.body[pos2 .. pos2 + 2]);
-                                const elen = readU16(p.body[pos2 + 2 .. pos2 + 4]);
-                                if (pos2 + 4 + elen > 2 + total) break;
-                                const edata = p.body[pos2 + 4 .. pos2 + 4 + elen];
-                                switch (etype) {
-                                    0x0010 => { // ALPN
-                                        if (elen >= 3) {
-                                            if (elen >= 2) {
-                                                const list_len = readU16(edata[0..2]);
-                                                if (2 + list_len <= edata.len and list_len > 0) {
-                                                    const name_len = edata[2];
-                                                    if (3 + name_len <= edata.len and name_len > 0) {
-                                                        if (self.alpn) |old| self.allocator.free(old);
-                                                        self.alpn = try self.allocator.dupe(u8, edata[3 .. 3 + name_len]);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    },
-                                    0x0039 => { // QUIC TP
-                                        if (self.peer_tp) |old| self.allocator.free(old);
-                                        self.peer_tp = try self.allocator.dupe(u8, edata);
-                                    },
-                                    else => {},
-                                }
-                            }
-                        }
-                    }
-
-                    // RFC 9001 Section 8.2: Validate that transport parameters extension is present
-                    // "Endpoints MUST send the quic_transport_parameters extension"
-                    // Skip validation in insecure/test mode to allow minimal test messages
-                    if (self.role == .Client and !self.allow_insecure) {
-                        // Client receiving EncryptedExtensions from server - TP MUST be present
-                        if (self.peer_tp == null) {
-                            traceHandshake("TLS: Missing transport parameters in EncryptedExtensions (RFC 9001 violation)\n", .{});
-                            // Mark connection as failed - upper layer should close connection
-                            self.handshake_failed = true;
-                            return;
-                        }
-                    }
-                }
-                // Certificate message parsing: RFC 8446 Section 4.4.2
-                if (p.typ == .certificate) {
-                    traceHandshake("{s}: Processing Certificate message (len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.body.len });
-                    if (self.allow_insecure) {
-                        traceHandshake("{s}: Certificate validation skipped (insecure mode)\n", .{if (self.role == .Server) "Server" else "Client"});
-                        self.peer_cert_ok = true;
-                    } else {
-                        traceHandshake("{s}: Attempting certificate validation\n", .{if (self.role == .Server) "Server" else "Client"});
-                        self.peer_cert_ok = false;
-
-                        const parsed_cert_msg_opt = blk_parsed_cert: {
-                            const msg = tls13_full.parseCertificate(self.allocator, p.body) catch |err| {
-                                traceHandshake("TLS: Failed to parse Certificate message structure: {}\n", .{err});
-                                break :blk_parsed_cert null;
-                            };
-                            break :blk_parsed_cert msg;
-                        };
-
-                        if (parsed_cert_msg_opt) |parsed_cert_msg| {
-                            defer self.allocator.free(parsed_cert_msg.entries);
-
-                            if (parsed_cert_msg.entries.len == 0) {
-                                traceHandshake("TLS: Certificate list empty\n", .{});
-                            } else {
-                                if (self.leaf_spki) |old| {
-                                    self.allocator.free(old);
-                                    self.leaf_spki = null;
-                                }
-
-                                const validation_ok = blk: {
-                                    var chain_der = self.allocator.alloc([]const u8, parsed_cert_msg.entries.len) catch {
-                                        traceHandshake("TLS: Out of memory allocating certificate chain view\n", .{});
-                                        break :blk false;
-                                    };
-                                    defer self.allocator.free(chain_der);
-
-                                    var parsed_certs = self.allocator.alloc(x509.Certificate, parsed_cert_msg.entries.len) catch {
-                                        traceHandshake("TLS: Out of memory allocating parsed certificate array\n", .{});
-                                        break :blk false;
-                                    };
-                                    var certs_parsed_count: usize = 0;
-                                    defer {
-                                        for (parsed_certs[0..certs_parsed_count]) |c| c.deinit(self.allocator);
-                                        self.allocator.free(parsed_certs);
-                                    }
-
-                                    for (parsed_cert_msg.entries, 0..) |entry, idx| {
-                                        chain_der[idx] = entry.cert;
-                                        parsed_certs[idx] = x509.parseCert(self.allocator, entry.cert) catch {
-                                            traceHandshake("TLS: Failed to parse certificate {} in chain\n", .{idx});
-                                            break :blk false;
-                                        };
-                                        certs_parsed_count += 1;
-                                    }
-
-                                    const leaf = parsed_certs[0];
-                                    const leaf_entry = parsed_cert_msg.entries[0];
-                                    self.leaf_spki = self.allocator.dupe(u8, leaf.spki) catch {
-                                        traceHandshake("TLS: Out of memory duplicating leaf SPKI\n", .{});
-                                        break :blk false;
-                                    };
-
-                                    const now = std.time.timestamp();
-                                    const server_name_slice: []const u8 = if (self.server_name) |sni| sni else &[_]u8{};
-
-                                    x509.validateChain(self.allocator, chain_der, now, server_name_slice, self.allow_insecure, .server_auth) catch |err| {
-                                        traceHandshake("TLS: Certificate chain validation failed: {}\n", .{err});
-                                        break :blk false;
-                                    };
-
-                                    if (leaf.eku) |eku| {
-                                        if (!eku.server_auth) {
-                                            traceHandshake("TLS: Leaf certificate missing serverAuth EKU\n", .{});
-                                            break :blk false;
-                                        }
-                                    } else {
-                                        // SEC-025: RFC 5280 Section 4.2.1.12 -- when EKU extension
-                                        // is absent, the certificate is unrestricted (all usages
-                                        // are permitted). This is standards-compliant behavior.
-                                        traceHandshake("TLS: Leaf certificate has no EKU extension (RFC 5280: unrestricted usage)\n", .{});
-                                    }
-
-                                    if (leaf_entry.ocsp_response) |ocsp_bytes| {
-                                        if (parsed_cert_msg.entries.len >= 2) {
-                                            const issuer_info: ocsp.IssuerInfo = .{ .cert = &parsed_certs[1], .der = chain_der[1] };
-                                            ocsp.validateStapledResponse(self.allocator, ocsp_bytes, &leaf, chain_der[0], issuer_info, now) catch |err| {
-                                                traceHandshake("TLS: OCSP validation failed: {}\n", .{err});
-                                                break :blk false;
-                                            };
-                                        } else {
-                                            ocsp.validateStapledResponse(self.allocator, ocsp_bytes, &leaf, chain_der[0], null, now) catch |err| {
-                                                traceHandshake("TLS: OCSP validation failed: {}\n", .{err});
-                                                break :blk false;
-                                            };
-                                        }
-                                    }
-
-                                    if (leaf_entry.sct_list) |sct_bytes| {
-                                        if (sct.parseList(self.allocator, sct_bytes)) |parsed_scts| {
-                                            self.allocator.free(parsed_scts);
-                                        } else |err| {
-                                            traceHandshake("TLS: Failed to parse SCT list: {} (non-fatal)\n", .{err});
-                                        }
-                                    }
-
-                                    break :blk true;
-                                };
-
-                                self.peer_cert_ok = validation_ok;
-                            }
-                        }
-                    }
-                }
-                // CertificateVerify: RFC 8446 format - SignatureScheme (2 bytes) + signature (2-byte length-prefixed)
-                // FIX: Changed from 1-byte "toy" format to RFC 8446 standard format for aioquic/quic-go compatibility
-                if (p.typ == .certificate_verify and !self.allow_insecure) {
-                    if (!self.peer_cert_ok or self.leaf_spki == null) {
-                        self.peer_cert_ok = false;
-                    } else {
-                        // RFC 8446 Section 4.4.3: struct { SignatureScheme algorithm; opaque signature<0..2^16-1>; }
-                        if (p.body.len >= 4) { // Minimum: 2 (SignatureScheme) + 2 (signature length) + 0 (signature data)
-                            const scheme_value: u16 = readU16(p.body[0..2]);
-                            const sig_len: usize = readU16(p.body[2..4]);
-                            if (4 + sig_len <= p.body.len) {
-                                const signature = p.body[4 .. 4 + sig_len];
-                                const th = th_before; // transcript up to CertificateVerify
-                                // SEC-027: Unknown signature schemes skip verification
-                                // entirely -- no dead fallback assignment.
-                                const alg: sig.SigAlg = switch (scheme_value) {
-                                    0x0403 => .ecdsa_secp256r1_sha256, // RFC 8446 SignatureScheme values
-                                    0x0503 => .ecdsa_secp384r1_sha384,
-                                    0x0804 => .rsa_pss_sha256,
-                                    0x0807 => .ed25519,
-                                    else => {
-                                        traceHandshake("TLS: Unknown SignatureScheme: 0x{X:0>4}, rejecting CertificateVerify\n", .{scheme_value});
-                                        self.peer_cert_ok = false;
-                                        continue; // skip verification for unknown schemes
-                                    },
-                                };
-                                if (self.peer_cert_ok) { // Only verify if not already failed
-                                    const ok = sig.verifyCertificateVerify(alg, self.leaf_spki.?, signature, "TLS 1.3, server CertificateVerify", th.slice(), self.allocator) catch false;
-                                    self.peer_cert_ok = ok;
-                                    if (!ok) {
-                                        traceHandshake("TLS: CertificateVerify signature verification FAILED\n", .{});
-                                    }
-                                }
-                            } else {
-                                traceHandshake("TLS: CertificateVerify message too short for declared signature length\n", .{});
-                                self.peer_cert_ok = false;
-                            }
-                        } else {
-                            traceHandshake("TLS: CertificateVerify message too short (len={})\n", .{p.body.len});
-                            self.peer_cert_ok = false;
-                        }
-                    }
-                }
-                // Finished verification
-                if (p.typ == .finished and self.ecdhe_secret != null) {
-                    traceHandshake("TLS: Processing Finished message\n", .{});
-                    var peer_secret_opt: ?Secret = null;
-                    if (self.handshake_client_secret != null and self.handshake_server_secret != null) {
-                        peer_secret_opt = switch (self.role) {
-                            .Client => self.handshake_server_secret.?,
-                            .Server => self.handshake_client_secret.?,
-                        };
-                        traceHandshake("TLS: Using stored handshake secrets for verification\n", .{});
-                    }
-                    const ok = if (peer_secret_opt) |ps| self.verifyPeerFinished(ps, p.body) else blk: {
-                        traceHandshake("TLS: Using fallback for Finished verification\n", .{});
-                        // Fallback (should not happen in real mode past this point)
-                        const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
-                        const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_before, &early_secret);
-                        self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
-                        self.handshake_client_secret = hs.client_hs;
-                        self.handshake_server_secret = hs.server_hs;
-                        break :blk switch (self.role) {
-                            .Client => self.verifyPeerFinished(hs.server_hs, p.body),
-                            .Server => self.verifyPeerFinished(hs.client_hs, p.body),
-                        };
-                    };
-                    traceHandshake("TLS: Finished verification result: {}\n", .{ok});
-                    self.updateFinishedVerified(ok);
-
-                    // SEC-020: Abort handshake immediately if Finished verification fails.
-                    // A failed Finished means the peer cannot prove possession of the
-                    // handshake traffic secret -- continuing would allow MITM attacks.
-                    if (!ok) {
-                        self.handshake_failed = true;
-                        return error.HandshakeFailure;
-                    }
-
-                    // RFC 8446 §7.1: Application traffic secrets must be derived from transcript
-                    // hash "ClientHello...server Finished" (NOT including client Finished).
-                    {
-                        // Get the Finished message bytes
-                        const finished_msg = data[off - p.n .. off];
-
-                        // CRITICAL FIX: Handle transcript differently based on role
-                        // For CLIENT: Must add server's Finished BEFORE deriving app secrets
-                        //             because app secrets use CH...SH...EE...Cert...CV...server Finished
-                        // For SERVER: Must NOT add client's Finished before deriving app secrets
-                        //             because server already queued its own Finished
-
-                        if (self.role == .Client) {
-                            // Client: Add server's Finished to transcript FIRST
-                            self.transcript.update(finished_msg);
-                            const show_len = @min(8, finished_msg.len);
-                            if (show_len >= 8) {
-                                traceHandshake("TLS: Added server Finished to transcript ({} bytes): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ finished_msg.len, finished_msg[0], finished_msg[1], finished_msg[2], finished_msg[3], finished_msg[4], finished_msg[5], finished_msg[6], finished_msg[7] });
-                            } else {
-                                traceHandshake("TLS: Added server Finished to transcript ({} bytes)\n", .{finished_msg.len});
-                            }
-
-                            // Now derive application secrets with server Finished included
-                            traceHandshake("TLS: Deriving application traffic secrets (after adding server Finished to transcript)\n", .{});
-                            _ = self.computeApplicationSecrets();
-                        } else {
-                            // Server: Derive app secrets BEFORE adding client's Finished
-                            // Server's own Finished is already in transcript from queueFinished()
-                            traceHandshake("TLS: Deriving application traffic secrets (before adding client Finished to transcript)\n", .{});
-                            _ = self.computeApplicationSecrets();
-
-                            // NOW add the client Finished to transcript for resumption master secret derivation
-                            self.transcript.update(finished_msg);
-                            const show_len = @min(8, finished_msg.len);
-                            if (show_len >= 8) {
-                                traceHandshake("TLS: Added client Finished to transcript ({} bytes): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ finished_msg.len, finished_msg[0], finished_msg[1], finished_msg[2], finished_msg[3], finished_msg[4], finished_msg[5], finished_msg[6], finished_msg[7] });
-                            } else {
-                                traceHandshake("TLS: Added client Finished to transcript ({} bytes)\n", .{finished_msg.len});
-                            }
-                        }
-                    }
-                }
-                // NewSessionTicket parsing (client side only for now)
-                // QUAL-090: Malformed tickets are logged and dropped (not fatal per RFC 8446 §4.6.1).
-                // Store errors are propagated via logging since tickets are non-critical post-handshake data.
-                if (p.typ == .new_session_ticket and self.role == .Client) {
-                    const b = p.body;
-                    var pos: usize = 0;
-                    if (b.len >= 4) {
-                        if (b.len < 4 + 4) {
-                            traceHandshake("TLS: Malformed NewSessionTicket: too short for lifetime+age_add (len={})\n", .{b.len});
-                            continue;
-                        }
-                        const lifetime: u32 = (@as(u32, b[0]) << 24) | (@as(u32, b[1]) << 16) | (@as(u32, b[2]) << 8) | @as(u32, b[3]);
-                        pos = 4 + 4; // skip age_add as well
-                        if (pos >= b.len) continue;
-                        // Parse ticket_nonce
-                        const nonce_len: usize = b[pos];
-                        pos += 1;
-                        if (pos + nonce_len > b.len) continue;
-                        const ticket_nonce = b[pos .. pos + nonce_len];
-                        pos += nonce_len;
-                        if (pos + 2 > b.len) continue;
-                        const ticket_len: usize = (@as(usize, b[pos]) << 8) | b[pos + 1];
-                        pos += 2;
-                        if (pos + ticket_len > b.len) continue;
-                        const ticket_bytes = b[pos .. pos + ticket_len];
-                        pos += ticket_len;
-                        if (pos + 2 > b.len) continue; // extensions length
-                        const ext_len: usize = (@as(usize, b[pos]) << 8) | b[pos + 1];
-                        pos += 2;
-                        if (pos + ext_len > b.len) continue;
-                        // Compute resumption PSK if we have master_secret stored
-                        if (self.master_secret) |ms| {
-                            // RFC 8446 Section 4.6.1:
-                            //   resumption_master_secret = Derive-Secret(master_secret, "res master", transcript_hash)
-                            //   PSK = HKDF-Expand-Label(resumption_master_secret, "resumption", ticket_nonce, Hash.length)
-                            var transcript_snapshot = self.transcript;
-                            const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
-                            var master_local = ms;
-                            const res_master = ks.deriveSecretHash(self.hash_kind, &master_local, "res master", transcript_hash.slice());
-
-                            // Derive the actual PSK from the resumption_master_secret and ticket_nonce
-                            const digest_len = ks.digestLength(self.hash_kind);
-                            var psk = ks.Secret.empty();
-                            psk.len = @intCast(digest_len);
-                            ks.expandLabelHash(self.hash_kind, &res_master, "resumption", ticket_nonce, psk.sliceMut()) catch {
-                                traceHandshake("TLS: Failed to derive resumption PSK from ticket nonce\n", .{});
-                                continue;
-                            };
-
-                            // CWE-391: Log ticket store errors instead of silently ignoring them.
-                            self.tickets.store(ticket_bytes, psk, lifetime) catch |err| {
-                                traceHandshake("TLS: Failed to store session ticket: {}\n", .{err});
-                            };
-                            traceHandshake("TLS: Stored session ticket with derived PSK (len={}, lifetime={}, nonce_len={})\n", .{ ticket_bytes.len, lifetime, nonce_len });
-                        } else {
-                            traceHandshake("TLS: Received ticket before master_secret ready; ignoring\n", .{});
-                        }
-                    }
-                }
+                // If any handler set handshake_failed, stop processing
+                if (self.handshake_failed) return;
             } else {
                 // parseHandshakeOne returned null - not enough data
                 if (off < self.inbox.items.len) {
@@ -1068,6 +648,448 @@ pub const Engine = struct {
 
         // Transcript is now updated message-by-message in the loop above
         try self.maybeAutoProgress();
+    }
+
+    // =========================================================================
+    // QUAL-094: Extracted handler methods for onCryptoRecv dispatch
+    // =========================================================================
+
+    /// Handle received ClientHello or ServerHello: derive handshake secrets,
+    /// extract peer public key, compute ECDHE, extract ALPN, validate TPs.
+    fn handleReceivedHello(self: *Engine, p: messages_mod.HandshakeMessage) !void {
+        // If we just processed a ServerHello, derive handshake secrets immediately (spec: hash includes CH+SH)
+        if (p.typ == .server_hello and self.handshake_client_secret == null and self.ecdhe_secret != null) {
+            // Use the actual transcript that already contains ClientHello + ServerHello
+            var snapshot = self.transcript;
+            const th_secret = snapshot.finalize(self.hash_kind);
+            const th_hash = th_secret.slice();
+            if (secret_trace_enabled and th_hash.len >= 4) {
+                traceSecrets("onCryptoRecv: Deriving handshake secrets after ServerHello\n", .{});
+                traceSecrets("onCryptoRecv: Transcript hash for handshake: {X:0>2} {X:0>2} {X:0>2} {X:0>2} ... (first 4 of {})\n", .{ th_hash[0], th_hash[1], th_hash[2], th_hash[3], th_hash.len });
+                traceSecrets("onCryptoRecv: ECDHE secret first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ self.ecdhe_secret.?[0], self.ecdhe_secret.?[1], self.ecdhe_secret.?[2], self.ecdhe_secret.?[3] });
+            }
+            // Engine doesn't support PSK yet, so use early_secret from null
+            const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+            const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_secret, &early_secret);
+            const client_slice = hs.client_hs.slice();
+            const server_slice = hs.server_hs.slice();
+            if (secret_trace_enabled and client_slice.len >= 4 and server_slice.len >= 4) {
+                traceSecrets("onCryptoRecv: Derived client_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ client_slice[0], client_slice[1], client_slice[2], client_slice[3] });
+                traceSecrets("onCryptoRecv: Derived server_hs first 4: {X:0>2} {X:0>2} {X:0>2} {X:0>2}\n", .{ server_slice[0], server_slice[1], server_slice[2], server_slice[3] });
+            }
+            self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
+            self.handshake_client_secret = hs.client_hs;
+            self.handshake_server_secret = hs.server_hs;
+            // FIX: Removed premature computeApplicationSecrets() call
+            // Per RFC 8446 Section 7.1 and RFC 9001, application secrets must be derived
+            // AFTER both Finished messages are sent and verified, not after ServerHello.
+        }
+
+        // Only try to extract public keys from ClientHello and ServerHello
+        traceHandshake("TLS: Processing hello message, typ={}\n", .{p.typ});
+        var extracted: ?[32]u8 = null;
+        // Try real TLS 1.3 parsing first
+        traceHandshake("TLS: Trying real TLS 1.3 hello parsing\n", .{});
+        switch (p.typ) {
+            .client_hello => {
+                traceHandshake("TLS: Calling parseRealClientHello with {} bytes\n", .{p.body.len});
+                extracted = try parseRealClientHello(p.body, self);
+                if (extracted != null) {
+                    traceHandshake("TLS: parseRealClientHello SUCCESS - extracted key\n", .{});
+                } else {
+                    traceHandshake("TLS: parseRealClientHello FAILED - returned null\n", .{});
+                }
+            },
+            .server_hello => extracted = parseRealServerHello(p.body),
+            else => {},
+        }
+        // If real parsing failed, try minimal format as fallback
+        if (extracted == null) {
+            traceHandshake("TLS: Real parse failed, trying minimal parse as fallback\n", .{});
+            extracted = parseMinimalHelloPub(p.typ, p.body);
+            if (extracted == null) {
+                traceHandshake("{s}: Failed to parse hello pub (typ={}, body_len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.typ, p.body.len });
+            }
+        }
+        if (extracted) |pk| {
+            traceHandshake("TLS: Setting peer_pub for {} (was null={})\n", .{ p.typ, self.peer_pub == null });
+            self.peer_pub = pk;
+            traceHandshake("TLS: peer_pub is now set (null={})\n", .{self.peer_pub == null});
+            // Compute shared secret after receiving peer's public key
+            switch (p.typ) {
+                .server_hello => if (self.role == .Client) try self.tryComputeShared(),
+                .client_hello => if (self.role == .Server) {
+                    traceHandshake("Server: Will compute ECDHE when generating ServerHello\n", .{});
+                    // Extract ALPN from ClientHello
+                    try self.extractAlpnFromClientHello(p.body);
+                },
+                else => {},
+            }
+        } else {
+            traceHandshake("TLS: No key extracted from hello message\n", .{});
+        }
+
+        // Also extract ALPN even if key extraction failed (ALPN is independent of key)
+        if (p.typ == .client_hello and self.role == .Server) {
+            try self.extractAlpnFromClientHello(p.body);
+        }
+
+        // RFC 9001 Section 8.2: Validate that transport parameters extension is present
+        // "Endpoints MUST send the quic_transport_parameters extension"
+        // Skip validation in insecure/test mode to allow minimal test messages
+        if (p.typ == .client_hello and self.role == .Server and !self.allow_insecure) {
+            // Server receiving ClientHello from client - TP MUST be present
+            if (self.peer_tp == null) {
+                traceHandshake("TLS: Missing transport parameters in ClientHello (RFC 9001 violation)\n", .{});
+                // Mark connection as failed - upper layer should close connection
+                self.handshake_failed = true;
+                return;
+            }
+        }
+    }
+
+    /// Handle received EncryptedExtensions: parse ALPN and QUIC TPs, validate TP presence.
+    fn handleReceivedEncryptedExtensions(self: *Engine, p: messages_mod.HandshakeMessage) !void {
+        self.ee_sent = true; // mark seen (client)
+        if (p.body.len >= 2) {
+            const total = readU16(p.body[0..2]);
+            if (2 + total <= p.body.len) {
+                var pos2: usize = 2;
+                while (pos2 + 4 <= 2 + total) : (pos2 += 4 + readU16(p.body[pos2 + 2 .. pos2 + 4])) {
+                    const etype = readU16(p.body[pos2 .. pos2 + 2]);
+                    const elen = readU16(p.body[pos2 + 2 .. pos2 + 4]);
+                    if (pos2 + 4 + elen > 2 + total) break;
+                    const edata = p.body[pos2 + 4 .. pos2 + 4 + elen];
+                    switch (etype) {
+                        0x0010 => { // ALPN
+                            if (elen >= 3) {
+                                if (elen >= 2) {
+                                    const list_len = readU16(edata[0..2]);
+                                    if (2 + list_len <= edata.len and list_len > 0) {
+                                        const name_len = edata[2];
+                                        if (3 + name_len <= edata.len and name_len > 0) {
+                                            if (self.alpn) |old| self.allocator.free(old);
+                                            self.alpn = try self.allocator.dupe(u8, edata[3 .. 3 + name_len]);
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        0x0039 => { // QUIC TP
+                            if (self.peer_tp) |old| self.allocator.free(old);
+                            self.peer_tp = try self.allocator.dupe(u8, edata);
+                        },
+                        else => {},
+                    }
+                }
+            }
+        }
+
+        // RFC 9001 Section 8.2: Validate that transport parameters extension is present
+        // "Endpoints MUST send the quic_transport_parameters extension"
+        // Skip validation in insecure/test mode to allow minimal test messages
+        if (self.role == .Client and !self.allow_insecure) {
+            // Client receiving EncryptedExtensions from server - TP MUST be present
+            if (self.peer_tp == null) {
+                traceHandshake("TLS: Missing transport parameters in EncryptedExtensions (RFC 9001 violation)\n", .{});
+                // Mark connection as failed - upper layer should close connection
+                self.handshake_failed = true;
+                return;
+            }
+        }
+    }
+
+    /// Handle received Certificate: parse chain, validate trust, check OCSP/SCT.
+    fn handleReceivedCertificate(self: *Engine, p: messages_mod.HandshakeMessage) !void {
+        traceHandshake("{s}: Processing Certificate message (len={})\n", .{ if (self.role == .Server) "Server" else "Client", p.body.len });
+        if (self.allow_insecure) {
+            traceHandshake("{s}: Certificate validation skipped (insecure mode)\n", .{if (self.role == .Server) "Server" else "Client"});
+            self.peer_cert_ok = true;
+        } else {
+            traceHandshake("{s}: Attempting certificate validation\n", .{if (self.role == .Server) "Server" else "Client"});
+            self.peer_cert_ok = false;
+
+            const parsed_cert_msg_opt = blk_parsed_cert: {
+                const msg = tls13_full.parseCertificate(self.allocator, p.body) catch |err| {
+                    traceHandshake("TLS: Failed to parse Certificate message structure: {}\n", .{err});
+                    break :blk_parsed_cert null;
+                };
+                break :blk_parsed_cert msg;
+            };
+
+            if (parsed_cert_msg_opt) |parsed_cert_msg| {
+                defer self.allocator.free(parsed_cert_msg.entries);
+
+                if (parsed_cert_msg.entries.len == 0) {
+                    traceHandshake("TLS: Certificate list empty\n", .{});
+                } else {
+                    if (self.leaf_spki) |old| {
+                        self.allocator.free(old);
+                        self.leaf_spki = null;
+                    }
+
+                    const validation_ok = blk: {
+                        var chain_der = self.allocator.alloc([]const u8, parsed_cert_msg.entries.len) catch {
+                            traceHandshake("TLS: Out of memory allocating certificate chain view\n", .{});
+                            break :blk false;
+                        };
+                        defer self.allocator.free(chain_der);
+
+                        var parsed_certs = self.allocator.alloc(x509.Certificate, parsed_cert_msg.entries.len) catch {
+                            traceHandshake("TLS: Out of memory allocating parsed certificate array\n", .{});
+                            break :blk false;
+                        };
+                        var certs_parsed_count: usize = 0;
+                        defer {
+                            for (parsed_certs[0..certs_parsed_count]) |c| c.deinit(self.allocator);
+                            self.allocator.free(parsed_certs);
+                        }
+
+                        for (parsed_cert_msg.entries, 0..) |entry, idx| {
+                            chain_der[idx] = entry.cert;
+                            parsed_certs[idx] = x509.parseCert(self.allocator, entry.cert) catch {
+                                traceHandshake("TLS: Failed to parse certificate {} in chain\n", .{idx});
+                                break :blk false;
+                            };
+                            certs_parsed_count += 1;
+                        }
+
+                        const leaf = parsed_certs[0];
+                        const leaf_entry = parsed_cert_msg.entries[0];
+                        self.leaf_spki = self.allocator.dupe(u8, leaf.spki) catch {
+                            traceHandshake("TLS: Out of memory duplicating leaf SPKI\n", .{});
+                            break :blk false;
+                        };
+
+                        const now = std.time.timestamp();
+                        const server_name_slice: []const u8 = if (self.server_name) |sni| sni else &[_]u8{};
+
+                        x509.validateChain(self.allocator, chain_der, now, server_name_slice, self.allow_insecure, .server_auth) catch |err| {
+                            traceHandshake("TLS: Certificate chain validation failed: {}\n", .{err});
+                            break :blk false;
+                        };
+
+                        if (leaf.eku) |eku| {
+                            if (!eku.server_auth) {
+                                traceHandshake("TLS: Leaf certificate missing serverAuth EKU\n", .{});
+                                break :blk false;
+                            }
+                        } else {
+                            // SEC-025: RFC 5280 Section 4.2.1.12 -- when EKU extension
+                            // is absent, the certificate is unrestricted (all usages
+                            // are permitted). This is standards-compliant behavior.
+                            traceHandshake("TLS: Leaf certificate has no EKU extension (RFC 5280: unrestricted usage)\n", .{});
+                        }
+
+                        if (leaf_entry.ocsp_response) |ocsp_bytes| {
+                            if (parsed_cert_msg.entries.len >= 2) {
+                                const issuer_info: ocsp.IssuerInfo = .{ .cert = &parsed_certs[1], .der = chain_der[1] };
+                                ocsp.validateStapledResponse(self.allocator, ocsp_bytes, &leaf, chain_der[0], issuer_info, now) catch |err| {
+                                    traceHandshake("TLS: OCSP validation failed: {}\n", .{err});
+                                    break :blk false;
+                                };
+                            } else {
+                                ocsp.validateStapledResponse(self.allocator, ocsp_bytes, &leaf, chain_der[0], null, now) catch |err| {
+                                    traceHandshake("TLS: OCSP validation failed: {}\n", .{err});
+                                    break :blk false;
+                                };
+                            }
+                        }
+
+                        if (leaf_entry.sct_list) |sct_bytes| {
+                            if (sct.parseList(self.allocator, sct_bytes)) |parsed_scts| {
+                                self.allocator.free(parsed_scts);
+                            } else |err| {
+                                traceHandshake("TLS: Failed to parse SCT list: {} (non-fatal)\n", .{err});
+                            }
+                        }
+
+                        break :blk true;
+                    };
+
+                    self.peer_cert_ok = validation_ok;
+                }
+            }
+        }
+    }
+
+    /// Handle received CertificateVerify: verify signature against leaf SPKI and transcript.
+    fn handleReceivedCertificateVerify(self: *Engine, p: messages_mod.HandshakeMessage, th_before: Secret) void {
+        // CertificateVerify: RFC 8446 format - SignatureScheme (2 bytes) + signature (2-byte length-prefixed)
+        if (!self.allow_insecure) {
+            if (!self.peer_cert_ok or self.leaf_spki == null) {
+                self.peer_cert_ok = false;
+            } else {
+                // RFC 8446 Section 4.4.3: struct { SignatureScheme algorithm; opaque signature<0..2^16-1>; }
+                if (p.body.len >= 4) { // Minimum: 2 (SignatureScheme) + 2 (signature length) + 0 (signature data)
+                    const scheme_value: u16 = readU16(p.body[0..2]);
+                    const sig_len: usize = readU16(p.body[2..4]);
+                    if (4 + sig_len <= p.body.len) {
+                        const signature = p.body[4 .. 4 + sig_len];
+                        const th = th_before; // transcript up to CertificateVerify
+                        // SEC-027: Unknown signature schemes skip verification
+                        // entirely -- no dead fallback assignment.
+                        const alg: sig.SigAlg = switch (scheme_value) {
+                            0x0403 => .ecdsa_secp256r1_sha256, // RFC 8446 SignatureScheme values
+                            0x0503 => .ecdsa_secp384r1_sha384,
+                            0x0804 => .rsa_pss_sha256,
+                            0x0807 => .ed25519,
+                            else => {
+                                traceHandshake("TLS: Unknown SignatureScheme: 0x{X:0>4}, rejecting CertificateVerify\n", .{scheme_value});
+                                self.peer_cert_ok = false;
+                                return; // skip verification for unknown schemes
+                            },
+                        };
+                        if (self.peer_cert_ok) { // Only verify if not already failed
+                            const ok = sig.verifyCertificateVerify(alg, self.leaf_spki.?, signature, "TLS 1.3, server CertificateVerify", th.slice(), self.allocator) catch false;
+                            self.peer_cert_ok = ok;
+                            if (!ok) {
+                                traceHandshake("TLS: CertificateVerify signature verification FAILED\n", .{});
+                            }
+                        }
+                    } else {
+                        traceHandshake("TLS: CertificateVerify message too short for declared signature length\n", .{});
+                        self.peer_cert_ok = false;
+                    }
+                } else {
+                    traceHandshake("TLS: CertificateVerify message too short (len={})\n", .{p.body.len});
+                    self.peer_cert_ok = false;
+                }
+            }
+        }
+    }
+
+    /// Handle received Finished: verify MAC, derive application secrets, update transcript.
+    fn handleReceivedFinished(self: *Engine, p: messages_mod.HandshakeMessage, th_before: Secret, data: []const u8, off: usize) !void {
+        if (self.ecdhe_secret == null) return;
+
+        traceHandshake("TLS: Processing Finished message\n", .{});
+        var peer_secret_opt: ?Secret = null;
+        if (self.handshake_client_secret != null and self.handshake_server_secret != null) {
+            peer_secret_opt = switch (self.role) {
+                .Client => self.handshake_server_secret.?,
+                .Server => self.handshake_client_secret.?,
+            };
+            traceHandshake("TLS: Using stored handshake secrets for verification\n", .{});
+        }
+        const ok = if (peer_secret_opt) |ps| self.verifyPeerFinished(ps, p.body) else blk: {
+            traceHandshake("TLS: Using fallback for Finished verification\n", .{});
+            // Fallback (should not happen in real mode past this point)
+            const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+            const hs = deriveHandshakeTraffic(self.hash_kind, self.ecdhe_secret.?, th_before, &early_secret);
+            self.handshake_secret = hs.handshake; // Cache intermediate handshake_secret
+            self.handshake_client_secret = hs.client_hs;
+            self.handshake_server_secret = hs.server_hs;
+            break :blk switch (self.role) {
+                .Client => self.verifyPeerFinished(hs.server_hs, p.body),
+                .Server => self.verifyPeerFinished(hs.client_hs, p.body),
+            };
+        };
+        traceHandshake("TLS: Finished verification result: {}\n", .{ok});
+        self.updateFinishedVerified(ok);
+
+        // SEC-020: Abort handshake immediately if Finished verification fails.
+        if (!ok) {
+            self.handshake_failed = true;
+            return error.HandshakeFailure;
+        }
+
+        // RFC 8446 Section 7.1: Application traffic secrets must be derived from transcript
+        // hash "ClientHello...server Finished" (NOT including client Finished).
+        {
+            // Get the Finished message bytes
+            const finished_msg = data[off - p.n .. off];
+
+            // CRITICAL FIX: Handle transcript differently based on role
+            if (self.role == .Client) {
+                // Client: Add server's Finished to transcript FIRST
+                self.transcript.update(finished_msg);
+                const show_len = @min(8, finished_msg.len);
+                if (show_len >= 8) {
+                    traceHandshake("TLS: Added server Finished to transcript ({} bytes): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ finished_msg.len, finished_msg[0], finished_msg[1], finished_msg[2], finished_msg[3], finished_msg[4], finished_msg[5], finished_msg[6], finished_msg[7] });
+                } else {
+                    traceHandshake("TLS: Added server Finished to transcript ({} bytes)\n", .{finished_msg.len});
+                }
+
+                // Now derive application secrets with server Finished included
+                traceHandshake("TLS: Deriving application traffic secrets (after adding server Finished to transcript)\n", .{});
+                _ = self.computeApplicationSecrets();
+            } else {
+                // Server: Derive app secrets BEFORE adding client's Finished
+                traceHandshake("TLS: Deriving application traffic secrets (before adding client Finished to transcript)\n", .{});
+                _ = self.computeApplicationSecrets();
+
+                // NOW add the client Finished to transcript for resumption master secret derivation
+                self.transcript.update(finished_msg);
+                const show_len = @min(8, finished_msg.len);
+                if (show_len >= 8) {
+                    traceHandshake("TLS: Added client Finished to transcript ({} bytes): {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} {X:0>2} ...\n", .{ finished_msg.len, finished_msg[0], finished_msg[1], finished_msg[2], finished_msg[3], finished_msg[4], finished_msg[5], finished_msg[6], finished_msg[7] });
+                } else {
+                    traceHandshake("TLS: Added client Finished to transcript ({} bytes)\n", .{finished_msg.len});
+                }
+            }
+        }
+    }
+
+    /// Handle received NewSessionTicket: parse ticket, derive PSK, store for resumption.
+    fn handleReceivedNewSessionTicket(self: *Engine, p: messages_mod.HandshakeMessage) void {
+        // QUAL-090: Malformed tickets are logged and dropped (not fatal per RFC 8446 Section 4.6.1).
+        if (self.role != .Client) return;
+
+        const b = p.body;
+        var pos: usize = 0;
+        if (b.len >= 4) {
+            if (b.len < 4 + 4) {
+                traceHandshake("TLS: Malformed NewSessionTicket: too short for lifetime+age_add (len={})\n", .{b.len});
+                return;
+            }
+            const lifetime: u32 = (@as(u32, b[0]) << 24) | (@as(u32, b[1]) << 16) | (@as(u32, b[2]) << 8) | @as(u32, b[3]);
+            pos = 4 + 4; // skip age_add as well
+            if (pos >= b.len) return;
+            // Parse ticket_nonce
+            const nonce_len: usize = b[pos];
+            pos += 1;
+            if (pos + nonce_len > b.len) return;
+            const ticket_nonce = b[pos .. pos + nonce_len];
+            pos += nonce_len;
+            if (pos + 2 > b.len) return;
+            const ticket_len: usize = (@as(usize, b[pos]) << 8) | b[pos + 1];
+            pos += 2;
+            if (pos + ticket_len > b.len) return;
+            const ticket_bytes = b[pos .. pos + ticket_len];
+            pos += ticket_len;
+            if (pos + 2 > b.len) return; // extensions length
+            const ext_len: usize = (@as(usize, b[pos]) << 8) | b[pos + 1];
+            pos += 2;
+            if (pos + ext_len > b.len) return;
+            // Compute resumption PSK if we have master_secret stored
+            if (self.master_secret) |ms| {
+                // RFC 8446 Section 4.6.1:
+                //   resumption_master_secret = Derive-Secret(master_secret, "res master", transcript_hash)
+                //   PSK = HKDF-Expand-Label(resumption_master_secret, "resumption", ticket_nonce, Hash.length)
+                var transcript_snapshot = self.transcript;
+                const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
+                var master_local = ms;
+                const res_master = ks.deriveSecretHash(self.hash_kind, &master_local, "res master", transcript_hash.slice());
+
+                // Derive the actual PSK from the resumption_master_secret and ticket_nonce
+                const digest_len = ks.digestLength(self.hash_kind);
+                var psk = ks.Secret.empty();
+                psk.len = @intCast(digest_len);
+                ks.expandLabelHash(self.hash_kind, &res_master, "resumption", ticket_nonce, psk.sliceMut()) catch {
+                    traceHandshake("TLS: Failed to derive resumption PSK from ticket nonce\n", .{});
+                    return;
+                };
+
+                // CWE-391: Log ticket store errors instead of silently ignoring them.
+                self.tickets.store(ticket_bytes, psk, lifetime) catch |err| {
+                    traceHandshake("TLS: Failed to store session ticket: {}\n", .{err});
+                };
+                traceHandshake("TLS: Stored session ticket with derived PSK (len={}, lifetime={}, nonce_len={})\n", .{ ticket_bytes.len, lifetime, nonce_len });
+            } else {
+                traceHandshake("TLS: Received ticket before master_secret ready; ignoring\n", .{});
+            }
+        }
     }
 
     /// Provide ECDHE shared secret directly (used in tests after X25519 exchange).
@@ -1170,82 +1192,34 @@ pub const Engine = struct {
     fn queueRealClientHello(self: *Engine) !void {
         self.ensureKeypair();
         const pubkey = self.my_pub orelse return error.Internal;
-        // Buffers
-        var body = std.ArrayList(u8){};
-        defer body.deinit(self.allocator);
-        // legacy_version 0x0303
-        try body.appendSlice(self.allocator, &.{ 0x03, 0x03 });
-        // random 32 bytes
+
+        // QUAL-096: Use shared ClientHello builder.
         var rnd: [32]u8 = undefined;
         std.crypto.random.bytes(&rnd);
-        try body.appendSlice(self.allocator, &rnd);
-        // session id (empty vector length 0)
-        try body.append(self.allocator, 0); // length
-        // cipher_suites vector (length 2, then suite 0x1301)
-        const suites = &[_]tls13_full.CipherSuite{
-            tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256,
-            tls13_full.CipherSuite.TLS_AES_256_GCM_SHA384,
-            tls13_full.CipherSuite.TLS_CHACHA20_POLY1305_SHA256,
-        };
-        const suites_len: u16 = @intCast(suites.len * 2);
-        try body.appendSlice(self.allocator, &.{ @intCast(suites_len >> 8), @intCast(suites_len & 0xff) });
-        for (suites) |suite| {
-            const value: u16 = @intFromEnum(suite);
-            try body.appendSlice(self.allocator, &.{ @intCast(value >> 8), @intCast(value & 0xff) });
-        }
-        // compression methods
-        try body.appendSlice(self.allocator, &.{ 0x01, 0x00 });
-        var ext_buf = std.ArrayList(u8){};
-        defer ext_buf.deinit(self.allocator);
-        // supported_versions
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
-        // supported_groups (x25519)
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x1d });
-        // signature_algorithms
-        const sigs = &[_]tls13_full.SignatureScheme{
-            tls13_full.SignatureScheme.ed25519,
-            tls13_full.SignatureScheme.ecdsa_secp256r1_sha256,
-            tls13_full.SignatureScheme.ecdsa_secp384r1_sha384,
-            tls13_full.SignatureScheme.rsa_pss_rsae_sha256,
-        };
-        if (sigs.len != 0) {
-            const list_len: u16 = @intCast(sigs.len * 2);
-            const ext_len: u16 = list_len + 2;
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x0d, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
-            for (sigs) |scheme| {
-                const val: u16 = @intFromEnum(scheme);
-                try ext_buf.appendSlice(self.allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
-            }
-        }
-        // key_share
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x33 });
-        const key_share_len: u16 = 2 + 2 + 32;
-        const total_len: u16 = key_share_len + 2;
-        try ext_buf.appendSlice(self.allocator, &.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
-        try ext_buf.appendSlice(self.allocator, &.{ @intCast(key_share_len >> 8), @intCast(key_share_len & 0xff) });
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x1d });
-        try ext_buf.appendSlice(self.allocator, &.{ 0x00, 32 });
-        try ext_buf.appendSlice(self.allocator, pubkey[0..]);
-        // ALPN
-        if (self.alpn) |alpn_protocol| {
-            const names_len: usize = 1 + alpn_protocol.len;
-            const list_len: u16 = @intCast(names_len);
-            const ext_len: u16 = list_len + 2;
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(ext_len >> 8), @intCast(ext_len & 0xff), @intCast(list_len >> 8), @intCast(list_len & 0xff) });
-            try ext_buf.append(self.allocator, @intCast(alpn_protocol.len));
-            try ext_buf.appendSlice(self.allocator, alpn_protocol);
-        }
-        // QUIC transport parameters (client sends its TP in CH)
-        if (self.local_tp) |tp| {
-            const tp_len: u16 = @intCast(tp.len);
-            try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
-            try ext_buf.appendSlice(self.allocator, tp);
-        }
-        // finalize extensions
-        const exts_len: u16 = @intCast(ext_buf.items.len);
-        try body.appendSlice(self.allocator, &.{ @intCast(exts_len >> 8), @intCast(exts_len & 0xff) });
-        try body.appendSlice(self.allocator, ext_buf.items);
-        const msg = try encodeHandshake(self.allocator, .client_hello, body.items);
+
+        // Engine uses a single ALPN string; wrap it in a temporary slice for the builder.
+        var alpn_slice: [1][]const u8 = undefined;
+        const alpn_protocols: ?[]const []const u8 = if (self.alpn) |alpn_protocol| blk: {
+            alpn_slice[0] = alpn_protocol;
+            break :blk &alpn_slice;
+        } else null;
+
+        const ch_result = try tls13_full.buildClientHello(self.allocator, .{
+            .random = rnd,
+            .client_pub = pubkey.*,
+            .supported_groups = &.{.x25519},
+            .signature_algorithms = &.{
+                .ed25519,
+                .ecdsa_secp256r1_sha256,
+                .ecdsa_secp384r1_sha384,
+                .rsa_pss_rsae_sha256,
+            },
+            .alpn_protocols = alpn_protocols,
+            .quic_transport_parameters = self.local_tp,
+        });
+        defer self.allocator.free(ch_result.body);
+
+        const msg = try encodeHandshake(self.allocator, .client_hello, ch_result.body);
         defer self.allocator.free(msg);
         try self.queueCrypto(msg);
     }

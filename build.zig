@@ -551,6 +551,21 @@ pub fn build(b: *std.Build) void {
     const run_key_update_test = b.addRunArtifact(key_update_test);
     test_step.dependOn(&run_key_update_test.step);
 
+    // QUAL-099: Context-level HRR Tests
+    const context_hrr_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/context_hrr_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        }),
+    });
+    const run_context_hrr_test = b.addRunArtifact(context_hrr_test);
+    test_step.dependOn(&run_context_hrr_test.step);
+
     // ========================================================================
     // Conformance Tests - Interoperability with BoringSSL and OpenSSL
     // ========================================================================
@@ -1085,6 +1100,9 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "quic_tls", .module = key_schedule_mod },
                 .{ .name = "record", .module = record_mod },
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "sig", .module = sig_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
             },
         }),
     });

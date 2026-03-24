@@ -23,6 +23,20 @@
 //! - Gracefully ignores unknown extensions (per RFC 8446 §4.2)
 //! - Zero-copy parsing (slices reference input buffer)
 //! - Supports real-world QUIC implementations
+//!
+//! ## QUAL-096: Shared ClientHello Builder
+//!
+//! The `buildClientHello` function provides a single, shared implementation
+//! for encoding TLS 1.3 ClientHello message bodies. It is used by:
+//! - `context.zig:startClientHandshake` (initial ClientHello with PSK support)
+//! - `context.zig:sendClientHello2` (ClientHello2 after HelloRetryRequest)
+//! - `engine.zig:queueRealClientHello` (legacy engine)
+//!
+//! The builder uses a single-buffer pattern (PERF-015) where extensions are
+//! written directly into the output buffer with length fields patched at the
+//! end, eliminating the ext_buf double-copy pattern.
+//!
+//! This module contains both parsing and building.
 
 const std = @import("std");
 const core_types = @import("core_types.zig");
@@ -514,4 +528,328 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     }
 
     return ch;
+}
+
+// ============================================================================
+// ClientHello Builder (QUAL-096)
+// ============================================================================
+
+/// Parameters for building a TLS 1.3 ClientHello message body.
+///
+/// Encapsulates all varying inputs so that `startClientHandshake`,
+/// `sendClientHello2`, and the Engine's `queueRealClientHello` can share
+/// the same wire-encoding logic.
+///
+/// ## RFC Coverage
+///
+/// - RFC 8446 §4.1.2: ClientHello structure
+/// - RFC 8446 §4.2: Extensions
+/// - RFC 9001 §8.2: QUIC transport parameters extension
+pub const ClientHelloParams = struct {
+    /// 32-byte client random (RFC 8446 §4.1.2).
+    random: [32]u8,
+
+    /// Client public key for key_share extension (RFC 8446 §4.2.8).
+    client_pub: [32]u8,
+
+    /// Named group for the key_share entry (default: x25519).
+    key_share_group: core_types.NamedGroup = .x25519,
+
+    /// Cipher suites to offer (RFC 8446 §4.1.2).
+    /// If empty, defaults to AES-128-GCM, AES-256-GCM, CHACHA20-POLY1305.
+    cipher_suites: []const core_types.CipherSuite = &.{},
+
+    /// Supported groups to advertise (RFC 8446 §4.2.7).
+    /// If empty, the extension is omitted.
+    supported_groups: []const core_types.NamedGroup = &.{},
+
+    /// Signature algorithms to advertise (RFC 8446 §4.2.3).
+    /// If empty, the extension is omitted.
+    signature_algorithms: []const core_types.SignatureScheme = &.{},
+
+    /// ALPN protocol names (RFC 7301). If empty/null, the extension is omitted.
+    alpn_protocols: ?[]const []const u8 = null,
+
+    /// QUIC transport parameters (RFC 9001 §8.2). If null, the extension is omitted.
+    quic_transport_parameters: ?[]const u8 = null,
+
+    /// Cookie from HelloRetryRequest (RFC 8446 §4.2.2). If null, the extension is omitted.
+    cookie: ?[]const u8 = null,
+
+    /// Whether to include the early_data extension (RFC 8446 §4.2.10).
+    include_early_data: bool = false,
+
+    /// Whether to include psk_key_exchange_modes + pre_shared_key extensions.
+    /// When true, `psk_identity` must be set.
+    include_psk: bool = false,
+
+    /// PSK identity bytes (session ticket or external PSK identity).
+    psk_identity: ?[]const u8 = null,
+
+    /// Obfuscated ticket age for the PSK identity (RFC 8446 §4.2.11).
+    psk_ticket_age: u32 = 0,
+
+    /// Digest length for the PSK binder (e.g. 32 for SHA-256, 48 for SHA-384).
+    /// Only used when `include_psk` is true.
+    psk_binder_len: u8 = 0,
+};
+
+/// Result from `buildClientHello` containing the encoded body and optional
+/// PSK binder metadata needed by the caller to compute and patch the binder.
+pub const ClientHelloResult = struct {
+    /// The fully-encoded ClientHello body (NOT including the 4-byte handshake
+    /// header). Caller owns this memory and must free it via the same allocator.
+    body: []u8,
+
+    /// If a PSK extension was written, this is the byte offset (within `body`)
+    /// where the binder placeholder (zeros) starts. Null when no PSK was included.
+    binder_offset: ?usize = null,
+
+    /// Length of the binder placeholder in bytes (same as `psk_binder_len`).
+    binder_len: u8 = 0,
+
+    /// Number of trailing bytes that form the binders list
+    /// (binders_list_len_field(2) + binder_len_field(1) + binder_data).
+    /// The truncated message for binder computation is `body[0 .. body.len - binders_tail_len]`.
+    binders_tail_len: usize = 0,
+};
+
+/// Build a TLS 1.3 ClientHello message body (RFC 8446 §4.1.2).
+///
+/// Encodes the ClientHello body bytes suitable for wrapping in a handshake
+/// message (type 0x01 + 3-byte length prefix). The caller is responsible for
+/// adding the handshake header and, when PSK is used, computing and patching
+/// the binder into the placeholder returned via `ClientHelloResult`.
+///
+/// ## Parameters
+///
+/// - `allocator`: Memory allocator for the returned body buffer.
+/// - `params`: All varying inputs for the ClientHello.
+///
+/// ## Returns
+///
+/// - `ClientHelloResult`: Encoded body and optional PSK binder metadata.
+///
+/// ## Extension Order (RFC 8446 §4.2)
+///
+/// 1. supported_versions (REQUIRED)
+/// 2. supported_groups
+/// 3. signature_algorithms
+/// 4. key_share
+/// 5. cookie (if present, from HRR)
+/// 6. ALPN
+/// 7. QUIC transport parameters
+/// 8. early_data (if enabled)
+/// 9. psk_key_exchange_modes (if PSK)
+/// 10. pre_shared_key (MUST be last per RFC 8446 §4.2.11)
+pub fn buildClientHello(allocator: std.mem.Allocator, params: ClientHelloParams) !ClientHelloResult {
+    // Use the same cipher suites defaulting logic as all 3 call sites.
+    const cipher_suites = if (params.cipher_suites.len > 0)
+        params.cipher_suites
+    else
+        &[_]core_types.CipherSuite{
+            .TLS_AES_128_GCM_SHA256,
+            .TLS_AES_256_GCM_SHA384,
+            .TLS_CHACHA20_POLY1305_SHA256,
+        };
+
+    // Pre-allocate with a typical ClientHello size (~256 bytes).
+    var buf = try std.ArrayList(u8).initCapacity(allocator, 256);
+    errdefer buf.deinit(allocator);
+
+    // --- ClientHello body ---
+
+    // legacy_version (RFC 8446 §4.1.2: MUST be 0x0303)
+    try buf.appendSlice(allocator, &.{ 0x03, 0x03 });
+
+    // random (32 bytes)
+    try buf.appendSlice(allocator, &params.random);
+
+    // legacy_session_id (empty for QUIC, RFC 9001 §8.4)
+    try buf.append(allocator, 0);
+
+    // cipher_suites
+    const cipher_list_len: u16 = @intCast(cipher_suites.len * 2);
+    try buf.appendSlice(allocator, &.{ @intCast(cipher_list_len >> 8), @intCast(cipher_list_len & 0xff) });
+    for (cipher_suites) |suite| {
+        const val: u16 = @intFromEnum(suite);
+        try buf.appendSlice(allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
+    }
+
+    // compression_methods (MUST be [0x00] for TLS 1.3)
+    try buf.appendSlice(allocator, &.{ 0x01, 0x00 });
+
+    // Reserve 2 bytes for extensions length (patched at end)
+    const exts_len_offset = buf.items.len;
+    try buf.appendSlice(allocator, &.{ 0x00, 0x00 });
+    const exts_start = buf.items.len;
+
+    // --- Extensions ---
+
+    // 1. supported_versions (REQUIRED, RFC 8446 §4.2.1)
+    //    list_len=2 containing 0x0304 (TLS 1.3)
+    try buf.appendSlice(allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
+
+    // 2. supported_groups (RFC 8446 §4.2.7)
+    if (params.supported_groups.len != 0) {
+        const group_list_len: u16 = @intCast(params.supported_groups.len * 2);
+        const group_ext_len: u16 = group_list_len + 2;
+        try buf.appendSlice(allocator, &.{
+            0x00,
+            0x0a,
+            @intCast(group_ext_len >> 8),
+            @intCast(group_ext_len & 0xff),
+            @intCast(group_list_len >> 8),
+            @intCast(group_list_len & 0xff),
+        });
+        for (params.supported_groups) |group| {
+            const gval: u16 = @intFromEnum(group);
+            try buf.appendSlice(allocator, &.{ @intCast(gval >> 8), @intCast(gval & 0xff) });
+        }
+    }
+
+    // 3. signature_algorithms (RFC 8446 §4.2.3)
+    if (params.signature_algorithms.len != 0) {
+        const list_len: u16 = @intCast(params.signature_algorithms.len * 2);
+        const ext_len: u16 = list_len + 2;
+        try buf.appendSlice(allocator, &.{
+            0x00,
+            0x0d,
+            @intCast(ext_len >> 8),
+            @intCast(ext_len & 0xff),
+            @intCast(list_len >> 8),
+            @intCast(list_len & 0xff),
+        });
+        for (params.signature_algorithms) |scheme| {
+            const val: u16 = @intFromEnum(scheme);
+            try buf.appendSlice(allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
+        }
+    }
+
+    // 4. key_share (RFC 8446 §4.2.8)
+    {
+        const group_val: u16 = @intFromEnum(params.key_share_group);
+        const key_share_entry_len: u16 = 2 + 2 + 32; // group(2) + key_len(2) + key(32)
+        const key_share_ext_len: u16 = key_share_entry_len + 2; // entries_list_len(2) + entry
+        try buf.appendSlice(allocator, &.{
+            0x00,
+            0x33,
+            @intCast(key_share_ext_len >> 8),
+            @intCast(key_share_ext_len & 0xff),
+            @intCast(key_share_entry_len >> 8),
+            @intCast(key_share_entry_len & 0xff),
+            @intCast(group_val >> 8),
+            @intCast(group_val & 0xff),
+            0x00,
+            32,
+        });
+        try buf.appendSlice(allocator, &params.client_pub);
+    }
+
+    // 5. cookie (RFC 8446 §4.2.2, only after HRR)
+    if (params.cookie) |ck| {
+        const ck_len: u16 = @intCast(ck.len);
+        try buf.appendSlice(allocator, &.{ 0x00, 0x2c, @intCast(ck_len >> 8), @intCast(ck_len & 0xff) });
+        try buf.appendSlice(allocator, ck);
+    }
+
+    // 6. ALPN (RFC 7301)
+    if (params.alpn_protocols) |alpn_list| {
+        if (alpn_list.len != 0) {
+            var names_len: usize = 0;
+            for (alpn_list) |p| names_len += 1 + p.len;
+            const list_len: u16 = @intCast(names_len);
+            const ext_len: u16 = list_len + 2;
+            try buf.appendSlice(allocator, &.{
+                0x00,
+                0x10,
+                @intCast(ext_len >> 8),
+                @intCast(ext_len & 0xff),
+                @intCast(list_len >> 8),
+                @intCast(list_len & 0xff),
+            });
+            for (alpn_list) |p| {
+                try buf.append(allocator, @intCast(p.len));
+                try buf.appendSlice(allocator, p);
+            }
+        }
+    }
+
+    // 7. QUIC transport parameters (RFC 9001 §8.2)
+    if (params.quic_transport_parameters) |tp| {
+        const tp_len: u16 = @intCast(tp.len);
+        try buf.appendSlice(allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
+        try buf.appendSlice(allocator, tp);
+    }
+
+    // 8. early_data (RFC 8446 §4.2.10, before PSK which must be last)
+    if (params.include_early_data) {
+        try buf.appendSlice(allocator, &.{ 0x00, 0x2a, 0x00, 0x00 });
+    }
+
+    // --- PSK-related extensions (9 & 10) ---
+    var result = ClientHelloResult{
+        .body = undefined,
+    };
+
+    if (params.include_psk) {
+        const identity = params.psk_identity orelse return error.MissingPskIdentity;
+        const binder_len = params.psk_binder_len;
+        if (binder_len == 0) return error.InvalidBinderLength;
+
+        // 9. psk_key_exchange_modes (RFC 8446 §4.2.9) - psk_dhe_ke(1)
+        try buf.appendSlice(allocator, &.{ 0x00, 0x2d, 0x00, 0x02, 0x01, 0x01 });
+
+        // 10. pre_shared_key (MUST be last, RFC 8446 §4.2.11)
+        try buf.appendSlice(allocator, &.{ 0x00, 0x29 }); // extension type
+
+        const ext_data_start = buf.items.len + 2; // after ext length field
+        try buf.appendSlice(allocator, &.{ 0x00, 0x00 }); // placeholder for ext length
+
+        // Identities list: list_len(2) + identity_len(2) + identity + ticket_age(4)
+        const identity_len: u16 = @intCast(identity.len);
+        const identities_list_len: u16 = 2 + identity_len + 4;
+        try buf.appendSlice(allocator, &.{ @intCast(identities_list_len >> 8), @intCast(identities_list_len & 0xff) });
+        try buf.appendSlice(allocator, &.{ @intCast(identity_len >> 8), @intCast(identity_len & 0xff) });
+        try buf.appendSlice(allocator, identity);
+
+        const ticket_age = params.psk_ticket_age;
+        try buf.appendSlice(allocator, &.{
+            @intCast((ticket_age >> 24) & 0xff),
+            @intCast((ticket_age >> 16) & 0xff),
+            @intCast((ticket_age >> 8) & 0xff),
+            @intCast(ticket_age & 0xff),
+        });
+
+        // Binders list: list_len(2) + binder_entry_len(1) + binder_data(binder_len)
+        const binders_list_len: u16 = 1 + @as(u16, binder_len);
+        try buf.appendSlice(allocator, &.{ @intCast(binders_list_len >> 8), @intCast(binders_list_len & 0xff) });
+        try buf.append(allocator, binder_len);
+
+        // Record binder placeholder position
+        const binder_offset = buf.items.len;
+
+        // Write zero placeholder for binder
+        const zeros = [_]u8{0} ** 64; // max digest length
+        try buf.appendSlice(allocator, zeros[0..binder_len]);
+
+        // Patch PSK extension length
+        const ext_data_len = buf.items.len - ext_data_start;
+        buf.items[ext_data_start - 2] = @intCast((ext_data_len >> 8) & 0xff);
+        buf.items[ext_data_start - 1] = @intCast(ext_data_len & 0xff);
+
+        // Fill result with binder metadata
+        // binders_tail_len = binders_list_len_field(2) + binder_len_field(1) + binder_data
+        result.binder_offset = binder_offset;
+        result.binder_len = binder_len;
+        result.binders_tail_len = 2 + 1 + binder_len;
+    }
+
+    // Patch extensions length
+    const exts_total: u16 = @intCast(buf.items.len - exts_start);
+    buf.items[exts_len_offset] = @intCast(exts_total >> 8);
+    buf.items[exts_len_offset + 1] = @intCast(exts_total & 0xff);
+
+    result.body = try buf.toOwnedSlice(allocator);
+    return result;
 }

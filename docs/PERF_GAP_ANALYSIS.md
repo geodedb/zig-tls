@@ -32,11 +32,11 @@
 
 ### Top 5 Remaining Risks (by PerfScore)
 
-1. **PERF-008** (PerfScore 36, P2): CryptoBuffer.consume O(n) memmove -- low urgency at current sizes (<1KB)
-2. **PERF-029** (PerfScore 20, P1): Missing critical benchmarks -- bench.zig covers only 3 micro-ops; no full handshake, cert validation, or AEAD decrypt benchmarks
+1. **PERF-008** (PerfScore 36, P2): CryptoBuffer.consume O(n) memmove -- **Closed**: offset-based O(1) consume implemented
+2. **PERF-029** (PerfScore 20, P1): Missing critical benchmarks -- **Closed**: 7 new benchmarks added (bench.zig)
 3. **PERF-010** (PerfScore 20, P3): AntiReplayWindow.contains O(n) linear scan -- timing-safe by design
-4. **PERF-013** (PerfScore 16, P1): 10+ alloc/free cycles per server flight (5 messages x 2 allocations each); ~3-8us/handshake
-5. **PERF-015** (PerfScore 15, P1): Double buffer copy in ClientHello construction
+4. **PERF-013** (PerfScore 16, P1): 10+ alloc/free cycles per server flight -- **Closed**: zero-alloc server flight via encodeHandshakeBuf + appendOutboundFramed
+5. **PERF-015** (PerfScore 15, P1): Double buffer copy in ClientHello construction -- **Closed**: single-buffer ClientHello construction
 
 ---
 
@@ -51,17 +51,17 @@
 | 5 | PERF-005 | P1 | 60 | Global mutex on getPool() even after init | infra | `src/parallel.zig:69-82` | Contention scales with concurrency | [#60](https://gitlab.com/devnw/zig/tls/-/issues/60) | Atomic double-checked locking with acquire/release semantics | git blame owner | Within sprint | Closed |
 | 6 | PERF-006 | P1 | 48 | ~38 copyForwards where @memcpy suffices (non-overlapping) | app | `src/record/aead.zig` (18), `src/key_schedule.zig` (9), `src/quic_transport_params.zig` (7), +4 others | <10ns per AEAD op (branch overhead) | [#61](https://gitlab.com/devnw/zig/tls/-/issues/61) | Replace with @memcpy where src/dst provably non-overlapping | git blame owner | Within sprint | Closed |
 | 7 | PERF-007 | P2 | 36 | ServerHello builder: 5 zero-cap ArrayLists | app | `src/tls13/messages/server_hello.zig:319,349,377,506,531` | ~200ns wasted per ServerHello build | [#62](https://gitlab.com/devnw/zig/tls/-/issues/62) | Pre-allocated with initCapacity(allocator, 36-128) for all 5 ArrayLists | git blame owner | Next quarter | Closed |
-| 8 | PERF-008 | P2 | 36 | CryptoBuffer.consume uses O(n) memmove via copyForwards | app | `src/tls13/handshake_state.zig:83-91` | ~30-60ns per handshake (typical buffer <1KB) | -- | Ring buffer or offset-based consume; low urgency at current sizes | git blame owner | Next quarter | Open |
+| 8 | PERF-008 | P2 | 36 | CryptoBuffer.consume uses O(n) memmove via copyForwards | app | `src/tls13/handshake_state.zig:83-91` | ~30-60ns per handshake (typical buffer <1KB) | -- | Ring buffer or offset-based consume; low urgency at current sizes | git blame owner | Next quarter | Closed |
 | 9 | PERF-009 | P2 | 36 | empty_hash recomputed 6x across key derivation functions | app | `src/tls13/key_derivation.zig:123,184,306,461,492,620` | ~120ns total (6 x ~20ns hash of empty input) | [#63](https://gitlab.com/devnw/zig/tls/-/issues/63) | Precomputed as comptime constants (SHA-256 and SHA-384) | git blame owner | Next quarter | Closed |
 | 10 | PERF-010 | P3 | 20 | AntiReplayWindow.contains O(n) linear scan | app | `src/zero_rtt.zig:293-303` | ~200ns at n=64 (constant-time by design) | -- | Documented O(n) complexity with recommendation for hash-based lookup at window_size>256 | Claude | 2026-03-24 | Closed |
-| 11 | PERF-029 | P1 | 20 | Missing critical benchmarks -- bench.zig covers only 3 micro-ops (key derivation, transcript hash, AEAD seal) | ci | `tests/bench.zig` -- no full handshake, cert validation, sig verify, ClientHello parse, server flight, or AEAD decrypt benchmarks | N/A -- blocks perf regression detection for majority of hot paths | -- | Expand bench.zig with full handshake latency, cert validation, sig verify, CH parse, server flight, AEAD decrypt | git blame owner | Within sprint | Open |
+| 11 | PERF-029 | P1 | 20 | Missing critical benchmarks -- bench.zig covers only 3 micro-ops (key derivation, transcript hash, AEAD seal) | ci | `tests/bench.zig` -- no full handshake, cert validation, sig verify, ClientHello parse, server flight, or AEAD decrypt benchmarks | N/A -- blocks perf regression detection for majority of hot paths | -- | Expand bench.zig with full handshake latency, cert validation, sig verify, CH parse, server flight, AEAD decrypt | git blame owner | Within sprint | Closed |
 | 12 | PERF-011 | P2 | 16 | Missing benchmark suite for handshake latency regression detection | ci | No benchmark harness found in repo | N/A -- prevents regression detection | [#64](https://gitlab.com/devnw/zig/tls/-/issues/64) | Added `zig build bench` target with placeholder benchmark | git blame owner | Next quarter | Closed |
 | 13 | PERF-012 | P0 | 18 | buildFinished uses ArrayList for simple slice copy | app | `src/tls13/messages/finished.zig:93-101` | ~100-200ns wasted per handshake (2 calls) | [#81](https://gitlab.com/devnw/zig/tls/-/issues/81) | Replaced with `allocator.dupe(u8, verify_data)` | git blame owner | Immediate | Closed |
-| 14 | PERF-013 | P1 | 16 | 10+ alloc/free cycles per server flight (5 msgs x build+encode); 10 allocs + 10 frees + 5 memcpy | app | `src/tls13/context.zig:1964-2206`, `src/tls13/messages.zig:88-98` | ~3-8us per server handshake | [#83](https://gitlab.com/devnw/zig/tls/-/issues/83) | Pre-compute total flight size, single buffer; write headers directly | git blame owner | Within sprint | Open |
+| 14 | PERF-013 | P1 | 16 | 10+ alloc/free cycles per server flight (5 msgs x build+encode); 10 allocs + 10 frees + 5 memcpy | app | `src/tls13/context.zig:1964-2206`, `src/tls13/messages.zig:88-98` | ~3-8us per server handshake | [#83](https://gitlab.com/devnw/zig/tls/-/issues/83) | Pre-compute total flight size, single buffer; write headers directly | git blame owner | Within sprint | Closed |
 | 15 | PERF-014 | P1 | 15 | Unbounded CryptoBuffer inbound growth (DoS risk) | app | `src/tls13/handshake_state.zig:63-91`, `src/tls13/context.zig:768-791` | Unbounded memory growth under adversarial input | [#86](https://gitlab.com/devnw/zig/tls/-/issues/86) | Security aspect closed via SEC-018 (64KB limit added); further optimization open | git blame owner | Within sprint | Closed (security) |
-| 16 | PERF-015 | P1 | 15 | Double buffer copy in ClientHello construction | app | `src/tls13/context.zig:1730-1857` | ~100-200ns per ClientHello (ext_buf -> body -> msg) | [#89](https://gitlab.com/devnw/zig/tls/-/issues/89) | Reserve header space upfront; use single ArrayList + toOwnedSlice | git blame owner | Within sprint | Open |
+| 16 | PERF-015 | P1 | 15 | Double buffer copy in ClientHello construction | app | `src/tls13/context.zig:1730-1857` | ~100-200ns per ClientHello (ext_buf -> body -> msg) | [#89](https://gitlab.com/devnw/zig/tls/-/issues/89) | Reserve header space upfront; use single ArrayList + toOwnedSlice | git blame owner | Within sprint | Closed |
 | 17 | PERF-016 | P2 | 12 | Global trust store RwLock contention on every handshake | infra | `src/x509.zig:132-155` | ~50-200ns per lock acquire under contention | -- | Cache trust store locally after first read; atomic pointer swap | git blame owner | Next quarter | Open |
-| 18 | PERF-017 | P2 | 12 | Duplicate x509.parseCert calls for same leaf certificate (3-4 parses: context.zig x2, x509.zig x1, engine.zig x1) | app | `src/tls13/context.zig:3077,3166`, `src/x509.zig:1499`, `src/tls13/engine.zig:751` | ~50-100us per handshake (3 redundant parses + 3 unnecessary allocs) | -- | Parse leaf once; pass parsed struct to OCSP + chain validation + CertificateVerify | git blame owner | Next quarter | Open |
+| 18 | PERF-017 | P2 | 12 | Duplicate x509.parseCert calls for same leaf certificate (3-4 parses: context.zig x2, x509.zig x1, engine.zig x1) | app | `src/tls13/context.zig:3077,3166`, `src/x509.zig:1499`, `src/tls13/engine.zig:751` | ~50-100us per handshake (3 redundant parses + 3 unnecessary allocs) | -- | Parse leaf once; pass parsed struct to OCSP + chain validation + CertificateVerify | git blame owner | Next quarter | Closed |
 | 19 | PERF-018 | P2 | 12 | pollCrypto copies entire outbound buffer via allocator.dupe | app | `src/tls13/context.zig:1071-1078` | ~50-200ns per poll (buffer typically 200-2000 bytes) | -- | Replaced dupe+clear with toOwnedSlice ownership transfer | git blame owner | Next quarter | Closed |
 | 20 | PERF-019 | P2 | 12 | Extension buffers built separately then appended in ClientHello | app | `src/tls13/context.zig:1765-1844` | ~100ns (extra copy of ~200 bytes extensions) | -- | Build extensions inline in body buffer | git blame owner | Next quarter | Open |
 | 21 | PERF-020 | P2 | 12 | Transcript struct copies on snapshot (~328 bytes each) | app | `src/tls13/transcript.zig:202-207` | ~50ns per snapshot (memcpy of 2 hash states) | -- | Acceptable at current frequency (5-7 per handshake, ~328B each) | git blame owner | Next quarter | Closed |
@@ -387,6 +387,8 @@ For the current buffer sizes (<2KB typical), the O(n) cost is ~30-60ns per consu
 
 **Confidence:** `confidence::confirmed` -- `copyForwards` with overlapping ranges is an O(n) shift by definition.
 
+**Status: Closed** -- CryptoBuffer refactored to offset-based O(1) consume, eliminating memmove.
+
 ---
 
 ### PERF-009: empty_hash Recomputed in Key Derivation (P2)
@@ -596,6 +598,8 @@ fn appendHandshakeMessage(outbound: *ArrayListUnmanaged(u8), alloc: std.mem.Allo
 
 **Note:** This finding subsumes the original PERF-013 scope and the Phase 5 PERF-028 analysis, which provided the specific 5x2=10 allocation count and 3-8us estimate.
 
+**Status: Closed** -- Zero-alloc server flight implemented via encodeHandshakeBuf + appendOutboundFramed, eliminating all intermediate allocations.
+
 ---
 
 ### PERF-014: Unbounded CryptoBuffer Inbound Growth (P1)
@@ -660,6 +664,8 @@ fn appendHandshakeMessage(outbound: *ArrayListUnmanaged(u8), alloc: std.mem.Allo
 **Rollout Risk:** Low. Output bytes are identical. Verify with handshake interop tests.
 
 **Confidence:** `confidence::confirmed` -- Double copy is visible in source.
+
+**Status: Closed** -- Single-buffer ClientHello construction implemented, eliminating double buffer copy.
 
 ---
 
@@ -728,6 +734,8 @@ fn appendHandshakeMessage(outbound: *ArrayListUnmanaged(u8), alloc: std.mem.Allo
 **Confidence:** `confidence::confirmed` -- Multiple parseCert calls for chain[0] are visible in source across 4 call sites.
 
 **Note:** Phase 5 review identified the Engine path (`engine.zig:751`) and quantified the per-handshake cost at ~50-100us with 3 unnecessary allocations (originally tracked as PERF-030, merged here).
+
+**Status: Closed** -- parseCert now extracts signature fields directly, eliminating redundant calls across all 4 call sites.
 
 ---
 
@@ -1125,6 +1133,8 @@ zig build bench -Doptimize=ReleaseFast
 
 **Confidence:** `confidence::confirmed` -- Absence of benchmarks is verifiable by inspecting `tests/bench.zig`.
 
+**Status: Closed** -- 7 new benchmarks added to bench.zig covering full handshake, cert validation, sig verify, ClientHello parse, server flight, AEAD decrypt, and alloc counting.
+
 ---
 
 ### PERF-031: 13 Zero-Capacity ArrayLists in Message Builders (P2)
@@ -1416,13 +1426,13 @@ This is a documentation-level change that makes the performance intent explicit.
 | PERF-002 | 1 day | ~2KB/connection -- box AntiReplayWindow behind pointer |
 | PERF-004 | 2 days | ~2-5us/handshake -- single-hash transcript fast path |
 | PERF-005 | 1 day | Eliminates mutex contention -- atomic double-checked locking |
-| PERF-013 | 2 days | ~3-8us/handshake -- single-buffer server flight (pre-compute total size) |
+| PERF-013 | 2 days | ~3-8us/handshake -- single-buffer server flight (pre-compute total size) -- **Closed** |
 | PERF-014 | 1 day | Bounded memory -- max_inbound_size guard for CryptoBuffer |
-| PERF-015 | 1 day | ~200ns/ClientHello -- eliminate double buffer copy |
-| PERF-017 | 1 day | ~50-100us/handshake -- parse leaf cert once, reuse across 4 call sites |
+| PERF-015 | 1 day | ~200ns/ClientHello -- eliminate double buffer copy -- **Closed** |
+| PERF-017 | 1 day | ~50-100us/handshake -- parse leaf cert once, reuse across 4 call sites -- **Closed** |
 | PERF-023 | 2 days | ~150ns/handshake -- direct-write encodeHandshake variant |
 | PERF-027 | 1 day | DoS prevention -- max chain depth in validateChain |
-| PERF-029 | 3 days | Validation infrastructure -- expand bench.zig with 7 critical benchmarks |
+| PERF-029 | 3 days | Validation infrastructure -- expand bench.zig with 7 critical benchmarks -- **Closed** |
 | PERF-032 | 2 days | ~1-2us/handshake -- arena allocator for ClientHelloInfo.parse dupe batch |
 
 ### Strategic (> 5 days)
@@ -1431,7 +1441,7 @@ This is a documentation-level change that makes the performance intent explicit.
 |----|--------|----------------|
 | PERF-011 | 5-10 days | Regression prevention -- full benchmark suite with CI integration |
 | PERF-024 | 3-5 days | Performance observability -- counting allocator for debug builds |
-| PERF-008 | 3-5 days | Future-proofing -- ring buffer for CryptoBuffer (only if buffers grow) |
+| PERF-008 | 3-5 days | Future-proofing -- ring buffer for CryptoBuffer (only if buffers grow) -- **Closed** (offset-based O(1) consume) |
 | PERF-010 | 3 days | Future-proofing -- hash-based anti-replay (only if window >256) |
 | PERF-016 | 2-3 days | Reduced contention -- atomic trust store pointer with local caching |
 | PERF-026 | 5-10 days | Code health -- complete Engine-to-Context migration |

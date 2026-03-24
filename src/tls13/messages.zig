@@ -97,6 +97,43 @@ pub fn encodeHandshake(alloc: std.mem.Allocator, typ: HsType, body: []const u8) 
     return out;
 }
 
+/// Zero-allocation variant of encodeHandshake that writes into a caller-provided buffer.
+///
+/// PERF-013: Enables server flight batching without per-message allocation.
+/// Writes the 4-byte handshake header (type + 24-bit length) followed by the body
+/// into `buf`, and returns the total number of bytes written.
+///
+/// RFC 8446 §4: Handshake protocol message format:
+/// ```
+/// struct {
+///     HandshakeType msg_type;    // 1 byte
+///     uint24 length;             // 3 bytes (big-endian)
+///     opaque body[length];
+/// } Handshake;
+/// ```
+///
+/// # Parameters
+/// - buf: Caller-provided output buffer (must be at least 4 + body.len bytes)
+/// - typ: Handshake message type
+/// - body: Message body bytes
+///
+/// # Returns
+/// Total bytes written (4 + body.len)
+///
+/// # Errors
+/// - `error.BufferTooSmall`: `buf` is shorter than 4 + body.len
+pub fn encodeHandshakeBuf(buf: []u8, typ: HsType, body: []const u8) !usize {
+    const total = 4 + body.len;
+    if (buf.len < total) return error.BufferTooSmall;
+    buf[0] = @intFromEnum(typ);
+    const L: u32 = @intCast(body.len);
+    buf[1] = @intCast((L >> 16) & 0xff);
+    buf[2] = @intCast((L >> 8) & 0xff);
+    buf[3] = @intCast(L & 0xff);
+    @memcpy(buf[4..][0..body.len], body);
+    return total;
+}
+
 /// Parse one complete handshake message from buffered CRYPTO data.
 ///
 /// RFC 8446 §4: Attempts to parse a single handshake message from the input.
@@ -411,4 +448,67 @@ test "KeyUpdate: enum values match RFC 8446" {
 test "KeyUpdate: HsType enum value matches RFC 8446" {
     // RFC 8446 §4: key_update message type is 24
     try std.testing.expectEqual(@as(u8, 24), @intFromEnum(HsType.key_update));
+}
+
+// ============================================================================
+// Tests - encodeHandshakeBuf (PERF-013)
+// ============================================================================
+
+test "PERF-013: encodeHandshakeBuf writes same output as encodeHandshake" {
+    const alloc = std.testing.allocator;
+    const body = "test body content";
+
+    // Allocating variant
+    const allocated = try encodeHandshake(alloc, .finished, body);
+    defer alloc.free(allocated);
+
+    // Zero-alloc variant
+    var buf: [256]u8 = undefined;
+    const n = try encodeHandshakeBuf(&buf, .finished, body);
+
+    try std.testing.expectEqual(allocated.len, n);
+    try std.testing.expectEqualSlices(u8, allocated, buf[0..n]);
+}
+
+test "PERF-013: encodeHandshakeBuf returns correct byte count" {
+    const body = [_]u8{0xAA} ** 100;
+    var buf: [256]u8 = undefined;
+    const n = try encodeHandshakeBuf(&buf, .certificate, &body);
+    try std.testing.expectEqual(@as(usize, 104), n);
+}
+
+test "PERF-013: encodeHandshakeBuf buffer too small" {
+    const body = [_]u8{0xBB} ** 100;
+    var buf: [50]u8 = undefined;
+    const result = encodeHandshakeBuf(&buf, .certificate, &body);
+    try std.testing.expectError(error.BufferTooSmall, result);
+}
+
+test "PERF-013: encodeHandshakeBuf empty body" {
+    var buf: [4]u8 = undefined;
+    const n = try encodeHandshakeBuf(&buf, .server_hello, &[_]u8{});
+    try std.testing.expectEqual(@as(usize, 4), n);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(HsType.server_hello)), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0), buf[1]);
+    try std.testing.expectEqual(@as(u8, 0), buf[2]);
+    try std.testing.expectEqual(@as(u8, 0), buf[3]);
+}
+
+test "PERF-013: encodeHandshakeBuf roundtrip with parseHandshakeOne" {
+    const body = "finished_verify_data_32_bytes!!!";
+    var buf: [256]u8 = undefined;
+    const n = try encodeHandshakeBuf(&buf, .finished, body);
+
+    const parsed = try parseHandshakeOne(buf[0..n]);
+    try std.testing.expect(parsed != null);
+    try std.testing.expectEqual(HsType.finished, parsed.?.typ);
+    try std.testing.expectEqualSlices(u8, body, parsed.?.body);
+    try std.testing.expectEqual(n, parsed.?.n);
+}
+
+test "PERF-013: encodeHandshakeBuf exact-fit buffer" {
+    const body = [_]u8{0xCC} ** 10;
+    var buf: [14]u8 = undefined; // exactly 4 + 10
+    const n = try encodeHandshakeBuf(&buf, .encrypted_extensions, &body);
+    try std.testing.expectEqual(@as(usize, 14), n);
 }

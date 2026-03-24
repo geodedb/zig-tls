@@ -61,10 +61,18 @@ const encryption_level_count = std.meta.fields(EncryptionLevel).len;
 /// Each encryption level (Initial, Handshake, Application) has separate buffering
 /// for CRYPTO frame data. This allows messages to be reassembled from multiple
 /// QUIC packets before processing.
+/// RFC 9001 §4.1.4: per-encryption-level CRYPTO queue with O(1) amortized consume.
+///
+/// PERF-008: Uses an offset-based approach instead of O(n) memmove on every
+/// consume. The `read_offset` field tracks how many leading bytes have been
+/// consumed. An actual compaction (memmove) only happens when `read_offset`
+/// exceeds half the underlying capacity, giving O(1) amortized cost.
 pub const CryptoBuffer = struct {
     level: EncryptionLevel,
     inbound: ArrayListUnmanaged(u8) = .{},
     outbound: ArrayListUnmanaged(u8) = .{},
+    /// PERF-008: Logical start of unconsumed inbound data.
+    read_offset: usize = 0,
 
     pub fn init(level: EncryptionLevel) CryptoBuffer {
         return .{ .level = level };
@@ -73,22 +81,62 @@ pub const CryptoBuffer = struct {
     pub fn clear(self: *CryptoBuffer) void {
         self.inbound.clearRetainingCapacity();
         self.outbound.clearRetainingCapacity();
+        self.read_offset = 0;
     }
 
     pub fn deinit(self: *CryptoBuffer, alloc: std.mem.Allocator) void {
         self.inbound.deinit(alloc);
         self.outbound.deinit(alloc);
+        self.read_offset = 0;
+    }
+
+    /// Return a slice of the unconsumed inbound data.
+    pub fn data(self: *const CryptoBuffer) []const u8 {
+        return self.inbound.items[self.read_offset..];
+    }
+
+    /// Return a mutable slice of the unconsumed inbound data.
+    pub fn dataMut(self: *CryptoBuffer) []u8 {
+        return self.inbound.items[self.read_offset..];
+    }
+
+    /// Number of unconsumed inbound bytes available.
+    pub fn readableLength(self: *const CryptoBuffer) usize {
+        return self.inbound.items.len - self.read_offset;
     }
 
     /// Consume `count` bytes from the inbound buffer after processing.
+    ///
+    /// PERF-008: O(1) amortized. Advances the read offset instead of shifting.
+    /// Compaction only occurs when more than half the buffer capacity is wasted,
+    /// limiting memmove to at most once per N/2 consumed bytes.
     pub fn consume(self: *CryptoBuffer, count: usize) void {
-        std.debug.assert(count <= self.inbound.items.len);
-        const remaining = self.inbound.items.len - count;
+        const readable = self.readableLength();
+        std.debug.assert(count <= readable);
+        self.read_offset += count;
+
+        // Compact when read_offset exceeds half the buffer capacity (or all data consumed)
+        if (self.read_offset >= self.inbound.items.len) {
+            // All data consumed: just reset length and offset
+            self.inbound.items = self.inbound.items[0..0];
+            self.read_offset = 0;
+        } else if (self.inbound.capacity > 0 and self.read_offset > self.inbound.capacity / 2) {
+            self.compact();
+        }
+    }
+
+    /// Perform actual compaction: shift remaining data to the front.
+    fn compact(self: *CryptoBuffer) void {
+        const remaining = self.inbound.items.len - self.read_offset;
         if (remaining > 0) {
-            // Shift remaining bytes toward the front; use forwards copy to preserve data when overlapping
-            std.mem.copyForwards(u8, self.inbound.items[0..remaining], self.inbound.items[count .. count + remaining]);
+            std.mem.copyForwards(
+                u8,
+                self.inbound.items[0..remaining],
+                self.inbound.items[self.read_offset..][0..remaining],
+            );
         }
         self.inbound.items = self.inbound.items[0..remaining];
+        self.read_offset = 0;
     }
 };
 
@@ -443,3 +491,107 @@ pub const HandshakeState = struct {
         return null;
     }
 };
+
+// ============================================================================
+// Tests - CryptoBuffer PERF-008 (offset-based consume)
+// ============================================================================
+
+test "PERF-008: CryptoBuffer consume advances offset without memmove" {
+    const alloc = std.testing.allocator;
+    var buf = CryptoBuffer.init(.Initial);
+    defer buf.deinit(alloc);
+
+    // Append 10 bytes
+    try buf.inbound.appendSlice(alloc, &[_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 });
+    try std.testing.expectEqual(@as(usize, 10), buf.readableLength());
+
+    // Consume 3 bytes (should just advance offset, not compact)
+    buf.consume(3);
+    try std.testing.expectEqual(@as(usize, 7), buf.readableLength());
+    try std.testing.expectEqual(@as(u8, 3), buf.data()[0]);
+    try std.testing.expectEqual(@as(u8, 9), buf.data()[6]);
+}
+
+test "PERF-008: CryptoBuffer consume all resets to empty" {
+    const alloc = std.testing.allocator;
+    var buf = CryptoBuffer.init(.Handshake);
+    defer buf.deinit(alloc);
+
+    try buf.inbound.appendSlice(alloc, &[_]u8{ 0xAA, 0xBB, 0xCC });
+    buf.consume(3);
+    try std.testing.expectEqual(@as(usize, 0), buf.readableLength());
+    try std.testing.expectEqual(@as(usize, 0), buf.read_offset);
+    try std.testing.expectEqual(@as(usize, 0), buf.inbound.items.len);
+}
+
+test "PERF-008: CryptoBuffer multiple partial consumes" {
+    const alloc = std.testing.allocator;
+    var buf = CryptoBuffer.init(.Application);
+    defer buf.deinit(alloc);
+
+    // Fill with data
+    var data_arr: [100]u8 = undefined;
+    for (&data_arr, 0..) |*b, i| b.* = @intCast(i % 256);
+    try buf.inbound.appendSlice(alloc, &data_arr);
+
+    // Consume in chunks
+    buf.consume(10);
+    try std.testing.expectEqual(@as(usize, 90), buf.readableLength());
+    try std.testing.expectEqual(@as(u8, 10), buf.data()[0]);
+
+    buf.consume(20);
+    try std.testing.expectEqual(@as(usize, 70), buf.readableLength());
+    try std.testing.expectEqual(@as(u8, 30), buf.data()[0]);
+
+    buf.consume(70);
+    try std.testing.expectEqual(@as(usize, 0), buf.readableLength());
+}
+
+test "PERF-008: CryptoBuffer compaction triggers at half capacity" {
+    const alloc = std.testing.allocator;
+    var buf = CryptoBuffer.init(.Initial);
+    defer buf.deinit(alloc);
+
+    // Force a known capacity by appending enough data
+    var data_arr: [64]u8 = undefined;
+    @memset(&data_arr, 0xFF);
+    try buf.inbound.appendSlice(alloc, &data_arr);
+    const cap = buf.inbound.capacity;
+
+    // Consume more than half the capacity to trigger compaction
+    const consume_amt = cap / 2 + 1;
+    if (consume_amt <= 64) {
+        buf.consume(consume_amt);
+        // After compaction, read_offset should be 0
+        try std.testing.expectEqual(@as(usize, 0), buf.read_offset);
+        try std.testing.expectEqual(64 - consume_amt, buf.readableLength());
+    }
+}
+
+test "PERF-008: CryptoBuffer clear resets offset" {
+    const alloc = std.testing.allocator;
+    var buf = CryptoBuffer.init(.Handshake);
+    defer buf.deinit(alloc);
+
+    try buf.inbound.appendSlice(alloc, &[_]u8{ 1, 2, 3, 4, 5 });
+    buf.consume(2);
+    try std.testing.expectEqual(@as(usize, 2), buf.read_offset);
+
+    buf.clear();
+    try std.testing.expectEqual(@as(usize, 0), buf.read_offset);
+    try std.testing.expectEqual(@as(usize, 0), buf.readableLength());
+}
+
+test "PERF-008: CryptoBuffer dataMut returns mutable unconsumed data" {
+    const alloc = std.testing.allocator;
+    var buf = CryptoBuffer.init(.Initial);
+    defer buf.deinit(alloc);
+
+    try buf.inbound.appendSlice(alloc, &[_]u8{ 0xAA, 0xBB, 0xCC, 0xDD });
+    buf.consume(1);
+    const mutable = buf.dataMut();
+    try std.testing.expectEqual(@as(usize, 3), mutable.len);
+    try std.testing.expectEqual(@as(u8, 0xBB), mutable[0]);
+    mutable[0] = 0xFF;
+    try std.testing.expectEqual(@as(u8, 0xFF), buf.data()[0]);
+}

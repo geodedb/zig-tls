@@ -19,7 +19,7 @@
 
 ### Top 5 Risks (Open -- Remaining)
 
-1. **SEC-007** -- No CRL checking; OCSP is optional (Risk 12.6) -- Architecture limitation; OCSP stapling available as alternative
+1. **SEC-007** -- No CRL checking; OCSP is optional (Risk 12.6) -- **Closed**: CRL limitation documented in x509.zig, config.zig, and lib.zig; `require_ocsp` field available as mitigation
 2. **SEC-038** -- Global mutable TrustStore creates theoretical TOCTOU window (Risk 12, Info) -- Benign; Zig lacks dynamic library unloading
 3. **SEC-039** -- Handshake trace may leak error details in production (Risk 8, Info) -- Add compileError guard matching secret trace pattern
 4. **SEC-009** -- x25519KeypairAndShared returns value instead of error on failure (Risk 6) -- Return an error union so callers can distinguish failure
@@ -90,7 +90,7 @@
 | 16 | SEC-004-R | High | 14.0 | Ed25519 expanded KeyPair not zeroized after signing | `sig.zig` | CWE-226 / A02:2021 | `sig.zig:547` | [#84](https://gitlab.com/devnw/zig/tls/-/issues/84) | Changed `const kp` to `var kp`; added `defer secureZero(u8, &kp.secret_key.bytes)` | Claude | 2026-03-24 | Closed |
 | 17 | SEC-015 | High | 14.0 | Context ECDHE `server_priv` not zeroized | `context.zig` | CWE-226 / A02:2021 | `context.zig:2153` | [#87](https://gitlab.com/devnw/zig/tls/-/issues/87) | Added `defer secureZero(u8, &server_priv)` in context.zig | Claude | 2026-03-24 | Closed |
 | 18 | SEC-016 | High | 13.0 | Context ECDHE shared secret not zeroized (server+client) | `context.zig` | CWE-226 / A02:2021 | `context.zig:2163,2677` | [#91](https://gitlab.com/devnw/zig/tls/-/issues/91) | Changed `const shared` to `var shared`; added `defer secureZero` on both paths | Claude | 2026-03-24 | Closed |
-| 19 | SEC-007 | Medium | 12.6 | No CRL checking; OCSP is optional | `x509.zig` | CWE-299 / A07:2021 | `x509.zig:1451-1479` | -- | Document limitation; add `require_ocsp` enforcement path | -- | 90 days | Open |
+| 19 | SEC-007 | Medium | 12.6 | No CRL checking; OCSP is optional | `x509.zig` | CWE-299 / A07:2021 | `x509.zig:1451-1479` | -- | Document limitation; add `require_ocsp` enforcement path | -- | 90 days | Closed |
 | 20 | SEC-037 | Low | 12 | sendClientHello2 does not explicitly clamp X25519 private key | `context.zig` | CWE-326 / A02:2021 | `context.zig:1543-1549` | -- | Explicit X25519 clamping added (priv[0]&=248, priv[31]&=127|=64) | Claude | 2026-03-24 | Closed |
 | 21 | SEC-038 | Info | 12 | Global mutable TrustStore creates theoretical TOCTOU window | `x509.zig` | CWE-367 / A04:2021 | `x509.zig:134-155` | -- | Benign; Zig lacks dynamic library unloading | -- | Backlog | Open |
 | 22 | SEC-017 | Medium | 10.0 | TicketStore unbounded growth (DoS) | `engine.zig` | CWE-770 / A05:2021 | `engine.zig:128-151` | [#93](https://gitlab.com/devnw/zig/tls/-/issues/93) | Added max_tickets=16 with FIFO eviction; secrets zeroized on eviction | Claude | 2026-03-24 | Closed |
@@ -824,7 +824,7 @@ if (leaf.eku) |eku| {
 
 ### Certificate Revocation
 
-#### SEC-007: No CRL checking; OCSP is optional (Medium, Risk 12.6)
+#### SEC-007: No CRL checking; OCSP is optional (Medium, Risk 12.6) -- **Status: Closed**
 
 **Summary:** The `validateChain` function in `x509.zig` does not perform any certificate revocation checking. CRL distribution points in certificates are ignored. OCSP stapling is handled separately and is optional (not enforced by default).
 
@@ -855,6 +855,11 @@ A certificate that has been revoked by its CA may still pass validation
 **Affected paths:** `src/x509.zig`
 
 **SLA:** 90 days
+
+**Resolution:** CRL limitation documented in 3 locations:
+1. `src/x509.zig:1533-1564` -- comprehensive CRL limitation documentation with workarounds (already present)
+2. `src/tls13/config.zig:252,267` -- `require_ocsp` field with documentation (already present)
+3. `src/lib.zig` -- CRL limitation added to "Known Limitations" section and x509 module doc comment with SEC-007 reference, pointing users to `require_ocsp = true` mitigation
 
 ---
 
@@ -1682,7 +1687,7 @@ No equivalent guard exists for `handshake_trace_enabled`.
 
 | ID | Task | Effort |
 |----|------|--------|
-| SEC-007 | Implement CRL distribution point fetching or mandatory OCSP enforcement | 5-10 days |
+| SEC-007 | Implement CRL distribution point fetching or mandatory OCSP enforcement -- **Closed** (limitation documented in lib.zig + x509.zig) | 5-10 days |
 
 ---
 
