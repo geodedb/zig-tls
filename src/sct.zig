@@ -24,14 +24,16 @@ pub const SignedCertificateTimestamp = struct {
     signature: []const u8,
 };
 
+// Canonical readU16 lives in tls13/messages/helpers.zig.
+// These thin wrappers delegate to std.mem.readInt to avoid
+// duplicating the manual bit-shift logic and to avoid pulling
+// in the heavyweight tls13_full module dependency.
 pub fn readU16(bytes: []const u8) u16 {
-    return (@as(u16, bytes[0]) << 8) | @as(u16, bytes[1]);
+    return std.mem.readInt(u16, bytes[0..2], .big);
 }
 
 pub fn readU64(bytes: []const u8) u64 {
-    var val: u64 = 0;
-    for (bytes) |b| val = (val << 8) | @as(u64, b);
-    return val;
+    return std.mem.readInt(u64, bytes[0..8], .big);
 }
 
 /// Parse a SignedCertificateTimestampList (without the outer length field) into

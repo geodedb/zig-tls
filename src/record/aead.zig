@@ -225,8 +225,93 @@ pub const AeadCipher = struct {
         return cipher;
     }
 
+    /// Seal (encrypt) plaintext into a caller-provided output buffer.
+    ///
+    /// Performs AEAD encryption (RFC 5116) without heap allocation. The caller
+    /// provides the output buffer, which must be at least `plaintext.len + tag_len`
+    /// bytes. This avoids per-record allocation pressure in high-throughput paths.
+    ///
+    /// ## Parameters
+    /// - `self`: AEAD cipher context (mutated to track usage)
+    /// - `out`: Caller-provided output buffer for ciphertext || tag
+    /// - `seq`: Record sequence number (used for nonce derivation, per-direction)
+    /// - `aad`: Additional authenticated data (TLS record header for TLS, QUIC header for QUIC)
+    /// - `plaintext`: Data to encrypt (typically TLSInnerPlaintext)
+    ///
+    /// ## Errors
+    /// - `AeadLimitExceeded`: Confidentiality limit reached, key update required
+    /// - `BufferTooSmall`: Output buffer is smaller than plaintext.len + tag_len
+    ///
+    /// ## RFC References
+    /// - RFC 8446 §5.2 - AEAD-Encrypt(write_key, nonce, additional_data, plaintext)
+    /// - RFC 8446 §5.3 - Nonce is base_iv XOR sequence_number (big-endian)
+    /// - RFC 8446 §5.5 - Confidentiality limits must be enforced
+    /// - RFC 5116 - AEAD encryption interface
+    ///
+    /// ## Security Considerations
+    /// - Sequence number MUST be unique for each record with the same key
+    /// - Nonce is zeroized after encryption to prevent stack disclosure
+    /// - Caller must not reuse the same (key, nonce) pair
+    pub fn sealBuf(
+        self: *AeadCipher,
+        out: []u8,
+        seq: u64,
+        aad: []const u8,
+        plaintext: []const u8,
+    ) RecordError!void {
+        // RFC 8446 §5.5 - Check confidentiality limit before encrypting
+        if (limitReached(self.usage.encrypted, self.usage.limits.confidentiality))
+            return RecordError.AeadLimitExceeded;
+        if (self.usage.encrypted == math.maxInt(u64))
+            return RecordError.AeadLimitExceeded;
+
+        const tag_len: usize = @intCast(self.tag_len);
+        const required_len = plaintext.len + tag_len;
+        if (out.len < required_len) return RecordError.BufferTooSmall;
+
+        const ct = out[0..plaintext.len];
+        const tag_slice = out[plaintext.len..][0..tag_len];
+
+        // RFC 8446 §5.3 - Derive per-record nonce: base_iv XOR seq
+        var nonce_full = self.deriveNonce(seq);
+        defer {
+            // Security: Zeroize nonce after use
+            const nonce_len: usize = @intCast(self.nonce_len);
+            crypto.secureZero(u8, nonce_full[0..nonce_len]);
+        }
+
+        // RFC 5116 - AEAD encryption: ciphertext || tag = AEAD-Encrypt(key, nonce, plaintext, aad)
+        switch (self.key_material) {
+            .aes128 => |key| {
+                var nonce_arr: [Aes128Gcm.nonce_length]u8 = undefined;
+                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..Aes128Gcm.nonce_length]);
+                var tag_arr: [Aes128Gcm.tag_length]u8 = undefined;
+                Aes128Gcm.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
+                std.mem.copyForwards(u8, tag_slice, tag_arr[0..tag_len]);
+            },
+            .aes256 => |key| {
+                var nonce_arr: [Aes256Gcm.nonce_length]u8 = undefined;
+                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..Aes256Gcm.nonce_length]);
+                var tag_arr: [Aes256Gcm.tag_length]u8 = undefined;
+                Aes256Gcm.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
+                std.mem.copyForwards(u8, tag_slice, tag_arr[0..tag_len]);
+            },
+            .chacha20 => |key| {
+                var nonce_arr: [ChaCha20Poly1305.nonce_length]u8 = undefined;
+                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..ChaCha20Poly1305.nonce_length]);
+                var tag_arr: [ChaCha20Poly1305.tag_length]u8 = undefined;
+                ChaCha20Poly1305.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
+                std.mem.copyForwards(u8, tag_slice, tag_arr[0..tag_len]);
+            },
+        }
+
+        // RFC 8446 §5.5 - Track successful encryption for usage limits
+        self.usage.encrypted += 1;
+    }
+
     /// Encrypt plaintext with AEAD and append authentication tag.
     ///
+    /// Convenience wrapper around `sealBuf` that allocates the output buffer.
     /// Performs AEAD encryption (RFC 5116) with the following steps:
     /// 1. Check confidentiality usage limit (RFC 8446 §5.5)
     /// 2. Derive per-record nonce via XOR with sequence number (RFC 8446 §5.3)
@@ -266,58 +351,116 @@ pub const AeadCipher = struct {
         aad: []const u8,
         plaintext: []const u8,
     ) RecordError![]u8 {
-        // RFC 8446 §5.5 - Check confidentiality limit before encrypting
-        if (limitReached(self.usage.encrypted, self.usage.limits.confidentiality))
-            return RecordError.AeadLimitExceeded;
-        if (self.usage.encrypted == math.maxInt(u64))
-            return RecordError.AeadLimitExceeded;
-
         const out = try allocator.alloc(u8, plaintext.len + self.tag_len);
         errdefer allocator.free(out);
 
-        const ct = out[0..plaintext.len];
-        const tag_slice = out[plaintext.len..];
+        self.sealBuf(out, seq, aad, plaintext) catch |err| switch (err) {
+            RecordError.BufferTooSmall => unreachable, // We allocated exact size
+            else => return err,
+        };
+
+        return out;
+    }
+
+    /// Open (decrypt) ciphertext into a caller-provided output buffer.
+    ///
+    /// Performs AEAD decryption (RFC 5116) without heap allocation. The caller
+    /// provides the output buffer, which must be at least `ciphertext.len - tag_len`
+    /// bytes. This avoids per-record allocation pressure in high-throughput paths.
+    ///
+    /// ## Parameters
+    /// - `self`: AEAD cipher context (mutated to track auth failures)
+    /// - `out`: Caller-provided output buffer for plaintext
+    /// - `seq`: Record sequence number (must match value used in seal)
+    /// - `aad`: Additional authenticated data (must match value used in seal)
+    /// - `ciphertext`: Encrypted data with appended tag (ciphertext || tag)
+    ///
+    /// ## Errors
+    /// - `CiphertextTooShort`: Buffer is shorter than tag length
+    /// - `BufferTooSmall`: Output buffer is smaller than ciphertext.len - tag_len
+    /// - `AuthenticationFailed`: Tag verification failed (tampering or wrong key/nonce/AAD)
+    /// - `AeadLimitExceeded`: Integrity limit reached after too many auth failures
+    ///
+    /// ## RFC References
+    /// - RFC 8446 §5.2 - AEAD-Decrypt(write_key, nonce, additional_data, ciphertext)
+    /// - RFC 8446 §5.3 - Nonce is base_iv XOR sequence_number (big-endian)
+    /// - RFC 8446 §5.5 - Integrity limits on authentication failures
+    /// - RFC 5116 - AEAD decryption interface
+    ///
+    /// ## Security Considerations
+    /// - Authentication failures indicate tampering or implementation bugs
+    /// - Too many failures trigger AeadLimitExceeded per RFC 8446 §5.5
+    /// - Tag comparison is constant-time (provided by std.crypto.aead)
+    /// - Plaintext is NOT written to `out` if authentication fails
+    pub fn openBuf(
+        self: *AeadCipher,
+        out: []u8,
+        seq: u64,
+        aad: []const u8,
+        ciphertext: []const u8,
+    ) RecordError!void {
+        // RFC 5116 - Ciphertext must include authentication tag
+        if (ciphertext.len < self.tag_len) return RecordError.CiphertextTooShort;
+
         const tag_len: usize = @intCast(self.tag_len);
+        const ct_len = ciphertext.len - tag_len;
+        if (out.len < ct_len) return RecordError.BufferTooSmall;
+
+        const ct = ciphertext[0..ct_len];
+        const pt_out = out[0..ct_len];
+        var tag_buf: [MaxTagLength]u8 = [_]u8{0} ** MaxTagLength;
+        std.mem.copyForwards(u8, tag_buf[0..tag_len], ciphertext[ct_len..]);
         // RFC 8446 §5.3 - Derive per-record nonce: base_iv XOR seq
         var nonce_full = self.deriveNonce(seq);
         defer {
-            // Security: Zeroize nonce after use
+            // Security: Zeroize nonce and tag after use
             const nonce_len: usize = @intCast(self.nonce_len);
             crypto.secureZero(u8, nonce_full[0..nonce_len]);
+            crypto.secureZero(u8, tag_buf[0..tag_len]);
         }
 
-        // RFC 5116 - AEAD encryption: ciphertext || tag = AEAD-Encrypt(key, nonce, plaintext, aad)
+        // RFC 5116 - AEAD decryption: plaintext = AEAD-Decrypt(key, nonce, ciphertext, tag, aad)
         switch (self.key_material) {
             .aes128 => |key| {
                 var nonce_arr: [Aes128Gcm.nonce_length]u8 = undefined;
                 std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..Aes128Gcm.nonce_length]);
                 var tag_arr: [Aes128Gcm.tag_length]u8 = undefined;
-                Aes128Gcm.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
-                std.mem.copyForwards(u8, tag_slice, tag_arr[0..tag_len]);
+                std.mem.copyForwards(u8, tag_arr[0..], tag_buf[0..Aes128Gcm.tag_length]);
+                Aes128Gcm.decrypt(pt_out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
+                    switch (err) {
+                        // RFC 8446 §5.2 - Authentication failure indicates tampering
+                        AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
+                    }
+                };
             },
             .aes256 => |key| {
                 var nonce_arr: [Aes256Gcm.nonce_length]u8 = undefined;
                 std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..Aes256Gcm.nonce_length]);
                 var tag_arr: [Aes256Gcm.tag_length]u8 = undefined;
-                Aes256Gcm.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
-                std.mem.copyForwards(u8, tag_slice, tag_arr[0..tag_len]);
+                std.mem.copyForwards(u8, tag_arr[0..], tag_buf[0..Aes256Gcm.tag_length]);
+                Aes256Gcm.decrypt(pt_out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
+                    switch (err) {
+                        AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
+                    }
+                };
             },
             .chacha20 => |key| {
                 var nonce_arr: [ChaCha20Poly1305.nonce_length]u8 = undefined;
                 std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..ChaCha20Poly1305.nonce_length]);
                 var tag_arr: [ChaCha20Poly1305.tag_length]u8 = undefined;
-                ChaCha20Poly1305.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
-                std.mem.copyForwards(u8, tag_slice, tag_arr[0..tag_len]);
+                std.mem.copyForwards(u8, tag_arr[0..], tag_buf[0..ChaCha20Poly1305.tag_length]);
+                ChaCha20Poly1305.decrypt(pt_out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
+                    switch (err) {
+                        AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
+                    }
+                };
             },
         }
-
-        // RFC 8446 §5.5 - Track successful encryption for usage limits
-        self.usage.encrypted += 1;
-        return out;
     }
 
     /// Decrypt and authenticate AEAD-protected ciphertext.
     ///
+    /// Convenience wrapper around `openBuf` that allocates the output buffer.
     /// Performs AEAD decryption (RFC 5116) with the following steps:
     /// 1. Validate ciphertext length (must include tag)
     /// 2. Derive per-record nonce via XOR with sequence number (RFC 8446 §5.3)
@@ -367,56 +510,11 @@ pub const AeadCipher = struct {
         const out = try allocator.alloc(u8, ct_len);
         errdefer allocator.free(out);
 
-        const ct = ciphertext[0..ct_len];
-        var tag_buf: [MaxTagLength]u8 = [_]u8{0} ** MaxTagLength;
-        const tag_len: usize = @intCast(self.tag_len);
-        std.mem.copyForwards(u8, tag_buf[0..tag_len], ciphertext[ct_len..]);
-        // RFC 8446 §5.3 - Derive per-record nonce: base_iv XOR seq
-        var nonce_full = self.deriveNonce(seq);
-        defer {
-            // Security: Zeroize nonce and tag after use
-            const nonce_len: usize = @intCast(self.nonce_len);
-            crypto.secureZero(u8, nonce_full[0..nonce_len]);
-            crypto.secureZero(u8, tag_buf[0..tag_len]);
-        }
-
-        // RFC 5116 - AEAD decryption: plaintext = AEAD-Decrypt(key, nonce, ciphertext, tag, aad)
-        switch (self.key_material) {
-            .aes128 => |key| {
-                var nonce_arr: [Aes128Gcm.nonce_length]u8 = undefined;
-                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..Aes128Gcm.nonce_length]);
-                var tag_arr: [Aes128Gcm.tag_length]u8 = undefined;
-                std.mem.copyForwards(u8, tag_arr[0..], tag_buf[0..Aes128Gcm.tag_length]);
-                Aes128Gcm.decrypt(out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
-                    switch (err) {
-                        // RFC 8446 §5.2 - Authentication failure indicates tampering
-                        AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
-                    }
-                };
-            },
-            .aes256 => |key| {
-                var nonce_arr: [Aes256Gcm.nonce_length]u8 = undefined;
-                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..Aes256Gcm.nonce_length]);
-                var tag_arr: [Aes256Gcm.tag_length]u8 = undefined;
-                std.mem.copyForwards(u8, tag_arr[0..], tag_buf[0..Aes256Gcm.tag_length]);
-                Aes256Gcm.decrypt(out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
-                    switch (err) {
-                        AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
-                    }
-                };
-            },
-            .chacha20 => |key| {
-                var nonce_arr: [ChaCha20Poly1305.nonce_length]u8 = undefined;
-                std.mem.copyForwards(u8, nonce_arr[0..], nonce_full[0..ChaCha20Poly1305.nonce_length]);
-                var tag_arr: [ChaCha20Poly1305.tag_length]u8 = undefined;
-                std.mem.copyForwards(u8, tag_arr[0..], tag_buf[0..ChaCha20Poly1305.tag_length]);
-                ChaCha20Poly1305.decrypt(out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
-                    switch (err) {
-                        AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
-                    }
-                };
-            },
-        }
+        self.openBuf(out, seq, aad, ciphertext) catch |err| switch (err) {
+            RecordError.BufferTooSmall => unreachable, // We allocated exact size
+            RecordError.CiphertextTooShort => unreachable, // Already checked above
+            else => return err,
+        };
 
         return out;
     }
@@ -469,6 +567,10 @@ pub const AeadCipher = struct {
     fn deriveNonce(self: *const AeadCipher, seq: u64) [MaxNonceLength]u8 {
         var tmp: [MaxNonceLength]u8 = [_]u8{0} ** MaxNonceLength;
         const nonce_len: usize = @intCast(self.nonce_len);
+        // SAFETY: nonce_len is validated at construction (init) to equal the suite's nonce_length
+        // (12 for all supported suites) and to be >= 8 and <= MaxNonceLength. xorNonce only fails
+        // with InvalidIvLength when out.len != base_iv.len or out.len < 8, neither of which
+        // can occur here since both slices are nonce_len bytes.
         // RFC 8446 §5.3 - XOR base_iv with padded sequence number
         xorNonce(tmp[0..nonce_len], self.base_iv[0..nonce_len], seq) catch unreachable;
         return tmp;
@@ -964,4 +1066,260 @@ test "integration - limit tracking through seal operations" {
         RecordError.AeadLimitExceeded,
         cipher.seal(testing.allocator, 10, aad, plaintext),
     );
+}
+
+test "sealBuf - AES-128-GCM round-trip with openBuf" {
+    const key = [_]u8{0x42} ** 16;
+    const iv = [_]u8{0x13} ** 12;
+    var cipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer cipher.wipe();
+
+    const plaintext = "Hello, TLS 1.3!";
+    const aad = "record header";
+    const seq: u64 = 0;
+    const tag_len: usize = @intCast(cipher.tag_len);
+
+    // Seal into caller-provided buffer
+    var sealed: [plaintext.len + 16]u8 = undefined;
+    try cipher.sealBuf(&sealed, seq, aad, plaintext);
+
+    // Open into caller-provided buffer
+    // Reset cipher for decryption (usage counters don't affect open)
+    var decipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer decipher.wipe();
+
+    var opened: [plaintext.len]u8 = undefined;
+    try decipher.openBuf(&opened, seq, aad, &sealed);
+
+    // Verify round-trip produces original plaintext
+    try testing.expectEqualSlices(u8, plaintext, opened[0..plaintext.len]);
+    _ = tag_len;
+}
+
+test "sealBuf - AES-256-GCM round-trip with openBuf" {
+    const key = [_]u8{0x42} ** 32;
+    const iv = [_]u8{0x13} ** 12;
+    var cipher = try AeadCipher.init(.TLS_AES_256_GCM_SHA384, &key, &iv, null);
+    defer cipher.wipe();
+
+    const plaintext = "AES-256 test data";
+    const aad = "aad256";
+    const seq: u64 = 42;
+
+    var sealed: [plaintext.len + 16]u8 = undefined;
+    try cipher.sealBuf(&sealed, seq, aad, plaintext);
+
+    var decipher = try AeadCipher.init(.TLS_AES_256_GCM_SHA384, &key, &iv, null);
+    defer decipher.wipe();
+
+    var opened: [plaintext.len]u8 = undefined;
+    try decipher.openBuf(&opened, seq, aad, &sealed);
+    try testing.expectEqualSlices(u8, plaintext, &opened);
+}
+
+test "sealBuf - ChaCha20-Poly1305 round-trip with openBuf" {
+    const key = [_]u8{0x42} ** 32;
+    const iv = [_]u8{0x13} ** 12;
+    var cipher = try AeadCipher.init(.TLS_CHACHA20_POLY1305_SHA256, &key, &iv, null);
+    defer cipher.wipe();
+
+    const plaintext = "ChaCha20 test data";
+    const aad = "chacha-aad";
+    const seq: u64 = 7;
+
+    var sealed: [plaintext.len + 16]u8 = undefined;
+    try cipher.sealBuf(&sealed, seq, aad, plaintext);
+
+    var decipher = try AeadCipher.init(.TLS_CHACHA20_POLY1305_SHA256, &key, &iv, null);
+    defer decipher.wipe();
+
+    var opened: [plaintext.len]u8 = undefined;
+    try decipher.openBuf(&opened, seq, aad, &sealed);
+    try testing.expectEqualSlices(u8, plaintext, &opened);
+}
+
+test "sealBuf - buffer too small returns error" {
+    const key = [_]u8{0x42} ** 16;
+    const iv = [_]u8{0x13} ** 12;
+    var cipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer cipher.wipe();
+
+    const plaintext = "Hello, TLS 1.3!";
+    const aad = "record header";
+
+    // Buffer too small: plaintext.len + tag_len - 1
+    var small_buf: [plaintext.len + 15]u8 = undefined;
+    try testing.expectError(
+        RecordError.BufferTooSmall,
+        cipher.sealBuf(&small_buf, 0, aad, plaintext),
+    );
+
+    // Usage should not have incremented on error
+    try testing.expectEqual(@as(u64, 0), cipher.usage.encrypted);
+}
+
+test "openBuf - buffer too small returns error" {
+    const key = [_]u8{0x42} ** 16;
+    const iv = [_]u8{0x13} ** 12;
+    var cipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer cipher.wipe();
+
+    const plaintext = "Hello, TLS 1.3!";
+    const aad = "record header";
+
+    // First seal to get valid ciphertext
+    var sealed: [plaintext.len + 16]u8 = undefined;
+    try cipher.sealBuf(&sealed, 0, aad, plaintext);
+
+    // Now try to open with too-small buffer
+    var decipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer decipher.wipe();
+
+    var small_buf: [plaintext.len - 1]u8 = undefined;
+    try testing.expectError(
+        RecordError.BufferTooSmall,
+        decipher.openBuf(&small_buf, 0, aad, &sealed),
+    );
+}
+
+test "openBuf - ciphertext too short returns error" {
+    const key = [_]u8{0x42} ** 16;
+    const iv = [_]u8{0x13} ** 12;
+    var cipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer cipher.wipe();
+
+    // Ciphertext shorter than tag length (16 bytes)
+    var out: [16]u8 = undefined;
+    const short_ct = [_]u8{0x00} ** 10;
+    try testing.expectError(
+        RecordError.CiphertextTooShort,
+        cipher.openBuf(&out, 0, "aad", &short_ct),
+    );
+}
+
+test "openBuf - authentication failure on tampered ciphertext" {
+    const key = [_]u8{0x42} ** 16;
+    const iv = [_]u8{0x13} ** 12;
+    var cipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer cipher.wipe();
+
+    const plaintext = "sensitive data";
+    const aad = "header";
+
+    var sealed: [plaintext.len + 16]u8 = undefined;
+    try cipher.sealBuf(&sealed, 0, aad, plaintext);
+
+    // Tamper with ciphertext
+    sealed[0] ^= 0xFF;
+
+    var decipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer decipher.wipe();
+
+    var opened: [plaintext.len]u8 = undefined;
+    try testing.expectError(
+        RecordError.AuthenticationFailed,
+        decipher.openBuf(&opened, 0, aad, &sealed),
+    );
+
+    // Auth failure should be tracked
+    try testing.expectEqual(@as(u64, 1), decipher.usage.auth_failures);
+}
+
+test "sealBuf - matches seal output" {
+    const key = [_]u8{0x42} ** 16;
+    const iv = [_]u8{0x13} ** 12;
+
+    const plaintext = "comparison test";
+    const aad = "aad data";
+    const seq: u64 = 5;
+
+    // Use seal (allocating version)
+    var cipher1 = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer cipher1.wipe();
+    const seal_result = try cipher1.seal(testing.allocator, seq, aad, plaintext);
+    defer testing.allocator.free(seal_result);
+
+    // Use sealBuf (buffer-passing version)
+    var cipher2 = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer cipher2.wipe();
+    var buf_result: [plaintext.len + 16]u8 = undefined;
+    try cipher2.sealBuf(&buf_result, seq, aad, plaintext);
+
+    // Both should produce identical output
+    try testing.expectEqualSlices(u8, seal_result, &buf_result);
+
+    // Both should have incremented usage counter
+    try testing.expectEqual(@as(u64, 1), cipher1.usage.encrypted);
+    try testing.expectEqual(@as(u64, 1), cipher2.usage.encrypted);
+}
+
+test "sealBuf - limit exceeded returns error" {
+    const key = [_]u8{0x42} ** 16;
+    const iv = [_]u8{0x13} ** 12;
+    var cipher = try AeadCipher.init(
+        .TLS_AES_128_GCM_SHA256,
+        &key,
+        &iv,
+        .{ .confidentiality = 2, .integrity = 100 },
+    );
+    defer cipher.wipe();
+
+    const plaintext = "test";
+    const aad = "aad";
+    var buf: [plaintext.len + 16]u8 = undefined;
+
+    // First two seals should succeed
+    try cipher.sealBuf(&buf, 0, aad, plaintext);
+    try cipher.sealBuf(&buf, 1, aad, plaintext);
+
+    // Third should fail - limit reached
+    try testing.expectError(
+        RecordError.AeadLimitExceeded,
+        cipher.sealBuf(&buf, 2, aad, plaintext),
+    );
+}
+
+test "sealBuf and openBuf - oversized output buffers work" {
+    const key = [_]u8{0x42} ** 16;
+    const iv = [_]u8{0x13} ** 12;
+    var cipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer cipher.wipe();
+
+    const plaintext = "short";
+    const aad = "aad";
+
+    // Oversized seal buffer (more than needed)
+    var sealed: [256]u8 = undefined;
+    try cipher.sealBuf(&sealed, 0, aad, plaintext);
+
+    // Oversized open buffer
+    var decipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer decipher.wipe();
+
+    var opened: [256]u8 = undefined;
+    try decipher.openBuf(&opened, 0, aad, sealed[0 .. plaintext.len + 16]);
+
+    // Only the first plaintext.len bytes contain the decrypted data
+    try testing.expectEqualSlices(u8, plaintext, opened[0..plaintext.len]);
+}
+
+test "sealBuf and openBuf - empty plaintext" {
+    const key = [_]u8{0x42} ** 16;
+    const iv = [_]u8{0x13} ** 12;
+    var cipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer cipher.wipe();
+
+    const plaintext = "";
+    const aad = "aad";
+
+    // Seal empty plaintext (output is just the tag)
+    var sealed: [16]u8 = undefined;
+    try cipher.sealBuf(&sealed, 0, aad, plaintext);
+
+    // Open should produce empty plaintext
+    var decipher = try AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null);
+    defer decipher.wipe();
+
+    var opened: [0]u8 = undefined;
+    try decipher.openBuf(&opened, 0, aad, &sealed);
 }

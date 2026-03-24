@@ -1,7 +1,7 @@
 # GAP Analysis
 
-> **Last updated:** 2026-01-30
-> **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Implementation)
+> **Last updated:** 2026-03-23
+> **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 
 ---
@@ -10,16 +10,62 @@
 
 | Severity | Original | Closed | Open |
 |----------|----------|--------|------|
-| Critical | 3        | 3      | 0    |
-| High     | 8        | 8      | 0    |
-| Medium   | 20       | 20     | 0    |
-| Low      | 9        | 9      | 0    |
-| **Total**| **40**   | **40** | **0**|
+| Critical | 6        | 6      | 0    |
+| High     | 13       | 13     | 0    |
+| Medium   | 25       | 25     | 0    |
+| Low      | 15       | 15     | 0    |
+| **Total**| **59**   | **59** | **0**|
 
 ### Implementation Status
 
-**Closed: 40 findings** - All implemented and verified ✅
+**Closed: 59 findings** - All implemented and verified
 **Open: 0 findings** - All gaps remediated
+
+### Sixth Review Remediations (2026-03-23)
+
+1. GAP-001/002: PSK session resumption — server emits pre_shared_key extension in ServerHello; client parses it and uses PSK for early_secret derivation (High)
+   - Added `selected_psk_index` param to `buildServerHello`; emits 0x0029 extension
+   - Moved PSK selection before ServerHello building in server path
+   - Client parses pre_shared_key from ServerHello extension loop
+   - Added `UnexpectedPskExtension` and `PskIndexOutOfRange` error variants
+   - Files: `src/tls13/messages/server_hello.zig`, `src/tls13/context.zig`, `src/tls13/engine.zig`, `src/tls13/types.zig`, `src/alert.zig`
+2. GAP-004: RFC 8448 Appendix A test vectors for key schedule validation (Low)
+   - Added complete RFC 8448 Section 3 "Simple 1-RTT Handshake" test vectors
+   - Validates: early_secret, handshake_secret, client/server HS traffic secrets,
+     master_secret, client/server app traffic secrets, exporter/resumption master secrets,
+     handshake/application keys and IVs, finished keys
+   - Tests both low-level key_schedule API and high-level key_derivation API
+   - Files: `tests/rfc8446/appendix_a_vectors.zig`, `tests/rfc8446_vectors.zig`,
+     `src/tls13/key_derivation.zig`
+3. GAP-012: Consolidated duplicate HandshakeError definitions (Medium)
+   - Moved canonical 26-variant HandshakeError from context.zig to types.zig
+   - context.zig and mod.zig now import from types.zig
+   - Eliminated dead 13-variant subset; also consolidated ApiError
+   - Files: `src/tls13/types.zig`, `src/tls13/context.zig`, `src/tls13/mod.zig`
+4. QUAL-019: Audited all 27 `catch unreachable` instances with SAFETY comments (Low)
+   - Added `// SAFETY:` comments to all 27 instances across 6 files
+   - All invariants verified: compile-time-known sizes, validated buffer capacities, cryptographic impossibility
+   - No instances required conversion to error propagation
+   - Files: `src/key_schedule.zig`, `src/varint.zig`, `src/record/aead.zig`,
+     `src/tls13/messages.zig`, `src/tls13/messages/finished.zig`, `src/tls13/engine.zig`
+
+### Fifth Review Remediations (2026-03-23)
+
+Full codebase audit identified and closed 14 additional findings:
+1. SEC-001/002+PERF-001: Custom RSA-PSS timing oracle + 60-100x perf regression replaced with stdlib (Critical)
+2. GAP-016: SHA-384 key derivation hardcoded 32-byte zero IKM/salt fixed to use Hash.length (Critical)
+3. RL-007: parseCert dangling stack pointer for SAN DNS list fixed with heap allocation (Critical)
+4. SEC-003: Context.deinit() missing secureZero for secrets (High)
+5. GAP-015: Client supported_versions validation in ServerHello (High)
+6. QUAL-020: onCryptoRecv void return swallowing OOM changed to !void (High)
+7. SEC-005: Unsafe @ptrCast between PskIdentity types eliminated (High)
+8. GAP-003: PSK ticket hardcoded "resumption_ticket" fallback replaced with error (Medium)
+9. GAP-010: Zero ticket_age_add replaced with std.crypto.random (Medium)
+10. PERF-006: Buffer-passing AEAD sealBuf/openBuf API added (Medium)
+11. SEC-004: TicketStore.lookup timing-safe comparison (Medium)
+12. GAP-007: Stale lib.zig doc comments updated (Low)
+13. QUAL-009: readU16 triplication deduplicated (Low)
+14. Dead code: tls13.zig.backup, main.zig, root.zig, duplicate test_certs/ deleted (Low)
 
 ### Fourth Review Remediations (2026-01-30)
 
@@ -58,6 +104,25 @@ All 11 remaining open issues from the third review have been implemented:
 | 14 | Medium | 24 | PSK binder verification truncates SHA-384 to 32 bytes | src/tls13/context.zig | CWE-347 | src/tls13/context.zig:2037 | [#34](https://gitlab.com/devnw/zig/tls/-/issues/34) | Compare full SHA-384 binder length in constant time; test trailing mismatch in `tests/tls13_handshake_tests.zig` | TBD | 2026-04-30 | Closed |
 | 15 | Medium | 24 | 0-RTT anti-replay uses wrong ClientHello.random offset | src/tls13/context.zig | CWE-345 | src/tls13/context.zig:2137 | [#35](https://gitlab.com/devnw/zig/tls/-/issues/35) | Use parsed ClientHello.random for replay window; test uses `client_random` in `tests/tls13_handshake_tests.zig` | TBD | 2026-04-30 | Closed |
 | 16 | Medium | 24 | CI includes remote components via mutable tags | .gitlab-ci.yml | CWE-494 | .gitlab-ci.yml:7 | [#36](https://gitlab.com/devnw/zig/tls/-/issues/36) | Pin CI components to immutable commit SHA `b7d3302b...` | TBD | 2026-04-30 | Closed |
+| 17 | Medium | 32 | SHA-384 key derivation uses hardcoded 32-byte zero IKM/salt instead of Hash.length | src/tls13/key_derivation.zig | CWE-327 | src/tls13/key_derivation.zig:93,101,300 | N/A | Replaced `[_]u8{0} ** 32` with `ks.zeroSecret(hash)` at all three locations; added 5 tests covering SHA-256 regression and SHA-384 correctness | Claude | 2026-03-23 | Closed |
+| 18 | Critical | 64 | Custom RSA-PSS has timing oracle (variable-time bignum + std.mem.eql hash compare) | src/sig.zig | CWE-208, CWE-385 | src/sig.zig:440-609 | N/A | Replaced custom bignum RSA-PSS with std.crypto.Certificate.rsa.PSSSignature (constant-time Montgomery); deleted ~200 lines of custom beMul/modExpSmallE/mgf1_sha256 | Claude | 2026-03-23 | Closed |
+| 19 | Critical | 56 | parseCert returns dangling stack pointer for SAN DNS list (use-after-return UB) | src/x509.zig | CWE-416 | src/x509.zig:762-772 | N/A | Heap-allocate SAN DNS list, NameConstraints, PolicyMappings via allocator; added Certificate.deinit; updated all callers | Claude | 2026-03-23 | Closed |
+| 20 | High | 49 | Context.deinit() does not secureZero secrets (handshake_secret, client_priv, SecretSlot) | src/tls13/context.zig, src/tls13/secrets.zig | CWE-226 | src/tls13/context.zig:1028-1079 | N/A | Added std.crypto.secureZero calls in SecretSlot.clear() and Context.deinit() matching Engine.deinit() pattern | Claude | 2026-03-23 | Closed |
+| 21 | High | 40 | Client does not validate supported_versions extension in ServerHello (RFC 8446 S4.2.1) | src/tls13/context.zig, src/tls13/engine.zig | CWE-290 | src/tls13/context.zig:2710-2724 | N/A | Added supported_versions parsing in both extension loops; returns UnsupportedVersion if missing/wrong; 8 tests | Claude | 2026-03-23 | Closed |
+| 22 | High | 40 | onCryptoRecv returns void, silently swallows OOM and all handshake errors | src/tls13/engine.zig | CWE-391 | src/tls13/engine.zig:422 | N/A | Changed onCryptoRecv and tryComputeShared to return !void; OOM propagated; 2 tests | Claude | 2026-03-23 | Closed |
+| 23 | High | 36 | Unsafe @ptrCast between PskIdentityOwned and ClientHelloPskIdentityView (non-extern struct UB) | src/tls13/context.zig, src/tls13/handshake_state.zig | CWE-843 | src/tls13/context.zig:876 | N/A | Eliminated PskIdentityOwned; unified on ClientHelloPskIdentityView; no more @ptrCast | Claude | 2026-03-23 | Closed |
+| 24 | Medium | 24 | PSK ticket identity uses hardcoded "resumption_ticket" fallback | src/tls13/context.zig | CWE-1188 | src/tls13/context.zig:2562 | [#19](https://gitlab.com/devnw/zig/tls/-/issues/19) | Returns MissingResumptionTicket error instead of fallback; 2 tests | Claude | 2026-03-23 | Closed |
+| 25 | Medium | 24 | NewSessionTicket ticket_age_add hardcoded to zero (privacy leak) | src/tls13/engine.zig | CWE-330 | src/tls13/engine.zig:343 | [#4](https://gitlab.com/devnw/zig/tls/-/issues/4) | Replaced 0 with std.crypto.random.int(u32) per RFC 8446 S4.6.1 | Claude | 2026-03-23 | Closed |
+| 26 | Medium | 20 | Per-record AEAD heap allocation in seal/open (perf bottleneck) | src/record/aead.zig | -- | src/record/aead.zig:275,367 | [#6](https://gitlab.com/devnw/zig/tls/-/issues/6) | Added sealBuf/openBuf buffer-passing API; existing seal/open refactored as wrappers; 10 tests | Claude | 2026-03-23 | Closed |
+| 27 | Medium | 20 | TicketStore.lookup uses non-constant-time std.mem.eql for PSK identity | src/tls13/engine.zig | CWE-208 | src/tls13/engine.zig:154 | N/A | Replaced with std.crypto.timing_safe.compare; full-scan pattern prevents early-return timing leak | Claude | 2026-03-23 | Closed |
+| 28 | Low | 8 | lib.zig doc comment claims OCSP/SCT are "placeholders" and chain validation "not implemented" | src/lib.zig | -- | src/lib.zig:305-306 | [#53](https://gitlab.com/devnw/zig/tls/-/issues/53) | Updated doc comments to accurately reflect implemented features | Claude | 2026-03-23 | Closed |
+| 29 | Low | 8 | readU16 function triplicated across sct.zig, engine.zig, helpers.zig | src/sct.zig, src/tls13/engine.zig | -- | Multiple | N/A | engine.zig delegates to tls13_full.readU16; sct.zig uses std.mem.readInt | Claude | 2026-03-23 | Closed |
+| 30 | Low | 4 | Dead code: tls13.zig.backup (4K lines with allow_insecure=true), main.zig, root.zig scaffolds, duplicate test_certs/ | Multiple | CWE-1188 | src/tls13.zig.backup | N/A | All deleted; *.backup added to .gitignore; gitleaks allowlist updated | Claude | 2026-03-23 | Closed |
+| 31 | Low | 4 | examples/ not formatted with zig fmt | examples/ | -- | examples/basic_server.zig | N/A | Ran zig fmt on both example files | Claude | 2026-03-23 | Closed |
+| 32 | High | 40 | Server ServerHello missing pre_shared_key extension; client ignores it | src/tls13/context.zig, src/tls13/messages/server_hello.zig | CWE-345 | src/tls13/context.zig:2596,2630; server_hello.zig:365 | N/A | Server emits 0x0029 extension with selected index; client parses and uses PSK for early_secret derivation; 12 tests | Claude | 2026-03-23 | Closed |
+| 33 | Medium | 20 | Duplicate HandshakeError definitions in context.zig and types.zig | src/tls13/types.zig, src/tls13/context.zig | CWE-1041 | src/tls13/types.zig:48-126; context.zig:254-392 | N/A | Moved canonical definition to types.zig; context.zig and mod.zig import from types | Claude | 2026-03-23 | Closed |
+| 34 | Low | 8 | RFC 8446 Appendix A test vectors missing from key schedule | src/tls13/key_derivation.zig, tests/rfc8446/ | -- | tests/rfc8446/appendix_a_vectors.zig | N/A | 33 tests validating every key schedule stage against RFC 8448 Section 3 hex vectors | Claude | 2026-03-23 | Closed |
+| 35 | Low | 4 | 27 catch unreachable instances lack SAFETY documentation | src/key_schedule.zig, src/varint.zig, + 4 files | CWE-391 | Multiple | N/A | Added SAFETY comments to all 27 instances; all invariants verified as genuinely unreachable | Claude | 2026-03-23 | Closed |
 
 ---
 

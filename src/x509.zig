@@ -479,6 +479,27 @@ pub const Certificate = struct {
     /// SubjectPublicKeyInfo DER bytes for signature verification and key extraction.
     /// RFC 5280 §4.1.2.7 - Subject Public Key Info
     spki: []const u8,
+
+    /// Free heap-allocated extension data (SAN DNS list, NameConstraints, PolicyMappings).
+    ///
+    /// Must be called when the Certificate is no longer needed if it was created
+    /// by parseCert(). The allocator must be the same one passed to parseCert().
+    ///
+    /// The individual DNS name slices and OID slices are NOT freed because they
+    /// reference the original DER buffer (zero-copy parsing). Only the metadata
+    /// arrays ([][]const u8 and []PolicyMapping) are heap-allocated.
+    pub fn deinit(self: Certificate, alloc: std.mem.Allocator) void {
+        if (self.san) |san| {
+            alloc.free(san.dns);
+        }
+        if (self.name_constraints) |nc| {
+            if (nc.permitted_dns.len > 0) alloc.free(nc.permitted_dns);
+            if (nc.excluded_dns.len > 0) alloc.free(nc.excluded_dns);
+        }
+        if (self.policy_mappings) |pm| {
+            if (pm.mappings.len > 0) alloc.free(pm.mappings);
+        }
+    }
 };
 
 /// Check if a year is a leap year (Gregorian calendar).
@@ -626,7 +647,6 @@ fn unwrapExtnValueToBytes(extn_val_or_octets: []const u8) []const u8 {
 /// - Validate name constraints
 /// - Enforce policy constraints
 pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
-    _ = alloc; // parsing is zero-copy for now
     var d = asn1.Decoder.init(der);
     const cert_seq = try d.readSequence();
     var ci = asn1.Decoder.init(cert_seq);
@@ -728,11 +748,19 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
 
     // Extensions (if any)
     var san_result: ?SubjectAltName = null;
+    errdefer if (san_result) |san| alloc.free(san.dns);
     var basic_res: ?BasicConstraints = null;
     var ku_res: ?KeyUsage = null;
     var eku_res: ?ExtKeyUsage = null;
     var name_constraints_res: ?NameConstraints = null;
+    errdefer if (name_constraints_res) |nc| {
+        if (nc.permitted_dns.len > 0) alloc.free(nc.permitted_dns);
+        if (nc.excluded_dns.len > 0) alloc.free(nc.excluded_dns);
+    };
     var policy_mappings_res: ?PolicyMappings = null;
+    errdefer if (policy_mappings_res) |pm| {
+        if (pm.mappings.len > 0) alloc.free(pm.mappings);
+    };
     var policy_constraints_res: ?PolicyConstraints = null;
 
     while (true) {
@@ -759,7 +787,7 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
             if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x11) {
                 var vd2 = asn1.Decoder.init(inner);
                 const san_seq = vd2.readSequence() catch continue;
-                var dns_list: [8][]const u8 = undefined;
+                var dns_list: [32][]const u8 = undefined;
                 var dns_len: usize = 0;
                 var s2 = asn1.Decoder.init(san_seq);
                 while (dns_len < dns_list.len) {
@@ -769,7 +797,11 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
                         dns_len += 1;
                     }
                 }
-                if (dns_len > 0) san_result = .{ .dns = dns_list[0..dns_len] };
+                if (dns_len > 0) {
+                    const heap_dns = try alloc.alloc([]const u8, dns_len);
+                    @memcpy(heap_dns, dns_list[0..dns_len]);
+                    san_result = .{ .dns = heap_dns };
+                }
             }
 
             // id-ce-basicConstraints = 2.5.29.19
@@ -836,9 +868,9 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
                 const nc_seq = ncd.readSequence() catch continue;
                 var nc_dec = asn1.Decoder.init(nc_seq);
 
-                var permitted: [8][]const u8 = undefined;
+                var permitted: [32][]const u8 = undefined;
                 var permitted_len: usize = 0;
-                var excluded: [8][]const u8 = undefined;
+                var excluded: [32][]const u8 = undefined;
                 var excluded_len: usize = 0;
 
                 // Parse permitted and excluded subtrees
@@ -870,9 +902,23 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
                 }
 
                 if (permitted_len > 0 or excluded_len > 0) {
+                    var permitted_dns: []const []const u8 = &[_][]const u8{};
+                    if (permitted_len > 0) {
+                        const heap_p = try alloc.alloc([]const u8, permitted_len);
+                        @memcpy(heap_p, permitted[0..permitted_len]);
+                        permitted_dns = heap_p;
+                    }
+
+                    var excluded_dns: []const []const u8 = &[_][]const u8{};
+                    if (excluded_len > 0) {
+                        const heap_e = try alloc.alloc([]const u8, excluded_len);
+                        @memcpy(heap_e, excluded[0..excluded_len]);
+                        excluded_dns = heap_e;
+                    }
+
                     name_constraints_res = .{
-                        .permitted_dns = permitted[0..permitted_len],
-                        .excluded_dns = excluded[0..excluded_len],
+                        .permitted_dns = permitted_dns,
+                        .excluded_dns = excluded_dns,
                     };
                 }
             }
@@ -902,7 +948,9 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
                 }
 
                 if (mappings_len > 0) {
-                    policy_mappings_res = .{ .mappings = mappings[0..mappings_len] };
+                    const heap_mappings = try alloc.alloc(PolicyMapping, mappings_len);
+                    @memcpy(heap_mappings, mappings[0..mappings_len]);
+                    policy_mappings_res = .{ .mappings = heap_mappings };
                 }
             }
 
@@ -970,6 +1018,7 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
 /// for unsupported or unknown key types.
 pub fn inferSignatureAlgorithm(cert_der: []const u8, alloc: std.mem.Allocator) !sigmod.SigAlg {
     const cert = try parseCert(alloc, cert_der);
+    defer cert.deinit(alloc);
 
     if (sigmod.parseEd25519Spki(cert.spki)) |_| {
         return .ed25519;
@@ -1434,9 +1483,16 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
 
     // Parse all certs
     var certs = try alloc.alloc(Certificate, chain_der.len);
-    defer alloc.free(certs);
+    var parsed_count: usize = 0;
+    defer {
+        for (certs[0..parsed_count]) |c| c.deinit(alloc);
+        alloc.free(certs);
+    }
     var i: usize = 0;
-    while (i < chain_der.len) : (i += 1) certs[i] = try parseCert(alloc, chain_der[i]);
+    while (i < chain_der.len) : (i += 1) {
+        certs[i] = try parseCert(alloc, chain_der[i]);
+        parsed_count += 1;
+    }
 
     // Special case: single self-signed certificate (trust anchor)
     const is_single_self_signed = chain_der.len == 1 and

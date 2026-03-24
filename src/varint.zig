@@ -85,6 +85,8 @@ pub fn decode(data: []const u8) Error!struct { n: usize, value: u64 } {
         1 => v = (first & 0x3f),
         2 => {
             var tmp: [2]u8 = .{ @as(u8, first & 0x3f), data[1] };
+            // SAFETY: tmp is [2]u8 which exactly matches @sizeOf(u16); decode only fails
+            // with BufferTooShort when data.len < size, which cannot happen here.
             const decoded = byteorder.decode(
                 u16,
                 .big,
@@ -96,6 +98,8 @@ pub fn decode(data: []const u8) Error!struct { n: usize, value: u64 } {
             var tmp: [4]u8 = undefined;
             tmp[0] = first & 0x3f;
             @memcpy(tmp[1..], data[1..4]);
+            // SAFETY: tmp is [4]u8 which exactly matches @sizeOf(u32); decode only fails
+            // with BufferTooShort when data.len < size, which cannot happen here.
             const decoded = byteorder.decode(
                 u32,
                 .big,
@@ -107,6 +111,8 @@ pub fn decode(data: []const u8) Error!struct { n: usize, value: u64 } {
             var tmp: [8]u8 = undefined;
             tmp[0] = first & 0x3f;
             @memcpy(tmp[1..], data[1..8]);
+            // SAFETY: tmp is [8]u8 which exactly matches @sizeOf(u64); decode only fails
+            // with BufferTooShort when data.len < size, which cannot happen here.
             const decoded = byteorder.decode(
                 u64,
                 .big,
@@ -147,6 +153,8 @@ pub fn encode(value: u64, out: []u8) Error!usize {
     //           +------+--------+-------------+-----------------------+
     switch (len) {
         1 => {
+            // SAFETY: out[0..1] is 1 byte which exactly matches @sizeOf(u8); encode only
+            // fails with BufferTooSmall when out.len < size, which cannot happen here.
             _ = byteorder.encode(
                 u8,
                 .big,
@@ -156,6 +164,8 @@ pub fn encode(value: u64, out: []u8) Error!usize {
             out[0] = (out[0] & 0x3f) | @as(u8, 0b00 << 6);
         },
         2 => {
+            // SAFETY: out[0..2] is 2 bytes which exactly matches @sizeOf(u16); encode only
+            // fails with BufferTooSmall when out.len < size, which cannot happen here.
             _ = byteorder.encode(
                 u16,
                 .big,
@@ -165,6 +175,8 @@ pub fn encode(value: u64, out: []u8) Error!usize {
             out[0] = (out[0] & 0x3f) | @as(u8, 0b01 << 6);
         },
         4 => {
+            // SAFETY: out[0..4] is 4 bytes which exactly matches @sizeOf(u32); encode only
+            // fails with BufferTooSmall when out.len < size, which cannot happen here.
             _ = byteorder.encode(
                 u32,
                 .big,
@@ -174,6 +186,8 @@ pub fn encode(value: u64, out: []u8) Error!usize {
             out[0] = (out[0] & 0x3f) | @as(u8, 0b10 << 6);
         },
         8 => {
+            // SAFETY: out[0..8] is 8 bytes which exactly matches @sizeOf(u64); encode only
+            // fails with BufferTooSmall when out.len < size, which cannot happen here.
             _ = byteorder.encode(
                 u64,
                 .big,
@@ -220,6 +234,8 @@ pub fn encodeWithLen(value: u64, out: []u8, byte_len: usize) Error!usize {
     //           +------+--------+-------------+-----------------------+
     switch (byte_len) {
         1 => {
+            // SAFETY: out[0..1] is 1 byte which exactly matches @sizeOf(u8); encode only
+            // fails with BufferTooSmall when out.len < size, which cannot happen here.
             _ = byteorder.encode(
                 u8,
                 .big,
@@ -229,6 +245,8 @@ pub fn encodeWithLen(value: u64, out: []u8, byte_len: usize) Error!usize {
             out[0] = (out[0] & 0x3f) | @as(u8, 0b00 << 6);
         },
         2 => {
+            // SAFETY: out[0..2] is 2 bytes which exactly matches @sizeOf(u16); encode only
+            // fails with BufferTooSmall when out.len < size, which cannot happen here.
             _ = byteorder.encode(
                 u16,
                 .big,
@@ -238,6 +256,8 @@ pub fn encodeWithLen(value: u64, out: []u8, byte_len: usize) Error!usize {
             out[0] = (out[0] & 0x3f) | @as(u8, 0b01 << 6);
         },
         4 => {
+            // SAFETY: out[0..4] is 4 bytes which exactly matches @sizeOf(u32); encode only
+            // fails with BufferTooSmall when out.len < size, which cannot happen here.
             _ = byteorder.encode(
                 u32,
                 .big,
@@ -247,6 +267,8 @@ pub fn encodeWithLen(value: u64, out: []u8, byte_len: usize) Error!usize {
             out[0] = (out[0] & 0x3f) | @as(u8, 0b10 << 6);
         },
         8 => {
+            // SAFETY: out[0..8] is 8 bytes which exactly matches @sizeOf(u64); encode only
+            // fails with BufferTooSmall when out.len < size, which cannot happen here.
             _ = byteorder.encode(
                 u64,
                 .big,

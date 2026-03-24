@@ -123,6 +123,8 @@ pub const RecordError = error{
     AuthenticationFailed,
     /// AEAD usage limit reached (RFC 8446 §5.5)
     AeadLimitExceeded,
+    /// Caller-provided buffer is too small for the output
+    BufferTooSmall,
     /// Memory allocation failed
     OutOfMemory,
 };

@@ -306,6 +306,7 @@ pub fn validateStapledResponse(
     var signer_spki = issuer.cert.spki;
     if (responder_cert_der_opt) |resp_der| {
         const responder_cert = x509.parseCert(allocator, resp_der) catch return OcspError.ResponderCertParse;
+        defer responder_cert.deinit(allocator);
         x509.checkValidity(now_unix, &responder_cert) catch return OcspError.ResponderCertInvalid;
         if (responder_cert.eku) |eku| {
             if (!eku.ocsp_signing) return OcspError.ResponderMissingEku;

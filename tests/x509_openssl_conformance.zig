@@ -72,6 +72,7 @@ fn hexToBytes(hex: []const u8, out: []u8) void {
 test "parseCert conformance - self-signed Ed25519 certificate" {
     // Parse certificate with our implementation
     const cert = try x509.parseCert(testing.allocator, TEST_CERT_ED25519_SELF_SIGNED);
+    defer cert.deinit(testing.allocator);
 
     // Verify subject matches expected
     try testing.expectEqualStrings("ed25519.example.com", cert.subject.cn.?);
@@ -89,6 +90,7 @@ test "parseCert conformance - self-signed Ed25519 certificate" {
 test "parseCert conformance - RSA certificate with extensions" {
     // Parse certificate with our implementation
     const cert = try x509.parseCert(testing.allocator, TEST_CERT_RSA_2048);
+    defer cert.deinit(testing.allocator);
 
     // Verify subject
     try testing.expectEqualStrings("rsa2048.example.com", cert.subject.cn.?);
@@ -108,6 +110,7 @@ test "parseCert conformance - RSA certificate with extensions" {
 test "parseCert conformance - ECDSA P-256 certificate" {
     // Parse certificate with our implementation
     const cert = try x509.parseCert(testing.allocator, TEST_CERT_ECDSA_P256);
+    defer cert.deinit(testing.allocator);
 
     // Verify subject
     try testing.expectEqualStrings("p256.example.com", cert.subject.cn.?);
@@ -123,8 +126,11 @@ test "parseCert conformance - ECDSA P-256 certificate" {
 test "parseCert conformance - certificate chain" {
     // Parse all three certificates in the chain
     const leaf = try x509.parseCert(testing.allocator, TEST_CHAIN_LEAF);
+    defer leaf.deinit(testing.allocator);
     const intermediate = try x509.parseCert(testing.allocator, TEST_CHAIN_INTERMEDIATE);
+    defer intermediate.deinit(testing.allocator);
     const root = try x509.parseCert(testing.allocator, TEST_CHAIN_ROOT);
+    defer root.deinit(testing.allocator);
 
     // Verify chain relationships via common names
     try testing.expectEqualStrings("leaf.example.com", leaf.subject.cn.?);
@@ -146,6 +152,7 @@ test "parseCert conformance - certificate chain" {
 test "parseCert - SubjectAltName conformance with OpenSSL" {
     // Parse leaf certificate which has SAN extension
     const cert = try x509.parseCert(testing.allocator, TEST_CHAIN_LEAF);
+    defer cert.deinit(testing.allocator);
 
     // Verify SAN was parsed
     try testing.expect(cert.san != null);
@@ -168,6 +175,7 @@ test "parseCert - SubjectAltName conformance with OpenSSL" {
 test "parseCert - BasicConstraints conformance with OpenSSL" {
     // Test intermediate certificate which has BasicConstraints
     const cert = try x509.parseCert(testing.allocator, TEST_CHAIN_INTERMEDIATE);
+    defer cert.deinit(testing.allocator);
 
     // Verify CA flag is set
     try testing.expect(cert.basic != null);
@@ -181,6 +189,7 @@ test "parseCert - BasicConstraints conformance with OpenSSL" {
 test "parseCert - KeyUsage conformance with OpenSSL" {
     // Parse certificate with KeyUsage extension
     const cert = try x509.parseCert(testing.allocator, TEST_CHAIN_LEAF);
+    defer cert.deinit(testing.allocator);
 
     // Verify KeyUsage was parsed
     try testing.expect(cert.ku != null);
@@ -195,6 +204,7 @@ test "parseCert - KeyUsage conformance with OpenSSL" {
 test "parseCert - ExtendedKeyUsage conformance with OpenSSL" {
     // Parse certificate with EKU extension
     const cert = try x509.parseCert(testing.allocator, TEST_CHAIN_LEAF);
+    defer cert.deinit(testing.allocator);
 
     // Verify EKU was parsed
     try testing.expect(cert.eku != null);

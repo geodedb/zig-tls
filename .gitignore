@@ -15,6 +15,9 @@ test_clients/rust/target/release/
 test_clients/rust/target/release/
 
 
+# Backup files
+*.backup
+
 .direnv/
 .zig-cache/
 zig-out/

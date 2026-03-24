@@ -155,6 +155,8 @@ pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, contex
 pub fn deriveSecretHash(hash: Hash, secret: *const Secret, label: []const u8, context: []const u8) Secret {
     var derived = Secret.empty();
     derived.len = @intCast(digestLength(hash));
+    // SAFETY: label and context lengths are known at call sites; total HkdfLabel fits within 256-byte
+    // fixed buffer used by expandLabelHash, so the allocation cannot fail.
     expandLabelHash(hash, secret, label, context, derived.sliceMut()) catch unreachable;
     return derived;
 }
@@ -177,6 +179,8 @@ pub fn hmacHash(hash: Hash, key: []const u8, data: []const u8) Secret {
 pub fn updateTrafficSecretHash(hash: Hash, current_secret: *const Secret) Secret {
     var next = Secret.empty();
     next.len = @intCast(digestLength(hash));
+    // SAFETY: label "traffic upd" (17 bytes with "tls13 " prefix) and empty context fit within
+    // the 256-byte fixed buffer; output size matches digest length. Allocation cannot fail.
     expandLabelHash(hash, current_secret, "traffic upd", &[_]u8{}, next.sliceMut()) catch unreachable;
     return next;
 }
@@ -189,6 +193,8 @@ pub fn updateTrafficSecretHash(hash: Hash, current_secret: *const Secret) Secret
 pub fn updateQuicSecretHash(hash: Hash, current_secret: *const Secret) Secret {
     var next = Secret.empty();
     next.len = @intCast(digestLength(hash));
+    // SAFETY: label "quic ku" (13 bytes with "tls13 " prefix) and empty context fit within
+    // the 256-byte fixed buffer; output size matches digest length. Allocation cannot fail.
     expandLabelHash(hash, current_secret, "quic ku", &[_]u8{}, next.sliceMut()) catch unreachable;
     return next;
 }
@@ -198,6 +204,10 @@ pub fn deriveKeyIvHpHash(hash: Hash, secret: *const Secret, v2: bool) KeyMateria
     var iv: [12]u8 = undefined;
     var hp: [16]u8 = undefined;
 
+    // SAFETY: all QUIC labels ("quic key", "quic iv", "quic hp" and their v2 variants) are
+    // short strings (max 16 bytes with "tls13 " prefix) with empty context. The HkdfLabel
+    // encoding fits well within the 256-byte fixed buffer. Output sizes (16, 12, 16) are
+    // within HKDF-Expand limits. Allocation cannot fail.
     if (v2) {
         expandLabelHash(hash, secret, "quicv2 key", &[_]u8{}, key[0..]) catch unreachable;
         expandLabelHash(hash, secret, "quicv2 iv", &[_]u8{}, iv[0..]) catch unreachable;
@@ -229,6 +239,8 @@ pub fn hashBytes(hash: Hash, data: []const u8) Secret {
 pub fn deriveFinishedVerifyDataHash(hash: Hash, traffic_secret: *const Secret, transcript_hash: *const Secret) Secret {
     var finished_key = Secret.empty();
     finished_key.len = @intCast(digestLength(hash));
+    // SAFETY: label "finished" (14 bytes with "tls13 " prefix) and empty context fit within
+    // the 256-byte fixed buffer; output size matches digest length. Allocation cannot fail.
     expandLabelHash(hash, traffic_secret, "finished", &[_]u8{}, finished_key.sliceMut()) catch unreachable;
     return hmacHash(hash, finished_key.slice(), transcript_hash.slice());
 }
@@ -507,6 +519,9 @@ pub fn deriveInitialSecret(version_v2: bool, dcid: []const u8) [Sha256.digest_le
 pub fn deriveClientServerInitial(initial_secret: [Sha256.digest_length]u8) struct { client: [Sha256.digest_length]u8, server: [Sha256.digest_length]u8 } {
     var client: [Sha256.digest_length]u8 = undefined;
     var server: [Sha256.digest_length]u8 = undefined;
+    // SAFETY: initial_secret is [Sha256.digest_length]u8 (32 bytes), so expandLabel will match
+    // sha256 and not return InvalidSecretLength. Labels "client in" and "server in" (15 bytes
+    // with "tls13 " prefix) with empty context fit within the 256-byte fixed buffer.
     // RFC 9001 §5.2 - Derive client initial secret with "client in" label
     expandLabel(initial_secret[0..], "client in", &[_]u8{}, &client) catch unreachable;
     // RFC 9001 §5.2 - Derive server initial secret with "server in" label

@@ -157,6 +157,9 @@ pub fn deriveFinishedVerifyData(
     transcript_hash: [H.digest_length]u8,
 ) [H.digest_length]u8 {
     var finished_key: [H.digest_length]u8 = undefined;
+    // SAFETY: traffic_secret is [H.digest_length]u8 (Sha256, 32 bytes), so expandLabel matches
+    // sha256 and will not return InvalidSecretLength. Label "finished" (14 bytes with "tls13 "
+    // prefix) and empty context fit within the 256-byte fixed buffer. Allocation cannot fail.
     ks.expandLabel(traffic_secret[0..], "finished", &[_]u8{}, &finished_key) catch unreachable;
     return ks.hmacSha256(&finished_key, &transcript_hash);
 }

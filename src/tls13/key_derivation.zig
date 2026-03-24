@@ -77,7 +77,7 @@ inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
 /// early_secret = HKDF-Extract(0, psk)
 /// ```
 ///
-/// If psk is null, uses a zero-length key (equivalent to 32 bytes of zeros for SHA-256).
+/// If psk is null, uses a zero-length key (equivalent to Hash.length bytes of zeros).
 ///
 /// ## RFC 8446 Compliance (§7.1 Key Schedule)
 ///
@@ -90,16 +90,17 @@ inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
 pub fn deriveEarlySecret(hash: Hash, psk: ?[]const u8) Secret {
     // RFC 8446 §7.1: Salt MUST be a string of Hash.length zeros for early_secret.
     // This is mandated by the specification, not a default or placeholder.
-    const zero_salt = [_]u8{0} ** 32;
+    // Use hash-dependent length: 32 bytes for SHA-256, 48 bytes for SHA-384.
+    const zero_salt = ks.zeroSecret(hash);
     // If PSK is not provided, use a zero-filled buffer of HashLen
     // RFC 8446 §7.1: "If a given secret is not available, then the 0-value
     // consisting of a string of Hash.length bytes set to zeros is used."
     if (psk) |k| {
-        return ks.extractHash(hash, &zero_salt, k);
+        return ks.extractHash(hash, zero_salt.slice(), k);
     } else {
         // RFC 8446 §7.1: When no PSK, IKM is Hash.length zeros (32 for SHA-256, 48 for SHA-384)
-        const zero_ikm = [_]u8{0} ** 32;
-        return ks.extractHash(hash, &zero_salt, &zero_ikm);
+        const zero_ikm = ks.zeroSecret(hash);
+        return ks.extractHash(hash, zero_salt.slice(), zero_ikm.slice());
     }
 }
 
@@ -157,8 +158,8 @@ pub fn deriveEarlyTraffic(hash: Hash, early_secret: *const Secret, client_hello_
 /// # Returns
 /// Struct containing:
 /// - handshake: Master handshake secret (used to derive application secrets later)
-/// - client_hs: Client→Server handshake traffic secret (32 or 48 bytes)
-/// - server_hs: Server→Client handshake traffic secret (32 or 48 bytes)
+/// - client_hs: Client->Server handshake traffic secret (32 or 48 bytes)
+/// - server_hs: Server->Client handshake traffic secret (32 or 48 bytes)
 pub fn deriveHandshakeTraffic(hash: Hash, ecdhe_secret: []const u8, transcript_hash: Secret, early_secret: *const Secret) struct {
     handshake: Secret,
     client_hs: Secret,
@@ -297,11 +298,13 @@ pub fn deriveApplicationTraffic(hash: Hash, handshake_secret: *const Secret, tra
 
     const empty_hash = ks.hashBytes(hash, &[_]u8{});
     const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", empty_hash.slice());
-    const zero_ikm = [_]u8{0} ** 32;
+    // RFC 8446 §7.1: IKM is Hash.length zeros (32 for SHA-256, 48 for SHA-384)
+    const zero_ikm = ks.zeroSecret(hash);
     if (secret_trace_enabled) {
-        traceSecrets("[TLS_APP_KEYS] IKM for master secret (should be 32 zeros): len={} first_byte={} last_byte={}\n", .{ zero_ikm.len, zero_ikm[0], zero_ikm[31] });
+        const zslice = zero_ikm.slice();
+        traceSecrets("[TLS_APP_KEYS] IKM for master secret (zeros): len={} first_byte={} last_byte={}\n", .{ zslice.len, zslice[0], zslice[zslice.len - 1] });
     }
-    const master = ks.extractHash(hash, derived.slice(), &zero_ikm);
+    const master = ks.extractHash(hash, derived.slice(), zero_ikm.slice());
     const client_app = ks.deriveSecretHash(hash, &master, "c ap traffic", transcript_hash.slice());
     const server_app = ks.deriveSecretHash(hash, &master, "s ap traffic", transcript_hash.slice());
     const exporter_master = ks.deriveSecretHash(hash, &master, "exp master", transcript_hash.slice());
@@ -382,4 +385,262 @@ pub fn deriveApplicationTrafficFromEcdhe(hash: Hash, ecdhe_secret: []const u8, t
     const hs = deriveHandshakeTraffic(hash, ecdhe_secret, transcript_hash, &early_secret);
     const apps = deriveApplicationTraffic(hash, &hs.handshake, transcript_hash);
     return .{ .client_app = apps.client_app, .server_app = apps.server_app };
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "deriveEarlySecret SHA-256 uses 32-byte zero salt and IKM" {
+    // RFC 8446 S7.1: early_secret = HKDF-Extract(salt=zeros(HashLen), IKM=zeros(HashLen))
+    // For SHA-256, HashLen = 32
+    const early = deriveEarlySecret(.sha256, null);
+    try testing.expectEqual(@as(usize, 32), early.slice().len);
+
+    // Compute expected value manually with correct 32-byte inputs
+    const zero32 = [_]u8{0} ** 32;
+    const expected = ks.extractHash(.sha256, &zero32, &zero32);
+    try testing.expectEqualSlices(u8, expected.slice(), early.slice());
+}
+
+test "deriveEarlySecret SHA-384 uses 48-byte zero salt and IKM" {
+    // RFC 8446 S7.1: early_secret = HKDF-Extract(salt=zeros(HashLen), IKM=zeros(HashLen))
+    // For SHA-384, HashLen = 48, NOT 32.
+    const early = deriveEarlySecret(.sha384, null);
+    try testing.expectEqual(@as(usize, 48), early.slice().len);
+
+    // Compute expected value manually with correct 48-byte inputs
+    const zero48 = [_]u8{0} ** 48;
+    const expected = ks.extractHash(.sha384, &zero48, &zero48);
+    try testing.expectEqualSlices(u8, expected.slice(), early.slice());
+}
+
+test "deriveEarlySecret SHA-384 with PSK uses 48-byte zero salt" {
+    // When a PSK is provided, only the salt needs to be Hash.length zeros.
+    // The IKM is the PSK itself.
+    const psk = "test_psk_value_for_sha384_testing";
+    const early = deriveEarlySecret(.sha384, psk);
+    try testing.expectEqual(@as(usize, 48), early.slice().len);
+
+    // Compute expected value manually with correct 48-byte zero salt
+    const zero48 = [_]u8{0} ** 48;
+    const expected = ks.extractHash(.sha384, &zero48, psk);
+    try testing.expectEqualSlices(u8, expected.slice(), early.slice());
+}
+
+test "deriveApplicationTraffic SHA-384 uses 48-byte zero IKM for master secret" {
+    // RFC 8446 S7.1: master_secret = HKDF-Extract(derived, IKM=zeros(HashLen))
+    // For SHA-384, HashLen = 48, NOT 32.
+    //
+    // Construct a fake handshake secret and transcript for SHA-384.
+    var hs_bytes: [48]u8 = undefined;
+    @memset(&hs_bytes, 0xAA);
+    const handshake_secret = ks.Secret.fromSlice(.sha384, &hs_bytes);
+
+    var transcript_bytes: [48]u8 = undefined;
+    @memset(&transcript_bytes, 0xBB);
+    const transcript_hash = ks.Secret.fromSlice(.sha384, &transcript_bytes);
+
+    const result = deriveApplicationTraffic(.sha384, &handshake_secret, transcript_hash);
+
+    // Verify the outputs are 48 bytes (SHA-384 digest length)
+    try testing.expectEqual(@as(usize, 48), result.client_app.slice().len);
+    try testing.expectEqual(@as(usize, 48), result.server_app.slice().len);
+    try testing.expectEqual(@as(usize, 48), result.exporter_master.slice().len);
+
+    // Compute the expected master secret manually with 48-byte zero IKM
+    const empty_hash = ks.hashBytes(.sha384, &[_]u8{});
+    const derived = ks.deriveSecretHash(.sha384, &handshake_secret, "derived", empty_hash.slice());
+    const zero48 = [_]u8{0} ** 48;
+    const expected_master = ks.extractHash(.sha384, derived.slice(), &zero48);
+    const expected_client = ks.deriveSecretHash(.sha384, &expected_master, "c ap traffic", transcript_hash.slice());
+    const expected_server = ks.deriveSecretHash(.sha384, &expected_master, "s ap traffic", transcript_hash.slice());
+    const expected_exporter = ks.deriveSecretHash(.sha384, &expected_master, "exp master", transcript_hash.slice());
+
+    try testing.expectEqualSlices(u8, expected_client.slice(), result.client_app.slice());
+    try testing.expectEqualSlices(u8, expected_server.slice(), result.server_app.slice());
+    try testing.expectEqualSlices(u8, expected_exporter.slice(), result.exporter_master.slice());
+}
+
+test "deriveApplicationTraffic SHA-256 unchanged behavior" {
+    // Verify SHA-256 still works correctly after the fix (regression test).
+    var hs_bytes: [32]u8 = undefined;
+    @memset(&hs_bytes, 0xCC);
+    const handshake_secret = ks.Secret.fromSlice(.sha256, &hs_bytes);
+
+    var transcript_bytes: [32]u8 = undefined;
+    @memset(&transcript_bytes, 0xDD);
+    const transcript_hash = ks.Secret.fromSlice(.sha256, &transcript_bytes);
+
+    const result = deriveApplicationTraffic(.sha256, &handshake_secret, transcript_hash);
+
+    // Verify the outputs are 32 bytes (SHA-256 digest length)
+    try testing.expectEqual(@as(usize, 32), result.client_app.slice().len);
+    try testing.expectEqual(@as(usize, 32), result.server_app.slice().len);
+    try testing.expectEqual(@as(usize, 32), result.exporter_master.slice().len);
+
+    // Compute the expected master secret manually with 32-byte zero IKM
+    const empty_hash = ks.hashBytes(.sha256, &[_]u8{});
+    const derived = ks.deriveSecretHash(.sha256, &handshake_secret, "derived", empty_hash.slice());
+    const zero32 = [_]u8{0} ** 32;
+    const expected_master = ks.extractHash(.sha256, derived.slice(), &zero32);
+    const expected_client = ks.deriveSecretHash(.sha256, &expected_master, "c ap traffic", transcript_hash.slice());
+
+    try testing.expectEqualSlices(u8, expected_client.slice(), result.client_app.slice());
+}
+
+// ============================================================================
+// RFC 8448 §3 Test Vectors (Simple 1-RTT Handshake)
+// ============================================================================
+//
+// These tests validate the high-level key_derivation API against official test
+// vectors from RFC 8448 Section 3 using TLS_AES_128_GCM_SHA256.
+
+/// Comptime hex-to-bytes conversion for test vector constants.
+fn hexLit(comptime hex: []const u8) [hex.len / 2]u8 {
+    @setEvalBranchQuota(hex.len * 100);
+    var result: [hex.len / 2]u8 = undefined;
+    var i: usize = 0;
+    while (i < hex.len) : (i += 2) {
+        const hi: u8 = switch (hex[i]) {
+            '0'...'9' => hex[i] - '0',
+            'a'...'f' => hex[i] - 'a' + 10,
+            'A'...'F' => hex[i] - 'A' + 10,
+            else => unreachable,
+        };
+        const lo: u8 = switch (hex[i + 1]) {
+            '0'...'9' => hex[i + 1] - '0',
+            'a'...'f' => hex[i + 1] - 'a' + 10,
+            'A'...'F' => hex[i + 1] - 'A' + 10,
+            else => unreachable,
+        };
+        result[i / 2] = (hi << 4) | lo;
+    }
+    return result;
+}
+
+test "RFC 8448 §3: deriveEarlySecret matches test vector" {
+    // RFC 8448 Section 3: Early Secret with no PSK
+    const early = deriveEarlySecret(.sha256, null);
+    const expected = hexLit(
+        "33ad0a1c607ec03b09e6cd9893680ce2" ++
+            "10adf300aa1f2660e1b22e10f170f92a",
+    );
+    try testing.expectEqualSlices(u8, &expected, early.slice());
+}
+
+test "RFC 8448 §3: deriveHandshakeTraffic matches test vectors" {
+    // RFC 8448 Section 3: Handshake traffic secrets
+    const dhe_shared_secret = hexLit(
+        "8bd4054fb55b9d63fdfbacf9f04b9f0d" ++
+            "35e6d63f537563efd46272900f89492d",
+    );
+    const transcript_ch_sh = ks.Secret.fromSlice(.sha256, &hexLit(
+        "860c06edc07858ee8e78f0e7428c58ed" ++
+            "d6b43f2ca3e6e95f02ed063cf0e1cad8",
+    ));
+
+    const early_secret = deriveEarlySecret(.sha256, null);
+    const result = deriveHandshakeTraffic(.sha256, &dhe_shared_secret, transcript_ch_sh, &early_secret);
+
+    // Handshake Secret
+    const expected_hs = hexLit(
+        "1dc826e93606aa6fdc0aadc12f741b01" ++
+            "046aa6b99f691ed221a9f0ca043fbeac",
+    );
+    try testing.expectEqualSlices(u8, &expected_hs, result.handshake.slice());
+
+    // Client Handshake Traffic Secret
+    const expected_client = hexLit(
+        "b3eddb126e067f35a780b3abf45e2d8f" ++
+            "3b1a950738f52e9600746a0e27a55a21",
+    );
+    try testing.expectEqualSlices(u8, &expected_client, result.client_hs.slice());
+
+    // Server Handshake Traffic Secret
+    const expected_server = hexLit(
+        "b67b7d690cc16c4e75e54213cb2d37b4" ++
+            "e9c912bcded9105d42befd59d391ad38",
+    );
+    try testing.expectEqualSlices(u8, &expected_server, result.server_hs.slice());
+}
+
+test "RFC 8448 §3: deriveApplicationTraffic matches test vectors" {
+    // RFC 8448 Section 3: Application traffic secrets
+    const handshake_secret = ks.Secret.fromSlice(.sha256, &hexLit(
+        "1dc826e93606aa6fdc0aadc12f741b01" ++
+            "046aa6b99f691ed221a9f0ca043fbeac",
+    ));
+    const transcript_ch_sf = ks.Secret.fromSlice(.sha256, &hexLit(
+        "9608102a0f1ccc6db6250b7b7e417b1a" ++
+            "000eaada3daae4777a7686c9ff83df13",
+    ));
+
+    const result = deriveApplicationTraffic(.sha256, &handshake_secret, transcript_ch_sf);
+
+    // Master Secret
+    const expected_master = hexLit(
+        "18df06843d13a08bf2a449844c5f8a47" ++
+            "8001bc4d4c627984d5a41da8d0402919",
+    );
+    // Verify master by recomputing: we can check client/server app secrets instead
+    // since the API does not expose the master secret directly.
+
+    // Client Application Traffic Secret
+    const expected_client = hexLit(
+        "9e40646ce79a7f9dc05af8889bce6552" ++
+            "875afa0b06df0087f792ebb7c17504a5",
+    );
+    try testing.expectEqualSlices(u8, &expected_client, result.client_app.slice());
+
+    // Server Application Traffic Secret
+    const expected_server = hexLit(
+        "a11af9f05531f856ad47116b45a95032" ++
+            "8204b4f44bfb6b3a4b4f1f3fcb631643",
+    );
+    try testing.expectEqualSlices(u8, &expected_server, result.server_app.slice());
+
+    // Exporter Master Secret
+    const expected_exporter = hexLit(
+        "fe22f881176eda18eb8f44529e6792c5" ++
+            "0c9a3f89452f68d8ae311b4309d3cf50",
+    );
+    try testing.expectEqualSlices(u8, &expected_exporter, result.exporter_master.slice());
+
+    // Cross-check: verify master secret by re-deriving manually
+    const empty_hash = ks.hashBytes(.sha256, &[_]u8{});
+    const derived = ks.deriveSecretHash(.sha256, &handshake_secret, "derived", empty_hash.slice());
+    const zero32 = [_]u8{0} ** 32;
+    const master = ks.extractHash(.sha256, derived.slice(), &zero32);
+    try testing.expectEqualSlices(u8, &expected_master, master.slice());
+}
+
+test "RFC 8448 §3: deriveApplicationTrafficFromEcdhe end-to-end" {
+    // Test the convenience function that combines handshake + application derivation
+    const dhe_shared_secret = hexLit(
+        "8bd4054fb55b9d63fdfbacf9f04b9f0d" ++
+            "35e6d63f537563efd46272900f89492d",
+    );
+    // Note: deriveApplicationTrafficFromEcdhe uses the same transcript hash for
+    // both handshake and application stages, so we use transcript_hash_ch_sf here.
+    // This means the handshake secrets will differ from RFC 8448 (which uses
+    // transcript_ch_sh for handshake), but the API's internal consistency is verified.
+    const transcript_ch_sf = ks.Secret.fromSlice(.sha256, &hexLit(
+        "9608102a0f1ccc6db6250b7b7e417b1a" ++
+            "000eaada3daae4777a7686c9ff83df13",
+    ));
+
+    const result = deriveApplicationTrafficFromEcdhe(.sha256, &dhe_shared_secret, transcript_ch_sf);
+
+    // The app secrets won't match RFC 8448 because the transcript hash used for
+    // handshake derivation differs. Instead, verify internal consistency by
+    // manually recomputing through the same path.
+    const early_secret = deriveEarlySecret(.sha256, null);
+    const hs = deriveHandshakeTraffic(.sha256, &dhe_shared_secret, transcript_ch_sf, &early_secret);
+    const apps = deriveApplicationTraffic(.sha256, &hs.handshake, transcript_ch_sf);
+
+    try testing.expectEqualSlices(u8, apps.client_app.slice(), result.client_app.slice());
+    try testing.expectEqualSlices(u8, apps.server_app.slice(), result.server_app.slice());
 }

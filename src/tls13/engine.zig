@@ -149,13 +149,23 @@ pub const TicketStore = struct {
         });
     }
 
+    /// Timing-safe PSK identity lookup.
+    ///
+    /// Uses constant-time comparison for identity content to prevent
+    /// timing side-channel attacks. Iterates ALL entries (no early
+    /// return) to avoid leaking which position matched. Length
+    /// comparison is non-constant-time, which is acceptable since PSK
+    /// identity lengths are sent in cleartext in the ClientHello.
     pub fn lookup(self: *const TicketStore, identity: []const u8) ?TicketEntryView {
+        var result: ?TicketEntryView = null;
         for (self.tickets.items) |*t| {
-            if (std.mem.eql(u8, t.identity, identity)) {
-                return .{ .identity = t.identity, .secret = t.secret, .lifetime = t.lifetime };
+            if (t.identity.len == identity.len and
+                std.crypto.timing_safe.compare(u8, t.identity, identity, .big) == .eq)
+            {
+                result = .{ .identity = t.identity, .secret = t.secret, .lifetime = t.lifetime };
             }
         }
-        return null;
+        return result;
     }
 };
 
@@ -340,7 +350,7 @@ pub const Engine = struct {
         var be2: [2]u8 = undefined; // big-endian scratch
         std.mem.writeInt(u32, &be4, lifetime, .big);
         try body.appendSlice(self.allocator, &be4);
-        std.mem.writeInt(u32, &be4, 0, .big); // age_add placeholder
+        std.mem.writeInt(u32, &be4, std.crypto.random.int(u32), .big); // RFC 8446 §4.6.1: random ticket_age_add
         try body.appendSlice(self.allocator, &be4);
         try body.append(self.allocator, 0); // nonce length 0
         std.mem.writeInt(u16, &be2, @intCast(ticket.len), .big);
@@ -369,7 +379,7 @@ pub const Engine = struct {
 
     /// Ingest CRYPTO data from peer and parse handshake messages.
     pub fn ingestCrypto(self: *Engine, data: []const u8) !void {
-        self.onCryptoRecv(data);
+        try self.onCryptoRecv(data);
     }
 
     pub fn ensureKeypair(self: *Engine) void {
@@ -380,7 +390,10 @@ pub const Engine = struct {
             sk[0] &= 248;
             sk[31] &= 127;
             sk[31] |= 64;
-            // Derive public key from private key using Zig 0.15.1 X25519 API
+            // SAFETY: recoverPublicKey only fails when the private key produces a weak (all-zero)
+            // public key. The key sk is randomly generated and then clamped per RFC 7748 §5
+            // (sk[31] |= 64 sets bit 6, ensuring the key is non-zero). A clamped random key
+            // cannot produce the identity point.
             const pk = std.crypto.dh.X25519.recoverPublicKey(sk) catch unreachable;
             self.my_priv = sk;
             self.my_pub = pk;
@@ -396,14 +409,11 @@ pub const Engine = struct {
         }
     }
 
-    fn tryComputeShared(self: *Engine) void {
+    fn tryComputeShared(self: *Engine) !void {
         if (self.peer_pub) |peer| {
             if (self.my_priv) |priv| {
                 // Use Zig 0.15.1 X25519 API - scalarmult returns the value
-                const sh = std.crypto.dh.X25519.scalarmult(priv, peer) catch {
-                    traceHandshake("{s}: X25519 scalarmult failed\n", .{if (self.role == .Server) "Server" else "Client"});
-                    return;
-                };
+                const sh = try std.crypto.dh.X25519.scalarmult(priv, peer);
                 self.ecdhe_buf = sh;
                 self.ecdhe_secret = self.ecdhe_buf[0..];
                 if (secret_trace_enabled) {
@@ -419,14 +429,11 @@ pub const Engine = struct {
 
     /// Append received CRYPTO bytes into transcript. Attempts to parse handshake messages
     /// to update simple state, but always feeds the transcript with raw bytes.
-    pub fn onCryptoRecv(self: *Engine, data: []const u8) void {
+    pub fn onCryptoRecv(self: *Engine, data: []const u8) !void {
         traceHandshake("TLS: onCryptoRecv called with {} bytes, inbox already has {} bytes\n", .{ data.len, self.inbox.items.len });
 
         // Append new data to inbox buffer
-        self.inbox.appendSlice(self.allocator, data) catch {
-            traceHandshake("TLS: Failed to buffer CRYPTO data\n", .{});
-            return;
-        };
+        try self.inbox.appendSlice(self.allocator, data);
 
         traceHandshake("TLS: Inbox now has {} bytes total\n", .{self.inbox.items.len});
 
@@ -526,7 +533,7 @@ pub const Engine = struct {
                         traceHandshake("TLS: peer_pub is now set (null={})\n", .{self.peer_pub == null});
                         // Compute shared secret after receiving peer's public key
                         switch (p.typ) {
-                            .server_hello => if (self.role == .Client) self.tryComputeShared(),
+                            .server_hello => if (self.role == .Client) try self.tryComputeShared(),
                             .client_hello => if (self.role == .Server) {
                                 traceHandshake("Server: Will compute ECDHE when generating ServerHello\n", .{});
                                 // Extract ALPN from ClientHello
@@ -647,7 +654,11 @@ pub const Engine = struct {
                                         traceHandshake("TLS: Out of memory allocating parsed certificate array\n", .{});
                                         break :blk false;
                                     };
-                                    defer self.allocator.free(parsed_certs);
+                                    var certs_parsed_count: usize = 0;
+                                    defer {
+                                        for (parsed_certs[0..certs_parsed_count]) |c| c.deinit(self.allocator);
+                                        self.allocator.free(parsed_certs);
+                                    }
 
                                     for (parsed_cert_msg.entries, 0..) |entry, idx| {
                                         chain_der[idx] = entry.cert;
@@ -655,6 +666,7 @@ pub const Engine = struct {
                                             traceHandshake("TLS: Failed to parse certificate {} in chain\n", .{idx});
                                             break :blk false;
                                         };
+                                        certs_parsed_count += 1;
                                     }
 
                                     const leaf = parsed_certs[0];
@@ -1345,7 +1357,7 @@ pub const Engine = struct {
     /// For testing only - uses minimal non-TLS format that won't interop with real TLS.
     pub fn queueMinimalServerHelloAuto(self: *Engine) !usize {
         self.ensureKeypair();
-        self.tryComputeShared(); // Compute shared secret with client's public key
+        try self.tryComputeShared(); // Compute shared secret with client's public key
         const pubkey = self.my_pub orelse return error.Internal;
         const msg = try encodeMinimalServerHello(self.allocator, pubkey);
         defer self.allocator.free(msg);
@@ -1411,8 +1423,15 @@ pub const Engine = struct {
         std.crypto.random.bytes(&server_random);
 
         // Use the comprehensive ServerHello builder
-        const sh_body = try tls13_full.buildServerHello(self.allocator, server_random, .TLS_AES_128_GCM_SHA256, // Use AES-128-GCM for compatibility
-            .x25519, pubkey[0..], self.client_session_id, null // RFC 9001: Transport params go in EncryptedExtensions, NOT ServerHello!
+        const sh_body = try tls13_full.buildServerHello(
+            self.allocator,
+            server_random,
+            .TLS_AES_128_GCM_SHA256, // Use AES-128-GCM for compatibility
+            .x25519,
+            pubkey[0..],
+            self.client_session_id,
+            null, // RFC 9001: Transport params go in EncryptedExtensions, NOT ServerHello!
+            null, // Engine doesn't support PSK yet
         );
         defer self.allocator.free(sh_body);
 
@@ -1439,7 +1458,7 @@ pub const Engine = struct {
         try self.queueCrypto(msg);
 
         self.hash_kind = cipherSuiteHash(.TLS_AES_128_GCM_SHA256);
-        self.tryComputeShared();
+        try self.tryComputeShared();
         if (self.ecdhe_secret != null and self.handshake_client_secret == null) {
             var snap = self.transcript;
             const th = snap.finalize(self.hash_kind);
@@ -1754,9 +1773,8 @@ pub fn parseMinimalHelloPub(typ: HsType, body: []const u8) ?[32]u8 {
 
 // --- Real TLS 1.3 ClientHello / ServerHello parsing helpers (minimal) ---
 
-fn readU16(be: []const u8) u16 {
-    return (@as(u16, be[0]) << 8) | be[1];
-}
+// readU16 is imported from tls13_full (canonical definition in messages/helpers.zig)
+const readU16 = tls13_full.readU16;
 
 /// Attempt to parse a real (spec-like) TLS 1.3 ClientHello and extract the first X25519 key share.
 /// Also stores the client's session ID for ServerHello echo (RFC 8446 requirement).
@@ -1847,27 +1865,186 @@ fn parseRealServerHello(body: []const u8) ?[32]u8 {
     pos += 2;
     if (pos + exts_len > body.len) return null;
     const exts_end = pos + exts_len;
+    var server_pub: ?[32]u8 = null;
+    var found_supported_versions = false;
     while (pos + 4 <= exts_end) {
         const etype = readU16(body[pos .. pos + 2]);
         const elen = readU16(body[pos + 2 .. pos + 4]);
         pos += 4;
         if (pos + elen > exts_end) return null;
-        if (etype == 0x0033) { // key_share (server format)
+        if (etype == @intFromEnum(tls13_full.ExtensionType.supported_versions)) {
+            // RFC 8446 §4.2.1: In ServerHello, supported_versions contains
+            // the single selected version (2 bytes). Must be 0x0304 (TLS 1.3).
+            if (elen != 2) return null;
+            const selected_version = readU16(body[pos .. pos + 2]);
+            if (selected_version != 0x0304) return null;
+            found_supported_versions = true;
+        } else if (etype == 0x0033) { // key_share (server format)
             if (elen < 4 + 32) return null;
             const group = readU16(body[pos .. pos + 2]);
             const klen = readU16(body[pos + 2 .. pos + 4]);
             if (group == 0x001d and klen == 32 and pos + 4 + 32 <= pos + elen) {
                 var out: [32]u8 = undefined;
                 @memcpy(&out, body[pos + 4 .. pos + 4 + 32]);
-                return out;
+                server_pub = out;
             }
         }
         pos += elen;
     }
-    return null;
+    // RFC 8446 §4.2.1: supported_versions is REQUIRED in ServerHello
+    if (!found_supported_versions) return null;
+    return server_pub;
 }
 
 // Build a minimally spec-compliant TLS 1.3 ServerHello with:
 // - cipher_suite TLS_AES_128_GCM_SHA256
 // - supported_versions (selected 1.3)
 // - key_share (x25519)
+
+// ============================================================================
+// Tests for error propagation (QUAL-020)
+// ============================================================================
+
+test "ingestCrypto propagates OOM from appendSlice" {
+    // Use a FailingAllocator that fails on the first allocation attempt.
+    // When onCryptoRecv calls inbox.appendSlice, the allocator will fail.
+    // This test verifies the OOM error is propagated to the caller instead of
+    // being silently swallowed.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var eng = Engine.init(failing.allocator(), .Client);
+    defer eng.deinit();
+
+    const result = eng.ingestCrypto("hello");
+    try std.testing.expectError(error.OutOfMemory, result);
+}
+
+test "tryComputeShared returns error on X25519 failure" {
+    // Use a valid allocator for Engine init, but set peer_pub to an invalid
+    // low-order point (all zeros) which causes X25519 scalarmult to fail.
+    // This test verifies the error is propagated instead of being silently swallowed.
+    var eng = Engine.init(std.testing.allocator, .Client);
+    defer eng.deinit();
+
+    // Generate a valid private key
+    eng.ensureKeypair();
+
+    // Set peer public key to all-zero (a low-order point that causes X25519 to fail
+    // with IdentityElement error)
+    eng.peer_pub = [_]u8{0} ** 32;
+
+    const result = eng.tryComputeShared();
+    try std.testing.expectError(error.IdentityElement, result);
+}
+
+// --- Inline tests for parseRealServerHello supported_versions validation ---
+
+/// Build a minimal ServerHello body for testing. The body includes:
+/// legacy_version(2) + random(32) + session_id_len(1) + cipher_suite(2) + compression(1) + extensions
+fn buildTestServerHelloBody(
+    include_supported_versions: bool,
+    supported_version_value: u16,
+    include_key_share: bool,
+    server_pub_key: [32]u8,
+) [128]u8 {
+    var body: [128]u8 = [_]u8{0} ** 128;
+    var pos: usize = 0;
+
+    // legacy_version = 0x0303
+    body[pos] = 0x03;
+    body[pos + 1] = 0x03;
+    pos += 2;
+
+    // random = 32 zero bytes (already zeroed)
+    pos += 32;
+
+    // session_id_len = 0
+    body[pos] = 0;
+    pos += 1;
+
+    // cipher_suite = TLS_AES_128_GCM_SHA256 (0x1301)
+    body[pos] = 0x13;
+    body[pos + 1] = 0x01;
+    pos += 2;
+
+    // compression = 0
+    body[pos] = 0x00;
+    pos += 1;
+
+    // Build extensions
+    var exts: [80]u8 = [_]u8{0} ** 80;
+    var epos: usize = 0;
+
+    if (include_supported_versions) {
+        // supported_versions extension: type(2) + len(2) + version(2) = 6 bytes
+        exts[epos] = 0x00;
+        exts[epos + 1] = 0x2b; // extension type
+        exts[epos + 2] = 0x00;
+        exts[epos + 3] = 0x02; // extension length
+        exts[epos + 4] = @intCast(supported_version_value >> 8);
+        exts[epos + 5] = @intCast(supported_version_value & 0xff);
+        epos += 6;
+    }
+
+    if (include_key_share) {
+        // key_share extension: type(2) + len(2) + group(2) + klen(2) + key(32) = 40 bytes
+        exts[epos] = 0x00;
+        exts[epos + 1] = 0x33; // extension type
+        exts[epos + 2] = 0x00;
+        exts[epos + 3] = 0x24; // extension length = 36 (2+2+32)
+        exts[epos + 4] = 0x00;
+        exts[epos + 5] = 0x1d; // x25519
+        exts[epos + 6] = 0x00;
+        exts[epos + 7] = 0x20; // key length = 32
+        @memcpy(exts[epos + 8 .. epos + 8 + 32], &server_pub_key);
+        epos += 40;
+    }
+
+    // extensions_length
+    body[pos] = @intCast(epos >> 8);
+    body[pos + 1] = @intCast(epos & 0xff);
+    pos += 2;
+
+    // Copy extensions data
+    @memcpy(body[pos .. pos + epos], exts[0..epos]);
+    pos += epos;
+
+    return body;
+}
+
+test "RFC 8446 §4.2.1: parseRealServerHello accepts supported_versions=0x0304" {
+    const server_pub_key = [_]u8{0x42} ** 32;
+    const body = buildTestServerHelloBody(true, 0x0304, true, server_pub_key);
+    // Calculate actual body length: 2 + 32 + 1 + 2 + 1 + 2 + 6 + 40 = 86
+    const result = parseRealServerHello(body[0..86]);
+    const std_test = @import("std").testing;
+    try std_test.expect(result != null);
+    try std_test.expectEqualSlices(u8, &server_pub_key, &result.?);
+}
+
+test "RFC 8446 §4.2.1: parseRealServerHello rejects missing supported_versions" {
+    const server_pub_key = [_]u8{0x42} ** 32;
+    // No supported_versions, only key_share
+    const body = buildTestServerHelloBody(false, 0x0304, true, server_pub_key);
+    // Body length without supported_versions: 2 + 32 + 1 + 2 + 1 + 2 + 40 = 80
+    const result = parseRealServerHello(body[0..80]);
+    const std_test = @import("std").testing;
+    try std_test.expect(result == null);
+}
+
+test "RFC 8446 §4.2.1: parseRealServerHello rejects supported_versions with non-TLS-1.3 version" {
+    const server_pub_key = [_]u8{0x42} ** 32;
+    // supported_versions with TLS 1.2 (0x0303) instead of TLS 1.3 (0x0304)
+    const body = buildTestServerHelloBody(true, 0x0303, true, server_pub_key);
+    const result = parseRealServerHello(body[0..86]);
+    const std_test = @import("std").testing;
+    try std_test.expect(result == null);
+}
+
+test "RFC 8446 §4.2.1: parseRealServerHello rejects supported_versions with TLS 1.1" {
+    const server_pub_key = [_]u8{0x42} ** 32;
+    // supported_versions with TLS 1.1 (0x0302)
+    const body = buildTestServerHelloBody(true, 0x0302, true, server_pub_key);
+    const result = parseRealServerHello(body[0..86]);
+    const std_test = @import("std").testing;
+    try std_test.expect(result == null);
+}

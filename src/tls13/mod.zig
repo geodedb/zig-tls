@@ -232,10 +232,10 @@ pub const Callbacks = context.Callbacks;
 pub const Context = context.Context;
 
 /// API operation errors.
-pub const ApiError = context.ApiError;
+pub const ApiError = types.ApiError;
 
 /// Handshake protocol errors.
-pub const HandshakeError = context.HandshakeError;
+pub const HandshakeError = types.HandshakeError;
 
 // ============================================================================
 // Engine (Legacy)

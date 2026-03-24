@@ -301,9 +301,10 @@ pub const record = @import("record");
 /// - Basic Constraints processing (CA flag, path length)
 /// - SubjectPublicKeyInfo extraction for signature verification
 ///
-/// Current limitations:
-/// - Full chain validation not yet implemented (validates leaf only)
-/// - OCSP stapling and SCT support are placeholders
+/// Also includes:
+/// - Full certificate chain validation with path length constraints
+/// - OCSP stapling support (DER parsing, response verification)
+/// - SCT (Signed Certificate Timestamp) list parsing (RFC 6962)
 ///
 /// Migration to `std.crypto.x509` planned when stdlib API stabilizes.
 pub const x509 = @import("x509");

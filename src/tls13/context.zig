@@ -68,9 +68,8 @@ const messages_mod = @import("messages.zig");
 const finished_mod = @import("finished.zig");
 const cookie_mod = @import("messages/extensions/cookie.zig");
 
-// Note: The extracted code below contains its own type definitions
-// (ApiError, HandshakeError, TrafficDirection, SecretSlot, etc.)
-// These were not fully extracted in Phase 1, so they remain here.
+// Note: ApiError and HandshakeError are now imported from types.zig (canonical source).
+// TrafficDirection, SecretSlot, etc. remain defined here pending further extraction.
 
 // Type aliases needed by extracted code (these are NOT defined in the extracted code)
 const Config = config_mod.Config;
@@ -250,142 +249,12 @@ pub const Callbacks = struct {
     fetch_certificate_chain: ?*const fn (ctx: *Context) anyerror![]const u8 = null,
 };
 
-/// Error type for TLS API operations.
-pub const ApiError = error{
-    /// Requested operation not yet implemented.
-    Unimplemented,
-};
+/// Error type for TLS API operations (canonical definition in types.zig).
+pub const ApiError = types.ApiError;
 
-/// Errors surfaced during TLS 1.3 handshake message parsing and validation.
-///
-/// These errors map to TLS alerts (alert.zig) which are then converted to QUIC
-/// CRYPTO_ERROR codes per RFC 9001 §4.8. The alert mapping is defined in
-/// `alert.fromHandshakeError()`.
-///
-/// # Error to Alert Mapping Examples
-/// - `UnexpectedMessage` → unexpected_message (0x0A)
-/// - `UnsupportedVersion` → protocol_version (0x46)
-/// - `NoCipherSuite` → handshake_failure (0x28)
-/// - `FinishedVerifyFailed` → decrypt_error (0x33)
-/// - `AlpnNegotiationFailed` → no_application_protocol (0x78)
-///
-/// All handshake errors are fatal and abort the connection.
-pub const HandshakeError = error{
-    /// Received handshake message in wrong state or unexpected message type.
-    /// RFC 8446 §4: Handshake messages must follow strict ordering.
-    /// Example: ServerHello received by server, or Finished before Certificate.
-    UnexpectedMessage,
-
-    /// ClientHello received when already processed (server role).
-    /// RFC 8446 §4.1.2: Only one ClientHello per handshake (excluding HelloRetryRequest).
-    DuplicateClientHello,
-
-    /// Client/server version mismatch or TLS 1.3 not supported.
-    /// RFC 8446 §4.2.1: supported_versions extension must contain 0x0304 (TLS 1.3).
-    UnsupportedVersion,
-
-    /// ClientHello missing key_share extension.
-    /// RFC 8446 §4.2.8: key_share required for ECDHE in TLS 1.3.
-    MissingKeyShare,
-
-    /// key_share contains unsupported group or invalid key length.
-    /// RFC 8446 §4.2.8: Must match a group in supported_groups extension.
-    /// Example: Received secp384r1 when only x25519 configured.
-    UnsupportedKeyShareGroup,
-
-    /// No mutually supported cipher suite found.
-    /// RFC 8446 §4.1.3: Server must select from client's offered suites.
-    /// Example: Client offers only TLS_AES_256_GCM_SHA384 but server supports only TLS_AES_128_GCM_SHA256.
-    NoCipherSuite,
-
-    /// QUIC transport parameters extension missing.
-    /// RFC 9001 §8.2: quic_transport_parameters (0x0039) mandatory for QUIC.
-    /// Both ClientHello and EncryptedExtensions must include it.
-    MissingTransportParameters,
-
-    /// No mutually supported ALPN protocol.
-    /// RFC 7301: Server must select from client's offered protocols.
-    /// Example: Client offers ["h2"] but server only supports ["h3"].
-    AlpnNegotiationFailed,
-
-    /// No mutually supported signature algorithm for CertificateVerify.
-    /// RFC 8446 §4.2.3: signature_algorithms extension required.
-    /// Example: Client offers only rsa_pss but server has Ed25519 key.
-    NoSignatureScheme,
-
-    /// Finished verify_data does not match expected HMAC.
-    /// RFC 8446 §4.4.4: verify_data = HMAC(finished_key, transcript_hash).
-    /// Indicates transcript tampering or incorrect secret derivation.
-    FinishedVerifyFailed,
-
-    /// ServerHello contains downgrade protection sentinel.
-    /// RFC 8446 §4.1.3: Last 8 bytes of server random signal TLS 1.2 if client supports 1.3.
-    /// Prevents version downgrade attacks.
-    DowngradeAttempt,
-
-    /// Post-handshake authentication (CertificateRequest after handshake completion) is unsupported for QUIC.
-    PostHandshakeAuthUnsupported,
-
-    /// Server sent an empty certificate chain.
-    /// RFC 8446 §4.4.2: Certificate message must contain at least one certificate.
-    EmptyCertificateChain,
-
-    /// CertificateVerify received but no Certificate message was processed.
-    /// RFC 8446 §4.4: Certificate must precede CertificateVerify.
-    MissingCertificate,
-
-    /// Certificate chain validation failed (RFC 5280 §6).
-    /// This includes validity period, hostname mismatch, chain verification, etc.
-    CertificateValidationFailed,
-
-    /// OCSP response required but not provided by server.
-    /// RFC 6960 + RFC 8446 §4.4.2.1: OCSP stapling when require_ocsp=true.
-    MissingOcspResponse,
-
-    /// OCSP response validation failed (status revoked, bad signature, etc.).
-    /// RFC 6960 §2.2: Response must be signed by trusted responder and show good status.
-    OcspValidationFailed,
-
-    /// SCT list required but not provided by server.
-    /// RFC 6962 + RFC 8446 §4.4.2.1: Certificate Transparency when require_scts=true.
-    MissingSctList,
-
-    /// Failed to parse SCT list from certificate extensions.
-    /// RFC 6962 §3.3: SCT list must be properly encoded.
-    SctParsingFailed,
-
-    /// SCT list is empty when require_scts=true.
-    /// RFC 6962: At least one valid SCT required for Certificate Transparency.
-    EmptySctList,
-
-    /// SCT list validation callback rejected the provided SCTs.
-    /// User-defined validation (e.g., checking log inclusion) failed.
-    SctCallbackRejected,
-
-    /// CertificateVerify signature verification failed.
-    /// RFC 8446 §4.4.3: Signature must verify using leaf certificate's public key.
-    InvalidSignature,
-
-    /// Signature algorithm in CertificateVerify is not supported.
-    /// RFC 8446 §4.2.3: Algorithm must be in client's signature_algorithms extension.
-    UnsupportedSignatureAlgorithm,
-
-    /// Decryption or authentication failure (e.g., PSK binder mismatch).
-    /// RFC 8446 §4.2.11.2: Invalid binders MUST be rejected.
-    DecryptError,
-
-    /// Cryptographic operation failed (HKDF, HMAC, or signature calculation).
-    /// RFC 8446 §7: Cryptographic computations must succeed to proceed.
-    CryptoError,
-
-    /// PSK offered but psk_key_exchange_modes extension missing.
-    /// RFC 8446 §4.2.9: Required when using PSK authentication.
-    MissingPskKeyExchangeModes,
-
-    /// PSK offered but psk_dhe_ke mode not supported.
-    /// RFC 8446 §4.2.9: psk_dhe_ke required for forward secrecy.
-    PskDheKeModeRequired,
-};
+/// Errors surfaced during TLS 1.3 handshake message parsing and validation
+/// (canonical definition in types.zig).
+pub const HandshakeError = types.HandshakeError;
 
 /// Traffic direction relative to the current endpoint (RFC 8446 §7.1).
 ///
@@ -649,13 +518,8 @@ pub const ClientHelloView = struct {
     raw: []const u8,
 };
 
-const PskIdentityOwned = struct {
-    identity: []const u8,
-    obfuscated_ticket_age: u32,
-};
-
 const PreSharedKeyInfo = struct {
-    identities: []PskIdentityOwned,
+    identities: []ClientHelloPskIdentityView,
     binders: []const []const u8,
 };
 
@@ -746,7 +610,7 @@ const ClientHelloInfo = struct {
 
         var psk_copy: ?PreSharedKeyInfo = null;
         if (parsed.pre_shared_key) |psk_ext| {
-            const ids = try allocator.alloc(PskIdentityOwned, psk_ext.identities.len);
+            const ids = try allocator.alloc(ClientHelloPskIdentityView, psk_ext.identities.len);
             var ids_filled: usize = 0;
             errdefer {
                 while (ids_filled != 0) {
@@ -872,13 +736,9 @@ const HandshakeState = struct {
                 .quic_transport_parameters = info.quic_transport_parameters,
                 .alpn_list = info.alpn_list,
                 .early_data = info.early_data,
-                .pre_shared_key = if (info.pre_shared_key) |psk| blk: {
-                    const base_ptr = @as([*]const ClientHelloPskIdentityView, @ptrCast(psk.identities.ptr));
-                    const identities_view = base_ptr[0..psk.identities.len];
-                    break :blk ClientHelloPreSharedKeyView{
-                        .identities = identities_view,
-                        .binders = psk.binders,
-                    };
+                .pre_shared_key = if (info.pre_shared_key) |psk| ClientHelloPreSharedKeyView{
+                    .identities = psk.identities,
+                    .binders = psk.binders,
                 } else null,
                 .psk_key_exchange_modes = info.psk_key_exchange_modes,
                 .raw = info.raw,
@@ -1073,7 +933,20 @@ pub const Context = struct {
         self.anti_replay.deinit();
         self.negotiated_signature = null;
         self.negotiated_cipher_suite = null;
+        // CWE-226: Zeroize sensitive keying material before freeing
+        // Use secureZero to prevent compiler from optimizing away the zeroization
+        if (self.handshake_secret) |*hs| {
+            std.crypto.secureZero(u8, hs.bytes[0..hs.len]);
+        }
         self.handshake_secret = null;
+        if (self.client_priv) |*priv| {
+            std.crypto.secureZero(u8, priv);
+        }
+        self.client_priv = null;
+        if (self.server_secret_generated) |*ssg| {
+            std.crypto.secureZero(u8, ssg);
+        }
+        self.server_secret_generated = null;
         self.hash_kind = .sha256;
         self.phase = .initial;
     }
@@ -2087,10 +1960,16 @@ pub const Context = struct {
     /// This implementation provides basic validation but delegates full age checking
     /// to the callback since it has access to ticket metadata.
     ///
+    /// Result of PSK selection: carries both the early secret and the selected identity index.
+    const PskSelection = struct {
+        early_secret: Secret,
+        selected_index: u16,
+    };
+
     /// Returns:
-    /// - The selected PSK (used for early secret)
-    /// - null if no PSK selected (use 0 for early secret)
-    fn selectPsk(self: *Context, ch_view: ClientHelloView) !?Secret {
+    /// - A PskSelection with the early secret and selected identity index
+    /// - null if no PSK selected (caller should use zero early secret)
+    fn selectPsk(self: *Context, ch_view: ClientHelloView) !?PskSelection {
         const psk_ext = ch_view.pre_shared_key orelse return null;
         const lookup_cb = self.callbacks.on_ticket_lookup orelse return null;
 
@@ -2211,7 +2090,10 @@ pub const Context = struct {
                 }
 
                 // Binder verified successfully - PSK is authentic
-                return early_secret;
+                return PskSelection{
+                    .early_secret = early_secret,
+                    .selected_index = @intCast(idx),
+                };
             }
         }
         return null;
@@ -2261,6 +2143,13 @@ pub const Context = struct {
 
         const session_id_opt: ?[]const u8 = if (ch_view.session_id.len != 0) ch_view.session_id else null;
 
+        // Select PSK and derive early secret BEFORE building ServerHello
+        // so we can include the pre_shared_key extension with the selected index.
+        // Track whether PSK authentication succeeded for certificate requirement enforcement.
+        const psk_selection = try self.selectPsk(ch_view);
+        const early_secret = if (psk_selection) |sel| sel.early_secret else key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+        const selected_psk_index: ?u16 = if (psk_selection) |sel| sel.selected_index else null;
+
         const sh_body = try tls13_full.buildServerHello(
             self.allocator,
             server_random,
@@ -2269,6 +2158,7 @@ pub const Context = struct {
             server_pub[0..],
             session_id_opt,
             null,
+            selected_psk_index,
         );
         defer self.allocator.free(sh_body);
 
@@ -2283,11 +2173,6 @@ pub const Context = struct {
         try self.appendOutbound(.Initial, sh_msg, true);
 
         const transcript_after_sh = self.transcripts.handshake.finalize(self.hash_kind);
-
-        // Select PSK and derive early secret
-        // Track whether PSK authentication succeeded for certificate requirement enforcement
-        const psk_selected = try self.selectPsk(ch_view);
-        const early_secret = psk_selected orelse key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
 
         // RFC 8446 §4.2.10 + RFC 9001 §4.6: Handle 0-RTT early data
         if (ch_view.early_data and self.config.enable_early_data and early_secret.slice().len > 0) {
@@ -2423,7 +2308,7 @@ pub const Context = struct {
             // No certificate configured - only acceptable if PSK authentication succeeded
             // RFC 8446 §4.4.1: "The server MUST send this message in all handshakes
             // except those using a PSK with key_exchange mode psk_ke"
-            if (psk_selected == null) {
+            if (psk_selection == null) {
                 // SECURITY: No PSK authentication and no certificate = unauthenticated server
                 // This prevents CWE-287: Improper Authentication
                 traceHandshake("Server: ERROR - Certificate required when not using PSK authentication\n", .{});
@@ -2565,8 +2450,8 @@ pub const Context = struct {
             try ext_buf.appendSlice(self.allocator, &.{ 0x00, 0x00 });
 
             // PskIdentity list
-            // Use the ticket identity from config, fallback to a default for backwards compatibility
-            const identity = self.config.resumption_ticket orelse "resumption_ticket";
+            // RFC 8446 §4.2.11: PSK identity (ticket) is required when offering PSK resumption
+            const identity = self.config.resumption_ticket orelse return HandshakeError.MissingResumptionTicket;
             const identity_len: u16 = @intCast(identity.len);
 
             // Identities list length (2 + identity_len + 4 for obfuscated_ticket_age)
@@ -2714,12 +2599,21 @@ pub const Context = struct {
         if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
         const exts_end = pos + exts_len;
         var server_pub: ?[32]u8 = null;
+        var found_supported_versions = false;
+        var server_selected_psk_index: ?u16 = null;
         while (pos + 4 <= exts_end) {
             const etype = (@as(u16, body[pos]) << 8) | body[pos + 1];
             const elen = (@as(usize, body[pos + 2]) << 8) | body[pos + 3];
             pos += 4;
             if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
-            if (etype == 0x0033) { // key_share
+            if (etype == @intFromEnum(tls13_full.ExtensionType.supported_versions)) {
+                // RFC 8446 §4.2.1: In ServerHello, supported_versions contains
+                // the single selected version (2 bytes). Must be 0x0304 (TLS 1.3).
+                if (elen != 2) return HandshakeError.UnsupportedVersion;
+                const selected_version = (@as(u16, body[pos]) << 8) | body[pos + 1];
+                if (selected_version != 0x0304) return HandshakeError.UnsupportedVersion;
+                found_supported_versions = true;
+            } else if (etype == 0x0033) { // key_share
                 if (elen < 4 + 32) return HandshakeError.MissingKeyShare;
                 const group = (@as(u16, body[pos]) << 8) | body[pos + 1];
                 const klen = (@as(u16, body[pos + 2]) << 8) | body[pos + 3];
@@ -2727,15 +2621,38 @@ pub const Context = struct {
                 var kp: [32]u8 = undefined;
                 @memcpy(&kp, body[pos + 4 .. pos + 4 + 32]);
                 server_pub = kp;
+            } else if (etype == @intFromEnum(tls13_full.ExtensionType.pre_shared_key)) {
+                // RFC 8446 §4.2.11: Server's pre_shared_key extension contains
+                // a single selected_identity value (u16).
+                if (elen != 2) return HandshakeError.UnexpectedMessage;
+                server_selected_psk_index = (@as(u16, body[pos]) << 8) | body[pos + 1];
             }
             pos += elen;
         }
+        // RFC 8446 §4.2.1: supported_versions is REQUIRED in ServerHello
+        if (!found_supported_versions) return HandshakeError.UnsupportedVersion;
         if (server_pub == null) return HandshakeError.MissingKeyShare;
         const priv = self.client_priv orelse return HandshakeError.UnexpectedMessage;
 
+        // RFC 8446 §4.2.11: Validate pre_shared_key extension from server
+        const early_secret = if (server_selected_psk_index) |psk_idx| blk: {
+            // Server selected a PSK -- validate and use it
+            const psk = self.config.resumption_psk orelse {
+                // Server sent pre_shared_key but client didn't offer PSK
+                return HandshakeError.UnexpectedPskExtension;
+            };
+            // We only offer one PSK identity, so index must be 0
+            if (psk_idx != 0) {
+                return HandshakeError.PskIndexOutOfRange;
+            }
+            break :blk key_derivation_mod.deriveEarlySecret(self.hash_kind, psk);
+        } else blk: {
+            // No PSK selected by server -- use zero early secret
+            break :blk key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
+        };
+
         const shared = std.crypto.dh.X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
         const sh_snapshot = self.transcripts.handshake.finalize(self.hash_kind);
-        const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
         const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], sh_snapshot, &early_secret);
         self.handshake_secret = hs.handshake;
 
@@ -3131,12 +3048,17 @@ pub const Context = struct {
             if (self.peer_ocsp_response) |ocsp_bytes| {
                 // Parse leaf certificate to get issuer information
                 const leaf_parsed = try x509.parseCert(self.allocator, chain[0]);
+                defer leaf_parsed.deinit(self.allocator);
 
                 // Determine issuer info for OCSP validation
+                var issuer_parsed: x509.Certificate = undefined;
+                var has_issuer = false;
                 const issuer_info: ?ocsp.IssuerInfo = if (chain.len >= 2) blk: {
-                    const issuer_parsed = try x509.parseCert(self.allocator, chain[1]);
+                    issuer_parsed = try x509.parseCert(self.allocator, chain[1]);
+                    has_issuer = true;
                     break :blk ocsp.IssuerInfo{ .cert = &issuer_parsed, .der = chain[1] };
                 } else null;
+                defer if (has_issuer) issuer_parsed.deinit(self.allocator);
 
                 // Validate the stapled OCSP response
                 ocsp.validateStapledResponse(
@@ -3409,3 +3331,239 @@ pub const Context = struct {
         recv_slot.store(.Application, recv_slot.hash, next);
     }
 };
+
+/// Validate the supported_versions extension in a ServerHello extensions block.
+///
+/// RFC 8446 Section 4.2.1: The ServerHello MUST contain a supported_versions
+/// extension with the selected version set to 0x0304 (TLS 1.3).
+///
+/// This function is used by tests to validate the same logic implemented
+/// inline in Context.handleServerHello. It scans the extensions starting at
+/// the given offset within the body and checks:
+///   - The supported_versions extension (0x002B) is present
+///   - Its data is exactly 2 bytes (selected version)
+///   - The selected version is 0x0304 (TLS 1.3)
+///
+/// Returns the selected version if valid, or an error otherwise.
+fn validateServerHelloSupportedVersions(body: []const u8, ext_start: usize, exts_len: usize) HandshakeError!u16 {
+    var pos = ext_start;
+    const exts_end = ext_start + exts_len;
+    if (exts_end > body.len) return HandshakeError.UnexpectedMessage;
+
+    var found = false;
+    var version: u16 = 0;
+    while (pos + 4 <= exts_end) {
+        const etype = (@as(u16, body[pos]) << 8) | body[pos + 1];
+        const elen = (@as(usize, body[pos + 2]) << 8) | body[pos + 3];
+        pos += 4;
+        if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
+        if (etype == @intFromEnum(tls13_full.ExtensionType.supported_versions)) {
+            if (elen != 2) return HandshakeError.UnsupportedVersion;
+            version = (@as(u16, body[pos]) << 8) | body[pos + 1];
+            if (version != 0x0304) return HandshakeError.UnsupportedVersion;
+            found = true;
+        }
+        pos += elen;
+    }
+    if (!found) return HandshakeError.UnsupportedVersion;
+    return version;
+}
+
+test "RFC 8446 §4.2.1: ServerHello supported_versions=0x0304 is accepted" {
+    // Build a minimal extensions block with supported_versions=0x0304 and key_share
+    var exts: [50]u8 = [_]u8{0} ** 50;
+    // supported_versions: type=0x002b, len=0x0002, value=0x0304
+    exts[0] = 0x00;
+    exts[1] = 0x2b;
+    exts[2] = 0x00;
+    exts[3] = 0x02;
+    exts[4] = 0x03;
+    exts[5] = 0x04;
+
+    const version = try validateServerHelloSupportedVersions(&exts, 0, 6);
+    try std.testing.expectEqual(@as(u16, 0x0304), version);
+}
+
+test "RFC 8446 §4.2.1: ServerHello missing supported_versions returns error" {
+    // Build extensions block with only key_share (0x0033), no supported_versions
+    var exts: [44]u8 = [_]u8{0} ** 44;
+    // key_share: type=0x0033, len=0x0024 (36 bytes), group=0x001d, klen=0x0020, key=32 zeros
+    exts[0] = 0x00;
+    exts[1] = 0x33;
+    exts[2] = 0x00;
+    exts[3] = 0x24;
+    exts[4] = 0x00;
+    exts[5] = 0x1d;
+    exts[6] = 0x00;
+    exts[7] = 0x20;
+    // key data is already zeroed
+
+    const result = validateServerHelloSupportedVersions(&exts, 0, 40);
+    try std.testing.expectError(HandshakeError.UnsupportedVersion, result);
+}
+
+test "RFC 8446 §4.2.1: ServerHello supported_versions with non-TLS-1.3 version returns error" {
+    // Build extensions block with supported_versions=0x0303 (TLS 1.2)
+    var exts: [6]u8 = [_]u8{0} ** 6;
+    exts[0] = 0x00;
+    exts[1] = 0x2b;
+    exts[2] = 0x00;
+    exts[3] = 0x02;
+    exts[4] = 0x03;
+    exts[5] = 0x03; // TLS 1.2
+
+    const result = validateServerHelloSupportedVersions(&exts, 0, 6);
+    try std.testing.expectError(HandshakeError.UnsupportedVersion, result);
+}
+
+test "RFC 8446 §4.2.1: ServerHello supported_versions with wrong length returns error" {
+    // Build extensions block with supported_versions with 3-byte data (invalid)
+    var exts: [7]u8 = [_]u8{0} ** 7;
+    exts[0] = 0x00;
+    exts[1] = 0x2b;
+    exts[2] = 0x00;
+    exts[3] = 0x03; // wrong length (should be 2)
+    exts[4] = 0x03;
+    exts[5] = 0x04;
+    exts[6] = 0x00;
+
+    const result = validateServerHelloSupportedVersions(&exts, 0, 7);
+    try std.testing.expectError(HandshakeError.UnsupportedVersion, result);
+}
+
+// ============================================================================
+// PSK Extension Round-Trip Tests (GAP-001/GAP-002)
+// ============================================================================
+
+/// Parse pre_shared_key extension from a ServerHello body.
+/// Returns the selected PSK identity index if found, null otherwise.
+/// This mirrors the parsing logic in handleServerHello for testability.
+fn parseServerHelloPskExtension(body: []const u8) !?u16 {
+    if (body.len < 2 + 32 + 1) return HandshakeError.UnexpectedMessage;
+    var pos: usize = 2 + 32; // skip legacy_version + random
+    if (pos >= body.len) return HandshakeError.UnexpectedMessage;
+    const sid_len: usize = body[pos];
+    pos += 1 + sid_len;
+    if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
+    pos += 2; // cipher_suite
+    pos += 1; // compression
+    if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
+    const exts_len: usize = (@as(usize, body[pos]) << 8) | @as(usize, body[pos + 1]);
+    pos += 2;
+    if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
+    const exts_end = pos + exts_len;
+    var selected_psk_index: ?u16 = null;
+    while (pos + 4 <= exts_end) {
+        const etype = (@as(u16, body[pos]) << 8) | body[pos + 1];
+        const elen = (@as(usize, body[pos + 2]) << 8) | body[pos + 3];
+        pos += 4;
+        if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
+        if (etype == @intFromEnum(tls13_full.ExtensionType.pre_shared_key)) {
+            if (elen != 2) return HandshakeError.UnexpectedMessage;
+            selected_psk_index = (@as(u16, body[pos]) << 8) | body[pos + 1];
+        }
+        pos += elen;
+    }
+    return selected_psk_index;
+}
+
+test "RFC 8446 §4.2.11: ServerHello with PSK extension round-trip" {
+    // Build a ServerHello WITH PSK extension, then parse it back
+    const allocator = std.testing.allocator;
+    var server_random: [32]u8 = undefined;
+    std.crypto.random.bytes(&server_random);
+    const key_data = &[_]u8{0x42} ** 32;
+
+    const sh = try tls13_full.buildServerHello(
+        allocator,
+        server_random,
+        .TLS_AES_128_GCM_SHA256,
+        .x25519,
+        key_data,
+        null,
+        null,
+        0, // PSK index 0
+    );
+    defer allocator.free(sh);
+
+    // Parse and verify PSK extension is present with correct index
+    const psk_idx = try parseServerHelloPskExtension(sh);
+    try std.testing.expect(psk_idx != null);
+    try std.testing.expectEqual(@as(u16, 0), psk_idx.?);
+}
+
+test "RFC 8446 §4.2.11: ServerHello without PSK extension returns null" {
+    // Build a ServerHello WITHOUT PSK extension, then parse it back
+    const allocator = std.testing.allocator;
+    var server_random: [32]u8 = undefined;
+    std.crypto.random.bytes(&server_random);
+    const key_data = &[_]u8{0x42} ** 32;
+
+    const sh = try tls13_full.buildServerHello(
+        allocator,
+        server_random,
+        .TLS_AES_128_GCM_SHA256,
+        .x25519,
+        key_data,
+        null,
+        null,
+        null, // No PSK
+    );
+    defer allocator.free(sh);
+
+    // Parse and verify PSK extension is NOT present
+    const psk_idx = try parseServerHelloPskExtension(sh);
+    try std.testing.expect(psk_idx == null);
+}
+
+test "RFC 8446 §4.2.11: PSK early_secret derived from PSK when server selects it" {
+    // Verify that deriving early_secret with a PSK produces a different result
+    // than with null (non-PSK handshake)
+    const psk = "my_test_resumption_key_material";
+    const early_with_psk = key_derivation_mod.deriveEarlySecret(.sha256, psk);
+    const early_without_psk = key_derivation_mod.deriveEarlySecret(.sha256, null);
+
+    // The two early secrets MUST be different
+    try std.testing.expect(!std.mem.eql(u8, early_with_psk.slice(), early_without_psk.slice()));
+
+    // Verify both have the correct length for SHA-256
+    try std.testing.expectEqual(@as(usize, 32), early_with_psk.slice().len);
+    try std.testing.expectEqual(@as(usize, 32), early_without_psk.slice().len);
+}
+
+test "RFC 8446 §4.2.11: Non-PSK handshake early_secret unchanged (regression)" {
+    // Regression test: verify that non-PSK handshake still uses null early secret
+    const early = key_derivation_mod.deriveEarlySecret(.sha256, null);
+    // Known value from RFC 8448 test vectors
+    const expected = [_]u8{
+        0x33, 0xad, 0x0a, 0x1c, 0x60, 0x7e, 0xc0, 0x3b,
+        0x09, 0xe6, 0xcd, 0x98, 0x93, 0x68, 0x0c, 0xe2,
+        0x10, 0xad, 0xf3, 0x00, 0xaa, 0x1f, 0x26, 0x60,
+        0xe1, 0xb2, 0x2e, 0x10, 0xf1, 0x70, 0xf9, 0x2a,
+    };
+    try std.testing.expectEqualSlices(u8, &expected, early.slice());
+}
+
+test "RFC 8446 §4.2.11: ServerHello PSK index non-zero round-trip" {
+    // Verify PSK index 5 round-trips correctly through build+parse
+    const allocator = std.testing.allocator;
+    var server_random: [32]u8 = undefined;
+    std.crypto.random.bytes(&server_random);
+    const key_data = &[_]u8{0x42} ** 32;
+
+    const sh = try tls13_full.buildServerHello(
+        allocator,
+        server_random,
+        .TLS_AES_128_GCM_SHA256,
+        .x25519,
+        key_data,
+        null,
+        null,
+        5, // PSK index 5
+    );
+    defer allocator.free(sh);
+
+    const psk_idx = try parseServerHelloPskExtension(sh);
+    try std.testing.expect(psk_idx != null);
+    try std.testing.expectEqual(@as(u16, 5), psk_idx.?);
+}

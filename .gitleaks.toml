@@ -19,9 +19,6 @@ paths = [
   # Test certificates and keys - intentionally committed for testing
   # WARNING: These are TEST KEYS ONLY - never use in production!
   # Files in these paths are self-signed test certificates, not real secrets.
-  '''tests/tests/test_certs/.*\.pem$''',
-  '''tests/tests/test_certs/.*\.crt$''',
-  '''tests/tests/test_certs/.*\.key$''',
   '''testdata/.*\.pem$''',
 
   # Test vector files containing expected cryptographic outputs

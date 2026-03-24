@@ -226,6 +226,8 @@ pub fn containsDowngradeSentinel(random: [32]u8) bool {
 /// - `key_share_data`: Server's ephemeral public key for the selected group
 /// - `client_session_id`: Echo of client's session ID (RFC 8446 §4.1.3 middlebox compatibility)
 /// - `quic_params`: IGNORED (transport params go in EncryptedExtensions per RFC 9001 §8.2)
+/// - `selected_psk_index`: If non-null, the index of the selected PSK identity from the client's
+///   pre_shared_key extension. Emits a pre_shared_key extension in ServerHello per RFC 8446 §4.2.11.
 ///
 /// ## Returns
 ///
@@ -247,8 +249,9 @@ pub fn containsDowngradeSentinel(random: [32]u8) bool {
 /// ## Extension Order (CRITICAL for Interop)
 ///
 /// This implementation follows BoringSSL/Quiche extension order for transcript hash compatibility:
-/// 1. **key_share** (0x0033): Server's ECDHE public key
-/// 2. **supported_versions** (0x002b): TLS 1.3 version (0x0304)
+/// 1. **pre_shared_key** (0x0029): Selected PSK identity index (if PSK selected)
+/// 2. **key_share** (0x0033): Server's ECDHE public key
+/// 3. **supported_versions** (0x002b): TLS 1.3 version (0x0304)
 ///
 /// Changing this order will break handshake with implementations that hardcode expected order!
 ///
@@ -298,7 +301,8 @@ pub fn containsDowngradeSentinel(random: [32]u8) bool {
 ///     .x25519,
 ///     server_public_key,
 ///     client_session_id,
-///     null  // quic_params ignored (goes in EncryptedExtensions)
+///     null,  // quic_params ignored (goes in EncryptedExtensions)
+///     null,  // selected_psk_index (null for non-PSK handshake)
 /// );
 /// defer allocator.free(server_hello);
 /// ```
@@ -310,6 +314,7 @@ pub fn buildServerHello(
     key_share_data: []const u8,
     client_session_id: ?[]const u8,
     quic_params: ?[]const u8,
+    selected_psk_index: ?u16,
 ) ![]u8 {
     var msg = try std.ArrayList(u8).initCapacity(allocator, 0);
     defer msg.deinit(allocator);
@@ -350,13 +355,25 @@ pub fn buildServerHello(
     //   2. pake (if using PAKE)
     //   3. key_share
     //   4. supported_versions
-    // We only support key_share and supported_versions, so our order is:
-    //   1. key_share
-    //   2. supported_versions
+    // Our order is:
+    //   1. pre_shared_key (if PSK selected)
+    //   2. key_share
+    //   3. supported_versions
     // This is CRITICAL because transcript hash = SHA256(ClientHello || ServerHello)
     // and extension order affects the byte representation.
 
-    // key_share (mandatory for ECDHE) - MUST BE FIRST (after PSK/PAKE if present)
+    // RFC 8446 §4.2.11: pre_shared_key extension (if PSK selected)
+    // Contains the selected identity index (u16) from the client's offered PSK list.
+    // Placed first per BoringSSL extension order convention.
+    if (selected_psk_index) |psk_idx| {
+        const psk_data = [_]u8{
+            @intCast(psk_idx >> 8),
+            @intCast(psk_idx & 0xff),
+        };
+        try helpers.writeExtension(allocator, &exts, .pre_shared_key, &psk_data);
+    }
+
+    // key_share (mandatory for ECDHE) - MUST BE AFTER pre_shared_key (if present)
     var ks_data = try std.ArrayList(u8).initCapacity(allocator, 0);
     defer ks_data.deinit(allocator);
     const group_value = @intFromEnum(key_share_group);
@@ -803,4 +820,257 @@ test "buildHelloRetryRequest - session ID echo" {
 
     // Verify session ID length is 0
     try testing.expectEqual(@as(u8, 0), hrr_no_sid[34]);
+}
+
+test "buildServerHello - no PSK extension when selected_psk_index is null" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var server_random: [32]u8 = undefined;
+    std.crypto.random.bytes(&server_random);
+    const key_data = &[_]u8{0x42} ** 32;
+
+    const sh = try buildServerHello(
+        allocator,
+        server_random,
+        .TLS_AES_128_GCM_SHA256,
+        .x25519,
+        key_data,
+        null,
+        null,
+        null, // No PSK selected
+    );
+    defer allocator.free(sh);
+
+    // Parse extensions to verify no pre_shared_key extension present
+    // Skip: version(2) + random(32) + session_id_len(1) + cipher(2) + compression(1) = 38
+    var pos: usize = 38;
+    try testing.expect(pos + 2 <= sh.len);
+    const ext_len = (@as(usize, sh[pos]) << 8) | @as(usize, sh[pos + 1]);
+    pos += 2;
+    const exts_end = pos + ext_len;
+
+    while (pos + 4 <= exts_end) {
+        const etype = (@as(u16, sh[pos]) << 8) | sh[pos + 1];
+        const elen = (@as(usize, sh[pos + 2]) << 8) | @as(usize, sh[pos + 3]);
+        pos += 4;
+        // pre_shared_key type is 0x0029 -- must NOT be present
+        try testing.expect(etype != @intFromEnum(core_types.ExtensionType.pre_shared_key));
+        pos += elen;
+    }
+}
+
+test "buildServerHello - PSK extension emitted when selected_psk_index is set" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var server_random: [32]u8 = undefined;
+    std.crypto.random.bytes(&server_random);
+    const key_data = &[_]u8{0x42} ** 32;
+
+    const sh = try buildServerHello(
+        allocator,
+        server_random,
+        .TLS_AES_128_GCM_SHA256,
+        .x25519,
+        key_data,
+        null,
+        null,
+        0, // PSK index 0 selected
+    );
+    defer allocator.free(sh);
+
+    // Parse extensions to find pre_shared_key extension
+    var pos: usize = 38;
+    try testing.expect(pos + 2 <= sh.len);
+    const ext_len = (@as(usize, sh[pos]) << 8) | @as(usize, sh[pos + 1]);
+    pos += 2;
+    const exts_end = pos + ext_len;
+
+    var found_psk = false;
+    var psk_index: ?u16 = null;
+    var psk_ext_position: usize = 0;
+    var ext_count: usize = 0;
+    while (pos + 4 <= exts_end) {
+        const etype = (@as(u16, sh[pos]) << 8) | sh[pos + 1];
+        const elen = (@as(usize, sh[pos + 2]) << 8) | @as(usize, sh[pos + 3]);
+        pos += 4;
+        if (etype == @intFromEnum(core_types.ExtensionType.pre_shared_key)) {
+            found_psk = true;
+            psk_ext_position = ext_count;
+            // RFC 8446 §4.2.11: selected_identity is u16
+            try testing.expectEqual(@as(usize, 2), elen);
+            psk_index = (@as(u16, sh[pos]) << 8) | sh[pos + 1];
+        }
+        pos += elen;
+        ext_count += 1;
+    }
+
+    try testing.expect(found_psk);
+    try testing.expectEqual(@as(u16, 0), psk_index.?);
+    // Per BoringSSL convention, pre_shared_key should be first extension
+    try testing.expectEqual(@as(usize, 0), psk_ext_position);
+}
+
+test "buildServerHello - PSK extension with non-zero index" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var server_random: [32]u8 = undefined;
+    std.crypto.random.bytes(&server_random);
+    const key_data = &[_]u8{0x42} ** 32;
+
+    const sh = try buildServerHello(
+        allocator,
+        server_random,
+        .TLS_AES_128_GCM_SHA256,
+        .x25519,
+        key_data,
+        null,
+        null,
+        3, // PSK index 3 selected
+    );
+    defer allocator.free(sh);
+
+    // Parse extensions to find PSK index value
+    var pos: usize = 38;
+    const ext_len = (@as(usize, sh[pos]) << 8) | @as(usize, sh[pos + 1]);
+    pos += 2;
+    const exts_end = pos + ext_len;
+
+    var psk_index: ?u16 = null;
+    while (pos + 4 <= exts_end) {
+        const etype = (@as(u16, sh[pos]) << 8) | sh[pos + 1];
+        const elen = (@as(usize, sh[pos + 2]) << 8) | @as(usize, sh[pos + 3]);
+        pos += 4;
+        if (etype == @intFromEnum(core_types.ExtensionType.pre_shared_key)) {
+            try testing.expectEqual(@as(usize, 2), elen);
+            psk_index = (@as(u16, sh[pos]) << 8) | sh[pos + 1];
+        }
+        pos += elen;
+    }
+
+    try testing.expect(psk_index != null);
+    try testing.expectEqual(@as(u16, 3), psk_index.?);
+}
+
+test "buildServerHello - PSK extension byte-level format" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var server_random: [32]u8 = undefined;
+    std.crypto.random.bytes(&server_random);
+    const key_data = &[_]u8{0x42} ** 32;
+
+    const sh = try buildServerHello(
+        allocator,
+        server_random,
+        .TLS_AES_128_GCM_SHA256,
+        .x25519,
+        key_data,
+        null,
+        null,
+        0,
+    );
+    defer allocator.free(sh);
+
+    // The first extension should be pre_shared_key (0x0029) with data [0x00, 0x00]
+    // Extensions start at offset 40 (38 header + 2 ext_len)
+    const ext_start = 40;
+    try testing.expect(sh.len > ext_start + 6);
+
+    // Extension type: 0x0029
+    try testing.expectEqual(@as(u8, 0x00), sh[ext_start]);
+    try testing.expectEqual(@as(u8, 0x29), sh[ext_start + 1]);
+    // Extension length: 0x0002
+    try testing.expectEqual(@as(u8, 0x00), sh[ext_start + 2]);
+    try testing.expectEqual(@as(u8, 0x02), sh[ext_start + 3]);
+    // Selected identity: 0x0000
+    try testing.expectEqual(@as(u8, 0x00), sh[ext_start + 4]);
+    try testing.expectEqual(@as(u8, 0x00), sh[ext_start + 5]);
+}
+
+test "buildServerHello - extension order: PSK before key_share before supported_versions" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var server_random: [32]u8 = undefined;
+    std.crypto.random.bytes(&server_random);
+    const key_data = &[_]u8{0x42} ** 32;
+
+    const sh = try buildServerHello(
+        allocator,
+        server_random,
+        .TLS_AES_128_GCM_SHA256,
+        .x25519,
+        key_data,
+        null,
+        null,
+        0,
+    );
+    defer allocator.free(sh);
+
+    // Parse extension types in order
+    var pos: usize = 38;
+    const ext_len = (@as(usize, sh[pos]) << 8) | @as(usize, sh[pos + 1]);
+    pos += 2;
+    const exts_end = pos + ext_len;
+
+    var ext_types = std.ArrayList(u16).init(allocator);
+    defer ext_types.deinit();
+    while (pos + 4 <= exts_end) {
+        const etype = (@as(u16, sh[pos]) << 8) | sh[pos + 1];
+        const elen = (@as(usize, sh[pos + 2]) << 8) | @as(usize, sh[pos + 3]);
+        pos += 4;
+        try ext_types.append(etype);
+        pos += elen;
+    }
+
+    // Expected order: pre_shared_key (0x0029), key_share (0x0033), supported_versions (0x002b)
+    try testing.expectEqual(@as(usize, 3), ext_types.items.len);
+    try testing.expectEqual(@as(u16, 0x0029), ext_types.items[0]); // pre_shared_key
+    try testing.expectEqual(@as(u16, 0x0033), ext_types.items[1]); // key_share
+    try testing.expectEqual(@as(u16, 0x002b), ext_types.items[2]); // supported_versions
+}
+
+test "buildServerHello - without PSK has only key_share and supported_versions" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var server_random: [32]u8 = undefined;
+    std.crypto.random.bytes(&server_random);
+    const key_data = &[_]u8{0x42} ** 32;
+
+    const sh = try buildServerHello(
+        allocator,
+        server_random,
+        .TLS_AES_128_GCM_SHA256,
+        .x25519,
+        key_data,
+        null,
+        null,
+        null, // No PSK
+    );
+    defer allocator.free(sh);
+
+    // Parse extension types in order
+    var pos: usize = 38;
+    const ext_len = (@as(usize, sh[pos]) << 8) | @as(usize, sh[pos + 1]);
+    pos += 2;
+    const exts_end = pos + ext_len;
+
+    var ext_types = std.ArrayList(u16).init(allocator);
+    defer ext_types.deinit();
+    while (pos + 4 <= exts_end) {
+        const etype = (@as(u16, sh[pos]) << 8) | sh[pos + 1];
+        const elen = (@as(usize, sh[pos + 2]) << 8) | @as(usize, sh[pos + 3]);
+        pos += 4;
+        try ext_types.append(etype);
+        pos += elen;
+    }
+
+    // Without PSK: only key_share (0x0033), supported_versions (0x002b)
+    try testing.expectEqual(@as(usize, 2), ext_types.items.len);
+    try testing.expectEqual(@as(u16, 0x0033), ext_types.items[0]); // key_share
+    try testing.expectEqual(@as(u16, 0x002b), ext_types.items[1]); // supported_versions
 }

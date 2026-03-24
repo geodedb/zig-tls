@@ -121,6 +121,9 @@ pub fn fromHandshakeError(err: anyerror) AlertDescription {
         error.DowngradeAttempt => .illegal_parameter,
         error.DuplicateClientHello => .unexpected_message,
         error.PostHandshakeAuthUnsupported => .unexpected_message,
+        error.MissingResumptionTicket => .illegal_parameter,
+        error.UnexpectedPskExtension => .illegal_parameter,
+        error.PskIndexOutOfRange => .illegal_parameter,
         error.CryptoError => .internal_error,
         error.OutOfMemory => .internal_error,
         else => .internal_error,
@@ -239,6 +242,9 @@ test "fromHandshakeError - comprehensive mapping" {
     try std.testing.expectEqual(AlertDescription.decrypt_error, fromHandshakeError(error.DecryptError));
     try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.DowngradeAttempt));
     try std.testing.expectEqual(AlertDescription.unexpected_message, fromHandshakeError(error.DuplicateClientHello));
+    try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.MissingResumptionTicket));
+    try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.UnexpectedPskExtension));
+    try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.PskIndexOutOfRange));
     try std.testing.expectEqual(AlertDescription.internal_error, fromHandshakeError(error.CryptoError));
     try std.testing.expectEqual(AlertDescription.internal_error, fromHandshakeError(error.OutOfMemory));
 }

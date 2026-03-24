@@ -440,6 +440,7 @@ test "parseCert - Ed25519 self-signed certificate" {
     hexToBytes(cert_hex, &cert_der);
 
     const cert = try x509.parseCert(testing.allocator, &cert_der);
+    defer cert.deinit(testing.allocator);
 
     // Verify basic fields
     try testing.expect(cert.subject.cn != null);
@@ -454,6 +455,7 @@ test "parseCert - certificate with extensions" {
     const cert_der = @embedFile("test_certs/leaf_cert.der");
 
     const cert = try x509.parseCert(testing.allocator, cert_der);
+    defer cert.deinit(testing.allocator);
 
     // Verify extensions were parsed
     try testing.expect(cert.san != null);
@@ -468,6 +470,64 @@ test "parseCert - certificate with extensions" {
     }
     try testing.expect(found_leaf);
     try testing.expect(found_www);
+}
+
+test "parseCert - SAN DNS list survives function return (heap allocated)" {
+    // This test verifies that the SAN DNS list is heap-allocated and not a
+    // dangling pointer to parseCert's stack frame. With testing.allocator,
+    // any memory leak or use-after-free would be caught.
+    const cert_der = @embedFile("test_certs/leaf_cert.der");
+
+    const cert = try x509.parseCert(testing.allocator, cert_der);
+    defer cert.deinit(testing.allocator);
+
+    // Access SAN DNS names after parseCert returns -- if these were stack
+    // pointers, the data would be corrupted/garbage by now.
+    try testing.expect(cert.san != null);
+    const dns_names = cert.san.?.dns;
+    try testing.expect(dns_names.len >= 2);
+
+    // Verify the actual DNS name content is valid and readable
+    var found_leaf = false;
+    var found_www = false;
+    for (dns_names) |dns| {
+        // The DNS names should be slices into the DER buffer, so they
+        // should contain valid ASCII domain names
+        try testing.expect(dns.len > 0);
+        try testing.expect(dns.len < 256); // RFC 5280 limits
+        if (std.mem.eql(u8, dns, "leaf.example.com")) found_leaf = true;
+        if (std.mem.eql(u8, dns, "www.example.com")) found_www = true;
+    }
+    try testing.expect(found_leaf);
+    try testing.expect(found_www);
+}
+
+test "parseCert - deinit frees SAN DNS list memory" {
+    // This test verifies that deinit properly frees heap-allocated SAN DNS
+    // list. With testing.allocator (which detects leaks), the test would
+    // fail if deinit did not free the memory.
+    const cert_der = @embedFile("test_certs/leaf_cert.der");
+
+    const cert = try x509.parseCert(testing.allocator, cert_der);
+    // Explicitly call deinit (testing.allocator will fail if memory leaks)
+    cert.deinit(testing.allocator);
+}
+
+test "parseCert - certificate without SAN has null san field" {
+    // Ed25519 self-signed cert without SAN extension - deinit should be safe
+    const cert_hex = "308201893082013ba003020102021420dfbb8852a7114369616dac435570bb72705c1c300506032b6570303a311c301a06035504030c13656432353531392e6578616d706c652e636f6d310d300b060355040a0c0454657374310b3009060355040613025553301e170d3235313130363134313331345a170d3335313130343134313331345a303a311c301a06035504030c13656432353531392e6578616d706c652e636f6d310d300b060355040a0c0454657374310b3009060355040613025553302a300506032b657003210031f99a615d25bf4303b30463f4cbfff4f0213b4c661a69b86cbbce52aa792db8a3533051301d0603551d0e04160414d5391a5fa777855dea8251fcbe4629a70e9e1987301f0603551d23041830168014d5391a5fa777855dea8251fcbe4629a70e9e1987300f0603551d130101ff040530030101ff300506032b6570034100770d719a2b5ed56616d398830e92af4f6fbeeedcdc4f03b74d9679bb90090f5583738eb147352de491ebfdc928f84af6e917c272b3e186f0d7f389daef08460a";
+    var cert_der: [397]u8 = undefined;
+    @import("std").debug.assert(cert_hex.len == cert_der.len * 2);
+    var j: usize = 0;
+    while (j < cert_hex.len) : (j += 2) {
+        cert_der[j / 2] = std.fmt.parseInt(u8, cert_hex[j .. j + 2], 16) catch unreachable;
+    }
+
+    const cert = try x509.parseCert(testing.allocator, &cert_der);
+    defer cert.deinit(testing.allocator);
+
+    // This cert has no SAN extension - deinit should handle null safely
+    try testing.expect(cert.san == null);
 }
 
 // ============================================================================
@@ -531,6 +591,7 @@ test "validateChain - trust store accepts root" {
     const root_der = @embedFile("test_certs/ed25519_cert.der");
 
     const root_cert = try x509.parseCert(testing.allocator, root_der);
+    defer root_cert.deinit(testing.allocator);
 
     const TrustStore = struct {
         var trusted_spki: []const u8 = &[_]u8{};

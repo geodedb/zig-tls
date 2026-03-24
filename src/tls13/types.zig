@@ -119,4 +119,76 @@ pub const HandshakeError = error{
 
     /// Post-handshake authentication (CertificateRequest after handshake completion) is unsupported for QUIC.
     PostHandshakeAuthUnsupported,
+
+    /// Server sent an empty certificate chain.
+    /// RFC 8446 §4.4.2: Certificate message must contain at least one certificate.
+    EmptyCertificateChain,
+
+    /// CertificateVerify received but no Certificate message was processed.
+    /// RFC 8446 §4.4: Certificate must precede CertificateVerify.
+    MissingCertificate,
+
+    /// Certificate chain validation failed (RFC 5280 §6).
+    /// This includes validity period, hostname mismatch, chain verification, etc.
+    CertificateValidationFailed,
+
+    /// OCSP response required but not provided by server.
+    /// RFC 6960 + RFC 8446 §4.4.2.1: OCSP stapling when require_ocsp=true.
+    MissingOcspResponse,
+
+    /// OCSP response validation failed (status revoked, bad signature, etc.).
+    /// RFC 6960 §2.2: Response must be signed by trusted responder and show good status.
+    OcspValidationFailed,
+
+    /// SCT list required but not provided by server.
+    /// RFC 6962 + RFC 8446 §4.4.2.1: Certificate Transparency when require_scts=true.
+    MissingSctList,
+
+    /// Failed to parse SCT list from certificate extensions.
+    /// RFC 6962 §3.3: SCT list must be properly encoded.
+    SctParsingFailed,
+
+    /// SCT list is empty when require_scts=true.
+    /// RFC 6962: At least one valid SCT required for Certificate Transparency.
+    EmptySctList,
+
+    /// SCT list validation callback rejected the provided SCTs.
+    /// User-defined validation (e.g., checking log inclusion) failed.
+    SctCallbackRejected,
+
+    /// CertificateVerify signature verification failed.
+    /// RFC 8446 §4.4.3: Signature must verify using leaf certificate's public key.
+    InvalidSignature,
+
+    /// Signature algorithm in CertificateVerify is not supported.
+    /// RFC 8446 §4.2.3: Algorithm must be in client's signature_algorithms extension.
+    UnsupportedSignatureAlgorithm,
+
+    /// Decryption or authentication failure (e.g., PSK binder mismatch).
+    /// RFC 8446 §4.2.11.2: Invalid binders MUST be rejected.
+    DecryptError,
+
+    /// Cryptographic operation failed (HKDF, HMAC, or signature calculation).
+    /// RFC 8446 §7: Cryptographic computations must succeed to proceed.
+    CryptoError,
+
+    /// PSK offered but psk_key_exchange_modes extension missing.
+    /// RFC 8446 §4.2.9: Required when using PSK authentication.
+    MissingPskKeyExchangeModes,
+
+    /// PSK offered but psk_dhe_ke mode not supported.
+    /// RFC 8446 §4.2.9: psk_dhe_ke required for forward secrecy.
+    PskDheKeModeRequired,
+
+    /// resumption_psk is set but resumption_ticket is null.
+    /// RFC 8446 §4.2.11: PSK identity (ticket) is required when offering PSK resumption.
+    MissingResumptionTicket,
+
+    /// Server sent pre_shared_key extension but client did not offer PSK.
+    /// RFC 8446 §4.2.11: Server MUST NOT send pre_shared_key if client did not offer one.
+    UnexpectedPskExtension,
+
+    /// Server selected a PSK identity index that exceeds the number of identities offered.
+    /// RFC 8446 §4.2.11: selected_identity MUST be in range [0, num_identities).
+    PskIndexOutOfRange,
 };

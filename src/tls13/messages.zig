@@ -191,7 +191,9 @@ pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
 pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) struct { priv_key: [32]u8, pub_key: [32]u8, shared: ?[32]u8 } {
     var sk: [32]u8 = undefined;
     std.crypto.random.bytes(&sk);
-    // Zig 0.15.1 API: recoverPublicKey derives public key from private key
+    // SAFETY: recoverPublicKey only fails when the private key is the all-zero point (producing
+    // a weak public key). Since sk is filled from std.crypto.random.bytes, the probability of
+    // generating an all-zero 32-byte key is ~2^-256, which is cryptographically negligible.
     const pk = std.crypto.dh.X25519.recoverPublicKey(sk) catch unreachable;
     var shared: ?[32]u8 = null;
     if (peer_pub_opt) |peer_pub| {

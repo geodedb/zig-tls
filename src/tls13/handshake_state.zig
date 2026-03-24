@@ -149,15 +149,9 @@ pub const ClientHelloView = struct {
     raw: []const u8,
 };
 
-/// Internal owned copy of PSK identity.
-const PskIdentityOwned = struct {
-    identity: []const u8,
-    obfuscated_ticket_age: u32,
-};
-
 /// Internal owned copy of pre-shared key info.
 const PreSharedKeyInfo = struct {
-    identities: []PskIdentityOwned,
+    identities: []ClientHelloPskIdentityView,
     binders: []const []const u8,
 };
 
@@ -260,7 +254,7 @@ pub const ClientHelloInfo = struct {
 
         var psk_copy: ?PreSharedKeyInfo = null;
         if (parsed.pre_shared_key) |psk_ext| {
-            const ids = try allocator.alloc(PskIdentityOwned, psk_ext.identities.len);
+            const ids = try allocator.alloc(ClientHelloPskIdentityView, psk_ext.identities.len);
             var ids_filled: usize = 0;
             errdefer {
                 while (ids_filled != 0) {
@@ -414,13 +408,9 @@ pub const HandshakeState = struct {
                 .quic_transport_parameters = info.quic_transport_parameters,
                 .alpn_list = info.alpn_list,
                 .early_data = info.early_data,
-                .pre_shared_key = if (info.pre_shared_key) |psk| blk: {
-                    const base_ptr = @as([*]const ClientHelloPskIdentityView, @ptrCast(psk.identities.ptr));
-                    const identities_view = base_ptr[0..psk.identities.len];
-                    break :blk ClientHelloPreSharedKeyView{
-                        .identities = identities_view,
-                        .binders = psk.binders,
-                    };
+                .pre_shared_key = if (info.pre_shared_key) |psk| ClientHelloPreSharedKeyView{
+                    .identities = psk.identities,
+                    .binders = psk.binders,
                 } else null,
                 .raw = info.raw,
             };

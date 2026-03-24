@@ -18,6 +18,7 @@
 //! 4. Used to derive QUIC packet protection keys
 //! 5. Cleared/zeroized when no longer needed
 
+const std = @import("std");
 const ks = @import("quic_tls");
 const handshake_state = @import("handshake_state.zig");
 
@@ -73,7 +74,10 @@ pub const SecretSlot = struct {
     const Self = @This();
 
     /// Clear secret and reset to initial state (zeroize).
+    /// Security: Uses secureZero to prevent compiler from optimizing away
+    /// the zeroization of sensitive key material (CWE-226).
     pub fn clear(self: *Self) void {
+        std.crypto.secureZero(u8, &self.value.bytes);
         self.value = Secret.empty();
         self.hash = .sha256;
         self.valid = false;

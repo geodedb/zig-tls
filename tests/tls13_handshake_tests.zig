@@ -248,3 +248,52 @@ test "TLS 1.3 encryption levels match QUIC requirements" {
         try testing.expect(level_int >= 0);
     }
 }
+
+// ============================================================================
+// PSK Configuration Validation Tests
+// ============================================================================
+
+test "TLS 1.3 PSK without ticket returns MissingResumptionTicket error" {
+    // GAP-003: resumption_psk set but resumption_ticket null must return error,
+    // not fall back to a hardcoded identity string that no server recognizes.
+    const client_callbacks = tls13.Callbacks{};
+    const client_config = tls13.Config{
+        .allocator = testing.allocator,
+        .role = .Client,
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .resumption_psk = test_psk,
+        .resumption_ticket = null, // deliberately omitted
+        .quic_transport_parameters = &[_]u8{},
+    };
+
+    var client_ctx = try tls13.Context.init(client_config, client_callbacks);
+    defer client_ctx.deinit();
+
+    // Starting the handshake with PSK but no ticket must fail
+    try testing.expectError(
+        error.MissingResumptionTicket,
+        client_ctx.startClientHandshake(),
+    );
+}
+
+test "TLS 1.3 PSK with ticket succeeds" {
+    // Complementary test: when both resumption_psk and resumption_ticket are set,
+    // startClientHandshake should succeed.
+    const client_callbacks = tls13.Callbacks{};
+    const client_config = tls13.Config{
+        .allocator = testing.allocator,
+        .role = .Client,
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .resumption_psk = test_psk,
+        .resumption_ticket = test_ticket,
+        .quic_transport_parameters = &[_]u8{},
+    };
+
+    var client_ctx = try tls13.Context.init(client_config, client_callbacks);
+    defer client_ctx.deinit();
+
+    // This should succeed without error
+    try client_ctx.startClientHandshake();
+}
