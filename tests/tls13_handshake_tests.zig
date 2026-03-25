@@ -380,6 +380,8 @@ test "SEC-029: client rejects null server_name for certificate validation" {
 }
 
 test "SEC-029: client with null server_name and allow_insecure succeeds init" {
+    // allow_insecure panics in release builds (SEC-005), so skip this test.
+    if (@import("builtin").mode != .Debug) return error.SkipZigTest;
     // When allow_insecure is true, null server_name should not prevent
     // handshake initiation (the check occurs during CertificateVerify).
     const client_callbacks = tls13.Callbacks{};

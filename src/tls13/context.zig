@@ -3376,6 +3376,8 @@ test "RFC 8446 §4.2.11: ServerHello PSK index non-zero round-trip" {
 // ============================================================================
 
 test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
+    // allow_insecure panics in release builds (SEC-005), so skip this test.
+    if (@import("builtin").mode != .Debug) return error.SkipZigTest;
     // Exercises the full HRR code path through the Context API:
     //   1. Client sends ClientHello1 (with x25519)
     //   2. Server sends HRR requesting x25519 (with cookie)
@@ -3442,6 +3444,8 @@ test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
 }
 
 test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
+    // allow_insecure panics in release builds (SEC-005), so skip this test.
+    if (@import("builtin").mode != .Debug) return error.SkipZigTest;
     // RFC 8446 §4.1.4: A client which receives a second HRR in the same
     // connection MUST abort the handshake with an "unexpected_message" alert.
     const allocator = std.testing.allocator;
@@ -3486,6 +3490,8 @@ test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
 }
 
 test "QUAL-099: HRR transcript manipulation preserves integrity" {
+    // allow_insecure panics in release builds (SEC-005), so skip this test.
+    if (@import("builtin").mode != .Debug) return error.SkipZigTest;
     // Verifies the transcript hash changes after HRR processing per
     // RFC 8446 §4.4.1 (message_hash construct).
     const allocator = std.testing.allocator;
