@@ -695,7 +695,9 @@ pub const Context = struct {
 
         // SEC-005: Prevent allow_insecure from being used in release builds.
         // This disables ALL certificate validation — only safe in Debug/testing.
-        if (config.allow_insecure and @import("builtin").mode != .Debug) {
+        // Allow in test builds (is_test) so release-mode test suites can still
+        // exercise insecure paths without triggering a panic.
+        if (config.allow_insecure and comptime @import("builtin").mode != .Debug and !@import("builtin").is_test) {
             @panic("SECURITY: allow_insecure=true is forbidden in release builds — it disables all certificate validation");
         }
 
