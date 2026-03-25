@@ -216,4 +216,8 @@ pub const HandshakeError = error{
     /// enabling man-in-the-middle attacks. Either set config.server_name or
     /// set config.allow_insecure=true for test environments.
     MissingServerName,
+
+    /// Internal state invariant violated. This indicates a programming error
+    /// where an expected value was not set before being used.
+    InternalError,
 };

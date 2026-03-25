@@ -322,3 +322,224 @@
   All 6 call sites updated. Allocator parameter removed. Zero heap allocations in this path.
 - **Evidence:** `src/sig.zig:318-328`
 - **Resolved date:** 2026-03-24
+
+---
+
+## Phase 10 Closures (2026-03-25)
+
+### GAP-0095: PSK conformance test compile error -- duplicate const Secret [CLOSED]
+- **Issue:** N/A
+- **Category:** Bug / Test
+- **Resolution:** Removed duplicate `const Secret = ks.Secret;` at line 87. Conformance tests went
+  from 435 to 449 passing (14 PSK tests unblocked).
+- **Evidence:** `tests/conformance/boringssl/psk_handshake.zig:87` (duplicate removed)
+- **Resolved date:** 2026-03-25
+
+### GAP-0096: README test count stale [CLOSED]
+- **Issue:** N/A
+- **Category:** Docs
+- **Resolution:** Updated README test counts from 853 to 1000 (551 unit + 449 conformance).
+  Updated Zig version from 0.14.0+ to 0.15.1.
+- **Evidence:** `README.md:81,85-88,97`
+- **Resolved date:** 2026-03-25
+
+### GAP-0093: 3 skipped tests indicate incomplete coverage [WON'T DO]
+- **Issue:** [#134](https://gitlab.com/devnw/zig/tls/-/issues/134)
+- **Category:** Test
+- **Resolution:** Won't Do. 2 of 3 skipped tests require Zig stdlib features not yet available
+  (Ed25519 cert sig verification, ChaCha20-Poly1305 build-dependent). RSA SPKI test data is a
+  fixture issue, not a code defect. No security or functional impact.
+- **Resolved date:** 2026-03-25
+
+### GAP-0099: 19 GitLab issues remain open despite documented resolution [WON'T DO]
+- **Issue:** N/A
+- **Category:** Docs / Tracking
+- **Resolution:** Won't Do. Issue tracker maintenance is a separate administrative task from
+  code quality and security gap closure. Code changes are merged and verified.
+- **Resolved date:** 2026-03-25
+
+### SEC-050: Private key not zeroed on error in startClientHandshake [CLOSED]
+- **Issue:** N/A
+- **Category:** Security / Key Material Zeroization
+- **Resolution:** Added `defer secureZero` for X25519 private key in `startClientHandshake` and
+  `sendClientHello2`. Private keys now zeroed on all exit paths (success and error).
+- **Evidence:** `src/tls13/context.zig` -- defer secureZero in startClientHandshake and sendClientHello2
+- **Resolved date:** 2026-03-25
+
+### SEC-055: client_priv retained after DH computation [CLOSED]
+- **Issue:** N/A
+- **Category:** Security / Key Material Zeroization
+- **Resolution:** Zeroed `client_priv` after DH computation in `handleServerHello`. Private key
+  no longer retained in Context until `deinit()`.
+- **Evidence:** `src/tls13/context.zig` -- secureZero in handleServerHello after DH
+- **Resolved date:** 2026-03-25
+
+### SEC-049: Missing @compileError guards on 4 trace flags [CLOSED]
+- **Issue:** N/A
+- **Category:** Security / Information Disclosure Defense-in-Depth
+- **Resolution:** Added `@compileError` guards on all 4 trace flags in `engine.zig`, `transcript.zig`,
+  `messages.zig`, and `ocsp.zig`, matching the existing `context.zig` pattern.
+- **Evidence:** `src/tls13/engine.zig`, `src/tls13/transcript.zig`, `src/tls13/messages.zig`, `src/ocsp.zig`
+- **Resolved date:** 2026-03-25
+
+### SEC-054: Memory leak in parseClientHello on error paths [CLOSED]
+- **Issue:** N/A
+- **Category:** Security / Memory Safety
+- **Resolution:** Added errdefer for all allocated slices in `parseClientHello`. Memory properly
+  cleaned on all error paths, preventing DoS via repeated malformed ClientHellos.
+- **Evidence:** `src/tls13/messages/client_hello.zig` -- errdefer at all allocator.dupe sites
+- **Resolved date:** 2026-03-25
+
+### SEC-052: ASN.1 readInteger silent truncation >8 bytes [CLOSED]
+- **Issue:** N/A
+- **Category:** Security / Integer Safety
+- **Resolution:** Added `IntegerOverflow` guard in `readInteger` for values >8 bytes. Rejects
+  oversized integers instead of silent truncation.
+- **Evidence:** `src/asn1.zig` -- IntegerOverflow error return for len > 8
+- **Resolved date:** 2026-03-25
+
+### QUAL-206: Redundant condition in engine.zig [CLOSED]
+- **Issue:** N/A
+- **Category:** Code Quality / Cleanup
+- **Resolution:** Removed redundant `if (elen >= 2)` inside `if (elen >= 3)` block in engine.zig.
+- **Evidence:** `src/tls13/engine.zig` -- inner check removed
+- **Resolved date:** 2026-03-25
+
+### QUAL-204: Magic hex constants in engine.zig [CLOSED]
+- **Issue:** N/A
+- **Category:** Code Quality / Readability
+- **Resolution:** Replaced all magic hex extension type constants (0x0010, 0x0039, 0x0033, etc.)
+  with `@intFromEnum(ExtensionType.*)` in engine.zig.
+- **Evidence:** `src/tls13/engine.zig` -- all hex constants replaced with enum references
+- **Resolved date:** 2026-03-25
+
+### QUAL-210: TicketEntryView exported but unused [CLOSED]
+- **Issue:** N/A
+- **Category:** Code Quality / Cleanup
+- **Resolution:** Removed unused `TicketEntryView` exports from `mod.zig` and `tls13.zig`.
+- **Evidence:** `src/tls13/mod.zig`, `src/tls13.zig` -- exports removed
+- **Resolved date:** 2026-03-25
+
+### QUAL-128: context.zig 11 dupe sites without errdefer [CLOSED]
+- **Issue:** N/A
+- **Category:** Code Quality / Error Handling
+- **Resolution:** Added errdefer at 8 `allocator.dupe` sites in context.zig that lacked coverage.
+- **Evidence:** `src/tls13/context.zig` -- errdefer added at dupe sites
+- **Resolved date:** 2026-03-25
+
+### QUAL-207: 17 .? unwraps in context.zig [CLOSED]
+- **Issue:** N/A
+- **Category:** Code Quality / Safety
+- **Resolution:** Added 10 SAFETY comments for `.?` unwraps documenting invariants. Converted
+  `negotiated_cipher_suite.?` to `orelse return InternalError` for the one case that could fail.
+- **Evidence:** `src/tls13/context.zig` -- SAFETY comments + orelse conversion
+- **Resolved date:** 2026-03-25
+
+### QUAL-201: parseCert 396 lines with inline extension sub-parsers [CLOSED]
+- **Issue:** N/A
+- **Category:** Code Quality / Maintainability
+- **Resolution:** Extracted 7 extension sub-parsers from `parseCert`, reducing it from 396 to 194 lines.
+  New helper functions: parseSanExtension, parseBasicConstraints, parseKeyUsage, parseExtKeyUsage,
+  parseNameConstraints, parsePolicyConstraints, parseAuthorityKeyIdentifier.
+- **Evidence:** `src/x509.zig` -- parseCert 396->194 lines; 7 new helper functions
+- **Resolved date:** 2026-03-25
+
+### QUAL-202: Deep nesting in x509.zig addressed by parseCert extraction [CLOSED]
+- **Issue:** N/A
+- **Category:** Code Quality / Readability
+- **Resolution:** Nesting depth in x509.zig reduced as a direct consequence of QUAL-201 extraction.
+  The 9-level nesting in extension parsing is now distributed across extracted helper functions.
+- **Evidence:** `src/x509.zig` -- nesting reduced via QUAL-201 extraction
+- **Resolved date:** 2026-03-25
+
+### QUAL-203: OCSP error mapping loses diagnostic info [CLOSED]
+- **Issue:** N/A
+- **Category:** Code Quality / API Contract
+- **Resolution:** Added trace logging to 8 critical OCSP parse points. Fixed `.?` unwraps to
+  `orelse` patterns for additional safety. Diagnostic info now available via OCSP trace flag.
+- **Evidence:** `src/ocsp.zig` -- trace logging at 8 parse points
+- **Resolved date:** 2026-03-25
+
+### QUAL-093: CI pipeline lacks build caching [WON'T DO]
+- **Issue:** [#94](https://gitlab.com/devnw/zig/tls/-/work_items/94)
+- **Category:** CI-CD / Infrastructure
+- **Resolution:** Won't Do. CI pipeline caching is infrastructure configuration, not library code.
+  Outside scope of security and quality gap closure.
+- **Resolved date:** 2026-03-25
+
+### QUAL-130: Stale line counts in QUAL-069 [WON'T DO]
+- **Issue:** N/A
+- **Category:** Code Quality / Cleanup
+- **Resolution:** Won't Do. Cosmetic doc update of a deferred item. The actual line count is
+  documented accurately in the QUAL-069 Line Count Update section.
+- **Resolved date:** 2026-03-25
+
+### QUAL-123: build.zig over 800 lines [WON'T DO]
+- **Issue:** N/A
+- **Category:** Code Quality / Maintainability
+- **Resolution:** Won't Do. Large build.zig files are idiomatic for Zig projects with many test
+  targets. The file is well-structured with clear section organization.
+- **Resolved date:** 2026-03-25
+
+### PERF-202: sendKeyUpdate allocates 5-byte buffer [CLOSED]
+- **Issue:** N/A
+- **Category:** Performance / Allocation
+- **Resolution:** sendKeyUpdate uses inline 5-byte stack buffer instead of heap allocation
+  via encodeHandshake.
+- **Evidence:** `src/tls13/context.zig` -- inline stack buffer for KeyUpdate
+- **Resolved date:** 2026-03-25
+
+### PERF-203: HRR client path uses allocating encodeHandshake [CLOSED]
+- **Issue:** N/A
+- **Category:** Performance / Allocation
+- **Resolution:** HRR client path uses stack header for transcript update instead of allocating
+  via encodeHandshake.
+- **Evidence:** `src/tls13/context.zig:1532` -- stack buffer replaces heap alloc
+- **Resolved date:** 2026-03-25
+
+### PERF-204: HRR server path uses allocating encodeHandshake [CLOSED]
+- **Issue:** N/A
+- **Category:** Performance / Allocation
+- **Resolution:** HRR server path uses stack header + appendOutboundFramed instead of allocating
+  via encodeHandshake.
+- **Evidence:** `src/tls13/context.zig:1649` -- stack buffer + appendOutboundFramed
+- **Resolved date:** 2026-03-25
+
+### PERF-042: Per-cert allocator.dupe in handleCertificate loop [CLOSED]
+- **Issue:** N/A
+- **Category:** Performance / Allocation
+- **Resolution:** handleCertificate uses single contiguous buffer for cert chain instead of
+  per-cert allocator.dupe calls. Batch allocation replaces N individual allocations.
+- **Evidence:** `src/tls13/context.zig` -- single contiguous cert chain buffer
+- **Resolved date:** 2026-03-25
+
+### PERF-016: Global trust store RwLock contention [CLOSED]
+- **Issue:** N/A
+- **Category:** Performance / Contention
+- **Resolution:** Cached trust store in Context avoids RwLock on every handshake. Trust store
+  is read once during Context initialization and cached locally.
+- **Evidence:** `src/tls13/context.zig` -- cached trust store field
+- **Resolved date:** 2026-03-25
+
+### PERF-041: Zero-capacity ArrayList in validateChain name constraints [CLOSED]
+- **Issue:** N/A
+- **Category:** Performance / Allocation
+- **Resolution:** ArrayList pre-sized to 4 in validateChain name constraints, avoiding
+  immediate reallocation on first append.
+- **Evidence:** `src/x509.zig` -- initCapacity(allocator, 4) for name constraint lists
+- **Resolved date:** 2026-03-25
+
+### PERF-043: Context struct hot/cold field mixing [CLOSED]
+- **Issue:** N/A
+- **Category:** Performance / Cache Locality
+- **Resolution:** Context struct fields reordered hot->warm->cold for improved cache locality.
+  Hot fields (phase, hash_kind, transcripts) grouped at struct top.
+- **Evidence:** `src/tls13/context.zig` -- field reordering
+- **Resolved date:** 2026-03-25
+
+### PERF-206: Benchmark suite lacks allocation tracking [WON'T DO]
+- **Issue:** N/A
+- **Category:** Performance / Test Infrastructure
+- **Resolution:** Won't Do. Test infrastructure only; does not affect library code or runtime
+  performance. Allocation tracking is a benchmark enhancement, not a code defect.
+- **Resolved date:** 2026-03-25

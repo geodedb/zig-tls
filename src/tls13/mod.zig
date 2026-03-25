@@ -259,9 +259,6 @@ pub const TicketStore = engine.TicketStore;
 /// Session ticket entry.
 pub const TicketEntry = engine.TicketEntry;
 
-/// Session ticket entry view.
-pub const TicketEntryView = engine.TicketEntryView;
-
 // ============================================================================
 
 // Re-export test helpers for testing

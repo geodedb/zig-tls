@@ -466,6 +466,10 @@ pub const Decoder = struct {
         const tlv = try self.readTLV();
         if (tagClass(tlv.tag) != .universal or tagNumber(tlv.tag) != 2)
             return error.UnexpectedTag;
+        // SEC-052: Reject integers that exceed 8 bytes to prevent silent
+        // truncation when accumulating into a u64.  ASN.1 INTEGERs can be
+        // arbitrarily large, but callers of this helper expect a u64 result.
+        if (tlv.val.len > 8) return error.IntegerOverflow;
         var v: u64 = 0;
         for (tlv.val) |b| {
             v = (v << 8) | b;

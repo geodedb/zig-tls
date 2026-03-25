@@ -253,9 +253,6 @@ pub const TicketStore = mod.TicketStore;
 /// Session ticket entry.
 pub const TicketEntry = mod.TicketEntry;
 
-/// Session ticket entry view.
-pub const TicketEntryView = mod.TicketEntryView;
-
 // ============================================================================
 // Tests
 // ============================================================================

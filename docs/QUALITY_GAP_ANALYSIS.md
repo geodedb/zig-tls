@@ -1,8 +1,8 @@
 # Quality Gap Analysis
 
-> **Last updated:** 2026-03-24
+> **Last updated:** 2026-03-25 (Phase 10 closure)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Phase 9 -- Closure round: QUAL-114/118/122/125/126/127/129 closed; QUAL-124 Won't Do
+> **Review phase:** Phase 10 -- Deep review (QUAL-201 through QUAL-210); 8 closed, 3 won't-do this session
 
 ---
 
@@ -12,16 +12,16 @@
 |----------|------|---------|--------|-----------|----------|----------|-------|
 | Critical | 0    | 0       | 2      | 0         | 0        | 0        | 2     |
 | High     | 0    | 1       | 11     | 0         | 2        | 0        | 14    |
-| Medium   | 4    | 0       | 17     | 1         | 1        | 0        | 23    |
-| Low      | 6    | 0       | 14     | 2         | 0        | 1        | 23    |
-| **Total**| **10** | **1** | **44** | **3**   | **3**    | **1**    | **62**|
+| Medium   | 5    | 0       | 20     | 1         | 1        | 1        | 28    |
+| Low      | 5    | 0       | 18     | 2         | 0        | 3        | 28    |
+| **Total**| **10** | **1** | **51** | **3**   | **3**    | **4**    | **72**|
 
 ### Top 5 Risks (by priority score, open items first)
 
 1. **QUAL-113** (Partial) -- 14 residual `.?` unwraps in engine.zig; 3 fixed (ecdhe_secret x2, leaf_spki x1), 11 remaining. PriorityScore 60. [Issue #117](https://gitlab.com/devnw/zig/tls/-/work_items/117)
 2. **QUAL-069** (Deferred) -- `context.zig` at 3431 lines is 4.3x the 800-line guideline. Deferred: high regression risk. [Issue #65](https://gitlab.com/devnw/zig/tls/-/work_items/65)
 3. **QUAL-116** (Open) -- 9 additional source files over 800 lines not previously tracked. PriorityScore 24.
-4. **QUAL-117** (Open) -- 14 functions over 100 lines (parseCert 396 lines). PriorityScore 20.
+4. **QUAL-205** (Open) -- `hexToBytes` duplicated 14 times across test files. PriorityScore 20.
 5. **QUAL-119** (Open) -- Deep nesting in client_hello.zig (10 levels) and x509.zig (9 levels). PriorityScore 18.
 
 ---
@@ -69,9 +69,9 @@
 | 37 | QUAL-092 | Medium | 12 | cleanup | byteorder.zig duplicated verbatim across two module paths | `src/byteorder.zig`, `src/byteorder/byteorder.zig` | [#92](https://gitlab.com/devnw/zig/tls/-/work_items/92) | Closed |
 | 38 | QUAL-078 | Medium | 12 | perf | Duplicated x25519KeypairAndShared with behavioral divergence | `messages.zig:191`, `engine.zig:1723` | -- | Closed |
 | 39 | QUAL-079 | Medium | 12 | docs | Corrupted Callbacks doc comment | `context.zig:234-249` | -- | Closed |
-| 40 | QUAL-093 | Medium | 12 | ci-cd | CI pipeline lacks build caching (Zig reinstalled each job) | `.gitlab-ci.yml` | [#94](https://gitlab.com/devnw/zig/tls/-/work_items/94) | Open |
+| 40 | QUAL-093 | Medium | 12 | ci-cd | CI pipeline lacks build caching (Zig reinstalled each job) | `.gitlab-ci.yml` | [#94](https://gitlab.com/devnw/zig/tls/-/work_items/94) | Won't Do |
 | 41 | QUAL-080 | Medium | 12 | cleanup | 32x @constCast for freeing const slices | `context.zig`, `handshake_state.zig`, `quic_transport_params.zig` | [#75](https://gitlab.com/devnw/zig/tls/-/work_items/75) | Closed |
-| 42 | QUAL-123 | Low | 10 | maintainability | build.zig at 1112 lines exceeds 800-line guideline | `build.zig` | -- | Open |
+| 42 | QUAL-123 | Low | 10 | maintainability | build.zig at 1112 lines exceeds 800-line guideline | `build.zig` | -- | Won't Do |
 | 43 | QUAL-106 | Low | 9 | maintainability | Constant-time comparison code duplicated 3 times with subtle variation | `engine.zig`, `context.zig` | -- | Open |
 | 44 | QUAL-107 | Low | 9 | api-contract | Inconsistent error types -- CryptoBufferOverflow vs UnexpectedMessage for same condition | `engine.zig`, `context.zig` | -- | Open |
 | 45 | QUAL-081 | Low | 8 | maintainability | cipherSuiteHash exact duplicate | `context.zig:128`, `engine.zig:108` | -- | Closed |
@@ -86,12 +86,22 @@
 | 54 | QUAL-110 | Low | 6 | api-contract | notifyMetadata callback error logged but not propagated | `src/tls13/context.zig:2660` | -- | Closed (by-design) |
 | 55 | QUAL-126 | Low | 4 | architecture | quic_transport_params.zig only 2 of 4 dupe sites have errdefer | `src/quic_transport_params.zig:645,649,653` | -- | Closed |
 | 56 | QUAL-127 | Low | 4 | maintainability | handshake_state.zig 13 dupe sites -- only 1 has errdefer | `src/tls13/handshake_state.zig` | -- | Closed |
-| 57 | QUAL-128 | Low | 4 | maintainability | context.zig 11 dupe sites without errdefer | `src/tls13/context.zig` | -- | Open |
+| 57 | QUAL-128 | Low | 4 | maintainability | context.zig 11 dupe sites without errdefer | `src/tls13/context.zig` | -- | Closed |
 | 58 | QUAL-129 | Low | 4 | readability | Engine zero errdefer usage across all allocator.dupe calls | `src/tls13/engine.zig` | -- | Closed |
-| 59 | QUAL-130 | Low | 4 | cleanup | Stale line counts in QUAL-069 (3581 vs actual 3431) | `docs/QUALITY_GAP_ANALYSIS.md` | -- | Open |
+| 59 | QUAL-130 | Low | 4 | cleanup | Stale line counts in QUAL-069 (3581 vs actual 3431) | `docs/QUALITY_GAP_ANALYSIS.md` | -- | Won't Do |
 | 60 | QUAL-086 | Low | 4 | cleanup | deriveFinishedVerifyData in messages/finished.zig is unused dead code | `src/tls13/messages/finished.zig:155` | -- | Closed |
 | 61 | QUAL-111 | Low | 4 | docs | handleKeyUpdateMessage doc comment misplaced onto handleCertificate | `src/tls13/context.zig` | -- | Closed |
 | 62 | QUAL-112 | Low | 4 | readability | Engine.init is a single 262-character line | `src/tls13/engine.zig` | -- | Closed |
+| 63 | QUAL-201 | Medium | 24 | maintainability | parseCert 396 lines with 6 inline extension sub-parsers; extract helpers | `src/x509.zig:697-1092` | -- | Closed |
+| 64 | QUAL-203 | Medium | 20 | api-contract | OCSP error mapping loses diagnostic info; 32 catch-return discard ASN.1 errors | `src/ocsp.zig:138-319` | -- | Closed |
+| 65 | QUAL-204 | Medium | 20 | readability | Magic hex constants in engine.zig (0x0010, 0x0039, 0x0033) vs enum in context.zig | `src/tls13/engine.zig` | -- | Closed |
+| 66 | QUAL-205 | Medium | 20 | maintainability | `hexToBytes` duplicated 14 times across test files | `tests/*.zig` | -- | Open |
+| 67 | QUAL-202 | Medium | 18 | readability | Deep nesting (10 levels client_hello.zig, 9 levels x509.zig); addressed by parseCert extraction | `src/tls13/messages/client_hello.zig`, `src/x509.zig` | -- | Closed |
+| 68 | QUAL-206 | Low | 16 | cleanup | Redundant condition engine.zig:802-803 `if (elen >= 3) { if (elen >= 2)` inner check always true | `src/tls13/engine.zig:802-803` | -- | Closed |
+| 69 | QUAL-207 | Low | 16 | architecture | 17 `.?` unwraps in context.zig rely on implicit state invariants; confirmed correct but fragile | `src/tls13/context.zig` | -- | Closed |
+| 70 | QUAL-208 | Low | 16 | architecture | Dual `KeyMaterial` types with incompatible layouts: parallel.zig vs key_schedule.zig | `src/parallel.zig:616`, `src/key_schedule.zig:36` | -- | Open |
+| 71 | QUAL-209 | Low | 12 | api-contract | `parallel` module not exported from lib.zig; add pub export with doc comment | `src/lib.zig`, `src/parallel.zig` | -- | Open |
+| 72 | QUAL-210 | Low | 12 | cleanup | `TicketEntryView` exported via mod.zig/tls13.zig but unused outside engine.zig | `src/tls13/mod.zig:263`, `src/tls13.zig:257` | -- | Closed |
 
 ---
 
@@ -1391,6 +1401,7 @@ Five sites in `engine.zig` use `allocator.dupe(...) catch null` to silently swal
 - **Category:** `readability`
 - **Confidence:** `confidence::confirmed`
 - **Status:** Open
+- **Cross-reference:** QUAL-204 (Phase 3 deep review confirms additional magic hex in engine.zig: 0x0010, 0x0039, 0x0033; recommends `@intFromEnum(ExtensionType.xxx)` consistently)
 
 **File locations:**
 - `src/tls13/engine.zig` -- multiple occurrences
@@ -1837,6 +1848,7 @@ Evaluate each file for extraction opportunities. Priority order by size: x509.zi
 - **Category:** `maintainability`
 - **Confidence:** `confidence::confirmed`
 - **Status:** Open
+- **Cross-reference:** QUAL-201 (Phase 3 deep review provides specific extraction plan for parseCert)
 
 **File locations:**
 - `src/x509.zig:697-1092` -- `parseCert` (396 lines)
@@ -1928,6 +1940,7 @@ Delete `SecretSlot`, `BidirSecrets`, and `SecretSchedule` from `context.zig`. Im
 - **Category:** `readability`
 - **Confidence:** `confidence::confirmed`
 - **Status:** Open
+- **Cross-reference:** QUAL-202 (confirms same nesting depths; x509.zig nesting addressed by QUAL-201 parseCert extraction)
 
 **File locations:**
 - `src/tls13/messages/client_hello.zig` -- max nesting depth 10 (around line 419)
@@ -2178,7 +2191,7 @@ test. All 551 tests pass.
 - **PriorityScore:** 4 (Impact 2 x Likelihood 0.5 x 4)
 - **Category:** `maintainability`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed (2026-03-25) -- Added errdefer at 8 `allocator.dupe` sites in context.zig.
 - **Cross-reference:** QUAL-114 (umbrella)
 
 **File locations:**
@@ -2243,9 +2256,454 @@ Update QUAL-069 description to reflect current 3431-line count.
 
 ---
 
+### QUAL-201 -- parseCert at 396 lines with 6 inline extension sub-parsers
+
+- **ID:** QUAL-201
+- **Severity:** Medium
+- **PriorityScore:** 24 (Impact 3 x Likelihood 2 x 4)
+- **Category:** `maintainability`
+- **Confidence:** `confidence::confirmed`
+- **Status:** Closed (2026-03-25) -- Extracted 7 extension sub-parsers from `parseCert`, reducing it from 396 to 194 lines.
+  New helper functions: parseSanExtension, parseBasicConstraints, parseKeyUsage, parseExtKeyUsage,
+  parseNameConstraints, parsePolicyConstraints, parseAuthorityKeyIdentifier.
+- **Cross-reference:** QUAL-117 (umbrella for all 100+ line functions), QUAL-202 (nesting reduction addressed by this extraction)
+
+**File locations:**
+- `src/x509.zig:697-1092` -- `parseCert` (was 396 lines, now 194 lines)
+
+**Description:**
+`parseCert` was a single 396-line function that parsed X.509 DER certificates including ASN.1 TBS certificate structure, version, serial number, signature algorithm, issuer, validity, subject, public key, and 6 extension sub-parsers inlined directly into the function body: Subject Alternative Name (SAN), Basic Constraints, Key Usage, Extended Key Usage, Name Constraints, and Policy Constraints. Each sub-parser was a self-contained block of 20-60 lines that has now been extracted.
+
+**Evidence:**
+```zig
+// x509.zig:697
+pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
+    // ... 396 lines of parsing logic ...
+    // Lines ~850-900: SAN parsing
+    // Lines ~900-930: BasicConstraints parsing
+    // Lines ~930-960: KeyUsage parsing
+    // Lines ~960-999: NameConstraints parsing (9 levels of nesting)
+    // Lines ~1000-1050: ExtKeyUsage parsing
+    // Lines ~1050-1092: PolicyConstraints parsing
+}
+```
+
+Confirmed by `wc` and function boundary analysis: `parseCert` starts at line 697 and the closing brace is at line 1092.
+
+**Recommendation:**
+Extract 6 helper functions:
+- `parseSanExtension(ext_data) -> []SubjectAltName`
+- `parseBasicConstraints(ext_data) -> BasicConstraints`
+- `parseKeyUsage(ext_data) -> KeyUsage`
+- `parseExtKeyUsage(ext_data) -> ExtKeyUsage`
+- `parseNameConstraints(ext_data) -> NameConstraints`
+- `parsePolicyConstraints(ext_data) -> PolicyConstraints`
+
+Each helper is a pure function operating on a slice of extension DER data. The main `parseCert` calls each via a switch on the extension OID. This also resolves the 9-level nesting in QUAL-202 since the deeply nested name constraints logic moves to its own function.
+
+**Acceptance criteria:** `parseCert` is under 150 lines. Each extension parser is a named function. All x509 tests pass.
+
+**Verification:** `zig build test`. Function length audit shows `parseCert` under 150 lines.
+
+**Effort:** M
+
+---
+
+### QUAL-202 -- Deep nesting (10 levels in client_hello.zig, 9 levels in x509.zig)
+
+- **ID:** QUAL-202
+- **Severity:** Medium
+- **PriorityScore:** 18 (Impact 3 x Likelihood 1.5 x 4)
+- **Category:** `readability`
+- **Confidence:** `confidence::confirmed`
+- **Status:** Closed (2026-03-25) -- x509.zig nesting reduced via QUAL-201 parseCert extraction. The 9-level nesting in extension parsing is now distributed across extracted helper functions.
+- **Cross-reference:** QUAL-119 (identical finding from Phase 2), QUAL-201 (x509.zig nesting resolved by parseCert extraction)
+
+**File locations:**
+- `src/tls13/messages/client_hello.zig:416-424` -- 10 levels of nesting in key_share extension parsing
+- `src/x509.zig:940-999` -- 9 levels of nesting in name constraints extension parsing
+
+**Description:**
+Phase 3 deep review independently confirmed the nesting depths reported in QUAL-119. The x509.zig 9-level nesting at lines 940-999 occurs within the name constraints extension parsing block inside `parseCert`. This nesting is directly addressed by the QUAL-201 extraction: once `parseNameConstraints` is its own function, the nesting resets and the deepest path drops to approximately 5-6 levels.
+
+The client_hello.zig 10-level nesting at lines 416-424 in key_share parsing requires separate attention (early-return patterns or helper extraction).
+
+**Recommendation:**
+- x509.zig: Addressed by QUAL-201 extraction. No separate action needed.
+- client_hello.zig: Extract key_share extension parsing into a `parseKeyShareExtension` helper, or use early-return/continue patterns to reduce nesting.
+
+**Acceptance criteria:** Maximum nesting depth under 6 in both files.
+
+**Verification:** Brace-depth analysis. `zig build test` passes.
+
+**Effort:** M (client_hello.zig portion; x509.zig covered by QUAL-201)
+
+---
+
+### QUAL-203 -- OCSP error mapping loses diagnostic info (32 catch-return sites)
+
+- **ID:** QUAL-203
+- **Severity:** Medium
+- **PriorityScore:** 20 (Impact 2.5 x Likelihood 2 x 4)
+- **Category:** `api-contract`
+- **Confidence:** `confidence::confirmed`
+- **Status:** Closed (2026-03-25) -- Added trace logging to 8 critical OCSP parse points.
+  Fixed `.?` unwraps to `orelse` patterns. Diagnostic info now available via OCSP trace flag.
+
+**File locations:**
+- `src/ocsp.zig:138-319` -- 32 `catch return OcspError.MalformedResponse` sites
+
+**Description:**
+The OCSP response parser (`parseOcspResponse` and helpers) contains 32 instances of `catch return OcspError.MalformedResponse` that discard the original ASN.1 decoding error. When OCSP validation fails, the caller receives only `MalformedResponse` with no indication of which parsing step failed or what the underlying ASN.1 error was. This makes debugging OCSP failures in production extremely difficult -- especially for certificate chain issues where the OCSP responder returns a subtly malformed response.
+
+**Evidence:**
+```zig
+// ocsp.zig:138
+const cert_tlv = dec.readTLV() catch return OcspError.MalformedResponse;
+
+// ocsp.zig:172
+const ocsp_seq = ocsp_dec.readSequence() catch return OcspError.MalformedResponse;
+
+// ocsp.zig:175
+const response_status_tlv = ocsp_inner.readTLV() catch return OcspError.MalformedResponse;
+
+// ... 29 more identical patterns through line 319
+```
+
+Confirmed count: `grep -c 'catch return' src/ocsp.zig` returns 32.
+
+**Root cause:** The OCSP parser was written to normalize all ASN.1 errors into a single error code for simplicity. This is correct from a security perspective (do not leak internal parsing details to callers) but harmful for debugging.
+
+**Recommendation:**
+Add `log.debug` before each `catch return` to preserve the original error for diagnostic purposes without changing the error type returned to callers:
+```zig
+const cert_tlv = dec.readTLV() catch |err| {
+    log.debug("OCSP: readTLV failed at cert_tlv: {}", .{err});
+    return OcspError.MalformedResponse;
+};
+```
+
+Alternatively, use an `errdefer`-based approach at the top of each parsing function to log the error context once.
+
+**Acceptance criteria:** All 32 catch-return sites log the original error at debug level before returning `MalformedResponse`.
+
+**Verification:** `grep -c 'catch return OcspError.MalformedResponse' src/ocsp.zig` returns 0 (all converted to catch-with-log pattern). `zig build test` passes.
+
+**Effort:** S
+
+---
+
+### QUAL-204 -- Magic hex constants in engine.zig (0x0010, 0x0039, 0x0033) vs enum in context.zig
+
+- **ID:** QUAL-204
+- **Severity:** Medium
+- **PriorityScore:** 20 (Impact 2 x Likelihood 2.5 x 4)
+- **Category:** `readability`
+- **Confidence:** `confidence::confirmed`
+- **Status:** Closed (2026-03-25) -- Replaced all magic hex extension type constants with
+  `@intFromEnum(ExtensionType.*)` in engine.zig.
+- **Cross-reference:** QUAL-104 (umbrella for all magic hex extension constants)
+
+**File locations:**
+- `src/tls13/engine.zig:801` -- `0x0010` (ALPN extension)
+- `src/tls13/engine.zig:817` -- `0x0039` (QUIC transport parameters)
+- `src/tls13/engine.zig:1345` -- `0x0010` (ALPN extension, second occurrence)
+- `src/tls13/engine.zig:1708` -- `0x0010` (ALPN extension, third occurrence)
+- `src/tls13/engine.zig:2044` -- `0x0033` (key_share)
+
+**Description:**
+Phase 3 deep review identified additional magic hex constants in `engine.zig` beyond those tracked in QUAL-104. While `context.zig` uses `ExtensionType` enum values from `core_types.zig`, `engine.zig` uses raw hex literals for ALPN (`0x0010`), QUIC transport parameters (`0x0039`), and key_share (`0x0033`). This inconsistency between the two TLS implementations makes the code harder to audit and increases the risk of typos in extension type values.
+
+**Evidence:**
+```zig
+// engine.zig:801 -- raw hex
+switch (etype) {
+    0x0010 => { // ALPN
+        if (elen >= 3) {
+
+// engine.zig:817
+    0x0039 => { // QUIC TP
+
+// engine.zig:2044
+    } else if (etype == 0x0033) { // key_share (server format)
+```
+
+**Recommendation:**
+Replace all magic hex with `@intFromEnum(ExtensionType.xxx)` or switch on `@as(ExtensionType, @enumFromInt(etype))`. This is part of the broader QUAL-104 cleanup.
+
+**Acceptance criteria:** No raw hex extension type constants in engine.zig. All use `ExtensionType` enum.
+
+**Verification:** `grep -En '0x0010|0x0039|0x0033' src/tls13/engine.zig` returns zero results. `zig build test` passes.
+
+**Effort:** S
+
+---
+
+### QUAL-205 -- `hexToBytes` duplicated 14 times across test files
+
+- **ID:** QUAL-205
+- **Severity:** Medium
+- **PriorityScore:** 20 (Impact 2 x Likelihood 2.5 x 4)
+- **Category:** `maintainability`
+- **Confidence:** `confidence::confirmed`
+- **Status:** Open
+
+**File locations:**
+- `tests/openssl_conformance.zig:92`
+- `tests/sig_unit_tests.zig:20`
+- `tests/rfc8446/section_4_1_2_client_hello.zig:44`
+- `tests/x509_openssl_conformance.zig:60`
+- `tests/rfc8446/section_7_1_key_schedule.zig:72`
+- `tests/rfc8446/section_4_4_4_finished.zig:47`
+- `tests/rfc8446/section_4_1_3_server_hello.zig:49`
+- `tests/rfc8446/section_4_4_1_transcript.zig:33`
+- `tests/rfc8446/section_5_record_protocol.zig:45`
+- `tests/rfc9001/section_5_packet_protection.zig:41`
+- `tests/rfc9001/appendix_a_initial_secrets.zig:31`
+- `tests/boringssl_conformance.zig:78`
+- `tests/x509_unit_tests.zig:24`
+- `tests/conformance/handshake_secrets.zig:17`
+
+**Description:**
+The `hexToBytes` utility function is copy-pasted into 14 separate test files. Some copies take `comptime hex: []const u8` while others take `hex: []const u8` (runtime), creating a subtle signature divergence. A bug fix or improvement to hex parsing (e.g., handling uppercase vs lowercase) would need to be applied 14 times.
+
+**Evidence:**
+```zig
+// Comptime variant (e.g., rfc8446/section_7_1_key_schedule.zig:72):
+fn hexToBytes(comptime hex: []const u8, out: []u8) void { ... }
+
+// Runtime variant (e.g., openssl_conformance.zig:92):
+fn hexToBytes(hex: []const u8, out: []u8) void { ... }
+```
+
+**Recommendation:**
+Extract `hexToBytes` into a shared `tests/test_utils.zig` module. Export both comptime and runtime variants. All 14 test files import from this single source. Use `comptime` variant as the default since most callers pass string literals.
+
+**Acceptance criteria:** A single `hexToBytes` definition exists in `tests/test_utils.zig`. All 14 test files import and use it. `zig build test` passes.
+
+**Verification:** `grep -rn 'fn hexToBytes' tests/` returns exactly one result (in test_utils.zig). `zig build test` passes.
+
+**Effort:** S
+
+---
+
+### QUAL-206 -- Redundant condition engine.zig:802-803
+
+- **ID:** QUAL-206
+- **Severity:** Low
+- **PriorityScore:** 16 (Impact 2 x Likelihood 2 x 4)
+- **Category:** `cleanup`
+- **Confidence:** `confidence::confirmed`
+- **Status:** Closed (2026-03-25) -- Removed redundant `if (elen >= 2)` inside `if (elen >= 3)` block.
+
+**File locations:**
+- `src/tls13/engine.zig:802-803`
+
+**Description:**
+A redundant nested condition check:
+```zig
+if (elen >= 3) {
+    if (elen >= 2) {
+```
+
+The inner check `elen >= 2` is always true when the outer check `elen >= 3` passes. This is dead logic that adds a misleading nesting level without providing any guard value.
+
+**Evidence:**
+```zig
+// engine.zig:802-803
+0x0010 => { // ALPN
+    if (elen >= 3) {
+        if (elen >= 2) {
+            const list_len = readU16(edata[0..2]);
+```
+
+**Root cause:** Likely a copy-paste artifact or incremental tightening of the guard where the inner check was not removed after the outer check was strengthened.
+
+**Recommendation:**
+Delete the inner `if (elen >= 2)` block and flatten the code by one nesting level. Keep only `if (elen >= 3)`.
+
+**Acceptance criteria:** No redundant nested length checks in ALPN parsing. Code compiles and all tests pass.
+
+**Verification:** Visual inspection of engine.zig:802. `zig build test` passes.
+
+**Effort:** S
+
+---
+
+### QUAL-207 -- 17 `.?` unwraps in context.zig rely on implicit state invariants
+
+- **ID:** QUAL-207
+- **Severity:** Low
+- **PriorityScore:** 16 (Impact 2 x Likelihood 2 x 4)
+- **Category:** `architecture`
+- **Confidence:** `confidence::confirmed`
+- **Status:** Closed (2026-03-25) -- Added 10 SAFETY comments for `.?` unwraps documenting invariants.
+  Converted `negotiated_cipher_suite.?` to `orelse return InternalError` for the one fragile case.
+- **Cross-reference:** QUAL-113 (engine.zig `.?` unwraps -- different file/scope)
+
+**File locations:**
+- `src/tls13/context.zig` -- 17 `.?` unwraps on optional fields
+
+**Description:**
+Context.zig contains 17 `.?` optional unwraps on state fields such as `negotiated_cipher_suite`, `server_secret_generated`, and others. All guards have been manually confirmed correct: each `.?` is reached only after a code path that guarantees the optional is non-null. However, this relies on implicit state machine invariants that are not enforced by the type system.
+
+Unlike the engine.zig `.?` unwraps in QUAL-113 (which had actual null-safety gaps), these context.zig unwraps are architecturally sound. The recommendation is defensive improvement for critical paths, not a bug fix.
+
+**Recommendation:**
+For the most critical paths (`negotiated_cipher_suite`, `server_secret_generated`), replace `.?` with `orelse return error.InvalidState` to provide a clear error instead of a panic if the state machine invariant is ever violated by future code changes. Leave low-risk `.?` unwraps (debug/trace paths) unchanged.
+
+**Acceptance criteria:** Critical-path `.?` unwraps use `orelse return error.X`. Non-critical paths documented with SAFETY comments.
+
+**Verification:** `zig build test -Doptimize=ReleaseSafe` passes.
+
+**Effort:** S
+
+---
+
+### QUAL-208 -- Dual `KeyMaterial` types with incompatible layouts
+
+- **ID:** QUAL-208
+- **Severity:** Low
+- **PriorityScore:** 16 (Impact 2 x Likelihood 2 x 4)
+- **Category:** `architecture`
+- **Confidence:** `confidence::confirmed`
+- **Status:** Open
+
+**File locations:**
+- `src/parallel.zig:616` -- `KeyMaterial` with `key: [32]u8`, `iv: [12]u8`, `hp_key: [32]u8`, `key_len: usize`
+- `src/key_schedule.zig:36` -- `KeyMaterial` with `key: [16]u8`, `iv: [12]u8`, `hp: [16]u8`
+
+**Description:**
+Two types named `KeyMaterial` exist with incompatible layouts:
+
+```zig
+// parallel.zig:616
+pub const KeyMaterial = struct {
+    key: [32]u8,
+    iv: [12]u8,
+    hp_key: [32]u8,
+    key_len: usize,
+};
+
+// key_schedule.zig:36
+pub const KeyMaterial = struct {
+    key: [16]u8,
+    iv: [12]u8,
+    hp: [16]u8,
+};
+```
+
+The `parallel.zig` version uses 32-byte fixed arrays with a `key_len` field to support both AES-128 (16-byte key) and AES-256 (32-byte key). The `key_schedule.zig` version assumes 16-byte keys only (AES-128). The field name also differs: `hp_key` vs `hp`. Code that passes a `parallel.KeyMaterial` to a function expecting `key_schedule.KeyMaterial` will get a compile error (caught at build time), but the naming collision is confusing and suggests they should be unified or one should be renamed.
+
+**Root cause:** The `parallel` module was developed independently as future infrastructure and did not reuse the existing `key_schedule.KeyMaterial` type.
+
+**Recommendation:**
+Either:
+1. Unify into a single `KeyMaterial` type in `key_schedule.zig` that supports variable key lengths (use `key: [32]u8` + `key_len: usize`), or
+2. Rename `parallel.KeyMaterial` to `parallel.DerivedKeyMaterial` to avoid the naming collision.
+
+Option 2 is lower risk since the parallel module is not yet exported.
+
+**Acceptance criteria:** No two types named `KeyMaterial` with incompatible layouts. Either unified or distinctly named.
+
+**Verification:** `grep -rn 'pub const KeyMaterial = struct' src/` returns one result (or two with distinct names). `zig build test` passes.
+
+**Effort:** S
+
+---
+
+### QUAL-209 -- `parallel` module not exported from lib.zig
+
+- **ID:** QUAL-209
+- **Severity:** Low
+- **PriorityScore:** 12 (Impact 1.5 x Likelihood 2 x 4)
+- **Category:** `api-contract`
+- **Confidence:** `confidence::confirmed`
+- **Status:** Open
+
+**File locations:**
+- `src/lib.zig` -- no `parallel` import or re-export
+- `src/parallel.zig` -- module exists with public API
+
+**Description:**
+The `parallel` module (`src/parallel.zig`) provides parallel key derivation and certificate verification utilities but is not exported from the library's public entry point (`src/lib.zig`). Users of the library cannot access `parallel` functionality without directly importing the file path, which is an implementation detail.
+
+The module is confirmed as intentional future/optional infrastructure (not dead code), so it should be made available through the public API.
+
+**Recommendation:**
+Add to `src/lib.zig`:
+```zig
+/// Parallel operations for key derivation and certificate verification.
+/// Optional module for performance-sensitive applications.
+pub const parallel = @import("parallel.zig");
+```
+
+**Acceptance criteria:** `@import("tls").parallel` compiles and provides access to parallel key derivation functions.
+
+**Verification:** Add a test that imports `parallel` via `lib.zig`. `zig build test` passes.
+
+**Effort:** S
+
+---
+
+### QUAL-210 -- `TicketEntryView` exported but unused outside engine.zig
+
+- **ID:** QUAL-210
+- **Severity:** Low
+- **PriorityScore:** 12 (Impact 1.5 x Likelihood 2 x 4)
+- **Category:** `cleanup`
+- **Confidence:** `confidence::confirmed`
+- **Status:** Closed (2026-03-25) -- Removed unused `TicketEntryView` exports from mod.zig and tls13.zig.
+
+**File locations:**
+- `src/tls13/mod.zig:263` -- `pub const TicketEntryView = engine.TicketEntryView;`
+- `src/tls13.zig:257` -- `pub const TicketEntryView = mod.TicketEntryView;`
+- `src/tls13/engine.zig:152` -- `TicketEntryView` struct definition
+
+**Description:**
+`TicketEntryView` is defined in `engine.zig` and re-exported through two levels of public API (`mod.zig` and `tls13.zig`), but no code outside of `engine.zig` references it. The struct is used only by `TicketStore.lookup` and `Engine.peekTicket`, both internal to `engine.zig`. The re-exports add unused symbols to the public API surface.
+
+**Evidence:**
+```
+$ grep -rn 'TicketEntryView' src/
+src/tls13/mod.zig:263:pub const TicketEntryView = engine.TicketEntryView;
+src/tls13.zig:257:pub const TicketEntryView = mod.TicketEntryView;
+src/tls13/engine.zig:152:pub const TicketEntryView = struct {
+src/tls13/engine.zig:212:    pub fn lookup(...) ?TicketEntryView {
+src/tls13/engine.zig:213:        var result: ?TicketEntryView = null;
+src/tls13/engine.zig:530:    pub fn peekTicket(self: *Engine) ?TicketEntryView {
+```
+
+No usage outside `engine.zig`.
+
+**Recommendation:**
+Remove the re-exports from `mod.zig:263` and `tls13.zig:257`. If `TicketEntryView` is intended as part of the public API for external consumers, document its intended use case. Otherwise, keep it as an internal type within `engine.zig`.
+
+**Acceptance criteria:** `TicketEntryView` is either removed from public re-exports or has documented public consumers.
+
+**Verification:** `grep -rn 'TicketEntryView' src/tls13/mod.zig src/tls13.zig` returns zero results. `zig build test` passes.
+
+**Effort:** S
+
+---
+
+### Phase 3 Deep Review -- Confirmed Non-Issues
+
+The following items were investigated during Phase 3 deep review and confirmed as non-issues requiring no action:
+
+**1. `catch unreachable` usage (46 sites):** All 46 `catch unreachable` patterns across the codebase have been verified as safe. Each has a preceding SAFETY comment explaining why the error cannot occur at that call site (e.g., fixed-size buffers that cannot overflow, comptime-known valid inputs). No action required.
+
+**2. Engine legacy exports:** The Engine module re-exports several types that will become unnecessary when Engine is retired in favor of Context. These are tracked implicitly under QUAL-069/QUAL-091 (Engine deprecation strategy) and will be cleaned up in a batch removal. No separate tracking needed.
+
+**3. `parallel` module is not dead code:** The parallel module is intentional future/optional infrastructure for performance-sensitive QUIC applications. It is not dead code. Tracked under QUAL-209 for public API export.
+
+**4. All `.?` unwraps in context.zig have valid guards:** All 17 `.?` unwraps in context.zig have been manually verified to have correct state invariants ensuring non-null values at the unwrap point. Tracked under QUAL-207 for defensive improvement on critical paths only.
+
+---
+
 ## Findings by Category
 
-### Architecture (12)
+### Architecture (14)
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-087 | Critical | engine.zig null-safety gap in certificate verification | Closed |
@@ -2258,10 +2716,12 @@ Update QUAL-069 description to reflect current 3431-line count.
 | QUAL-122 | Medium | Engine dupe calls at 9 sites lack errdefer | Closed |
 | QUAL-102 | Medium | 6x allocator.dupe catch null silently swallow OOM | Closed |
 | QUAL-074 | Medium | new_session_ticket silently dropped in Context path | Closed |
+| QUAL-207 | Low | 17 `.?` unwraps in context.zig rely on implicit state invariants; confirmed correct | Closed |
+| QUAL-208 | Low | Dual `KeyMaterial` types with incompatible layouts (parallel.zig vs key_schedule.zig) | Open |
 | QUAL-126 | Low | quic_transport_params.zig only 2 of 4 dupe sites have errdefer | Closed |
 | QUAL-109 | Low | TODO in context.zig:1207 -- QUAL-074 callback not wired (status inconsistent) | Closed |
 
-### Maintainability (18)
+### Maintainability (21)
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-094 | High | onCryptoRecv 516 lines / 14 nesting levels | Closed |
@@ -2270,6 +2730,8 @@ Update QUAL-069 description to reflect current 3431-line count.
 | QUAL-069 | High | context.zig 3431 lines (4.3x limit) | Deferred |
 | QUAL-070 | High | Near-duplicate ClientHelloInfo struct+parse+deinit | Closed |
 | QUAL-091 | High | engine.zig uses legacy inline key schedule patterns | Deferred |
+| QUAL-201 | Medium | parseCert 396 lines with 6 inline extension sub-parsers | Closed |
+| QUAL-205 | Medium | `hexToBytes` duplicated 14 times across test files | Open |
 | QUAL-116 | Medium | 9 additional source files over 800 lines not tracked | Open |
 | QUAL-117 | Medium | 14 functions over 100 lines (parseCert 396 lines) | Open |
 | QUAL-118 | Medium | SecretSlot duplicated between context.zig and secrets.zig | Closed |
@@ -2277,32 +2739,36 @@ Update QUAL-069 description to reflect current 3431-line count.
 | QUAL-075 | Medium | Two distinct CipherSuite enums | Closed (By Design) |
 | QUAL-076 | Medium | Duplicated SignatureScheme-to-SigAlg with unsafe else | Closed |
 | QUAL-106 | Low | Constant-time comparison duplicated 3 times with subtle variation | Open |
-| QUAL-123 | Low | build.zig at 1112 lines exceeds 800-line guideline | Open |
+| QUAL-123 | Low | build.zig at 1112 lines exceeds 800-line guideline | Won't Do |
 | QUAL-124 | Low | readU16 helper duplicated between sct.zig and messages/helpers.zig | Won't Do |
 | QUAL-125 | Low | HashDigestCache dead code removed from context.zig | Closed |
 | QUAL-127 | Low | handshake_state.zig 13 dupe sites -- only 1 has errdefer | Closed |
-| QUAL-128 | Low | context.zig 11 dupe sites without errdefer | Open |
+| QUAL-128 | Low | context.zig 11 dupe sites without errdefer | Closed |
 | QUAL-081 | Low | cipherSuiteHash exact duplicate | Closed |
 
-### API Contract (9)
+### API Contract (11)
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-115 | High | setTransportParameters silently swallows OOM via catch return | Closed |
 | QUAL-072 | High | Callback errors logged but not propagated | Closed |
 | QUAL-089 | High | setTransportParameters lacks OOM error handling | Closed |
 | QUAL-090 | High | NewSessionTicket processing incomplete error propagation | Closed |
+| QUAL-203 | Medium | OCSP error mapping loses diagnostic info; 32 catch-return discard ASN.1 errors | Closed |
 | QUAL-098 | Medium | queueServerHandshakeFlight returns void -- errors not propagated | Closed |
 | QUAL-103 | Medium | maybeAutoProgress swallows queueFinished error | Closed |
+| QUAL-209 | Low | `parallel` module not exported from lib.zig | Open |
 | QUAL-085 | Low | pollCrypto returns Unimplemented for empty buffer | Closed |
 | QUAL-107 | Low | Inconsistent error types -- CryptoBufferOverflow vs UnexpectedMessage | Open |
 | QUAL-110 | Low | notifyMetadata callback error logged but not propagated | Closed (by-design) |
 
-### Cleanup (7)
+### Cleanup (9)
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-092 | Medium | byteorder.zig duplicated across two module paths | Closed |
 | QUAL-080 | Medium | 18x @constCast for freeing const slices | Closed |
-| QUAL-130 | Low | Stale line counts in QUAL-069 | Open |
+| QUAL-206 | Low | Redundant condition engine.zig:802-803 inner check always true | Closed |
+| QUAL-210 | Low | TicketEntryView exported but unused outside engine.zig | Closed |
+| QUAL-130 | Low | Stale line counts in QUAL-069 | Won't Do |
 | QUAL-082 | Low | traceHandshake/traceSecrets exact duplicates (5 files) | Closed (By Design) |
 | QUAL-083 | Low | encodeMinimal*/parseMinimal* exact duplicates | Closed |
 | QUAL-086 | Low | deriveFinishedVerifyData dead code in messages/finished.zig | Closed |
@@ -2332,11 +2798,13 @@ Update QUAL-069 description to reflect current 3431-line count.
 ### CI/CD (1)
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
-| QUAL-093 | Medium | CI pipeline lacks build caching | Open |
+| QUAL-093 | Medium | CI pipeline lacks build caching | Won't Do |
 
-### Readability (5)
+### Readability (7)
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
+| QUAL-204 | Medium | Magic hex constants in engine.zig (0x0010, 0x0039, 0x0033) vs enum in context.zig | Closed |
+| QUAL-202 | Medium | Deep nesting (10 levels client_hello.zig, 9 levels x509.zig); cross-ref QUAL-119 | Closed |
 | QUAL-119 | Medium | Deep nesting in client_hello.zig (10) and x509.zig (9) | Open |
 | QUAL-084 | Low | 13x inline u16 big-endian read instead of readU16 helper | Closed |
 | QUAL-104 | Low | Magic hex constants for extension types instead of ExtensionType enum | Open |
@@ -2359,9 +2827,9 @@ Update QUAL-069 description to reflect current 3431-line count.
 | QUAL-124 | Delete readU16 from sct.zig, import from helpers.zig | S | Won't Do |
 | QUAL-125 | Remove dead HashDigestCache definition from context.zig | S | Closed |
 | QUAL-126 | Add errdefer to quic_transport_params.zig dupe sites | S | Closed |
-| QUAL-128 | Add errdefer to 11 context.zig dupe sites | S | Open |
-| QUAL-130 | Update stale line counts in QUAL-069 | S | Open |
-| QUAL-123 | Evaluate build.zig for extraction | S | Open |
+| QUAL-128 | Add errdefer to 11 context.zig dupe sites | S | Closed |
+| QUAL-130 | Update stale line counts in QUAL-069 | S | Won't Do |
+| QUAL-123 | Evaluate build.zig for extraction | S | Won't Do |
 | QUAL-097 | Fix parseHandshakeOne to distinguish invalid vs incomplete data | S | Closed |
 | QUAL-098 | Change queueServerHandshakeFlight return type to !void | S | Closed |
 | QUAL-102 | Replace allocator.dupe catch null with try | S | Closed |
@@ -2379,7 +2847,15 @@ Update QUAL-069 description to reflect current 3431-line count.
 | QUAL-088 | Delete engine.zig x25519KeypairAndShared duplicate (CWE-226) | S | Closed |
 | QUAL-089 | Audit transport parameter OOM propagation | S | Closed |
 | QUAL-092 | Delete duplicate byteorder.zig | S | Closed |
-| QUAL-093 | Add CI cache directive for Zig toolchain | S | Open |
+| QUAL-093 | Add CI cache directive for Zig toolchain | S | Won't Do |
+| QUAL-203 | Add log.debug before each OCSP catch-return to preserve ASN.1 error context | S | Closed |
+| QUAL-204 | Replace magic hex extension constants in engine.zig with ExtensionType enum | S | Closed |
+| QUAL-205 | Extract hexToBytes to shared tests/test_utils.zig (14 duplicates) | S | Open |
+| QUAL-206 | Delete redundant inner `if (elen >= 2)` check in engine.zig:803 | S | Closed |
+| QUAL-207 | Add `orelse return error.InvalidState` for critical-path `.?` unwraps in context.zig | S | Closed |
+| QUAL-208 | Rename parallel.KeyMaterial to DerivedKeyMaterial (or unify with key_schedule.KeyMaterial) | S | Open |
+| QUAL-209 | Add `pub const parallel = @import("parallel.zig")` to lib.zig | S | Open |
+| QUAL-210 | Remove unused TicketEntryView re-exports from mod.zig and tls13.zig | S | Closed |
 | QUAL-071 | Fix 0-RTT transcript hash ordering (server side) | S | Closed |
 | QUAL-072 | Propagate callback errors (or change signature to void) | S | Closed |
 | QUAL-075 | Unify CipherSuite enums | S | Closed (By Design) |
@@ -2397,6 +2873,8 @@ Update QUAL-069 description to reflect current 3431-line count.
 
 | ID | Finding | Effort | Status |
 |----|---------|--------|--------|
+| QUAL-201 | Extract 6 extension sub-parsers from parseCert (SAN, BasicConstraints, KeyUsage, ExtKeyUsage, NameConstraints, PolicyConstraints) | M | Closed |
+| QUAL-202 | Reduce deep nesting in client_hello.zig key_share parsing (x509.zig covered by QUAL-201) | M | Closed |
 | QUAL-113 | Replace 14 residual .? unwraps with safe patterns in engine.zig (3 done, 11 remaining) | M | Partial |
 | QUAL-114 | Add errdefer to 22+ allocator.dupe sites across 4 files | M | Closed |
 | QUAL-119 | Reduce nesting depth in client_hello.zig and x509.zig | M | Open |

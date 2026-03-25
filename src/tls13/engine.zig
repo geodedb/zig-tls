@@ -50,6 +50,9 @@ const key_derivation_mod = @import("key_derivation.zig");
 const messages_mod = @import("messages.zig");
 const finished_mod = @import("finished.zig");
 
+// RFC 8446 Appendix B.3: Extension type codes used in handshake parsing/encoding.
+const ExtensionType = tls13_full.ExtensionType;
+
 // Note: The extracted code below contains its own type and function definitions
 // These were not fully extracted in Phase 1, so they remain here.
 
@@ -112,6 +115,15 @@ fn emptyHash(hash: Hash) Secret {
 // QUAL-082: Per-file trace constants are intentionally NOT extracted to a shared
 // module. See context.zig for rationale.
 const handshake_trace_enabled = false;
+
+// SEC-049: Compile-time safety: prevent handshake trace logging in release builds.
+// Handshake traces can leak error details, cipher suite info, and other metadata
+// that aids attackers in fingerprinting or exploiting the TLS implementation.
+comptime {
+    if (handshake_trace_enabled and @import("builtin").mode != .Debug) {
+        @compileError("SECURITY: handshake_trace_enabled must be false in release builds — handshake metadata would be logged");
+    }
+}
 
 /// Secret tracing - logs cryptographic secrets for debugging.
 ///
@@ -798,23 +810,21 @@ pub const Engine = struct {
                     if (pos2 + 4 + elen > 2 + total) break;
                     const edata = p.body[pos2 + 4 .. pos2 + 4 + elen];
                     switch (etype) {
-                        0x0010 => { // ALPN
+                        @intFromEnum(ExtensionType.alpn) => {
                             if (elen >= 3) {
-                                if (elen >= 2) {
-                                    const list_len = readU16(edata[0..2]);
-                                    if (2 + list_len <= edata.len and list_len > 0) {
-                                        const name_len = edata[2];
-                                        if (3 + name_len <= edata.len and name_len > 0) {
-                                            // QUAL-122: Allocate before freeing old to avoid dangling pointer on OOM
-                                            const new_alpn = try self.allocator.dupe(u8, edata[3 .. 3 + name_len]);
-                                            if (self.alpn) |old| self.allocator.free(old);
-                                            self.alpn = new_alpn;
-                                        }
+                                const list_len = readU16(edata[0..2]);
+                                if (2 + list_len <= edata.len and list_len > 0) {
+                                    const name_len = edata[2];
+                                    if (3 + name_len <= edata.len and name_len > 0) {
+                                        // QUAL-122: Allocate before freeing old to avoid dangling pointer on OOM
+                                        const new_alpn = try self.allocator.dupe(u8, edata[3 .. 3 + name_len]);
+                                        if (self.alpn) |old| self.allocator.free(old);
+                                        self.alpn = new_alpn;
                                     }
                                 }
                             }
                         },
-                        0x0039 => { // QUIC TP
+                        @intFromEnum(ExtensionType.quic_transport_parameters) => {
                             // QUAL-122: Allocate before freeing old to avoid dangling pointer on OOM
                             const new_tp = try self.allocator.dupe(u8, edata);
                             if (self.peer_tp) |old| self.allocator.free(old);
@@ -1233,7 +1243,7 @@ pub const Engine = struct {
     /// - supported_versions: TLS 1.3
     /// - signature_algorithms: a small set
     /// - alpn (if set via setServerName?) / local alpn not yet; will be extended
-    /// - quic transport parameters extension (0x0039) if local_tp present
+    /// - quic transport parameters extension if local_tp present
     fn queueRealClientHello(self: *Engine) !void {
         self.ensureKeypair();
         const pubkey = self.my_pub orelse return error.Internal;
@@ -1342,15 +1352,18 @@ pub const Engine = struct {
         var ext_list = std.ArrayList(u8){};
         defer ext_list.deinit(self.allocator);
         if (alpn.len > 0) {
-            // ALPN extension (0x0010)
+            // RFC 7301: ALPN extension
+            const alpn_type = comptime std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(ExtensionType.alpn)));
             const proto_list_len: u16 = @intCast(1 + alpn.len); // one entry
             const ext_data_len: u16 = @intCast(2 + proto_list_len);
-            try ext_list.appendSlice(self.allocator, &.{ 0x00, 0x10, @intCast(ext_data_len >> 8), @intCast(ext_data_len & 0xff), @intCast(proto_list_len >> 8), @intCast(proto_list_len & 0xff), @intCast(alpn.len) });
+            try ext_list.appendSlice(self.allocator, &.{ alpn_type[0], alpn_type[1], @intCast(ext_data_len >> 8), @intCast(ext_data_len & 0xff), @intCast(proto_list_len >> 8), @intCast(proto_list_len & 0xff), @intCast(alpn.len) });
             try ext_list.appendSlice(self.allocator, alpn);
         }
         if (tp_bytes.len > 0) {
+            // RFC 9001 §8.2: QUIC transport parameters extension
+            const tp_type = comptime std.mem.toBytes(std.mem.nativeToBig(u16, @intFromEnum(ExtensionType.quic_transport_parameters)));
             const tp_len: u16 = @intCast(tp_bytes.len);
-            try ext_list.appendSlice(self.allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
+            try ext_list.appendSlice(self.allocator, &.{ tp_type[0], tp_type[1], @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
             try ext_list.appendSlice(self.allocator, tp_bytes);
         }
         const all_ext = ext_list.items;
@@ -1699,13 +1712,13 @@ pub const Engine = struct {
         pos += 2;
         if (pos + exts_len > body.len) return;
         const exts_end = pos + exts_len;
-        // Parse extensions looking for ALPN (0x0010)
+        // Parse extensions looking for ALPN
         while (pos + 4 <= exts_end) {
             const etype = readU16(body[pos .. pos + 2]);
             const elen = readU16(body[pos + 2 .. pos + 4]);
             pos += 4;
             if (pos + elen > exts_end) break;
-            if (etype == 0x0010 and elen >= 3) { // ALPN extension
+            if (etype == @intFromEnum(ExtensionType.alpn) and elen >= 3) {
                 const list_len = readU16(body[pos .. pos + 2]);
                 if (2 + list_len <= elen and list_len > 0) {
                     const name_len = body[pos + 2];
@@ -2041,7 +2054,7 @@ fn parseRealServerHello(body: []const u8) ?[32]u8 {
             const selected_version = readU16(body[pos .. pos + 2]);
             if (selected_version != 0x0304) return null;
             found_supported_versions = true;
-        } else if (etype == 0x0033) { // key_share (server format)
+        } else if (etype == @intFromEnum(ExtensionType.key_share)) {
             if (elen < 4 + 32) return null;
             const group = readU16(body[pos .. pos + 2]);
             const klen = readU16(body[pos + 2 .. pos + 4]);

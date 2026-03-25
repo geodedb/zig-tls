@@ -20,6 +20,16 @@ const std = @import("std");
 const asn1 = @import("asn1");
 
 const ocsp_trace_enabled = false;
+
+// SEC-049: Compile-time safety: prevent OCSP trace logging in release builds.
+// OCSP traces can leak certificate status details, responder info, and other
+// metadata that aids attackers in fingerprinting the TLS implementation.
+comptime {
+    if (ocsp_trace_enabled and @import("builtin").mode != .Debug) {
+        @compileError("SECURITY: ocsp_trace_enabled must be false in release builds — OCSP metadata would be logged");
+    }
+}
+
 const x509 = @import("x509");
 
 /// Maximum allowed clock skew (seconds) when validating OCSP timestamps.
@@ -165,20 +175,28 @@ pub fn validateStapledResponse(
     issuer_opt: ?IssuerInfo,
     now_unix: i64,
 ) OcspError!void {
-    if (issuer_opt == null) return OcspError.MissingIssuer;
-    const issuer = issuer_opt.?;
+    const issuer = issuer_opt orelse return OcspError.MissingIssuer;
 
     var ocsp_dec = asn1.Decoder.init(response);
-    const ocsp_seq = ocsp_dec.readSequence() catch return OcspError.MalformedResponse;
+    const ocsp_seq = ocsp_dec.readSequence() catch |err| {
+        if (ocsp_trace_enabled) std.debug.print("OCSP: OCSPResponse outer SEQUENCE decode failed: {}\n", .{err});
+        return OcspError.MalformedResponse;
+    };
     var ocsp_inner = asn1.Decoder.init(ocsp_seq);
 
-    const response_status_tlv = ocsp_inner.readTLV() catch return OcspError.MalformedResponse;
+    const response_status_tlv = ocsp_inner.readTLV() catch |err| {
+        if (ocsp_trace_enabled) std.debug.print("OCSP: responseStatus TLV decode failed: {}\n", .{err});
+        return OcspError.MalformedResponse;
+    };
     if (asn1.tagClass(response_status_tlv.tag) != .universal or asn1.tagNumber(response_status_tlv.tag) != 10) {
         return OcspError.MalformedResponse;
     }
     try parseStatus(response_status_tlv.val);
 
-    const response_bytes_tlv = ocsp_inner.readTLV() catch return OcspError.MalformedResponse;
+    const response_bytes_tlv = ocsp_inner.readTLV() catch |err| {
+        if (ocsp_trace_enabled) std.debug.print("OCSP: responseBytes TLV decode failed: {}\n", .{err});
+        return OcspError.MalformedResponse;
+    };
     if (asn1.tagClass(response_bytes_tlv.tag) != .context or asn1.tagNumber(response_bytes_tlv.tag) != 0) {
         return OcspError.MalformedResponse;
     }
@@ -191,10 +209,16 @@ pub fn validateStapledResponse(
     const basic_der = rb_inner.readOctetString() catch return OcspError.MalformedResponse;
 
     var basic_dec = asn1.Decoder.init(basic_der);
-    const basic_seq = basic_dec.readSequence() catch return OcspError.MalformedResponse;
+    const basic_seq = basic_dec.readSequence() catch |err| {
+        if (ocsp_trace_enabled) std.debug.print("OCSP: BasicOCSPResponse SEQUENCE decode failed: {}\n", .{err});
+        return OcspError.MalformedResponse;
+    };
     var basic_inner = asn1.Decoder.init(basic_seq);
 
-    const response_data_tlv = basic_inner.readTLV() catch return OcspError.MalformedResponse;
+    const response_data_tlv = basic_inner.readTLV() catch |err| {
+        if (ocsp_trace_enabled) std.debug.print("OCSP: tbsResponseData TLV decode failed: {}\n", .{err});
+        return OcspError.MalformedResponse;
+    };
     const val_ptr = @intFromPtr(response_data_tlv.val.ptr);
     const base_ptr = @intFromPtr(basic_seq.ptr);
     const header_len = val_ptr - base_ptr;
@@ -219,7 +243,10 @@ pub fn validateStapledResponse(
     // Parse ResponseData
     var rd_dec = asn1.Decoder.init(response_data_tlv.val);
 
-    var responder_id_tlv = rd_dec.readTLV() catch return OcspError.MalformedResponse;
+    var responder_id_tlv = rd_dec.readTLV() catch |err| {
+        if (ocsp_trace_enabled) std.debug.print("OCSP: responderID TLV decode failed: {}\n", .{err});
+        return OcspError.MalformedResponse;
+    };
     if (asn1.tagClass(responder_id_tlv.tag) == .context and asn1.tagNumber(responder_id_tlv.tag) == 0) {
         // Version - skip value
         responder_id_tlv = rd_dec.readTLV() catch return OcspError.MalformedResponse;
@@ -233,7 +260,10 @@ pub fn validateStapledResponse(
     const produced_at = x509.parseDerTime(produced_at_tlv.val) catch return OcspError.MalformedResponse;
     if (produced_at > now_unix + max_clock_skew) return OcspError.FutureProducedAt;
 
-    const responses_seq = rd_dec.readSequence() catch return OcspError.MalformedResponse;
+    const responses_seq = rd_dec.readSequence() catch |err| {
+        if (ocsp_trace_enabled) std.debug.print("OCSP: tbsResponseData responses SEQUENCE decode failed: {}\n", .{err});
+        return OcspError.MalformedResponse;
+    };
     var responses_iter = asn1.Decoder.init(responses_seq);
 
     const issuer_spk = x509.subjectPublicKeyBytes(issuer.cert.spki) catch return OcspError.ResponderCertInvalid;
@@ -247,9 +277,15 @@ pub fn validateStapledResponse(
         const single_seq = responses_iter.readSequence() catch break;
         var single_dec = asn1.Decoder.init(single_seq);
 
-        const cert_id_seq = single_dec.readSequence() catch return OcspError.MalformedResponse;
+        const cert_id_seq = single_dec.readSequence() catch |err| {
+            if (ocsp_trace_enabled) std.debug.print("OCSP: SingleResponse certID SEQUENCE decode failed: {}\n", .{err});
+            return OcspError.MalformedResponse;
+        };
         var cert_id_dec = asn1.Decoder.init(cert_id_seq);
-        const hash_algo_seq2 = cert_id_dec.readSequence() catch return OcspError.MalformedResponse;
+        const hash_algo_seq2 = cert_id_dec.readSequence() catch |err| {
+            if (ocsp_trace_enabled) std.debug.print("OCSP: certID hashAlgorithm SEQUENCE decode failed: {}\n", .{err});
+            return OcspError.MalformedResponse;
+        };
         var hash_algo_dec = asn1.Decoder.init(hash_algo_seq2);
         const hash_algo_oid = hash_algo_dec.readOID() catch return OcspError.MalformedResponse;
         _ = hash_algo_dec.readTLV() catch null;

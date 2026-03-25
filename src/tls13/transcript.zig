@@ -78,6 +78,15 @@ const MESSAGE_HASH_TYPE: u8 = 254;
 const handshake_trace_enabled = false;
 const secret_trace_enabled = false;
 
+// SEC-049: Compile-time safety: prevent handshake trace logging in release builds.
+// Handshake traces can leak error details, cipher suite info, and other metadata
+// that aids attackers in fingerprinting or exploiting the TLS implementation.
+comptime {
+    if (handshake_trace_enabled and @import("builtin").mode != .Debug) {
+        @compileError("SECURITY: handshake_trace_enabled must be false in release builds — handshake metadata would be logged");
+    }
+}
+
 // Compile-time safety: prevent secret logging in release builds
 comptime {
     if (secret_trace_enabled and @import("builtin").mode != .Debug) {

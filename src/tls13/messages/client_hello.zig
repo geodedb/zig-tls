@@ -258,6 +258,19 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
         .compression_methods = &[_]u8{},
     };
 
+    // SEC-054: On any error after partial allocation, free all owned slices
+    // to prevent memory leaks from repeated malformed ClientHello messages.
+    errdefer {
+        if (ch.cipher_suites.len > 0) allocator.free(ch.cipher_suites);
+        if (ch.supported_groups) |sg| allocator.free(sg);
+        if (ch.signature_algorithms) |sa| allocator.free(sa);
+        if (ch.alpn_list) |al| allocator.free(al);
+        if (ch.pre_shared_key) |psk| {
+            allocator.free(psk.identities);
+            allocator.free(psk.binders);
+        }
+    }
+
     var pos: usize = 0;
 
     // Skip legacy_version (2 bytes)

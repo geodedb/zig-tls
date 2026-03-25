@@ -7,7 +7,7 @@ A **TLS 1.3** implementation for QUIC written in Zig, strictly adhering to RFC 8
 | Aspect | Info |
 |--------|------|
 | API Stability | Production |
-| Zig Version | 0.14.0+ |
+| Zig Version | 0.15.1 |
 | Platforms | Linux, macOS, Windows |
 
 ## Features
@@ -16,7 +16,7 @@ A **TLS 1.3** implementation for QUIC written in Zig, strictly adhering to RFC 8
 ✅ **Zero Dependencies** - Uses only Zig standard library
 ✅ **Interop Tested** - Conformance tests against BoringSSL and OpenSSL
 ✅ **QUIC Native** - Designed for QUIC integration, no traditional record layer
-✅ **Well Tested** - 77 unit tests + RFC test vectors + conformance tests
+✅ **Well Tested** - 551 unit tests + RFC test vectors + 449 conformance tests
 
 ## Quick Start
 
@@ -78,14 +78,12 @@ zig build -Doptimize=ReleaseFast
 ## Test Results
 
 ```
-Build Summary: All steps succeeded; 853 tests passed ✅
+Build Summary: All steps succeeded; 1000 tests passed ✅
 ```
 
 **Comprehensive Test Coverage:**
-- **262 unit tests** - Per-module tests with RFC subsection references
-- **148 RFC compliance tests** - TLS 1.3 (79), QUIC-TLS (52), X.509 (17)
-- **13 RFC test vectors** - Official vectors from RFC 8446 & 9001 appendices
-- **430 conformance tests** - BoringSSL (123) and OpenSSL (279) parity testing
+- **551 unit tests** - Per-module tests with RFC subsection references (553 total, 2 skipped)
+- **449 conformance tests** - BoringSSL and OpenSSL parity testing
   - Cryptographic operations (HKDF, AEAD, signatures)
   - X.509 certificate validation and chain building
   - Advanced X.509 extensions (OCSP, CRL, AIA, name constraints, policies)
@@ -94,7 +92,7 @@ Build Summary: All steps succeeded; 853 tests passed ✅
   - Security testing (fuzzing, input validation)
   - Post-quantum algorithm readiness (parsing-only)
 
-**Total: 853 tests** ensuring RFC compliance, cryptographic parity, and production readiness
+**Total: 1000 tests** ensuring RFC compliance, cryptographic parity, and production readiness
 
 ## Project Structure
 

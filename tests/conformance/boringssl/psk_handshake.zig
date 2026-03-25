@@ -84,7 +84,6 @@ const ClientHello = tls13.ClientHello;
 const PskIdentity = tls13.ClientHelloView.PskIdentity;
 const PreSharedKey = tls13.ClientHelloView.PreSharedKey;
 const Hash = ks.Hash;
-const Secret = ks.Secret;
 
 // ============================================================================
 // Test 1: PSK Extension Parsing - Single Identity

@@ -16,6 +16,15 @@ const logger = @import("quic_logger");
 /// Debug tracing for handshake messages.
 const handshake_trace_enabled = false;
 
+// SEC-049: Compile-time safety: prevent handshake trace logging in release builds.
+// Handshake traces can leak error details, cipher suite info, and other metadata
+// that aids attackers in fingerprinting or exploiting the TLS implementation.
+comptime {
+    if (handshake_trace_enabled and @import("builtin").mode != .Debug) {
+        @compileError("SECURITY: handshake_trace_enabled must be false in release builds — handshake metadata would be logged");
+    }
+}
+
 inline fn traceHandshake(comptime fmt: []const u8, args: anytype) void {
     if (handshake_trace_enabled) logger.debugPrint(fmt, args);
 }

@@ -628,6 +628,235 @@ fn unwrapExtnValueToBytes(extn_val_or_octets: []const u8) []const u8 {
     return inner;
 }
 
+/// Parse Subject Alternative Name extension (OID 2.5.29.17).
+/// Extracts dNSName entries (GeneralName choice [2]) from the SAN extension.
+/// RFC 5280 §4.2.1.6
+fn parseExtSan(alloc: std.mem.Allocator, inner: []const u8) !?SubjectAltName {
+    var vd2 = asn1.Decoder.init(inner);
+    const san_seq = vd2.readSequence() catch return null;
+    var dns_list: [32][]const u8 = undefined;
+    var dns_len: usize = 0;
+    var s2 = asn1.Decoder.init(san_seq);
+    while (dns_len < dns_list.len) {
+        const gn = s2.readTLV() catch break;
+        if (asn1.tagClass(gn.tag) == .context and asn1.tagNumber(gn.tag) == 2) {
+            dns_list[dns_len] = gn.val;
+            dns_len += 1;
+        }
+    }
+    if (dns_len > 0) {
+        const heap_dns = try alloc.alloc([]const u8, dns_len);
+        @memcpy(heap_dns, dns_list[0..dns_len]);
+        return .{ .dns = heap_dns };
+    }
+    return null;
+}
+
+/// Parse Basic Constraints extension (OID 2.5.29.19).
+/// Extracts CA flag and optional pathLenConstraint.
+/// RFC 5280 §4.2.1.9
+fn parseExtBasicConstraints(inner: []const u8) ?BasicConstraints {
+    var bd = asn1.Decoder.init(inner);
+    const bc_seq = bd.readSequence() catch return null;
+    var b2 = asn1.Decoder.init(bc_seq);
+    var ca = false;
+    var path_len: ?u32 = null;
+    const tlv_ca = b2.readTLV() catch null;
+    if (tlv_ca) |t| {
+        if (asn1.tagClass(t.tag) == .universal and asn1.tagNumber(t.tag) == 1 and t.val.len >= 1)
+            ca = (t.val[0] != 0);
+        const tlv_pl = b2.readTLV() catch null;
+        if (tlv_pl) |pl| {
+            if (asn1.tagClass(pl.tag) == .universal and asn1.tagNumber(pl.tag) == 2) {
+                var v: u32 = 0;
+                for (pl.val) |bb| v = (v << 8) | bb;
+                path_len = v;
+            }
+        }
+    }
+    return .{ .ca = ca, .path_len = path_len };
+}
+
+/// Parse Key Usage extension (OID 2.5.29.15).
+/// Extracts the key usage bit string as a u16 bitmask (MSB-first).
+/// RFC 5280 §4.2.1.3
+fn parseExtKeyUsage(inner: []const u8) ?KeyUsage {
+    var kd = asn1.Decoder.init(inner);
+    const bits = kd.readBitString() catch return null;
+    var mask: u16 = 0;
+    if (bits.len >= 1) {
+        mask |= @as(u16, bits[0]) << 8;
+    }
+    if (bits.len >= 2) {
+        mask |= @as(u16, bits[1]);
+    }
+    return .{ .bits = mask };
+}
+
+/// Parse Extended Key Usage extension (OID 2.5.29.37).
+/// Extracts serverAuth, clientAuth, and OCSPSigning purpose flags.
+/// RFC 5280 §4.2.1.12
+fn parseExtExtKeyUsage(inner: []const u8) ?ExtKeyUsage {
+    var ed2 = asn1.Decoder.init(inner);
+    const seq2 = ed2.readSequence() catch return null;
+    var e2 = asn1.Decoder.init(seq2);
+    var server_auth = false;
+    var client_auth = false;
+    var ocsp_signing = false;
+    while (true) {
+        const oid2 = e2.readOID() catch break;
+        // id-kp-serverAuth = 1.3.6.1.5.5.7.3.1
+        if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01 })) {
+            server_auth = true;
+        }
+        // SEC-031: id-kp-clientAuth = 1.3.6.1.5.5.7.3.2
+        if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02 })) {
+            client_auth = true;
+        }
+        // id-kp-OCSPSigning = 1.3.6.1.5.5.7.3.9
+        if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x09 })) {
+            ocsp_signing = true;
+        }
+    }
+    return .{ .server_auth = server_auth, .client_auth = client_auth, .ocsp_signing = ocsp_signing };
+}
+
+/// Parse Name Constraints extension (OID 2.5.29.30).
+/// Extracts permitted and excluded DNS name subtrees.
+/// RFC 5280 §4.2.1.10
+fn parseExtNameConstraints(alloc: std.mem.Allocator, inner: []const u8) !?NameConstraints {
+    var ncd = asn1.Decoder.init(inner);
+    const nc_seq = ncd.readSequence() catch return null;
+    var nc_dec = asn1.Decoder.init(nc_seq);
+
+    var permitted: [32][]const u8 = undefined;
+    var permitted_len: usize = 0;
+    var excluded: [32][]const u8 = undefined;
+    var excluded_len: usize = 0;
+
+    while (true) {
+        const subtree_tlv = nc_dec.readTLV() catch break;
+        if (asn1.tagClass(subtree_tlv.tag) != .context) continue;
+        const tag_num = asn1.tagNumber(subtree_tlv.tag);
+
+        // [0] IMPLICIT SEQUENCE OF GeneralSubtree (permitted)
+        // [1] IMPLICIT SEQUENCE OF GeneralSubtree (excluded)
+        if (tag_num == 0 or tag_num == 1) {
+            var st_dec = asn1.Decoder.init(subtree_tlv.val);
+            while (true) {
+                const gs_seq = st_dec.readSequence() catch break;
+                var gs_dec = asn1.Decoder.init(gs_seq);
+                const gn_tlv = gs_dec.readTLV() catch break;
+                // Look for dNSName [2]
+                if (asn1.tagClass(gn_tlv.tag) == .context and asn1.tagNumber(gn_tlv.tag) == 2) {
+                    if (tag_num == 0 and permitted_len < permitted.len) {
+                        permitted[permitted_len] = gn_tlv.val;
+                        permitted_len += 1;
+                    } else if (tag_num == 1 and excluded_len < excluded.len) {
+                        excluded[excluded_len] = gn_tlv.val;
+                        excluded_len += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if (permitted_len > 0 or excluded_len > 0) {
+        var permitted_dns: []const []const u8 = &[_][]const u8{};
+        if (permitted_len > 0) {
+            const heap_p = try alloc.alloc([]const u8, permitted_len);
+            @memcpy(heap_p, permitted[0..permitted_len]);
+            permitted_dns = heap_p;
+        }
+
+        var excluded_dns: []const []const u8 = &[_][]const u8{};
+        if (excluded_len > 0) {
+            const heap_e = try alloc.alloc([]const u8, excluded_len);
+            @memcpy(heap_e, excluded[0..excluded_len]);
+            excluded_dns = heap_e;
+        }
+
+        return .{
+            .permitted_dns = permitted_dns,
+            .excluded_dns = excluded_dns,
+        };
+    }
+    return null;
+}
+
+/// Parse Policy Constraints (OID 2.5.29.36) and Policy Mappings (OID 2.5.29.33).
+/// Returns both parsed values as a tuple struct.
+/// RFC 5280 §4.2.1.5 (Policy Mappings) and §4.2.1.11 (Policy Constraints)
+const PolicyExtResult = struct {
+    mappings: ?PolicyMappings = null,
+    constraints: ?PolicyConstraints = null,
+};
+
+fn parseExtPolicyMappings(alloc: std.mem.Allocator, inner: []const u8) !?PolicyMappings {
+    var pmd = asn1.Decoder.init(inner);
+    const pm_seq = pmd.readSequence() catch return null;
+    var pm_dec = asn1.Decoder.init(pm_seq);
+
+    var mappings: [16]PolicyMapping = undefined;
+    var mappings_len: usize = 0;
+
+    while (mappings_len < mappings.len) {
+        const mapping_seq = pm_dec.readSequence() catch break;
+        var map_dec = asn1.Decoder.init(mapping_seq);
+
+        const issuer_policy = map_dec.readOID() catch break;
+        const subject_policy = map_dec.readOID() catch break;
+
+        mappings[mappings_len] = .{
+            .issuer_policy = issuer_policy,
+            .subject_policy = subject_policy,
+        };
+        mappings_len += 1;
+    }
+
+    if (mappings_len > 0) {
+        const heap_mappings = try alloc.alloc(PolicyMapping, mappings_len);
+        @memcpy(heap_mappings, mappings[0..mappings_len]);
+        return .{ .mappings = heap_mappings };
+    }
+    return null;
+}
+
+fn parseExtPolicyConstraints(inner: []const u8) ?PolicyConstraints {
+    var pcd = asn1.Decoder.init(inner);
+    const pc_seq = pcd.readSequence() catch return null;
+    var pc_dec = asn1.Decoder.init(pc_seq);
+
+    var req_exp_policy: ?u32 = null;
+    var inh_pol_map: ?u32 = null;
+
+    while (true) {
+        const field_tlv = pc_dec.readTLV() catch break;
+        if (asn1.tagClass(field_tlv.tag) != .context) continue;
+        const tag_num = asn1.tagNumber(field_tlv.tag);
+
+        // requireExplicitPolicy [0] SkipCerts
+        // inhibitPolicyMapping [1] SkipCerts
+        if (tag_num == 0 or tag_num == 1) {
+            var skip_certs: u32 = 0;
+            for (field_tlv.val) |b| skip_certs = (skip_certs << 8) | b;
+            if (tag_num == 0) {
+                req_exp_policy = skip_certs;
+            } else {
+                inh_pol_map = skip_certs;
+            }
+        }
+    }
+
+    if (req_exp_policy != null or inh_pol_map != null) {
+        return .{
+            .require_explicit_policy = req_exp_policy,
+            .inhibit_policy_mapping = inh_pol_map,
+        };
+    }
+    return null;
+}
+
 /// Parse a DER-encoded X.509 certificate and extract fields for TLS validation.
 ///
 /// Parses the ASN.1 DER encoding of an X.509 v3 certificate and extracts:
@@ -851,218 +1080,16 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
             if (one.readTLV() catch null) |v2| val = v2.val;
             const inner = unwrapExtnValueToBytes(val);
 
-            // id-ce-subjectAltName = 2.5.29.17
-            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x11) {
-                var vd2 = asn1.Decoder.init(inner);
-                const san_seq = vd2.readSequence() catch continue;
-                var dns_list: [32][]const u8 = undefined;
-                var dns_len: usize = 0;
-                var s2 = asn1.Decoder.init(san_seq);
-                while (dns_len < dns_list.len) {
-                    const gn = s2.readTLV() catch break;
-                    if (asn1.tagClass(gn.tag) == .context and asn1.tagNumber(gn.tag) == 2) {
-                        dns_list[dns_len] = gn.val;
-                        dns_len += 1;
-                    }
-                }
-                if (dns_len > 0) {
-                    const heap_dns = try alloc.alloc([]const u8, dns_len);
-                    @memcpy(heap_dns, dns_list[0..dns_len]);
-                    san_result = .{ .dns = heap_dns };
-                }
-            }
-
-            // id-ce-basicConstraints = 2.5.29.19
-            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x13) {
-                var bd = asn1.Decoder.init(inner);
-                const bc_seq = bd.readSequence() catch continue;
-                var b2 = asn1.Decoder.init(bc_seq);
-                var ca = false;
-                var path_len: ?u32 = null;
-                const tlv_ca = b2.readTLV() catch null;
-                if (tlv_ca) |t| {
-                    if (asn1.tagClass(t.tag) == .universal and asn1.tagNumber(t.tag) == 1 and t.val.len >= 1)
-                        ca = (t.val[0] != 0);
-                    const tlv_pl = b2.readTLV() catch null;
-                    if (tlv_pl) |pl| {
-                        if (asn1.tagClass(pl.tag) == .universal and asn1.tagNumber(pl.tag) == 2) {
-                            var v: u32 = 0;
-                            for (pl.val) |bb| v = (v << 8) | bb;
-                            path_len = v;
-                        }
-                    }
-                }
-                basic_res = .{ .ca = ca, .path_len = path_len };
-            }
-
-            // id-ce-keyUsage = 2.5.29.15
-            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x0f) {
-                var kd = asn1.Decoder.init(inner);
-                const bits = kd.readBitString() catch continue;
-                var mask: u16 = 0;
-                // KeyUsage bits are MSB-first: bit 0 is MSB of first byte
-                // We store them in a u16 with bit 0 = 0x8000
-                if (bits.len >= 1) {
-                    mask |= @as(u16, bits[0]) << 8; // First byte goes to high byte of u16
-                }
-                if (bits.len >= 2) {
-                    mask |= @as(u16, bits[1]); // Second byte goes to low byte of u16
-                }
-                ku_res = .{ .bits = mask };
-            }
-
-            // id-ce-extKeyUsage = 2.5.29.37
-            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x25) {
-                var ed2 = asn1.Decoder.init(inner);
-                const seq2 = ed2.readSequence() catch continue;
-                var e2 = asn1.Decoder.init(seq2);
-                var server_auth = false;
-                var client_auth = false;
-                var ocsp_signing = false;
-                while (true) {
-                    const oid2 = e2.readOID() catch break;
-                    // id-kp-serverAuth = 1.3.6.1.5.5.7.3.1
-                    if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01 })) {
-                        server_auth = true;
-                    }
-                    // SEC-031: id-kp-clientAuth = 1.3.6.1.5.5.7.3.2
-                    if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02 })) {
-                        client_auth = true;
-                    }
-                    // id-kp-OCSPSigning = 1.3.6.1.5.5.7.3.9
-                    if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x09 })) {
-                        ocsp_signing = true;
-                    }
-                }
-                eku_res = .{ .server_auth = server_auth, .client_auth = client_auth, .ocsp_signing = ocsp_signing };
-            }
-
-            // id-ce-nameConstraints = 2.5.29.30
-            // RFC 5280 §4.2.1.10 - Name Constraints extension
-            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x1e) {
-                var ncd = asn1.Decoder.init(inner);
-                const nc_seq = ncd.readSequence() catch continue;
-                var nc_dec = asn1.Decoder.init(nc_seq);
-
-                var permitted: [32][]const u8 = undefined;
-                var permitted_len: usize = 0;
-                var excluded: [32][]const u8 = undefined;
-                var excluded_len: usize = 0;
-
-                // Parse permitted and excluded subtrees
-                while (true) {
-                    const subtree_tlv = nc_dec.readTLV() catch break;
-                    if (asn1.tagClass(subtree_tlv.tag) != .context) continue;
-                    const tag_num = asn1.tagNumber(subtree_tlv.tag);
-
-                    // [0] IMPLICIT SEQUENCE OF GeneralSubtree (permitted)
-                    // [1] IMPLICIT SEQUENCE OF GeneralSubtree (excluded)
-                    if (tag_num == 0 or tag_num == 1) {
-                        var st_dec = asn1.Decoder.init(subtree_tlv.val);
-                        while (true) {
-                            const gs_seq = st_dec.readSequence() catch break;
-                            var gs_dec = asn1.Decoder.init(gs_seq);
-                            const gn_tlv = gs_dec.readTLV() catch break;
-                            // Look for dNSName [2]
-                            if (asn1.tagClass(gn_tlv.tag) == .context and asn1.tagNumber(gn_tlv.tag) == 2) {
-                                if (tag_num == 0 and permitted_len < permitted.len) {
-                                    permitted[permitted_len] = gn_tlv.val;
-                                    permitted_len += 1;
-                                } else if (tag_num == 1 and excluded_len < excluded.len) {
-                                    excluded[excluded_len] = gn_tlv.val;
-                                    excluded_len += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (permitted_len > 0 or excluded_len > 0) {
-                    var permitted_dns: []const []const u8 = &[_][]const u8{};
-                    if (permitted_len > 0) {
-                        const heap_p = try alloc.alloc([]const u8, permitted_len);
-                        @memcpy(heap_p, permitted[0..permitted_len]);
-                        permitted_dns = heap_p;
-                    }
-
-                    var excluded_dns: []const []const u8 = &[_][]const u8{};
-                    if (excluded_len > 0) {
-                        const heap_e = try alloc.alloc([]const u8, excluded_len);
-                        @memcpy(heap_e, excluded[0..excluded_len]);
-                        excluded_dns = heap_e;
-                    }
-
-                    name_constraints_res = .{
-                        .permitted_dns = permitted_dns,
-                        .excluded_dns = excluded_dns,
-                    };
-                }
-            }
-
-            // id-ce-policyMappings = 2.5.29.33
-            // RFC 5280 §4.2.1.5 - Policy Mappings extension
-            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x21) {
-                var pmd = asn1.Decoder.init(inner);
-                const pm_seq = pmd.readSequence() catch continue;
-                var pm_dec = asn1.Decoder.init(pm_seq);
-
-                var mappings: [16]PolicyMapping = undefined;
-                var mappings_len: usize = 0;
-
-                while (mappings_len < mappings.len) {
-                    const mapping_seq = pm_dec.readSequence() catch break;
-                    var map_dec = asn1.Decoder.init(mapping_seq);
-
-                    const issuer_policy = map_dec.readOID() catch break;
-                    const subject_policy = map_dec.readOID() catch break;
-
-                    mappings[mappings_len] = .{
-                        .issuer_policy = issuer_policy,
-                        .subject_policy = subject_policy,
-                    };
-                    mappings_len += 1;
-                }
-
-                if (mappings_len > 0) {
-                    const heap_mappings = try alloc.alloc(PolicyMapping, mappings_len);
-                    @memcpy(heap_mappings, mappings[0..mappings_len]);
-                    policy_mappings_res = .{ .mappings = heap_mappings };
-                }
-            }
-
-            // id-ce-policyConstraints = 2.5.29.36
-            // RFC 5280 §4.2.1.11 - Policy Constraints extension
-            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d and oid[2] == 0x24) {
-                var pcd = asn1.Decoder.init(inner);
-                const pc_seq = pcd.readSequence() catch continue;
-                var pc_dec = asn1.Decoder.init(pc_seq);
-
-                var req_exp_policy: ?u32 = null;
-                var inh_pol_map: ?u32 = null;
-
-                while (true) {
-                    const field_tlv = pc_dec.readTLV() catch break;
-                    if (asn1.tagClass(field_tlv.tag) != .context) continue;
-                    const tag_num = asn1.tagNumber(field_tlv.tag);
-
-                    // requireExplicitPolicy [0] SkipCerts
-                    // inhibitPolicyMapping [1] SkipCerts
-                    if (tag_num == 0 or tag_num == 1) {
-                        var skip_certs: u32 = 0;
-                        for (field_tlv.val) |b| skip_certs = (skip_certs << 8) | b;
-                        if (tag_num == 0) {
-                            req_exp_policy = skip_certs;
-                        } else {
-                            inh_pol_map = skip_certs;
-                        }
-                    }
-                }
-
-                if (req_exp_policy != null or inh_pol_map != null) {
-                    policy_constraints_res = .{
-                        .require_explicit_policy = req_exp_policy,
-                        .inhibit_policy_mapping = inh_pol_map,
-                    };
+            if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d) {
+                switch (oid[2]) {
+                    0x11 => san_result = try parseExtSan(alloc, inner), // subjectAltName
+                    0x13 => basic_res = parseExtBasicConstraints(inner), // basicConstraints
+                    0x0f => ku_res = parseExtKeyUsage(inner), // keyUsage
+                    0x25 => eku_res = parseExtExtKeyUsage(inner), // extKeyUsage
+                    0x1e => name_constraints_res = try parseExtNameConstraints(alloc, inner), // nameConstraints
+                    0x21 => policy_mappings_res = try parseExtPolicyMappings(alloc, inner), // policyMappings
+                    0x24 => policy_constraints_res = parseExtPolicyConstraints(inner), // policyConstraints
+                    else => {},
                 }
             }
         }
@@ -1572,6 +1599,19 @@ pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oi
 /// O(chain_length * cert_size) which is bounded by max_chain_depth * max_cert_size.
 /// A timeout is unnecessary given these structural bounds.
 pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, allow_insecure: bool, eku_purpose: EkuPurpose) !void {
+    // PERF-016: Delegate to validateChainEx, reading the global trust store once.
+    return validateChainEx(alloc, chain_der, now_unix, server_name, allow_insecure, eku_purpose, null);
+}
+
+/// PERF-016: Extended validateChain that accepts an optional pre-resolved TrustStore.
+///
+/// When `trust_store_override` is provided (`.{ .override = ... }`), it is used
+/// directly without acquiring the global RwLock. When null, the global trust
+/// store is read once via `getTrustStore()`.
+///
+/// This allows callers that cache the trust store at init time (e.g., Context)
+/// to avoid RwLock contention on every handshake.
+pub fn validateChainEx(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, allow_insecure: bool, eku_purpose: EkuPurpose, trust_store_override: ?TrustStore) !void {
     if (allow_insecure) return;
     if (chain_der.len == 0) return error.EmptyChain;
 
@@ -1654,9 +1694,10 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
             const cert = &certs[i];
 
             // Collect name constraints from all issuers (certificates above this one)
-            var accumulated_permitted = try std.ArrayList([]const u8).initCapacity(alloc, 0);
+            // PERF-041: Pre-size to 4 to avoid first few reallocations.
+            var accumulated_permitted = try std.ArrayList([]const u8).initCapacity(alloc, 4);
             defer accumulated_permitted.deinit(alloc);
-            var accumulated_excluded = try std.ArrayList([]const u8).initCapacity(alloc, 0);
+            var accumulated_excluded = try std.ArrayList([]const u8).initCapacity(alloc, 4);
             defer accumulated_excluded.deinit(alloc);
 
             var issuer_idx = i + 1;
@@ -1699,6 +1740,9 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
         }
     }
 
+    // PERF-016: Resolve trust store once, using override if provided.
+    const resolved_trust_store: ?TrustStore = trust_store_override orelse getTrustStore();
+
     // Verify signatures along the chain
     // PERF-017: Use pre-parsed sig_algo_oid/sig_value from parseCert instead of
     // re-parsing each certificate via parseCertSignature.
@@ -1726,7 +1770,7 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
             if (certs[i].basic) |b| {
                 if (!b.ca) return error.BasicConstraints;
             } else return error.BasicConstraints;
-            if (getTrustStore()) |ts| {
+            if (resolved_trust_store) |ts| {
                 if (!ts.isTrustedSpki(certs[i].spki)) return error.UntrustedRoot;
             } else {
                 return error.UntrustedRoot;

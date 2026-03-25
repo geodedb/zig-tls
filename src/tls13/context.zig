@@ -594,35 +594,51 @@ const CryptoStreams = struct {
 };
 
 /// TLS 1.3 driver that will orchestrate QUIC CRYPTO data flow (RFC 8446 §4, RFC 9001 §4.1.4).
+///
+/// PERF-043: Fields are ordered hot-to-cold for cache locality.
+/// Hot fields (accessed on every handshake message) are grouped first,
+/// followed by warm fields (phase-specific), then cold/rare fields.
 pub const Context = struct {
-    config: Config,
-    callbacks: Callbacks,
-    allocator: std.mem.Allocator,
+    // --- Hot fields: accessed on every processCrypto / message dispatch ---
     phase: HandshakePhase = .initial,
+    hash_kind: Hash = .sha256,
+    allocator: std.mem.Allocator,
     transcripts: TranscriptSet = TranscriptSet.init(),
     secrets: SecretSchedule = SecretSchedule.init(),
     streams: CryptoStreams = .{},
     state: HandshakeState = HandshakeState.init(),
     flags: HandshakeFlags = .{},
-    hash_kind: Hash = .sha256,
+    config: Config,
+    callbacks: Callbacks,
+
+    // --- Warm fields: accessed during specific handshake phases ---
+    handshake_secret: ?Secret = null,
+    negotiated_cipher_suite: ?tls13_full.CipherSuite = null,
+    negotiated_signature: ?tls13_full.SignatureScheme = null,
+    client_priv: ?[32]u8 = null,
+    client_pub: ?[32]u8 = null,
     local_transport_parameters: ?[]u8 = null,
     peer_quic_transport_parameters: ?[]u8 = null,
     negotiated_alpn: ?[]u8 = null,
-    negotiated_signature: ?tls13_full.SignatureScheme = null,
-    negotiated_cipher_suite: ?tls13_full.CipherSuite = null,
-    handshake_secret: ?Secret = null,
-    client_priv: ?[32]u8 = null,
-    client_pub: ?[32]u8 = null,
-    client_random: ?[32]u8 = null, // Client random from first ClientHello (for HRR)
-    hrr_sent: bool = false, // Track if we already sent HelloRetryRequest (server)
-    hrr_received: bool = false, // Track if we received HelloRetryRequest (client)
-    server_secret_generated: ?[32]u8 = null, // Generated server secret for HRR cookies
+
+    // --- Cold fields: rarely accessed, optional/conditional paths ---
     // Certificate validation state (client role)
     peer_cert_chain: ?[][]const u8 = null, // DER-encoded certificate chain from peer
+    // PERF-042: Contiguous backing buffer for peer_cert_chain sub-slices.
+    // When non-null, all cert slices in peer_cert_chain point into this single buffer.
+    peer_cert_chain_buf: ?[]u8 = null,
     peer_cert_verify_sig: ?[]const u8 = null, // CertificateVerify signature from peer
     peer_cert_verify_alg: ?tls13_full.SignatureScheme = null, // Signature algorithm used
     peer_ocsp_response: ?[]const u8 = null, // Stapled OCSP response from peer (leaf cert only)
     peer_sct_list: ?[]const u8 = null, // Signed Certificate Timestamp list from peer (leaf cert only)
+    // PERF-016: Cached trust store snapshot taken at init time.
+    // Avoids acquiring the global RwLock on every validateChain call during handshake.
+    cached_trust_store: ?x509.TrustStore = null,
+    // HRR state (only used in HelloRetryRequest path)
+    client_random: ?[32]u8 = null, // Client random from first ClientHello (for HRR)
+    hrr_sent: bool = false, // Track if we already sent HelloRetryRequest (server)
+    hrr_received: bool = false, // Track if we received HelloRetryRequest (client)
+    server_secret_generated: ?[32]u8 = null, // Generated server secret for HRR cookies
     // mTLS state (RFC 8446 §4.3.2)
     client_cert_requested: bool = false, // Client: tracks that server sent CertificateRequest
     client_cert_request_context: ?[]u8 = null, // Client: stores request context from CertificateRequest
@@ -647,6 +663,9 @@ pub const Context = struct {
             break :blk ptr;
         } else null;
 
+        // PERF-016: Cache the global trust store at init to avoid RwLock on every handshake.
+        const cached_ts = x509.getTrustStore();
+
         const ctx = Context{
             .config = config,
             .callbacks = callbacks,
@@ -666,6 +685,7 @@ pub const Context = struct {
             .client_priv = null,
             .client_pub = null,
             .anti_replay = anti_replay,
+            .cached_trust_store = cached_ts,
         };
 
         // NOTE: For clients, DO NOT automatically call startClientHandshake() here!
@@ -680,6 +700,24 @@ pub const Context = struct {
         }
 
         return ctx;
+    }
+
+    /// PERF-042: Free peer_cert_chain and its backing buffer (contiguous or per-cert).
+    fn freePeerCertChain(self: *Context) void {
+        if (self.peer_cert_chain) |chain| {
+            if (self.peer_cert_chain_buf) |buf| {
+                // Contiguous backing buffer: free the single buffer + slice array
+                self.allocator.free(buf);
+            } else {
+                // Legacy per-cert allocation: free each cert individually
+                for (chain) |cert| {
+                    self.allocator.free(cert);
+                }
+            }
+            self.allocator.free(chain);
+            self.peer_cert_chain = null;
+            self.peer_cert_chain_buf = null;
+        }
     }
 
     /// Cleans up the context, freeing resources and resetting state.
@@ -702,13 +740,7 @@ pub const Context = struct {
             self.negotiated_alpn = null;
         }
         // Clean up peer certificate data (client role)
-        if (self.peer_cert_chain) |chain| {
-            for (chain) |cert| {
-                self.allocator.free(cert);
-            }
-            self.allocator.free(chain);
-            self.peer_cert_chain = null;
-        }
+        self.freePeerCertChain();
         if (self.peer_cert_verify_sig) |sig_data| {
             self.allocator.free(sig_data);
             self.peer_cert_verify_sig = null;
@@ -767,6 +799,7 @@ pub const Context = struct {
         // The config's quic_transport_parameters is set at Context creation time; this allows updating it later
         // We need to make a mutable copy since local_transport_parameters is ?[]u8, not ?[]const u8
         const mutable_copy = try self.allocator.dupe(u8, tp_bytes);
+        errdefer self.allocator.free(mutable_copy);
         // Free any existing allocation
         if (self.local_transport_parameters) |old| {
             self.allocator.free(old);
@@ -843,6 +876,7 @@ pub const Context = struct {
             const parsed_opt = try parseHandshakeOne(buffer);
             if (parsed_opt == null) break; // Need more data for complete message
 
+            // SAFETY: null case handled by the break above; parsed_opt is guaranteed non-null here.
             const parsed = parsed_opt.?;
             const message_bytes = buffer[0..parsed.n];
 
@@ -1101,6 +1135,7 @@ pub const Context = struct {
 
                         // Store peer (client) transport parameters
                         const tp_copy = try self.allocator.dupe(u8, tp);
+                        errdefer self.allocator.free(tp_copy);
                         if (self.peer_quic_transport_parameters) |old| {
                             self.allocator.free(old);
                         }
@@ -1133,6 +1168,7 @@ pub const Context = struct {
                     try self.allocator.dupe(u8, cr_parsed.context)
                 else
                     null;
+                errdefer if (new_ctx) |ctx_buf| self.allocator.free(ctx_buf);
                 if (self.client_cert_request_context) |old| {
                     self.allocator.free(old);
                 }
@@ -1516,6 +1552,7 @@ pub const Context = struct {
             return HandshakeError.MissingKeyShare;
         }
 
+        // SAFETY: null case returns MissingKeyShare above; selected_group is guaranteed non-null.
         traceHandshake("Client: HRR requests group: {s}\n", .{@tagName(selected_group.?)});
 
         // RFC 8446 §4.4.1: Update transcript for HelloRetryRequest
@@ -1525,17 +1562,22 @@ pub const Context = struct {
         // Update transcript: replace with message_hash(CH1) || HRR
         self.transcripts.handshake.handleHelloRetryRequest(ch1_raw, self.hash_kind);
 
-        // Now add HRR to transcript
-        // Need to get the full HRR message (with handshake framing)
-        // We're currently in the ServerHello handler, so the transcript already has it
-        // But handleHelloRetryRequest reset the transcript, so we need to add HRR manually
-        const hrr_msg = try encodeHandshake(self.allocator, .server_hello, body);
-        defer self.allocator.free(hrr_msg);
-        self.transcripts.handshake.update(hrr_msg);
+        // PERF-203: Zero-alloc transcript update for HRR.
+        // Instead of allocating via encodeHandshake, feed the 4-byte handshake header
+        // and body separately into the transcript hash (streaming update).
+        var hrr_hdr: [4]u8 = undefined;
+        hrr_hdr[0] = @intFromEnum(HsType.server_hello);
+        const hrr_len: u32 = @intCast(body.len);
+        hrr_hdr[1] = @intCast((hrr_len >> 16) & 0xff);
+        hrr_hdr[2] = @intCast((hrr_len >> 8) & 0xff);
+        hrr_hdr[3] = @intCast(hrr_len & 0xff);
+        self.transcripts.handshake.update(&hrr_hdr);
+        self.transcripts.handshake.update(body);
 
         // Mark that we received HRR
         self.hrr_received = true;
 
+        // SAFETY: selected_group null case returns MissingKeyShare earlier in this function.
         // Send ClientHello2 with new key_share and cookie
         try self.sendClientHello2(selected_group.?, cookie);
 
@@ -1559,6 +1601,9 @@ pub const Context = struct {
         }
 
         var priv: [32]u8 = undefined;
+        // SEC-050: Zero stack-local private key on all exit paths (error or success).
+        // After copying to self.client_priv, this stack copy is no longer needed.
+        defer std.crypto.secureZero(u8, &priv);
         std.crypto.random.bytes(&priv);
         // SEC-037: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
         // Zig's X25519 internally clamps during DH computation, but we clamp here
@@ -1613,6 +1658,7 @@ pub const Context = struct {
         var secret: [32]u8 = undefined;
         std.crypto.random.bytes(&secret);
         self.server_secret_generated = secret;
+        // SAFETY: Just assigned on the line above; server_secret_generated is guaranteed non-null.
         return &self.server_secret_generated.?;
     }
 
@@ -1645,19 +1691,23 @@ pub const Context = struct {
         );
         defer self.allocator.free(hrr_body);
 
-        // Encode as ServerHello handshake message
-        const hrr_msg = try encodeHandshake(self.allocator, .server_hello, hrr_body);
-        defer self.allocator.free(hrr_msg);
-
         // RFC 8446 §4.4.1: Update transcript hash for HelloRetryRequest
         // Replace transcript with: message_hash(ClientHello1) || HelloRetryRequest
         self.transcripts.handshake.handleHelloRetryRequest(ch_view.raw, self.hash_kind);
 
-        // Now add HRR to the modified transcript
-        self.transcripts.handshake.update(hrr_msg);
+        // PERF-204: Zero-alloc transcript update and outbound framing for HRR.
+        // Feed 4-byte handshake header + body into transcript without allocating.
+        var srv_hrr_hdr: [4]u8 = undefined;
+        srv_hrr_hdr[0] = @intFromEnum(HsType.server_hello);
+        const srv_hrr_len: u32 = @intCast(hrr_body.len);
+        srv_hrr_hdr[1] = @intCast((srv_hrr_len >> 16) & 0xff);
+        srv_hrr_hdr[2] = @intCast((srv_hrr_len >> 8) & 0xff);
+        srv_hrr_hdr[3] = @intCast(srv_hrr_len & 0xff);
+        self.transcripts.handshake.update(&srv_hrr_hdr);
+        self.transcripts.handshake.update(hrr_body);
 
-        // Queue HRR for transmission at Initial encryption level
-        try self.appendOutbound(.Initial, hrr_msg, false); // Already updated transcript above
+        // Queue HRR for transmission at Initial encryption level (zero-alloc framing)
+        try self.appendOutboundFramed(.Initial, .server_hello, hrr_body, false);
 
         // Mark that we sent HRR
         self.hrr_sent = true;
@@ -1774,6 +1824,8 @@ pub const Context = struct {
             // Resumption PSKs come from NewSessionTicket and use "res binder" label.
             // SEC-046: Use constant-time comparison for PSK identity matching to prevent
             // timing side-channel leaks (CWE-208). Length check is non-secret.
+            // SAFETY: .? unwraps below are guarded by the preceding `!= null` checks
+            // in this `and`-chain; Zig evaluates `and` left-to-right with short-circuit.
             const is_external_psk = self.config.external_psk != null and
                 self.config.external_psk_identity != null and
                 ident.identity.len == self.config.external_psk_identity.?.len and
@@ -1950,10 +2002,13 @@ pub const Context = struct {
 
     /// QUAL-095 step 2: Build ServerHello body (allocates; caller frees).
     fn buildServerHelloMsg(self: *Context, neg: *const ServerNegotiationResult) ![]u8 {
+        // SAFETY: negotiated_cipher_suite is set by negotiateCipherAndKeys() which
+        // runs before emitServerFlight(), the sole caller of this function.
+        const cipher = self.negotiated_cipher_suite orelse return HandshakeError.InternalError;
         return tls13_full.buildServerHello(
             self.allocator,
             neg.server_random,
-            self.negotiated_cipher_suite.?,
+            cipher,
             neg.ch_view.key_share.group,
             neg.server_pub[0..],
             neg.session_id_opt,
@@ -2132,6 +2187,9 @@ pub const Context = struct {
         }
         // Generate X25519 key pair
         var priv: [32]u8 = undefined;
+        // SEC-050: Zero stack-local private key on all exit paths (error or success).
+        // After copying to self.client_priv, this stack copy is no longer needed.
+        defer std.crypto.secureZero(u8, &priv);
         std.crypto.random.bytes(&priv);
         // SEC-040: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
         // Zig's X25519 internally clamps during DH computation, but we clamp here
@@ -2154,6 +2212,8 @@ pub const Context = struct {
         const has_any_psk = has_resumption_psk or has_external_psk;
         const using_external_psk = has_external_psk and !has_resumption_psk;
 
+        // SAFETY: .? on external_psk_identity is guarded by has_external_psk which
+        // checks external_psk_identity != null; using_external_psk implies has_external_psk.
         const psk_identity: ?[]const u8 = if (has_any_psk) blk: {
             break :blk if (using_external_psk)
                 self.config.external_psk_identity.?
@@ -2194,6 +2254,8 @@ pub const Context = struct {
             const binder_len = ch_result.binder_len;
             if (binder_len == 0) return HandshakeError.CryptoError;
 
+            // SAFETY: using_external_psk implies external_psk != null (checked via has_external_psk);
+            // otherwise has_any_psk implies resumption_psk != null (has_resumption_psk).
             const psk = if (using_external_psk) self.config.external_psk.? else self.config.resumption_psk.?;
             const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, psk);
             const binder_key = key_derivation_mod.deriveBinderKey(self.hash_kind, &early_secret, using_external_psk);
@@ -2322,6 +2384,7 @@ pub const Context = struct {
             // Check for external PSK first, then resumption PSK
             const client_has_external_psk = self.config.external_psk != null and self.config.external_psk_identity != null;
             const client_has_resumption_psk = self.config.resumption_psk != null;
+            // SAFETY: .? unwraps are guarded by the != null checks directly above.
             const psk = if (client_has_resumption_psk)
                 self.config.resumption_psk.?
             else if (client_has_external_psk)
@@ -2340,8 +2403,14 @@ pub const Context = struct {
             break :blk key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
         };
 
+        // SAFETY: server_pub null case returns MissingKeyShare at the guard above (line: `if (server_pub == null)`).
         var shared = std.crypto.dh.X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
         defer std.crypto.secureZero(u8, &shared);
+        // SEC-055: Zero client_priv after DH computation completes.
+        // The scalarmult already copied the key internally, so the field
+        // is no longer needed and should not linger in memory.
+        if (self.client_priv) |*p| std.crypto.secureZero(u8, p);
+        self.client_priv = null;
         const sh_snapshot = self.transcripts.handshake.finalize(self.hash_kind);
         const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], sh_snapshot, &early_secret);
         self.handshake_secret = hs.handshake;
@@ -2511,13 +2580,19 @@ pub const Context = struct {
         // Install new sending secret via callback (QUIC layer updates packet protection)
         try self.installTrafficSecret(.Application, .send, next_secret);
 
-        // Build KeyUpdate message
-        const key_update_msg = try buildKeyUpdate(self.allocator, request_peer_update);
-        defer self.allocator.free(key_update_msg);
+        // PERF-202: Build KeyUpdate inline with stack buffer (zero-alloc).
+        // RFC 8446 §4.6.3: KeyUpdate body is 1 byte (request type).
+        const request: KeyUpdateRequest = if (request_peer_update) .update_requested else .update_not_requested;
+        var ku_buf: [5]u8 = undefined;
+        ku_buf[0] = @intFromEnum(HsType.key_update);
+        ku_buf[1] = 0;
+        ku_buf[2] = 0;
+        ku_buf[3] = 1; // length = 1
+        ku_buf[4] = @intFromEnum(request);
 
         // Queue KeyUpdate message in Application-level CRYPTO stream
         var stream = self.streams.buffer(.Application);
-        try stream.outbound.appendSlice(self.allocator, key_update_msg);
+        try stream.outbound.appendSlice(self.allocator, &ku_buf);
 
         traceHandshake("TLS: Sent KeyUpdate (request_update={})\n", .{request_peer_update});
     }
@@ -2627,35 +2702,37 @@ pub const Context = struct {
         }
 
         // Free any previously stored chain
-        if (self.peer_cert_chain) |old_chain| {
-            for (old_chain) |cert| {
-                self.allocator.free(cert);
-            }
-            self.allocator.free(old_chain);
-        }
+        self.freePeerCertChain();
 
-        // Allocate and copy the certificate chain
+        // PERF-042: Allocate one contiguous buffer for all certificate data,
+        // then point the sub-slices into it. This replaces N+1 allocations
+        // (one per cert + the slice array) with exactly 2 (buffer + slice array).
+        var total_cert_bytes: usize = 0;
+        for (parsed.entries) |cert_entry| {
+            total_cert_bytes += cert_entry.cert.len;
+        }
+        const cert_buf = try self.allocator.alloc(u8, total_cert_bytes);
+        errdefer self.allocator.free(cert_buf);
+
         var chain = try self.allocator.alloc([]const u8, parsed.entries.len);
-        var allocated_count: usize = 0;
-        errdefer {
-            for (chain[0..allocated_count]) |cert| {
-                self.allocator.free(cert);
-            }
-            self.allocator.free(chain);
-        }
+        errdefer self.allocator.free(chain);
 
+        var offset: usize = 0;
         for (parsed.entries, 0..) |cert_entry, i| {
-            chain[i] = try self.allocator.dupe(u8, cert_entry.cert);
-            allocated_count += 1;
+            @memcpy(cert_buf[offset..][0..cert_entry.cert.len], cert_entry.cert);
+            chain[i] = cert_buf[offset..][0..cert_entry.cert.len];
+            offset += cert_entry.cert.len;
         }
 
         self.peer_cert_chain = chain;
+        self.peer_cert_chain_buf = cert_buf;
 
         // Store OCSP response and SCT list from leaf certificate (first entry)
         // RFC 8446 §4.4.2.1: Extensions in leaf certificate entry
         // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
         if (parsed.entries[0].ocsp_response) |ocsp_data| {
             const new_copy = try self.allocator.dupe(u8, ocsp_data);
+            errdefer self.allocator.free(new_copy);
             if (self.peer_ocsp_response) |old| {
                 self.allocator.free(old);
             }
@@ -2665,6 +2742,7 @@ pub const Context = struct {
 
         if (parsed.entries[0].sct_list) |sct_data| {
             const new_copy = try self.allocator.dupe(u8, sct_data);
+            errdefer self.allocator.free(new_copy);
             if (self.peer_sct_list) |old| {
                 self.allocator.free(old);
             }
@@ -2683,6 +2761,7 @@ pub const Context = struct {
 
         // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
         const sig_copy = try self.allocator.dupe(u8, parsed.signature);
+        errdefer self.allocator.free(sig_copy);
         if (self.peer_cert_verify_sig) |old_sig| {
             self.allocator.free(old_sig);
         }
@@ -2712,13 +2791,15 @@ pub const Context = struct {
         // - Extended Key Usage (id-kp-serverAuth)
         // - Basic Constraints enforcement
         // - Signature verification along the chain
-        x509.validateChain(
+        // PERF-016: Use validateChainEx with cached trust store to avoid RwLock.
+        x509.validateChainEx(
             self.allocator,
             chain,
             now_unix,
             server_name,
             self.config.allow_insecure,
             .server_auth,
+            self.cached_trust_store,
         ) catch |err| {
             traceHandshake("Client: Certificate chain validation failed: {}\\n", .{err});
             return HandshakeError.CertificateValidationFailed;
@@ -2858,34 +2939,34 @@ pub const Context = struct {
         if (parsed.entries.len == 0) {
             traceHandshake("Server: Client sent empty Certificate (no client cert)\n", .{});
             // Store empty chain so handleClientCertificateVerify knows no cert was sent
-            if (self.peer_cert_chain) |old_chain| {
-                for (old_chain) |cert| self.allocator.free(cert);
-                self.allocator.free(old_chain);
-            }
-            self.peer_cert_chain = null;
+            self.freePeerCertChain();
             return;
         }
 
         // Free any previously stored chain
-        if (self.peer_cert_chain) |old_chain| {
-            for (old_chain) |cert| self.allocator.free(cert);
-            self.allocator.free(old_chain);
-        }
+        self.freePeerCertChain();
 
-        // Allocate and copy the certificate chain
+        // PERF-042: Allocate one contiguous buffer for all certificate data,
+        // then point the sub-slices into it (same pattern as handleCertificate).
+        var total_cert_bytes: usize = 0;
+        for (parsed.entries) |cert_entry| {
+            total_cert_bytes += cert_entry.cert.len;
+        }
+        const client_cert_buf = try self.allocator.alloc(u8, total_cert_bytes);
+        errdefer self.allocator.free(client_cert_buf);
+
         var chain = try self.allocator.alloc([]const u8, parsed.entries.len);
-        var client_allocated_count: usize = 0;
-        errdefer {
-            for (chain[0..client_allocated_count]) |cert| self.allocator.free(cert);
-            self.allocator.free(chain);
-        }
+        errdefer self.allocator.free(chain);
 
+        var client_offset: usize = 0;
         for (parsed.entries, 0..) |cert_entry, i| {
-            chain[i] = try self.allocator.dupe(u8, cert_entry.cert);
-            client_allocated_count += 1;
+            @memcpy(client_cert_buf[client_offset..][0..cert_entry.cert.len], cert_entry.cert);
+            chain[i] = client_cert_buf[client_offset..][0..cert_entry.cert.len];
+            client_offset += cert_entry.cert.len;
         }
 
         self.peer_cert_chain = chain;
+        self.peer_cert_chain_buf = client_cert_buf;
         traceHandshake("Server: Received client Certificate with {} cert(s)\n", .{chain.len});
     }
 
@@ -2896,6 +2977,7 @@ pub const Context = struct {
 
         // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
         const sig_copy = try self.allocator.dupe(u8, parsed.signature);
+        errdefer self.allocator.free(sig_copy);
         if (self.peer_cert_verify_sig) |old_sig| self.allocator.free(old_sig);
         self.peer_cert_verify_sig = sig_copy;
         self.peer_cert_verify_alg = parsed.algorithm;
@@ -2909,13 +2991,15 @@ pub const Context = struct {
             // Skip hostname validation for client certs (no SNI to match against)
             const now_unix = std.time.timestamp();
             // SEC-031: Pass client_auth EKU purpose for mTLS client certs
-            x509.validateChain(
+            // PERF-016: Use validateChainEx with cached trust store to avoid RwLock.
+            x509.validateChainEx(
                 self.allocator,
                 chain,
                 now_unix,
                 "", // No hostname validation for client certs
                 false, // Don't skip validation
                 .client_auth,
+                self.cached_trust_store,
             ) catch |err| {
                 traceHandshake("Server: Client certificate chain validation failed: {}\n", .{err});
                 return HandshakeError.CertificateValidationFailed;
@@ -2973,6 +3057,7 @@ pub const Context = struct {
         if (parsed.quic_transport_parameters) |tp| {
             // Store peer transport parameters
             const tp_copy = try self.allocator.dupe(u8, tp);
+            errdefer self.allocator.free(tp_copy);
             if (self.peer_quic_transport_parameters) |old| {
                 self.allocator.free(old);
             }
@@ -2985,6 +3070,7 @@ pub const Context = struct {
         // RFC 7301: Store negotiated ALPN
         if (parsed.alpn) |alpn| {
             const alpn_copy = try self.allocator.dupe(u8, alpn);
+            errdefer self.allocator.free(alpn_copy);
             if (self.negotiated_alpn) |old| {
                 self.allocator.free(old);
             }
