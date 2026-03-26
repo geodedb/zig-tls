@@ -357,10 +357,10 @@ pub const Engine = struct {
     }
 
     /// SEC-019: Set allow_insecure with release-mode guard.
-    /// Panics if called with `true` in non-Debug builds, matching Context behavior.
-    pub fn setAllowInsecure(self: *Engine, value: bool) void {
-        if (value and @import("builtin").mode != .Debug) {
-            @panic("SECURITY: allow_insecure=true is forbidden in release builds");
+    /// Returns error if called with `true` in non-Debug builds, matching Context behavior.
+    pub fn setAllowInsecure(self: *Engine, value: bool) error{InsecureForbiddenInRelease}!void {
+        if (value and comptime @import("builtin").mode != .Debug and !@import("builtin").is_test) {
+            return error.InsecureForbiddenInRelease;
         }
         self.allow_insecure = value;
     }

@@ -698,7 +698,7 @@ pub const Context = struct {
         // Allow in test builds (is_test) so release-mode test suites can still
         // exercise insecure paths without triggering a panic.
         if (config.allow_insecure and comptime @import("builtin").mode != .Debug and !@import("builtin").is_test) {
-            @panic("SECURITY: allow_insecure=true is forbidden in release builds — it disables all certificate validation");
+            return error.InsecureForbiddenInRelease;
         }
 
         return ctx;
