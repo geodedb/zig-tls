@@ -574,9 +574,10 @@ pub const TransportParameters = struct {
             offset += len_result.n;
 
             // RFC 9000 §18: Ensure we have enough data for value
-            if (offset + length > data.len) return error.Truncated;
-            const value = data[offset .. offset + length];
-            offset += length;
+            const len: usize = @intCast(length);
+            if (offset + len > data.len) return error.Truncated;
+            const value = data[offset .. offset + len];
+            offset += len;
 
             // RFC 9000 §18.2: Parse parameter based on ID
             switch (@as(ParameterId, @enumFromInt(id))) {
