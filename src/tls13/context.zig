@@ -2763,7 +2763,10 @@ pub const Context = struct {
 
         // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
         const sig_copy = try self.allocator.dupe(u8, parsed.signature);
-        errdefer self.allocator.free(sig_copy);
+        errdefer {
+            self.allocator.free(sig_copy);
+            self.peer_cert_verify_sig = null;
+        }
         if (self.peer_cert_verify_sig) |old_sig| {
             self.allocator.free(old_sig);
         }
