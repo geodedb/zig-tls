@@ -49,12 +49,11 @@
 //! | Key Derivation         | 2 levels  | Yes              |
 
 const std = @import("std");
-const build_options = @import("tls_build_options");
 const x509 = @import("x509");
 const sigmod = @import("sig");
 const ks = @import("quic_tls");
 
-const spice = if (build_options.enable_spice) @import("spice") else struct {
+const spice = if (true) @import("spice") else struct {
     pub const ThreadPool = void;
     pub const Task = void;
     pub fn Future(comptime I: type, comptime O: type) type {
@@ -68,13 +67,13 @@ const spice = if (build_options.enable_spice) @import("spice") else struct {
 // Global Thread Pool
 // ============================================================================
 
-var global_pool: if (build_options.enable_spice) ?spice.ThreadPool else void = if (build_options.enable_spice) null else {};
+var global_pool: if (true) ?spice.ThreadPool else void = if (true) null else {};
 var pool_mutex: std.Thread.Mutex = .{};
 /// Atomic flag for lock-free fast path on pool initialization check (PERF-005).
 var pool_initialized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
-pub fn getPool() if (build_options.enable_spice) *spice.ThreadPool else void {
-    if (!build_options.enable_spice) return;
+pub fn getPool() if (true) *spice.ThreadPool else void {
+    // spice always enabled when this module is compiled
 
     // Fast path: if already initialized, return without acquiring mutex (PERF-005).
     if (pool_initialized.load(.acquire)) {
@@ -94,7 +93,7 @@ pub fn getPool() if (build_options.enable_spice) *spice.ThreadPool else void {
 }
 
 pub fn deinitPool() void {
-    if (!build_options.enable_spice) return;
+    // spice always enabled when this module is compiled
 
     pool_mutex.lock();
     defer pool_mutex.unlock();
@@ -149,7 +148,7 @@ pub fn parallelCertificateValidate(
 ) void {
     std.debug.assert(inputs.len == results.len);
 
-    if (!build_options.enable_spice or inputs.len < 2) {
+    if (!true or inputs.len < 2) {
         for (inputs, 0..) |input, i| {
             results[i] = validateCertificateChain(allocator, input);
         }
@@ -288,7 +287,7 @@ pub fn parallelSignatureVerify(
 ) void {
     std.debug.assert(inputs.len == results.len);
 
-    if (!build_options.enable_spice or inputs.len < 2) {
+    if (!true or inputs.len < 2) {
         for (inputs, 0..) |input, i| {
             results[i] = verifySignature(input);
         }
@@ -501,7 +500,7 @@ pub fn parallelAeadSeal(
     std.debug.assert(inputs.len == outputs.len);
     std.debug.assert(inputs.len == results.len);
 
-    if (!build_options.enable_spice or inputs.len < 4) {
+    if (!true or inputs.len < 4) {
         for (inputs, 0..) |input, i| {
             results[i] = sealRecord(input, outputs[i]);
         }
@@ -646,7 +645,7 @@ pub fn parallelKeyDerive(
     std.debug.assert(secrets.len == levels.len);
     std.debug.assert(secrets.len == results.len);
 
-    if (!build_options.enable_spice or secrets.len < 2) {
+    if (!true or secrets.len < 2) {
         for (secrets, 0..) |secret, i| {
             results[i] = deriveKeyMaterial(secret, levels[i]);
         }
@@ -737,7 +736,7 @@ fn deriveKeyMaterial(secret: [32]u8, level: EncryptionLevel) KeyMaterial {
 // ============================================================================
 
 test "parallel certificate validate - insecure bypass" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     var inputs: [4]CertValidateInput = undefined;
     var results: [4]CertValidateResult = undefined;
@@ -760,7 +759,7 @@ test "parallel certificate validate - insecure bypass" {
 }
 
 test "parallel certificate validate - invalid DER rejected" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     var inputs: [4]CertValidateInput = undefined;
     var results: [4]CertValidateResult = undefined;
@@ -784,7 +783,7 @@ test "parallel certificate validate - invalid DER rejected" {
 }
 
 test "parallel signature verify - invalid SPKI rejected" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     var inputs: [4]SignatureVerifyInput = undefined;
     var results: [4]SignatureVerifyResult = undefined;
@@ -809,7 +808,7 @@ test "parallel signature verify - invalid SPKI rejected" {
 }
 
 test "parallel certificate validate - empty chain" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     var inputs: [4]CertValidateInput = undefined;
     var results: [4]CertValidateResult = undefined;
@@ -862,7 +861,7 @@ test "parallel certificate validate - single item invalid DER" {
 }
 
 test "parallel signature verify - invalid inputs" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     var inputs: [4]SignatureVerifyInput = undefined;
     var results: [4]SignatureVerifyResult = undefined;
@@ -908,7 +907,7 @@ test "parallel signature verify - invalid inputs" {
 }
 
 test "parallel aead seal - basic" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     const allocator = std.testing.allocator;
     const count = 8;
@@ -943,7 +942,7 @@ test "parallel aead seal - basic" {
 }
 
 test "parallel aead seal - chacha20" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     const allocator = std.testing.allocator;
     const count = 4;
@@ -977,7 +976,7 @@ test "parallel aead seal - chacha20" {
 }
 
 test "parallel key derive" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    // spice always enabled when this module is compiled
 
     var secrets: [4][32]u8 = undefined;
     var levels: [4]EncryptionLevel = undefined;
