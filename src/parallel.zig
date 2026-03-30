@@ -49,7 +49,7 @@
 //! | Key Derivation         | 2 levels  | Yes              |
 
 const std = @import("std");
-const build_options = @import("build_options");
+const build_options = @import("tls_build_options");
 const x509 = @import("x509");
 const sigmod = @import("sig");
 const ks = @import("quic_tls");

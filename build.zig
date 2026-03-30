@@ -184,7 +184,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "build_options", .module = build_options.createModule() },
+            .{ .name = "tls_build_options", .module = build_options.createModule() },
             .{ .name = "x509", .module = x509_mod },
             .{ .name = "sig", .module = sig_mod },
             .{ .name = "record", .module = record_mod },
