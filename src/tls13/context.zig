@@ -693,13 +693,10 @@ pub const Context = struct {
         // then explicitly call startClientHandshake(). If we call it here, the ClientHello
         // will be generated without transport parameters.
 
-        // SEC-005: Prevent allow_insecure from being used in release builds.
-        // This disables ALL certificate validation — only safe in Debug/testing.
-        // Allow in test builds (is_test) so release-mode test suites can still
-        // exercise insecure paths without triggering a panic.
-        if (config.allow_insecure and comptime @import("builtin").mode != .Debug and !@import("builtin").is_test) {
-            return error.InsecureForbiddenInRelease;
-        }
+        // SEC-005: allow_insecure disables ALL certificate validation.
+        // This is a runtime opt-in (caller must explicitly pass the flag),
+        // so we permit it in all build modes. The security boundary is the
+        // CLI flag / API parameter, not a compile-time gate.
 
         return ctx;
     }

@@ -356,12 +356,10 @@ pub const Engine = struct {
         };
     }
 
-    /// SEC-019: Set allow_insecure with release-mode guard.
-    /// Returns error if called with `true` in non-Debug builds, matching Context behavior.
-    pub fn setAllowInsecure(self: *Engine, value: bool) error{InsecureForbiddenInRelease}!void {
-        if (value and comptime @import("builtin").mode != .Debug and !@import("builtin").is_test) {
-            return error.InsecureForbiddenInRelease;
-        }
+    /// SEC-019: Set allow_insecure. Runtime opt-in — caller must explicitly
+    /// pass the flag. Security boundary is the CLI/API parameter, not a
+    /// compile-time gate.
+    pub fn setAllowInsecure(self: *Engine, value: bool) void {
         self.allow_insecure = value;
     }
     /// Release any owned resources and buffers.
