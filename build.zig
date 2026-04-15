@@ -219,7 +219,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "quic_transport_params", .module = transport_params_mod },
             .{ .name = "ocsp", .module = ocsp_mod },
             .{ .name = "sct", .module = sct_mod },
-            
+
         },
     });
 
@@ -568,7 +568,7 @@ pub fn build(b: *std.Build) void {
     const conformance_step = b.step("test-conformance", "Run conformance tests against BoringSSL and OpenSSL (requires libssl-dev)");
 
     // Windows vcpkg OpenSSL support
-    const vcpkg_root = std.process.getEnvVarOwned(b.allocator, "VCPKG_ROOT") catch null;
+    const vcpkg_root = b.graph.environ_map.get("VCPKG_ROOT");
     const vcpkg_include_path = if (vcpkg_root) |root|
         b.fmt("{s}/installed/x64-windows/include", .{root})
     else
