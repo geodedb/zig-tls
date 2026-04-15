@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024-2025 CodePros
 
-//! Parallel TLS operations using spice heartbeat scheduling.
+//! Parallel TLS operations using thread-pool flat submission.
 //!
 //! Provides high-performance parallel implementations of compute-intensive
 //! TLS operations including certificate validation, signature verification,
@@ -10,13 +10,13 @@
 //! ## Overview
 //!
 //! This module enables parallel processing of TLS cryptographic operations
-//! using the spice thread pool. Ideal for servers handling multiple TLS
+//! using the thread-pool library. Ideal for servers handling multiple TLS
 //! connections simultaneously.
 //!
 //! ## Build Configuration
 //!
-//! Enable: `-Dspice=true` (default)
-//! Disable: `-Dspice=false`
+//! Enable: `-Dthread-pool=true` (default)
+//! Disable: `-Dthread-pool=false`
 //!
 //! ## Usage Example
 //!
@@ -53,28 +53,18 @@ const x509 = @import("x509");
 const sigmod = @import("sig");
 const ks = @import("quic_tls");
 
-const spice = if (true) @import("spice") else struct {
-    pub const ThreadPool = void;
-    pub const Task = void;
-    pub fn Future(comptime I: type, comptime O: type) type {
-        _ = I;
-        _ = O;
-        return void;
-    }
-};
+const tp = @import("thread_pool");
 
 // ============================================================================
 // Global Thread Pool
 // ============================================================================
 
-var global_pool: if (true) ?spice.ThreadPool else void = if (true) null else {};
+var global_pool: ?tp.ThreadPool = null;
 var pool_mutex: std.Thread.Mutex = .{};
 /// Atomic flag for lock-free fast path on pool initialization check (PERF-005).
 var pool_initialized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
-pub fn getPool() if (true) *spice.ThreadPool else void {
-    // spice always enabled when this module is compiled
-
+pub fn getPool() *tp.ThreadPool {
     // Fast path: if already initialized, return without acquiring mutex (PERF-005).
     if (pool_initialized.load(.acquire)) {
         return &global_pool.?;
@@ -85,16 +75,13 @@ pub fn getPool() if (true) *spice.ThreadPool else void {
     defer pool_mutex.unlock();
 
     if (global_pool == null) {
-        global_pool = spice.ThreadPool.init(std.heap.page_allocator);
-        global_pool.?.start(.{});
+        global_pool = tp.ThreadPool.init(std.heap.page_allocator, .{}) catch @panic("thread-pool: init failed");
         pool_initialized.store(true, .release);
     }
     return &global_pool.?;
 }
 
 pub fn deinitPool() void {
-    // spice always enabled when this module is compiled
-
     pool_mutex.lock();
     defer pool_mutex.unlock();
 
@@ -130,6 +117,20 @@ pub const CertValidateContext = struct {
     allocator: std.mem.Allocator,
 };
 
+const MAX_CHUNKS = 64;
+
+/// Per-item chunk context for cert validation
+const CertValidateChunk = struct {
+    input: CertValidateInput,
+    result: *CertValidateResult,
+    allocator: std.mem.Allocator,
+};
+
+fn certValidateChunkTask(ctx_ptr: *anyopaque, _: *tp.TaskContext) void {
+    const chunk: *CertValidateChunk = @ptrCast(@alignCast(ctx_ptr));
+    chunk.result.* = validateCertificateChain(chunk.allocator, chunk.input);
+}
+
 /// Validate multiple certificate chains in parallel.
 ///
 /// Each chain is validated independently, making this ideal for
@@ -148,7 +149,7 @@ pub fn parallelCertificateValidate(
 ) void {
     std.debug.assert(inputs.len == results.len);
 
-    if (!true or inputs.len < 2) {
+    if (inputs.len < 2) {
         for (inputs, 0..) |input, i| {
             results[i] = validateCertificateChain(allocator, input);
         }
@@ -156,43 +157,31 @@ pub fn parallelCertificateValidate(
     }
 
     const pool = getPool();
-    const ctx = CertValidateContext{
-        .inputs = inputs,
-        .results = results,
-        .allocator = allocator,
-    };
-    _ = pool.call(void, parallelCertValidateTask, ctx);
-}
 
-fn parallelCertValidateTask(t: *spice.Task, ctx: CertValidateContext) void {
-    const inputs = ctx.inputs;
-    const results = ctx.results;
+    // Each item maps to one chunk/task (up to MAX_CHUNKS).
+    const n = @min(inputs.len, MAX_CHUNKS);
+    var chunks: [MAX_CHUNKS]CertValidateChunk = undefined;
+    var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
 
-    if (inputs.len < 2) {
-        for (inputs, 0..) |input, i| {
-            results[i] = validateCertificateChain(ctx.allocator, input);
-        }
-        return;
+    for (0..n) |i| {
+        chunks[i] = .{
+            .input = inputs[i],
+            .result = &results[i],
+            .allocator = allocator,
+        };
+        batch[i] = .{ .task_fn = &certValidateChunkTask, .ctx = @ptrCast(&chunks[i]) };
     }
 
-    const mid = inputs.len / 2;
-    const left_ctx = CertValidateContext{
-        .inputs = inputs[0..mid],
-        .results = results[0..mid],
-        .allocator = ctx.allocator,
+    var wg = pool.waitGroup();
+    _ = pool.submitBatch(batch[0..n], .{ .wait_group = &wg }) catch {
+        for (inputs, 0..) |input, i| results[i] = validateCertificateChain(allocator, input);
+        return;
     };
-    const right_ctx = CertValidateContext{
-        .inputs = inputs[mid..],
-        .results = results[mid..],
-        .allocator = ctx.allocator,
-    };
+    wg.wait();
 
-    var fut = spice.Future(CertValidateContext, void).init();
-    fut.fork(t, parallelCertValidateTask, right_ctx);
-
-    t.call(void, parallelCertValidateTask, left_ctx);
-    if (fut.join(t) == null) {
-        t.call(void, parallelCertValidateTask, right_ctx);
+    // Handle any remaining items beyond MAX_CHUNKS sequentially.
+    for (n..inputs.len) |i| {
+        results[i] = validateCertificateChain(allocator, inputs[i]);
     }
 }
 
@@ -269,6 +258,17 @@ pub const SignatureVerifyContext = struct {
     results: []SignatureVerifyResult,
 };
 
+/// Per-item chunk context for signature verification
+const SigVerifyChunk = struct {
+    input: SignatureVerifyInput,
+    result: *SignatureVerifyResult,
+};
+
+fn sigVerifyChunkTask(ctx_ptr: *anyopaque, _: *tp.TaskContext) void {
+    const chunk: *SigVerifyChunk = @ptrCast(@alignCast(ctx_ptr));
+    chunk.result.* = verifySignature(chunk.input);
+}
+
 /// Verify multiple signatures in parallel.
 ///
 /// Each signature verification is independent, ideal for:
@@ -287,25 +287,6 @@ pub fn parallelSignatureVerify(
 ) void {
     std.debug.assert(inputs.len == results.len);
 
-    if (!true or inputs.len < 2) {
-        for (inputs, 0..) |input, i| {
-            results[i] = verifySignature(input);
-        }
-        return;
-    }
-
-    const pool = getPool();
-    const ctx = SignatureVerifyContext{
-        .inputs = inputs,
-        .results = results,
-    };
-    _ = pool.call(void, parallelSigVerifyTask, ctx);
-}
-
-fn parallelSigVerifyTask(t: *spice.Task, ctx: SignatureVerifyContext) void {
-    const inputs = ctx.inputs;
-    const results = ctx.results;
-
     if (inputs.len < 2) {
         for (inputs, 0..) |input, i| {
             results[i] = verifySignature(input);
@@ -313,22 +294,27 @@ fn parallelSigVerifyTask(t: *spice.Task, ctx: SignatureVerifyContext) void {
         return;
     }
 
-    const mid = inputs.len / 2;
-    const left_ctx = SignatureVerifyContext{
-        .inputs = inputs[0..mid],
-        .results = results[0..mid],
-    };
-    const right_ctx = SignatureVerifyContext{
-        .inputs = inputs[mid..],
-        .results = results[mid..],
-    };
+    const pool = getPool();
 
-    var fut = spice.Future(SignatureVerifyContext, void).init();
-    fut.fork(t, parallelSigVerifyTask, right_ctx);
+    const n = @min(inputs.len, MAX_CHUNKS);
+    var chunks: [MAX_CHUNKS]SigVerifyChunk = undefined;
+    var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
 
-    t.call(void, parallelSigVerifyTask, left_ctx);
-    if (fut.join(t) == null) {
-        t.call(void, parallelSigVerifyTask, right_ctx);
+    for (0..n) |i| {
+        chunks[i] = .{ .input = inputs[i], .result = &results[i] };
+        batch[i] = .{ .task_fn = &sigVerifyChunkTask, .ctx = @ptrCast(&chunks[i]) };
+    }
+
+    var wg = pool.waitGroup();
+    _ = pool.submitBatch(batch[0..n], .{ .wait_group = &wg }) catch {
+        for (inputs, 0..) |input, i| results[i] = verifySignature(input);
+        return;
+    };
+    wg.wait();
+
+    // Handle any remaining items beyond MAX_CHUNKS sequentially.
+    for (n..inputs.len) |i| {
+        results[i] = verifySignature(inputs[i]);
     }
 }
 
@@ -481,6 +467,18 @@ pub const AeadSealContext = struct {
     results: []AeadSealResult,
 };
 
+/// Per-item chunk context for AEAD seal
+const AeadSealChunk = struct {
+    input: AeadSealInput,
+    output: []u8,
+    result: *AeadSealResult,
+};
+
+fn aeadSealChunkTask(ctx_ptr: *anyopaque, _: *tp.TaskContext) void {
+    const chunk: *AeadSealChunk = @ptrCast(@alignCast(ctx_ptr));
+    chunk.result.* = sealRecord(chunk.input, chunk.output);
+}
+
 /// Encrypt multiple TLS records in parallel.
 ///
 /// Each record is encrypted with AEAD independently.
@@ -500,7 +498,7 @@ pub fn parallelAeadSeal(
     std.debug.assert(inputs.len == outputs.len);
     std.debug.assert(inputs.len == results.len);
 
-    if (!true or inputs.len < 4) {
+    if (inputs.len < 4) {
         for (inputs, 0..) |input, i| {
             results[i] = sealRecord(input, outputs[i]);
         }
@@ -508,44 +506,26 @@ pub fn parallelAeadSeal(
     }
 
     const pool = getPool();
-    const ctx = AeadSealContext{
-        .inputs = inputs,
-        .outputs = outputs,
-        .results = results,
-    };
-    _ = pool.call(void, parallelAeadSealTask, ctx);
-}
 
-fn parallelAeadSealTask(t: *spice.Task, ctx: AeadSealContext) void {
-    const inputs = ctx.inputs;
-    const outputs = ctx.outputs;
-    const results = ctx.results;
+    const n = @min(inputs.len, MAX_CHUNKS);
+    var chunks: [MAX_CHUNKS]AeadSealChunk = undefined;
+    var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
 
-    if (inputs.len < 2) {
-        for (inputs, 0..) |input, i| {
-            results[i] = sealRecord(input, outputs[i]);
-        }
-        return;
+    for (0..n) |i| {
+        chunks[i] = .{ .input = inputs[i], .output = outputs[i], .result = &results[i] };
+        batch[i] = .{ .task_fn = &aeadSealChunkTask, .ctx = @ptrCast(&chunks[i]) };
     }
 
-    const mid = inputs.len / 2;
-    const left_ctx = AeadSealContext{
-        .inputs = inputs[0..mid],
-        .outputs = outputs[0..mid],
-        .results = results[0..mid],
+    var wg = pool.waitGroup();
+    _ = pool.submitBatch(batch[0..n], .{ .wait_group = &wg }) catch {
+        for (inputs, 0..) |input, i| results[i] = sealRecord(input, outputs[i]);
+        return;
     };
-    const right_ctx = AeadSealContext{
-        .inputs = inputs[mid..],
-        .outputs = outputs[mid..],
-        .results = results[mid..],
-    };
+    wg.wait();
 
-    var fut = spice.Future(AeadSealContext, void).init();
-    fut.fork(t, parallelAeadSealTask, right_ctx);
-
-    t.call(void, parallelAeadSealTask, left_ctx);
-    if (fut.join(t) == null) {
-        t.call(void, parallelAeadSealTask, right_ctx);
+    // Handle any remaining items beyond MAX_CHUNKS sequentially.
+    for (n..inputs.len) |i| {
+        results[i] = sealRecord(inputs[i], outputs[i]);
     }
 }
 
@@ -626,6 +606,18 @@ pub const KeyDeriveContext = struct {
     results: []KeyMaterial,
 };
 
+/// Per-item chunk context for key derivation
+const KeyDeriveChunk = struct {
+    secret: [32]u8,
+    level: EncryptionLevel,
+    result: *KeyMaterial,
+};
+
+fn keyDeriveChunkTask(ctx_ptr: *anyopaque, _: *tp.TaskContext) void {
+    const chunk: *KeyDeriveChunk = @ptrCast(@alignCast(ctx_ptr));
+    chunk.result.* = deriveKeyMaterial(chunk.secret, chunk.level);
+}
+
 /// Derive keys for multiple encryption levels in parallel.
 ///
 /// Useful for deriving Initial, Handshake, and Application keys
@@ -645,27 +637,6 @@ pub fn parallelKeyDerive(
     std.debug.assert(secrets.len == levels.len);
     std.debug.assert(secrets.len == results.len);
 
-    if (!true or secrets.len < 2) {
-        for (secrets, 0..) |secret, i| {
-            results[i] = deriveKeyMaterial(secret, levels[i]);
-        }
-        return;
-    }
-
-    const pool = getPool();
-    const ctx = KeyDeriveContext{
-        .secrets = secrets,
-        .levels = levels,
-        .results = results,
-    };
-    _ = pool.call(void, parallelKeyDeriveTask, ctx);
-}
-
-fn parallelKeyDeriveTask(t: *spice.Task, ctx: KeyDeriveContext) void {
-    const secrets = ctx.secrets;
-    const levels = ctx.levels;
-    const results = ctx.results;
-
     if (secrets.len < 2) {
         for (secrets, 0..) |secret, i| {
             results[i] = deriveKeyMaterial(secret, levels[i]);
@@ -673,24 +644,27 @@ fn parallelKeyDeriveTask(t: *spice.Task, ctx: KeyDeriveContext) void {
         return;
     }
 
-    const mid = secrets.len / 2;
-    const left_ctx = KeyDeriveContext{
-        .secrets = secrets[0..mid],
-        .levels = levels[0..mid],
-        .results = results[0..mid],
-    };
-    const right_ctx = KeyDeriveContext{
-        .secrets = secrets[mid..],
-        .levels = levels[mid..],
-        .results = results[mid..],
-    };
+    const pool = getPool();
 
-    var fut = spice.Future(KeyDeriveContext, void).init();
-    fut.fork(t, parallelKeyDeriveTask, right_ctx);
+    const n = @min(secrets.len, MAX_CHUNKS);
+    var chunks: [MAX_CHUNKS]KeyDeriveChunk = undefined;
+    var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
 
-    t.call(void, parallelKeyDeriveTask, left_ctx);
-    if (fut.join(t) == null) {
-        t.call(void, parallelKeyDeriveTask, right_ctx);
+    for (0..n) |i| {
+        chunks[i] = .{ .secret = secrets[i], .level = levels[i], .result = &results[i] };
+        batch[i] = .{ .task_fn = &keyDeriveChunkTask, .ctx = @ptrCast(&chunks[i]) };
+    }
+
+    var wg = pool.waitGroup();
+    _ = pool.submitBatch(batch[0..n], .{ .wait_group = &wg }) catch {
+        for (secrets, 0..) |secret, i| results[i] = deriveKeyMaterial(secret, levels[i]);
+        return;
+    };
+    wg.wait();
+
+    // Handle any remaining items beyond MAX_CHUNKS sequentially.
+    for (n..secrets.len) |i| {
+        results[i] = deriveKeyMaterial(secrets[i], levels[i]);
     }
 }
 
@@ -736,8 +710,6 @@ fn deriveKeyMaterial(secret: [32]u8, level: EncryptionLevel) KeyMaterial {
 // ============================================================================
 
 test "parallel certificate validate - insecure bypass" {
-    // spice always enabled when this module is compiled
-
     var inputs: [4]CertValidateInput = undefined;
     var results: [4]CertValidateResult = undefined;
 
@@ -759,8 +731,6 @@ test "parallel certificate validate - insecure bypass" {
 }
 
 test "parallel certificate validate - invalid DER rejected" {
-    // spice always enabled when this module is compiled
-
     var inputs: [4]CertValidateInput = undefined;
     var results: [4]CertValidateResult = undefined;
 
@@ -783,8 +753,6 @@ test "parallel certificate validate - invalid DER rejected" {
 }
 
 test "parallel signature verify - invalid SPKI rejected" {
-    // spice always enabled when this module is compiled
-
     var inputs: [4]SignatureVerifyInput = undefined;
     var results: [4]SignatureVerifyResult = undefined;
 
@@ -808,8 +776,6 @@ test "parallel signature verify - invalid SPKI rejected" {
 }
 
 test "parallel certificate validate - empty chain" {
-    // spice always enabled when this module is compiled
-
     var inputs: [4]CertValidateInput = undefined;
     var results: [4]CertValidateResult = undefined;
 
@@ -861,8 +827,6 @@ test "parallel certificate validate - single item invalid DER" {
 }
 
 test "parallel signature verify - invalid inputs" {
-    // spice always enabled when this module is compiled
-
     var inputs: [4]SignatureVerifyInput = undefined;
     var results: [4]SignatureVerifyResult = undefined;
 
@@ -907,8 +871,6 @@ test "parallel signature verify - invalid inputs" {
 }
 
 test "parallel aead seal - basic" {
-    // spice always enabled when this module is compiled
-
     const allocator = std.testing.allocator;
     const count = 8;
 
@@ -942,8 +904,6 @@ test "parallel aead seal - basic" {
 }
 
 test "parallel aead seal - chacha20" {
-    // spice always enabled when this module is compiled
-
     const allocator = std.testing.allocator;
     const count = 4;
 
@@ -976,8 +936,6 @@ test "parallel aead seal - chacha20" {
 }
 
 test "parallel key derive" {
-    // spice always enabled when this module is compiled
-
     var secrets: [4][32]u8 = undefined;
     var levels: [4]EncryptionLevel = undefined;
     var results: [4]KeyMaterial = undefined;

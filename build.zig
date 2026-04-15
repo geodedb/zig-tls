@@ -7,16 +7,16 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Spice parallelism option
-    const enable_spice = b.option(bool, "spice", "Enable spice-based parallelism") orelse true;
+    // thread-pool parallelism option
+    const enable_tp = b.option(bool, "thread-pool", "Enable thread-pool-based parallelism") orelse true;
 
-    // Get spice dependency if enabled
-    const spice_mod: ?*std.Build.Module = if (enable_spice) blk: {
-        const spice_dep = b.dependency("spice", .{
+    // Get thread-pool dependency if enabled
+    const tp_mod: ?*std.Build.Module = if (enable_tp) blk: {
+        const tp_dep = b.dependency("thread_pool", .{
             .target = target,
             .optimize = optimize,
         });
-        break :blk spice_dep.module("spice");
+        break :blk tp_dep.module("thread_pool");
     } else null;
 
     // ========================================================================
@@ -172,23 +172,25 @@ pub fn build(b: *std.Build) void {
     });
 
     // ========================================================================
-    // Parallel Module - Spice-based parallelism
+    // Parallel Module - thread-pool-based parallelism
     // ========================================================================
 
-    const parallel_mod: ?*std.Build.Module = if (enable_spice) blk: {
+    const parallel_mod: ?*std.Build.Module = if (enable_tp) blk: {
         break :blk b.addModule("parallel", .{
-        .root_source_file = b.path("src/parallel.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "x509", .module = x509_mod },
-            .{ .name = "sig", .module = sig_mod },
-            .{ .name = "record", .module = record_mod },
-            .{ .name = "quic_tls", .module = key_schedule_mod },
-        },
-    });
+            .root_source_file = b.path("src/parallel.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "sig", .module = sig_mod },
+                .{ .name = "record", .module = record_mod },
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+            },
+        });
     } else null;
-    if (parallel_mod) |pm| { if (spice_mod) |sm| pm.addImport("spice", sm); }
+    if (parallel_mod) |pm| {
+        if (tp_mod) |tm| pm.addImport("thread_pool", tm);
+    }
 
     // ========================================================================
     // Public API Module - Main Entry Point
@@ -219,7 +221,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "quic_transport_params", .module = transport_params_mod },
             .{ .name = "ocsp", .module = ocsp_mod },
             .{ .name = "sct", .module = sct_mod },
-
         },
     });
 
@@ -568,7 +569,7 @@ pub fn build(b: *std.Build) void {
     const conformance_step = b.step("test-conformance", "Run conformance tests against BoringSSL and OpenSSL (requires libssl-dev)");
 
     // Windows vcpkg OpenSSL support
-    const vcpkg_root = b.graph.environ_map.get("VCPKG_ROOT");
+    const vcpkg_root = std.process.getEnvVarOwned(b.allocator, "VCPKG_ROOT") catch null;
     const vcpkg_include_path = if (vcpkg_root) |root|
         b.fmt("{s}/installed/x64-windows/include", .{root})
     else
@@ -592,11 +593,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    boringssl_test.root_module.linkSystemLibrary("ssl", .{});
-    boringssl_test.root_module.linkSystemLibrary("crypto", .{});
-    boringssl_test.root_module.link_libc = true;
+    boringssl_test.linkSystemLibrary("ssl");
+    boringssl_test.linkSystemLibrary("crypto");
+    boringssl_test.linkLibC();
     if (vcpkg_include_path) |path| {
-        boringssl_test.root_module.addIncludePath(.{ .cwd_relative = path });
+        boringssl_test.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_boringssl_test = b.addRunArtifact(boringssl_test);
@@ -620,11 +621,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    openssl_test.root_module.linkSystemLibrary("ssl", .{});
-    openssl_test.root_module.linkSystemLibrary("crypto", .{});
-    openssl_test.root_module.link_libc = true;
+    openssl_test.linkSystemLibrary("ssl");
+    openssl_test.linkSystemLibrary("crypto");
+    openssl_test.linkLibC();
     if (vcpkg_include_path) |path| {
-        openssl_test.root_module.addIncludePath(.{ .cwd_relative = path });
+        openssl_test.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_openssl_test = b.addRunArtifact(openssl_test);
@@ -643,11 +644,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    x509_openssl_test.root_module.linkSystemLibrary("ssl", .{});
-    x509_openssl_test.root_module.linkSystemLibrary("crypto", .{});
-    x509_openssl_test.root_module.link_libc = true;
+    x509_openssl_test.linkSystemLibrary("ssl");
+    x509_openssl_test.linkSystemLibrary("crypto");
+    x509_openssl_test.linkLibC();
     if (vcpkg_include_path) |path| {
-        x509_openssl_test.root_module.addIncludePath(.{ .cwd_relative = path });
+        x509_openssl_test.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_x509_openssl_test = b.addRunArtifact(x509_openssl_test);
@@ -666,11 +667,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    ocsp_openssl_test.root_module.linkSystemLibrary("ssl", .{});
-    ocsp_openssl_test.root_module.linkSystemLibrary("crypto", .{});
-    ocsp_openssl_test.root_module.link_libc = true;
+    ocsp_openssl_test.linkSystemLibrary("ssl");
+    ocsp_openssl_test.linkSystemLibrary("crypto");
+    ocsp_openssl_test.linkLibC();
     if (vcpkg_include_path) |path| {
-        ocsp_openssl_test.root_module.addIncludePath(.{ .cwd_relative = path });
+        ocsp_openssl_test.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_ocsp_openssl_test = b.addRunArtifact(ocsp_openssl_test);
@@ -687,11 +688,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    sct_openssl_test.root_module.linkSystemLibrary("ssl", .{});
-    sct_openssl_test.root_module.linkSystemLibrary("crypto", .{});
-    sct_openssl_test.root_module.link_libc = true;
+    sct_openssl_test.linkSystemLibrary("ssl");
+    sct_openssl_test.linkSystemLibrary("crypto");
+    sct_openssl_test.linkLibC();
     if (vcpkg_include_path) |path| {
-        sct_openssl_test.root_module.addIncludePath(.{ .cwd_relative = path });
+        sct_openssl_test.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_sct_openssl_test = b.addRunArtifact(sct_openssl_test);
@@ -712,11 +713,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    handshake_conformance_test.root_module.linkSystemLibrary("ssl", .{});
-    handshake_conformance_test.root_module.linkSystemLibrary("crypto", .{});
-    handshake_conformance_test.root_module.link_libc = true;
+    handshake_conformance_test.linkSystemLibrary("ssl");
+    handshake_conformance_test.linkSystemLibrary("crypto");
+    handshake_conformance_test.linkLibC();
     if (vcpkg_include_path) |path| {
-        handshake_conformance_test.root_module.addIncludePath(.{ .cwd_relative = path });
+        handshake_conformance_test.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_handshake_conformance_test = b.addRunArtifact(handshake_conformance_test);
@@ -734,11 +735,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    handshake_secrets_test.root_module.linkSystemLibrary("ssl", .{});
-    handshake_secrets_test.root_module.linkSystemLibrary("crypto", .{});
-    handshake_secrets_test.root_module.link_libc = true;
+    handshake_secrets_test.linkSystemLibrary("ssl");
+    handshake_secrets_test.linkSystemLibrary("crypto");
+    handshake_secrets_test.linkLibC();
     if (vcpkg_include_path) |path| {
-        handshake_secrets_test.root_module.addIncludePath(.{ .cwd_relative = path });
+        handshake_secrets_test.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_handshake_secrets_test = b.addRunArtifact(handshake_secrets_test);
@@ -907,11 +908,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    mtls_openssl_interop_test.root_module.linkSystemLibrary("ssl", .{});
-    mtls_openssl_interop_test.root_module.linkSystemLibrary("crypto", .{});
-    mtls_openssl_interop_test.root_module.link_libc = true;
+    mtls_openssl_interop_test.linkSystemLibrary("ssl");
+    mtls_openssl_interop_test.linkSystemLibrary("crypto");
+    mtls_openssl_interop_test.linkLibC();
     if (vcpkg_include_path) |path| {
-        mtls_openssl_interop_test.root_module.addIncludePath(.{ .cwd_relative = path });
+        mtls_openssl_interop_test.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_mtls_openssl_interop_test = b.addRunArtifact(mtls_openssl_interop_test);
