@@ -133,7 +133,7 @@ pub const TrustStore = struct {
 /// pointer and we need to ensure the entire struct is read consistently.
 const TrustStoreState = struct {
     store: ?TrustStore = null,
-    lock: std.Io.RwLock = .{},
+    lock: std.Io.RwLock = std.Io.RwLock.init,
 
     /// Read the current trust store value with lock protection.
     fn get(self: *TrustStoreState) ?TrustStore {

@@ -1539,7 +1539,7 @@ pub const Context = struct {
             else if (etype == 0x0033) {
                 if (elen == 2) {
                     const group_val = readU16(body[pos .. pos + 2]);
-                    selected_group = std.meta.intToEnum(tls13_full.NamedGroup, group_val) catch null;
+                    selected_group = @as(tls13_full.NamedGroup, @enumFromInt(group_val)) catch null;
                 }
             }
 
@@ -2313,7 +2313,7 @@ pub const Context = struct {
         pos += 1 + sid_len;
         if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
         const suite_value: u16 = readU16(body[pos .. pos + 2]);
-        const cipher_suite = std.meta.intToEnum(tls13_full.CipherSuite, suite_value) catch return HandshakeError.NoCipherSuite;
+        const cipher_suite = @as(tls13_full.CipherSuite, @enumFromInt(suite_value)) catch return HandshakeError.NoCipherSuite;
 
         // SEC-028: Verify the server-selected cipher suite was in our offered list.
         // RFC 8446 §4.1.3: Server MUST select from the client's cipher_suites.

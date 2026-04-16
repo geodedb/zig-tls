@@ -270,7 +270,7 @@ pub fn parseCertificateVerify(body: []const u8) !ParsedCertificateVerify {
 
     // Parse SignatureScheme (2 bytes)
     const algo_raw = (@as(u16, body[0]) << 8) | body[1];
-    const algorithm = std.meta.intToEnum(core_types.SignatureScheme, algo_raw) catch {
+    const algorithm = @as(core_types.SignatureScheme, @enumFromInt(algo_raw)) catch {
         return error.UnsupportedSignatureScheme;
     };
 
