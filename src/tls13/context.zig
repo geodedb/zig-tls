@@ -514,8 +514,8 @@ const encryption_level_count = std.meta.fields(EncryptionLevel).len;
 /// PERF-036: Uses offset-based O(1) amortized consume (matching handshake_state.zig pattern).
 const CryptoBuffer = struct {
     level: EncryptionLevel,
-    inbound: ArrayListUnmanaged(u8) = .{},
-    outbound: ArrayListUnmanaged(u8) = .{},
+    inbound: ArrayListUnmanaged(u8) = .empty,
+    outbound: ArrayListUnmanaged(u8) = .empty,
     read_offset: usize = 0,
 
     fn init(level: EncryptionLevel) CryptoBuffer {
