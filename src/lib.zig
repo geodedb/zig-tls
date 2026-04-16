@@ -406,6 +406,13 @@ pub const zero_rtt = @import("zero_rtt");
 /// for compatibility with quic-go, quinn, msquic.
 pub const tls13_full = @import("tls13_full");
 
+/// Parallel TLS operations (requires `thread_pool`).
+///
+/// Provides thread-pool-backed batch operations:
+/// `parallelCertificateValidate`, `parallelSignatureVerify`,
+/// `parallelAeadSeal`, `parallelKeyDerive`, and pool lifecycle helpers.
+pub const parallel = @import("parallel");
+
 // ============================================================================
 // Convenience Type Re-exports
 // ============================================================================
@@ -538,4 +545,13 @@ pub const version = std.SemanticVersion{
 test {
     // Run tests for all modules
     std.testing.refAllDecls(@This());
+}
+
+test "parallel re-export is reachable" {
+    // Smoke test: verify parallel.zig is reachable through the public
+    // ztls root module. Parallel TLS ops need real key material and
+    // certs which are impractical in a unit test, so we just assert the
+    // pool lifecycle entry points are exposed and `deinitPool()` is safe.
+    _ = @TypeOf(parallel.getPool);
+    parallel.deinitPool();
 }

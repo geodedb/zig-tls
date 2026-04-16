@@ -223,6 +223,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "sct", .module = sct_mod },
         },
     });
+    if (parallel_mod) |pm| zig_tls_mod.addImport("parallel", pm);
 
     // ========================================================================
     // Unit Tests - Test each module independently

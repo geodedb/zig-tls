@@ -60,7 +60,7 @@ const tp = @import("thread_pool");
 // ============================================================================
 
 var global_pool: ?tp.ThreadPool = null;
-var pool_mutex: std.Thread.Mutex = .{};
+var pool_mutex: tp.sync.Mutex = .{};
 /// Atomic flag for lock-free fast path on pool initialization check (PERF-005).
 var pool_initialized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
@@ -883,7 +883,6 @@ test "parallel aead seal - basic" {
     const plaintext = "test data for encryption";
 
     for (&inputs, 0..) |*input, i| {
-        _ = i;
         input.* = .{
             .suite = .aes_128_gcm,
             .key = &key,
@@ -916,7 +915,6 @@ test "parallel aead seal - chacha20" {
     const plaintext = "test";
 
     for (&inputs, 0..) |*input, i| {
-        _ = i;
         input.* = .{
             .suite = .chacha20_poly1305,
             .key = &key,
