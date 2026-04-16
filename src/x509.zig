@@ -133,19 +133,21 @@ pub const TrustStore = struct {
 /// pointer and we need to ensure the entire struct is read consistently.
 const TrustStoreState = struct {
     store: ?TrustStore = null,
-    lock: std.Thread.RwLock = .{},
+    lock: std.Io.RwLock = .{},
 
     /// Read the current trust store value with lock protection.
     fn get(self: *TrustStoreState) ?TrustStore {
-        self.lock.lockShared();
-        defer self.lock.unlockShared();
+        const io = std.Io.Threaded.global_single_threaded.io();
+        self.lock.lockSharedUncancelable(io);
+        defer self.lock.unlockShared(io);
         return self.store;
     }
 
     /// Set the trust store value with lock protection.
     fn set(self: *TrustStoreState, ts: ?TrustStore) void {
-        self.lock.lock();
-        defer self.lock.unlock();
+        const io = std.Io.Threaded.global_single_threaded.io();
+        self.lock.lockUncancelable(io);
+        defer self.lock.unlock(io);
         self.store = ts;
     }
 };

@@ -182,13 +182,17 @@ pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
         return error.ProtocolViolation;
     }
 
-    const typ: HsType = std.meta.intToEnum(HsType, t_byte) catch {
-        const dump_len: usize = if (data.len < 32) data.len else 32;
-        logger.debugPrint(
-            "TLS: Unknown handshake type byte=0x{X}, buf_len={}, head={any}\n",
-            .{ t_byte, data.len, data[0..dump_len] },
-        );
-        return error.UnknownHandshakeType;
+    // Zig 0.16 compat: std.meta.intToEnum was removed; validate manually.
+    const typ: HsType = switch (t_byte) {
+        1, 2, 4, 8, 11, 13, 15, 20, 24 => @enumFromInt(t_byte),
+        else => {
+            const dump_len: usize = if (data.len < 32) data.len else 32;
+            logger.debugPrint(
+                "TLS: Unknown handshake type byte=0x{X}, buf_len={}, head={any}\n",
+                .{ t_byte, data.len, data[0..dump_len] },
+            );
+            return error.UnknownHandshakeType;
+        },
     };
 
     // Parse 24-bit big-endian length
@@ -350,7 +354,10 @@ pub fn buildKeyUpdate(alloc: std.mem.Allocator, request_update: bool) ![]u8 {
 /// ```
 pub fn parseKeyUpdate(body: []const u8) !KeyUpdateRequest {
     if (body.len != 1) return error.InvalidKeyUpdateLength;
-    return std.meta.intToEnum(KeyUpdateRequest, body[0]) catch return error.InvalidKeyUpdateRequest;
+    return switch (body[0]) {
+        0, 1 => @enumFromInt(body[0]),
+        else => error.InvalidKeyUpdateRequest,
+    };
 }
 
 // ============================================================================
