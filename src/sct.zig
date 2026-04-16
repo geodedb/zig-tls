@@ -40,7 +40,7 @@ pub fn readU64(bytes: []const u8) u64 {
 /// an owned slice of SCT views. Each view references the original `list`
 /// buffer; callers must retain `list` for the lifetime of the returned slice.
 pub fn parseList(allocator: std.mem.Allocator, list: []const u8) SctError![]SignedCertificateTimestamp {
-    var items = std.ArrayList(SignedCertificateTimestamp){};
+    var items = std.ArrayList(SignedCertificateTimestamp).empty;
     errdefer items.deinit(allocator);
 
     var offset: usize = 0;

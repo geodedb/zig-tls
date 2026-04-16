@@ -212,7 +212,7 @@ pub fn parseCertificateRequest(
             while (spos + 2 <= send) {
                 const scheme_val = helpers.readU16(data[spos .. spos + 2]);
                 spos += 2;
-                const scheme = @as(core_types.SignatureScheme, @enumFromInt(scheme_val)) catch continue;
+                const scheme = std.enums.fromInt(core_types.SignatureScheme, scheme_val) orelse continue;
                 try sig_algs.append(allocator, scheme);
             }
         }

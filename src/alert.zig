@@ -38,7 +38,7 @@ pub const AlertDescription = enum(u8) {
     no_application_protocol = 120,
     _,
     /// Human-readable formatting for diagnostics and logging.
-    pub fn format(self: AlertDescription, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: AlertDescription, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         const name = switch (self) {
             .close_notify => "close_notify",
             .unexpected_message => "unexpected_message",
@@ -259,11 +259,10 @@ test "fromHandshakeError - unknown error defaults to internal_error" {
 // Test alert format method
 test "AlertDescription format method" {
     var buf: [100]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const writer = stream.writer();
+    var writer: std.Io.Writer = .fixed(&buf);
 
-    try AlertDescription.handshake_failure.format("", .{}, writer);
-    const output = stream.getWritten();
+    try AlertDescription.handshake_failure.format(&writer);
+    const output = writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "handshake_failure") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "40") != null);
 }
@@ -271,12 +270,11 @@ test "AlertDescription format method" {
 // Test format method with unknown alert
 test "AlertDescription format - unknown alert" {
     var buf: [100]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const writer = stream.writer();
+    var writer: std.Io.Writer = .fixed(&buf);
 
     const unknown: AlertDescription = @enumFromInt(254);
-    try unknown.format("", .{}, writer);
-    const output = stream.getWritten();
+    try unknown.format(&writer);
+    const output = writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, output, "unknown") != null);
 }
 

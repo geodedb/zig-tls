@@ -15,50 +15,52 @@ const x509 = @import("x509");
 const asn1 = @import("asn1");
 
 // Test utilities for building OCSP responses
-fn writeLength(writer: anytype, len: usize) !void {
+fn appendLength(list: *std.ArrayList(u8), allocator: std.mem.Allocator, len: usize) !void {
     if (len <= 127) {
-        try writer.writeByte(@intCast(len));
+        try list.append(allocator, @intCast(len));
     } else if (len <= 255) {
-        try writer.writeByte(0x81);
-        try writer.writeByte(@intCast(len));
+        try list.append(allocator, 0x81);
+        try list.append(allocator, @intCast(len));
     } else {
-        try writer.writeByte(0x82);
-        try writer.writeInt(u16, @intCast(len), .big);
+        try list.append(allocator, 0x82);
+        var buf: [2]u8 = undefined;
+        std.mem.writeInt(u16, &buf, @intCast(len), .big);
+        try list.appendSlice(allocator, &buf);
     }
 }
 
-fn writeSequence(writer: anytype, content: []const u8) !void {
-    try writer.writeByte(0x30);
-    try writeLength(writer, content.len);
-    try writer.writeAll(content);
+fn appendSequence(list: *std.ArrayList(u8), allocator: std.mem.Allocator, content: []const u8) !void {
+    try list.append(allocator, 0x30);
+    try appendLength(list, allocator, content.len);
+    try list.appendSlice(allocator, content);
 }
 
-fn writeOctetString(writer: anytype, content: []const u8) !void {
-    try writer.writeByte(0x04);
-    try writeLength(writer, content.len);
-    try writer.writeAll(content);
+fn appendOctetString(list: *std.ArrayList(u8), allocator: std.mem.Allocator, content: []const u8) !void {
+    try list.append(allocator, 0x04);
+    try appendLength(list, allocator, content.len);
+    try list.appendSlice(allocator, content);
 }
 
-fn writeOID(writer: anytype, oid_bytes: []const u8) !void {
-    try writer.writeByte(0x06);
-    try writeLength(writer, oid_bytes.len);
-    try writer.writeAll(oid_bytes);
+fn appendOID(list: *std.ArrayList(u8), allocator: std.mem.Allocator, oid_bytes: []const u8) !void {
+    try list.append(allocator, 0x06);
+    try appendLength(list, allocator, oid_bytes.len);
+    try list.appendSlice(allocator, oid_bytes);
 }
 
-fn writeInteger(writer: anytype, value: []const u8) !void {
-    try writer.writeByte(0x02);
-    try writeLength(writer, value.len);
-    try writer.writeAll(value);
+fn appendInteger(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: []const u8) !void {
+    try list.append(allocator, 0x02);
+    try appendLength(list, allocator, value.len);
+    try list.appendSlice(allocator, value);
 }
 
-fn writeBitString(writer: anytype, bits: []const u8) !void {
-    try writer.writeByte(0x03);
-    try writeLength(writer, bits.len + 1);
-    try writer.writeByte(0); // No unused bits
-    try writer.writeAll(bits);
+fn appendBitString(list: *std.ArrayList(u8), allocator: std.mem.Allocator, bits: []const u8) !void {
+    try list.append(allocator, 0x03);
+    try appendLength(list, allocator, bits.len + 1);
+    try list.append(allocator, 0); // No unused bits
+    try list.appendSlice(allocator, bits);
 }
 
-fn writeGeneralizedTime(writer: anytype, unix_time: i64) !void {
+fn appendGeneralizedTime(list: *std.ArrayList(u8), allocator: std.mem.Allocator, unix_time: i64) !void {
     // Convert Unix time to GeneralizedTime format (YYYYMMDDHHMMSSZ)
     const seconds_per_day: i64 = 86400;
     const days_since_epoch = @divTrunc(unix_time, seconds_per_day);
@@ -77,9 +79,9 @@ fn writeGeneralizedTime(writer: anytype, unix_time: i64) !void {
         year, month, day, hours, minutes, seconds,
     });
 
-    try writer.writeByte(0x18); // GeneralizedTime tag
-    try writeLength(writer, 15);
-    try writer.writeAll(&time_str[0..15]);
+    try list.append(allocator, 0x18); // GeneralizedTime tag
+    try appendLength(list, allocator, 15);
+    try list.appendSlice(allocator, time_str[0..15]);
 }
 
 // ============================================================================
@@ -258,11 +260,11 @@ test "compareSlices - different content" {
 
 test "extractCertFromSequence - valid certificate extraction" {
     // Build a minimal sequence containing a certificate
-    var cert_data = std.ArrayList(u8){};
+    var cert_data = std.ArrayList(u8).empty;
     defer cert_data.deinit(testing.allocator);
 
     // Certificate is itself a SEQUENCE (tag 0x30)
-    try writeSequence(cert_data.writer(testing.allocator), "dummy cert content");
+    try appendSequence(&cert_data, testing.allocator, "dummy cert content");
 
     const seq = cert_data.items;
     const cert_opt = try ocsp.extractCertFromSequence(seq);
@@ -312,47 +314,47 @@ test "validateStapledResponse - missing issuer rejection" {
 
 // Test helper: Build a minimal but valid OCSP response structure
 fn buildMinimalOcspResponse(allocator: std.mem.Allocator) ![]u8 {
-    var response = std.ArrayList(u8){};
+    var response = std.ArrayList(u8).empty;
     errdefer response.deinit(allocator);
 
-    var inner_content = std.ArrayList(u8){};
+    var inner_content = std.ArrayList(u8).empty;
     defer inner_content.deinit(allocator);
 
     // OCSPResponseStatus
-    try inner_content.writer(allocator).writeByte(0x0A); // ENUMERATED tag
-    try inner_content.writer(allocator).writeByte(0x01);
-    try inner_content.writer(allocator).writeByte(0x00); // successful
+    try inner_content.append(allocator, 0x0A); // ENUMERATED tag
+    try inner_content.append(allocator, 0x01);
+    try inner_content.append(allocator, 0x00); // successful
 
     // ResponseBytes [0] EXPLICIT
-    var response_bytes = std.ArrayList(u8){};
+    var response_bytes = std.ArrayList(u8).empty;
     defer response_bytes.deinit(allocator);
 
     // responseType OID (id-pkix-ocsp-basic)
     const basic_oid = [_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x01 };
-    try writeOID(response_bytes.writer(allocator), &basic_oid);
+    try appendOID(&response_bytes, allocator, &basic_oid);
 
     // response OCTET STRING (containing BasicOCSPResponse)
-    var basic_response = std.ArrayList(u8){};
+    var basic_response = std.ArrayList(u8).empty;
     defer basic_response.deinit(allocator);
 
     // Build BasicOCSPResponse content...
     // (Simplified for testing - would need proper structure for real validation)
-    try basic_response.writer(allocator).writeAll("placeholder");
+    try basic_response.appendSlice(allocator, "placeholder");
 
-    try writeOctetString(response_bytes.writer(allocator), basic_response.items);
+    try appendOctetString(&response_bytes, allocator, basic_response.items);
 
     // Wrap ResponseBytes in SEQUENCE
-    var rb_seq = std.ArrayList(u8){};
+    var rb_seq = std.ArrayList(u8).empty;
     defer rb_seq.deinit(allocator);
-    try writeSequence(rb_seq.writer(allocator), response_bytes.items);
+    try appendSequence(&rb_seq, allocator, response_bytes.items);
 
     // Add as [0] EXPLICIT
-    try inner_content.writer(allocator).writeByte(0xA0); // Context [0] constructed
-    try writeLength(inner_content.writer(allocator), rb_seq.items.len);
-    try inner_content.writer(allocator).writeAll(rb_seq.items);
+    try inner_content.append(allocator, 0xA0); // Context [0] constructed
+    try appendLength(&inner_content, allocator, rb_seq.items.len);
+    try inner_content.appendSlice(allocator, rb_seq.items);
 
     // Wrap everything in outer SEQUENCE
-    try writeSequence(response.writer(allocator), inner_content.items);
+    try appendSequence(&response, allocator, inner_content.items);
 
     return response.toOwnedSlice(allocator);
 }

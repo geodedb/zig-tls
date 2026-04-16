@@ -584,7 +584,6 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
                     const off = idx orelse return error.BadKey;
                     @memcpy(sk[0..], privkey_der[off .. off + 32]);
                 },
-                else => return err,
             }
             const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
             // Build signing context content

@@ -77,6 +77,17 @@ const max_digest_length = ks.max_digest_length;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const Sha384 = std.crypto.hash.sha2.Sha384;
 
+/// Zig 0.16 compat: std.crypto.random was removed; obtain entropy via the global IO instance.
+fn cryptoRandom(buf: []u8) void {
+    std.Io.Threaded.global_single_threaded.io().random(buf);
+}
+
+/// Zig 0.16 compat: unixTimestamp() was removed; use Io clock to get unix seconds.
+fn unixTimestamp() i64 {
+    const ts = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real);
+    return @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s));
+}
+
 // SEC-047: Pre-computed empty hash constants (Hash("") for each supported algorithm).
 // These mirror key_derivation.zig's private emptyHash() to fix the master secret derivation
 // in computeApplicationSecrets, which must use Hash("") (not empty slice) as context for
@@ -171,11 +182,11 @@ pub const TicketStore = struct {
     /// SEC-017: Maximum number of stored tickets to prevent OOM from malicious peers.
     const max_tickets: usize = 16;
 
-    tickets: ArrayListUnmanaged(TicketEntry) = .{},
+    tickets: ArrayListUnmanaged(TicketEntry) = .empty,
     allocator: std.mem.Allocator = undefined,
 
     pub fn init(allocator: std.mem.Allocator) TicketStore {
-        return .{ .allocator = allocator, .tickets = .{} };
+        return .{ .allocator = allocator, .tickets = .empty };
     }
 
     pub fn deinit(self: *TicketStore) void {
@@ -323,8 +334,8 @@ pub const Engine = struct {
             .my_pub = null,
             .peer_pub = null,
             .client_session_id = null,
-            .outbox = std.ArrayList(u8){},
-            .inbox = std.ArrayList(u8){},
+            .outbox = std.ArrayList(u8).empty,
+            .inbox = std.ArrayList(u8).empty,
             .handshake_failed = false,
             .ch_sent = false,
             .ch_recv = false,
@@ -468,7 +479,7 @@ pub const Engine = struct {
 
         // 2. Generate random ticket nonce (8 bytes per common practice)
         var ticket_nonce: [8]u8 = undefined;
-        std.crypto.random.bytes(&ticket_nonce);
+        cryptoRandom(&ticket_nonce);
 
         // 3. Derive PSK from resumption_master_secret using nonce
         // RFC 8446 Section 4.6.1:
@@ -483,7 +494,7 @@ pub const Engine = struct {
 
         // 4. Generate random ticket identifier (32 bytes)
         var ticket_id: [32]u8 = undefined;
-        std.crypto.random.bytes(&ticket_id);
+        cryptoRandom(&ticket_id);
 
         const lifetime: u32 = 3600; // 1 hour
 
@@ -505,7 +516,7 @@ pub const Engine = struct {
 
     /// Internal: Build and queue a NewSessionTicket message with optional nonce.
     fn queueNewSessionTicketWithNonce(self: *Engine, lifetime: u32, ticket: []const u8, nonce: []const u8) !void {
-        var body = std.ArrayList(u8){};
+        var body = std.ArrayList(u8).empty;
         defer body.deinit(self.allocator);
         // struct {
         //   uint32 ticket_lifetime;
@@ -518,7 +529,9 @@ pub const Engine = struct {
         var be2: [2]u8 = undefined; // big-endian scratch
         std.mem.writeInt(u32, &be4, lifetime, .big);
         try body.appendSlice(self.allocator, &be4);
-        std.mem.writeInt(u32, &be4, std.crypto.random.int(u32), .big); // RFC 8446 §4.6.1: random ticket_age_add
+        var rnd_int_buf: [4]u8 = undefined;
+        cryptoRandom(&rnd_int_buf);
+        std.mem.writeInt(u32, &be4, std.mem.readInt(u32, &rnd_int_buf, .big), .big); // RFC 8446 §4.6.1: random ticket_age_add
         try body.appendSlice(self.allocator, &be4);
         // ticket_nonce
         try body.append(self.allocator, @intCast(nonce.len));
@@ -555,7 +568,7 @@ pub const Engine = struct {
     pub fn ensureKeypair(self: *Engine) void {
         if (self.my_priv == null or self.my_pub == null) {
             var sk: [32]u8 = undefined;
-            std.crypto.random.bytes(&sk);
+            cryptoRandom(&sk);
             // Clamp the private key per RFC 7748 §5 to ensure interoperability
             sk[0] &= 248;
             sk[31] &= 127;
@@ -903,7 +916,7 @@ pub const Engine = struct {
                         // QUAL-121: Propagate OOM instead of converting to cert-invalid
                         self.leaf_spki = try self.allocator.dupe(u8, leaf.spki);
 
-                        const now = std.time.timestamp();
+                        const now = unixTimestamp();
                         const server_name_slice: []const u8 = if (self.server_name) |sni| sni else &[_]u8{};
 
                         x509.validateChain(self.allocator, chain_der, now, server_name_slice, self.allow_insecure, .server_auth) catch |err| {
@@ -1248,7 +1261,7 @@ pub const Engine = struct {
 
         // QUAL-096: Use shared ClientHello builder.
         var rnd: [32]u8 = undefined;
-        std.crypto.random.bytes(&rnd);
+        cryptoRandom(&rnd);
 
         // Engine uses a single ALPN string; wrap it in a temporary slice for the builder.
         var alpn_slice: [1][]const u8 = undefined;
@@ -1347,7 +1360,7 @@ pub const Engine = struct {
     /// Build and queue EncryptedExtensions carrying ALPN and Transport Parameters.
     pub fn queueEncryptedExtensions(self: *Engine, alpn: []const u8, tp_bytes: []const u8) !void {
         // Encode standard TLS EncryptedExtensions extension vector
-        var ext_list = std.ArrayList(u8){};
+        var ext_list = std.ArrayList(u8).empty;
         defer ext_list.deinit(self.allocator);
         if (alpn.len > 0) {
             // RFC 7301: ALPN extension
@@ -1366,7 +1379,7 @@ pub const Engine = struct {
         }
         const all_ext = ext_list.items;
         const total_len: u16 = @intCast(all_ext.len);
-        var body = std.ArrayList(u8){};
+        var body = std.ArrayList(u8).empty;
         defer body.deinit(self.allocator);
         try body.appendSlice(self.allocator, &.{ @intCast(total_len >> 8), @intCast(total_len & 0xff) });
         try body.appendSlice(self.allocator, all_ext);
@@ -1387,7 +1400,7 @@ pub const Engine = struct {
     /// Format: certificate_request_context (1 byte len + data) + certificate_list (3 bytes len + entries)
     /// Each entry: cert_data (3 bytes len + DER) + extensions (2 bytes len + data)
     pub fn queueCertificate(self: *Engine, cert_der: []const u8) !void {
-        var body = std.ArrayList(u8){};
+        var body = std.ArrayList(u8).empty;
         defer body.deinit(self.allocator);
 
         // certificate_request_context (empty for server certificates)
@@ -1443,7 +1456,7 @@ pub const Engine = struct {
         //     opaque signature<0..2^16-1>; // 2-byte length + signature
         // } CertificateVerify;
 
-        var body = std.ArrayList(u8){};
+        var body = std.ArrayList(u8).empty;
         defer body.deinit(self.allocator);
 
         // SignatureScheme (2 bytes)
@@ -1624,7 +1637,7 @@ pub const Engine = struct {
 
         // Generate server random
         var server_random: [32]u8 = undefined;
-        std.crypto.random.bytes(&server_random);
+        cryptoRandom(&server_random);
 
         // Use the comprehensive ServerHello builder
         const sh_body = try tls13_full.buildServerHello(

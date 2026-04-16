@@ -56,6 +56,12 @@ const zero_rtt_mod = @import("zero_rtt");
 const logger = @import("quic_logger");
 const transport_params = @import("quic_transport_params");
 
+/// Zig 0.16 compat: unixTimestamp() was removed; use Io clock to get unix seconds.
+fn unixTimestamp() i64 {
+    const ts = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real);
+    return @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s));
+}
+
 // Import modularized tls13 types
 const types = @import("types.zig");
 const config_mod = @import("config.zig");
@@ -1539,7 +1545,7 @@ pub const Context = struct {
             else if (etype == 0x0033) {
                 if (elen == 2) {
                     const group_val = readU16(body[pos .. pos + 2]);
-                    selected_group = @as(tls13_full.NamedGroup, @enumFromInt(group_val)) catch null;
+                    selected_group = std.enums.fromInt(tls13_full.NamedGroup, group_val);
                 }
             }
 
@@ -2313,7 +2319,7 @@ pub const Context = struct {
         pos += 1 + sid_len;
         if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
         const suite_value: u16 = readU16(body[pos .. pos + 2]);
-        const cipher_suite = @as(tls13_full.CipherSuite, @enumFromInt(suite_value)) catch return HandshakeError.NoCipherSuite;
+        const cipher_suite = std.enums.fromInt(tls13_full.CipherSuite, suite_value) orelse return HandshakeError.NoCipherSuite;
 
         // SEC-028: Verify the server-selected cipher suite was in our offered list.
         // RFC 8446 §4.1.3: Server MUST select from the client's cipher_suites.
@@ -2774,7 +2780,7 @@ pub const Context = struct {
         const chain = self.peer_cert_chain orelse return HandshakeError.MissingCertificate;
 
         // Get current time for certificate validity checking
-        const now_unix = std.time.timestamp();
+        const now_unix = unixTimestamp();
 
         // SEC-029: Require server_name for hostname validation unless allow_insecure.
         // Without a server_name, any valid cert from any CA would be accepted (MITM risk).
@@ -2991,7 +2997,7 @@ pub const Context = struct {
         if (!self.config.allow_insecure) {
             // RFC 5280 §6: Validate client certificate chain
             // Skip hostname validation for client certs (no SNI to match against)
-            const now_unix = std.time.timestamp();
+            const now_unix = unixTimestamp();
             // SEC-031: Pass client_auth EKU purpose for mTLS client certs
             // PERF-016: Use validateChainEx with cached trust store to avoid RwLock.
             x509.validateChainEx(

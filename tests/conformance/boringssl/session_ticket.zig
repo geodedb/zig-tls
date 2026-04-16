@@ -225,7 +225,7 @@ test "Session Ticket: ticket_age_add randomization" {
     // Simulate generating 3 tickets
     var ticket_age_adds: [3]u32 = undefined;
 
-    // In real implementation, use std.crypto.random
+    // In real implementation, use io.random()
     // For test, just ensure they're different
     ticket_age_adds[0] = 0x12345678;
     ticket_age_adds[1] = 0xABCDEF01;

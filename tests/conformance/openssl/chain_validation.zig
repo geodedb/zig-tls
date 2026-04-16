@@ -67,7 +67,7 @@ test "Chain validation: valid 2-cert chain (leaf + self-signed root)" {
 
     // Test that validateChain with allow_insecure=true skips validation
     var chain = [_][]const u8{};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     // Empty chain should be rejected even with allow_insecure
     const result = x509.validateChain(testing.allocator, &chain, now, "", false, .server_auth);

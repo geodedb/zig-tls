@@ -333,8 +333,8 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
         if (pos + ext_data_len > ext_end) return error.TooShort;
         const ext_data = data[pos .. pos + ext_data_len];
 
-        // Use intToEnum to safely handle unknown extension types without panicking
-        const ext = @as(core_types.ExtensionType, @enumFromInt(ext_type)) catch {
+        // Use enums.fromInt to safely handle unknown extension types without panicking
+        const ext = std.enums.fromInt(core_types.ExtensionType, ext_type) orelse {
             // Unknown extension type - ignore per TLS 1.3 spec
             // But still check if PSK was already seen (it must be last)
             if (psk_seen) {

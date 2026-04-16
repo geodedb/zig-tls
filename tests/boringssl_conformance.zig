@@ -937,7 +937,7 @@ test "QUIC transport parameters - forward compatibility (unknown parameters)" {
     // This ensures compatibility when connecting to newer QUIC implementations
 
     // Manually construct a parameter stream with an unknown parameter ID
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(testing.allocator);
 
     // Add a known parameter (max_idle_timeout = 30000)
@@ -1142,7 +1142,7 @@ test "SCT list parsing - BoringSSL format compatibility" {
     // Validate our parser handles the wire format that BoringSSL produces
 
     // Construct a minimal valid SCT (version 0)
-    var sct_data = std.ArrayList(u8){};
+    var sct_data = std.ArrayList(u8).empty;
     defer sct_data.deinit(testing.allocator);
 
     // Version (1 byte) = 0
@@ -1172,7 +1172,7 @@ test "SCT list parsing - BoringSSL format compatibility" {
     try sct_data.appendSlice(testing.allocator, &sig);
 
     // Build the SCT list: length-prefixed entry
-    var sct_list = std.ArrayList(u8){};
+    var sct_list = std.ArrayList(u8).empty;
     defer sct_list.deinit(testing.allocator);
 
     const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
@@ -1205,12 +1205,12 @@ test "SCT list parsing - BoringSSL format compatibility" {
 test "SCT list parsing - multiple entries" {
     // Test parsing multiple SCTs in a list (common in production)
 
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(testing.allocator);
 
     // Add two minimal SCTs
     for (0..2) |i| {
-        var entry = std.ArrayList(u8){};
+        var entry = std.ArrayList(u8).empty;
         defer entry.deinit(testing.allocator);
 
         try entry.append(testing.allocator, 0); // version
@@ -1259,7 +1259,7 @@ test "SCT list parsing - malformed data rejection" {
 
     // Invalid SCT version
     {
-        var list = std.ArrayList(u8){};
+        var list = std.ArrayList(u8).empty;
         defer list.deinit(testing.allocator);
 
         try list.appendSlice(testing.allocator, &[_]u8{ 0x00, 0x01 }); // Entry length = 1

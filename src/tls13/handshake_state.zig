@@ -69,8 +69,8 @@ const encryption_level_count = std.meta.fields(EncryptionLevel).len;
 /// exceeds half the underlying capacity, giving O(1) amortized cost.
 pub const CryptoBuffer = struct {
     level: EncryptionLevel,
-    inbound: ArrayListUnmanaged(u8) = .{},
-    outbound: ArrayListUnmanaged(u8) = .{},
+    inbound: ArrayListUnmanaged(u8) = .empty,
+    outbound: ArrayListUnmanaged(u8) = .empty,
     /// PERF-008: Logical start of unconsumed inbound data.
     read_offset: usize = 0,
 

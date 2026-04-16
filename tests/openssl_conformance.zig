@@ -974,7 +974,7 @@ test "QUIC transport parameters - forward compatibility (unknown parameters)" {
     // This is critical for version negotiation and OpenSSL compatibility
 
     // Create parameters with a known parameter
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     errdefer list.deinit(testing.allocator);
 
     // Add max_idle_timeout (ID 0x01) = 30000
@@ -1249,7 +1249,7 @@ test "SCT parsing - OpenSSL 3.x wire format compatibility" {
     // RFC 6962 SCT format validation
     // OpenSSL 3.x supports SCT validation via OCSP stapling and TLS extensions
 
-    var sct_data = std.ArrayList(u8){};
+    var sct_data = std.ArrayList(u8).empty;
     defer sct_data.deinit(testing.allocator);
 
     // Construct valid SCT v1 (version 0)
@@ -1272,7 +1272,7 @@ test "SCT parsing - OpenSSL 3.x wire format compatibility" {
     try sct_data.appendSlice(testing.allocator, &signature);
 
     // Build SCT list with length prefix
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(testing.allocator);
 
     const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
@@ -1317,7 +1317,7 @@ test "SCT error handling - invalid data" {
 
     // Test SCT with unsupported version
     {
-        var list = std.ArrayList(u8){};
+        var list = std.ArrayList(u8).empty;
         defer list.deinit(testing.allocator);
 
         try list.appendSlice(testing.allocator, &[_]u8{ 0x00, 0x01 }); // Length = 1
@@ -1335,10 +1335,10 @@ test "SCT timestamp validation" {
     // This is critical for OpenSSL compatibility where SCT timestamps
     // are used for freshness validation
 
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(testing.allocator);
 
-    var entry = std.ArrayList(u8){};
+    var entry = std.ArrayList(u8).empty;
     defer entry.deinit(testing.allocator);
 
     try entry.append(testing.allocator, 0); // version

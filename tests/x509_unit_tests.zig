@@ -554,7 +554,7 @@ test "validateChain - expired certificate rejection" {
     hexToBytes(cert_hex, &cert_der);
 
     const chain = [_][]const u8{&cert_der};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     try testing.expectError(
         error.Expired,
@@ -573,7 +573,7 @@ test "validateChain - missing trust store rejects chain" {
     const root_der = @embedFile("test_certs/ed25519_cert.der");
 
     const chain = [_][]const u8{root_der};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     // Ensure no trust store configured
     x509.setTrustStore(null);
@@ -607,7 +607,7 @@ test "validateChain - trust store accepts root" {
     defer x509.setTrustStore(null);
 
     const chain = [_][]const u8{root_der};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     try x509.validateChain(
         testing.allocator,
@@ -627,7 +627,7 @@ test "validateChain - allow_insecure bypass" {
     hexToBytes(cert_hex, &cert_der);
 
     const chain = [_][]const u8{&cert_der};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     // Should succeed even with wrong name when allow_insecure=true
     try x509.validateChain(
@@ -836,7 +836,7 @@ test "SEC-030: self-signed cert with wrong hostname is rejected" {
     defer x509.setTrustStore(null);
 
     const chain = [_][]const u8{root_der};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     // Should reject: wrong hostname for self-signed cert
     const result = x509.validateChain(
@@ -867,7 +867,7 @@ test "SEC-030: self-signed cert with correct hostname is accepted" {
     defer x509.setTrustStore(null);
 
     const chain = [_][]const u8{root_der};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     // Should accept: correct hostname (CN=ed25519.example.com)
     try x509.validateChain(
@@ -907,7 +907,7 @@ test "SEC-031: validateChain checks client_auth EKU when purpose is client_auth"
     defer x509.setTrustStore(null);
 
     const chain = [_][]const u8{root_der};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     // No EKU means no restriction: accepted for client_auth
     try x509.validateChain(

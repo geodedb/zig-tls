@@ -579,7 +579,7 @@ test "HelloRetryRequest detection" {
 
     // Test normal random is not HRR
     var normal_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&normal_random);
+    std.testing.io.random(&normal_random);
     try testing.expect(!isHelloRetryRequest(normal_random));
 
     // Test first byte different
@@ -597,7 +597,7 @@ test "Downgrade protection - TLS 1.2 sentinel" {
 
     // Random with TLS 1.2 downgrade sentinel in last 8 bytes
     var random_with_sentinel: [32]u8 = undefined;
-    std.crypto.random.bytes(&random_with_sentinel);
+    std.testing.io.random(&random_with_sentinel);
     @memcpy(random_with_sentinel[24..32], &TLS12_DOWNGRADE_SENTINEL);
 
     try testing.expect(containsTls12DowngradeSentinel(random_with_sentinel));
@@ -606,7 +606,7 @@ test "Downgrade protection - TLS 1.2 sentinel" {
 
     // Random without sentinel
     var normal_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&normal_random);
+    std.testing.io.random(&normal_random);
     try testing.expect(!containsTls12DowngradeSentinel(normal_random));
     try testing.expect(!containsDowngradeSentinel(normal_random));
 }
@@ -616,7 +616,7 @@ test "Downgrade protection - TLS 1.1 sentinel" {
 
     // Random with TLS 1.1 downgrade sentinel in last 8 bytes
     var random_with_sentinel: [32]u8 = undefined;
-    std.crypto.random.bytes(&random_with_sentinel);
+    std.testing.io.random(&random_with_sentinel);
     @memcpy(random_with_sentinel[24..32], &TLS11_DOWNGRADE_SENTINEL);
 
     try testing.expect(!containsTls12DowngradeSentinel(random_with_sentinel));
@@ -832,7 +832,7 @@ test "buildServerHello - no PSK extension when selected_psk_index is null" {
     const allocator = testing.allocator;
 
     var server_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&server_random);
+    std.testing.io.random(&server_random);
     const key_data = &[_]u8{0x42} ** 32;
 
     const sh = try buildServerHello(
@@ -870,7 +870,7 @@ test "buildServerHello - PSK extension emitted when selected_psk_index is set" {
     const allocator = testing.allocator;
 
     var server_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&server_random);
+    std.testing.io.random(&server_random);
     const key_data = &[_]u8{0x42} ** 32;
 
     const sh = try buildServerHello(
@@ -922,7 +922,7 @@ test "buildServerHello - PSK extension with non-zero index" {
     const allocator = testing.allocator;
 
     var server_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&server_random);
+    std.testing.io.random(&server_random);
     const key_data = &[_]u8{0x42} ** 32;
 
     const sh = try buildServerHello(
@@ -964,7 +964,7 @@ test "buildServerHello - PSK extension byte-level format" {
     const allocator = testing.allocator;
 
     var server_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&server_random);
+    std.testing.io.random(&server_random);
     const key_data = &[_]u8{0x42} ** 32;
 
     const sh = try buildServerHello(
@@ -1000,7 +1000,7 @@ test "buildServerHello - extension order: PSK before key_share before supported_
     const allocator = testing.allocator;
 
     var server_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&server_random);
+    std.testing.io.random(&server_random);
     const key_data = &[_]u8{0x42} ** 32;
 
     const sh = try buildServerHello(
@@ -1043,7 +1043,7 @@ test "buildServerHello - without PSK has only key_share and supported_versions" 
     const allocator = testing.allocator;
 
     var server_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&server_random);
+    std.testing.io.random(&server_random);
     const key_data = &[_]u8{0x42} ** 32;
 
     const sh = try buildServerHello(

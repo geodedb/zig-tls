@@ -464,7 +464,7 @@ test "createMessageHash - SHA-256" {
 
     // Create a 32-byte hash (SHA-256)
     var ch1_hash: [32]u8 = undefined;
-    std.crypto.random.bytes(&ch1_hash);
+    std.testing.io.random(&ch1_hash);
 
     const msg_hash = try createMessageHash(allocator, &ch1_hash);
     defer allocator.free(msg_hash);
@@ -484,7 +484,7 @@ test "createMessageHash - SHA-384" {
 
     // Create a 48-byte hash (SHA-384)
     var ch1_hash: [48]u8 = undefined;
-    std.crypto.random.bytes(&ch1_hash);
+    std.testing.io.random(&ch1_hash);
 
     const msg_hash = try createMessageHash(allocator, &ch1_hash);
     defer allocator.free(msg_hash);
@@ -504,13 +504,13 @@ test "createMessageHash - invalid hash length" {
 
     // 31 bytes (invalid - not 32 or 48)
     var invalid_hash: [31]u8 = undefined;
-    std.crypto.random.bytes(&invalid_hash);
+    std.testing.io.random(&invalid_hash);
 
     try testing.expectError(error.InvalidHashLength, createMessageHash(allocator, &invalid_hash));
 
     // 40 bytes (invalid)
     var invalid_hash2: [40]u8 = undefined;
-    std.crypto.random.bytes(&invalid_hash2);
+    std.testing.io.random(&invalid_hash2);
 
     try testing.expectError(error.InvalidHashLength, createMessageHash(allocator, &invalid_hash2));
 }

@@ -80,7 +80,7 @@ test "Security: TLS 1.2 downgrade sentinel detection" {
 
     // Create ServerHello random with sentinel
     var malicious_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&malicious_random);
+    std.testing.io.random(&malicious_random);
     @memcpy(malicious_random[24..32], &tls12_sentinel);
 
     // Verify sentinel is detected
@@ -88,7 +88,7 @@ test "Security: TLS 1.2 downgrade sentinel detection" {
 
     // Normal random should not trigger detection
     var normal_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&normal_random);
+    std.testing.io.random(&normal_random);
     // Ensure it doesn't accidentally match sentinel
     if (std.mem.eql(u8, normal_random[24..32], &tls12_sentinel)) {
         normal_random[24] ^= 0xFF;
@@ -104,7 +104,7 @@ test "Security: TLS 1.1 downgrade sentinel detection" {
     };
 
     var malicious_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&malicious_random);
+    std.testing.io.random(&malicious_random);
     @memcpy(malicious_random[24..32], &tls11_sentinel);
 
     try testing.expect(tls13_full.containsDowngradeSentinel(malicious_random));
@@ -218,7 +218,7 @@ test "Security: empty certificate chain rejected" {
     // An empty certificate chain provides no authentication and MUST be rejected.
 
     const empty_chain = [_][]const u8{};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false, .server_auth);
     try testing.expectError(error.EmptyChain, result);
@@ -233,7 +233,7 @@ test "Security: excessive certificate chain length rejected" {
     // Note: Current implementation checks for empty chain
     // Full implementation would enforce max chain length
     const empty_chain = [_][]const u8{};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false, .server_auth);
     try testing.expectError(error.EmptyChain, result);
@@ -250,7 +250,7 @@ test "Security: certificate with future notBefore rejected" {
     // This is tested in certificate validation logic
     // Empty chain test verifies error handling exists
     const empty_chain = [_][]const u8{};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false, .server_auth);
     try testing.expectError(error.EmptyChain, result);
@@ -265,7 +265,7 @@ test "Security: certificate with past notAfter rejected" {
     // Expired certificates MUST be rejected to prevent use of compromised keys.
 
     const empty_chain = [_][]const u8{};
-    const now = std.time.timestamp();
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
     const result = x509.validateChain(testing.allocator, &empty_chain, now, "example.com", false, .server_auth);
     try testing.expectError(error.EmptyChain, result);

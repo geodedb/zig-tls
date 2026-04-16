@@ -569,7 +569,7 @@ pub fn build(b: *std.Build) void {
     const conformance_step = b.step("test-conformance", "Run conformance tests against BoringSSL and OpenSSL (requires libssl-dev)");
 
     // Windows vcpkg OpenSSL support
-    const vcpkg_root = std.process.getEnvVarOwned(b.allocator, "VCPKG_ROOT") catch null;
+    const vcpkg_root = b.graph.environ_map.get("VCPKG_ROOT");
     const vcpkg_include_path = if (vcpkg_root) |root|
         b.fmt("{s}/installed/x64-windows/include", .{root})
     else
@@ -593,11 +593,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    boringssl_test.linkSystemLibrary("ssl");
-    boringssl_test.linkSystemLibrary("crypto");
-    boringssl_test.linkLibC();
+    boringssl_test.root_module.linkSystemLibrary("ssl", .{});
+    boringssl_test.root_module.linkSystemLibrary("crypto", .{});
+    boringssl_test.root_module.link_libc = true;
     if (vcpkg_include_path) |path| {
-        boringssl_test.addIncludePath(.{ .cwd_relative = path });
+        boringssl_test.root_module.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_boringssl_test = b.addRunArtifact(boringssl_test);
@@ -621,11 +621,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    openssl_test.linkSystemLibrary("ssl");
-    openssl_test.linkSystemLibrary("crypto");
-    openssl_test.linkLibC();
+    openssl_test.root_module.linkSystemLibrary("ssl", .{});
+    openssl_test.root_module.linkSystemLibrary("crypto", .{});
+    openssl_test.root_module.link_libc = true;
     if (vcpkg_include_path) |path| {
-        openssl_test.addIncludePath(.{ .cwd_relative = path });
+        openssl_test.root_module.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_openssl_test = b.addRunArtifact(openssl_test);
@@ -644,11 +644,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    x509_openssl_test.linkSystemLibrary("ssl");
-    x509_openssl_test.linkSystemLibrary("crypto");
-    x509_openssl_test.linkLibC();
+    x509_openssl_test.root_module.linkSystemLibrary("ssl", .{});
+    x509_openssl_test.root_module.linkSystemLibrary("crypto", .{});
+    x509_openssl_test.root_module.link_libc = true;
     if (vcpkg_include_path) |path| {
-        x509_openssl_test.addIncludePath(.{ .cwd_relative = path });
+        x509_openssl_test.root_module.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_x509_openssl_test = b.addRunArtifact(x509_openssl_test);
@@ -667,11 +667,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    ocsp_openssl_test.linkSystemLibrary("ssl");
-    ocsp_openssl_test.linkSystemLibrary("crypto");
-    ocsp_openssl_test.linkLibC();
+    ocsp_openssl_test.root_module.linkSystemLibrary("ssl", .{});
+    ocsp_openssl_test.root_module.linkSystemLibrary("crypto", .{});
+    ocsp_openssl_test.root_module.link_libc = true;
     if (vcpkg_include_path) |path| {
-        ocsp_openssl_test.addIncludePath(.{ .cwd_relative = path });
+        ocsp_openssl_test.root_module.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_ocsp_openssl_test = b.addRunArtifact(ocsp_openssl_test);
@@ -688,11 +688,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    sct_openssl_test.linkSystemLibrary("ssl");
-    sct_openssl_test.linkSystemLibrary("crypto");
-    sct_openssl_test.linkLibC();
+    sct_openssl_test.root_module.linkSystemLibrary("ssl", .{});
+    sct_openssl_test.root_module.linkSystemLibrary("crypto", .{});
+    sct_openssl_test.root_module.link_libc = true;
     if (vcpkg_include_path) |path| {
-        sct_openssl_test.addIncludePath(.{ .cwd_relative = path });
+        sct_openssl_test.root_module.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_sct_openssl_test = b.addRunArtifact(sct_openssl_test);
@@ -713,11 +713,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    handshake_conformance_test.linkSystemLibrary("ssl");
-    handshake_conformance_test.linkSystemLibrary("crypto");
-    handshake_conformance_test.linkLibC();
+    handshake_conformance_test.root_module.linkSystemLibrary("ssl", .{});
+    handshake_conformance_test.root_module.linkSystemLibrary("crypto", .{});
+    handshake_conformance_test.root_module.link_libc = true;
     if (vcpkg_include_path) |path| {
-        handshake_conformance_test.addIncludePath(.{ .cwd_relative = path });
+        handshake_conformance_test.root_module.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_handshake_conformance_test = b.addRunArtifact(handshake_conformance_test);
@@ -735,11 +735,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    handshake_secrets_test.linkSystemLibrary("ssl");
-    handshake_secrets_test.linkSystemLibrary("crypto");
-    handshake_secrets_test.linkLibC();
+    handshake_secrets_test.root_module.linkSystemLibrary("ssl", .{});
+    handshake_secrets_test.root_module.linkSystemLibrary("crypto", .{});
+    handshake_secrets_test.root_module.link_libc = true;
     if (vcpkg_include_path) |path| {
-        handshake_secrets_test.addIncludePath(.{ .cwd_relative = path });
+        handshake_secrets_test.root_module.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_handshake_secrets_test = b.addRunArtifact(handshake_secrets_test);
@@ -908,11 +908,11 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    mtls_openssl_interop_test.linkSystemLibrary("ssl");
-    mtls_openssl_interop_test.linkSystemLibrary("crypto");
-    mtls_openssl_interop_test.linkLibC();
+    mtls_openssl_interop_test.root_module.linkSystemLibrary("ssl", .{});
+    mtls_openssl_interop_test.root_module.linkSystemLibrary("crypto", .{});
+    mtls_openssl_interop_test.root_module.link_libc = true;
     if (vcpkg_include_path) |path| {
-        mtls_openssl_interop_test.addIncludePath(.{ .cwd_relative = path });
+        mtls_openssl_interop_test.root_module.addIncludePath(.{ .cwd_relative = path });
     }
 
     const run_mtls_openssl_interop_test = b.addRunArtifact(mtls_openssl_interop_test);

@@ -69,7 +69,7 @@ test "HRR: random value detection (RFC 8446 §4.1.4)" {
 
     // Verify normal ServerHello random is NOT detected as HRR
     var normal_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&normal_random);
+    std.testing.io.random(&normal_random);
     // Ensure it's different from HRR random
     if (std.mem.eql(u8, &normal_random, &hrr_random)) {
         normal_random[0] ^= 0xFF; // Flip bits to make it different
@@ -96,21 +96,21 @@ test "HRR: downgrade sentinel detection (RFC 8446 §4.1.3)" {
 
     // Create random with TLS 1.2 sentinel
     var random_tls12: [32]u8 = undefined;
-    std.crypto.random.bytes(&random_tls12);
+    std.testing.io.random(&random_tls12);
     @memcpy(random_tls12[24..32], &tls12_sentinel);
 
     try testing.expect(tls13_full.containsDowngradeSentinel(random_tls12));
 
     // Create random with TLS 1.1 sentinel
     var random_tls11: [32]u8 = undefined;
-    std.crypto.random.bytes(&random_tls11);
+    std.testing.io.random(&random_tls11);
     @memcpy(random_tls11[24..32], &tls11_sentinel);
 
     try testing.expect(tls13_full.containsDowngradeSentinel(random_tls11));
 
     // Normal random should not contain sentinel
     var normal_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&normal_random);
+    std.testing.io.random(&normal_random);
     // Ensure last 8 bytes don't match sentinels
     if (std.mem.eql(u8, normal_random[24..32], &tls12_sentinel) or
         std.mem.eql(u8, normal_random[24..32], &tls11_sentinel))
@@ -271,7 +271,7 @@ test "HRR: multiple extensions in response" {
     // Build a minimal HRR-like ServerHello
     // Format: type(1) + length(3) + legacy_version(2) + random(32) + ...
 
-    var hrr_data = std.ArrayList(u8){};
+    var hrr_data = std.ArrayList(u8).empty;
     defer hrr_data.deinit(testing.allocator);
 
     // Handshake message framing
@@ -295,7 +295,7 @@ test "HRR: multiple extensions in response" {
     try hrr_data.append(testing.allocator, 0x00);
 
     // Extensions (supported_versions + cookie)
-    var extensions = std.ArrayList(u8){};
+    var extensions = std.ArrayList(u8).empty;
     defer extensions.deinit(testing.allocator);
 
     // supported_versions extension (0x002b)

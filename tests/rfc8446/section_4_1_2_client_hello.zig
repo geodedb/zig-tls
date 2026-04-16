@@ -107,7 +107,7 @@ test "RFC 8446 §4.1.2: ClientHello legacy_version must be 0x0303" {
 test "RFC 8446 §4.1.2: ClientHello random field is 32 bytes" {
     // Test that random field is exactly 32 bytes
     var random: [32]u8 = undefined;
-    std.crypto.random.bytes(&random);
+    std.testing.io.random(&random);
 
     try testing.expectEqual(@as(usize, 32), random.len);
 }

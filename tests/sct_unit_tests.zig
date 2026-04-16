@@ -13,51 +13,55 @@ const testing = std.testing;
 const sct = @import("sct");
 
 // Helper functions for building test SCTs
-fn writeU16(writer: anytype, value: u16) !void {
-    try writer.writeInt(u16, value, .big);
+fn appendU16(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u16) !void {
+    var buf: [2]u8 = undefined;
+    std.mem.writeInt(u16, &buf, value, .big);
+    try list.appendSlice(allocator, &buf);
 }
 
-fn writeU64(writer: anytype, value: u64) !void {
-    try writer.writeInt(u64, value, .big);
+fn appendU64(list: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u64) !void {
+    var buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buf, value, .big);
+    try list.appendSlice(allocator, &buf);
 }
 
 fn buildMinimalSct(allocator: std.mem.Allocator) ![]u8 {
-    var sct_data = std.ArrayList(u8){};
+    var sct_data = std.ArrayList(u8).empty;
     errdefer sct_data.deinit(allocator);
 
     // Version (1 byte) = 0
-    try sct_data.writer(allocator).writeByte(0);
+    try sct_data.append(allocator, 0);
 
     // Log ID (32 bytes)
-    try sct_data.writer(allocator).writeAll(&[_]u8{0x01} ** 32);
+    try sct_data.appendSlice(allocator, &[_]u8{0x01} ** 32);
 
     // Timestamp (8 bytes) - Unix time in milliseconds
-    try writeU64(sct_data.writer(allocator), 1609459200000); // 2021-01-01 00:00:00 UTC
+    try appendU64(&sct_data, allocator, 1609459200000); // 2021-01-01 00:00:00 UTC
 
     // Extensions length (2 bytes) = 0
-    try writeU16(sct_data.writer(allocator), 0);
+    try appendU16(&sct_data, allocator, 0);
 
     // Hash algorithm (1 byte) = SHA-256 (4)
-    try sct_data.writer(allocator).writeByte(4);
+    try sct_data.append(allocator, 4);
 
     // Signature algorithm (1 byte) = ECDSA (3)
-    try sct_data.writer(allocator).writeByte(3);
+    try sct_data.append(allocator, 3);
 
     // Signature length (2 bytes) and signature data
     const sig_len: u16 = 71; // Typical ECDSA P-256 signature
-    try writeU16(sct_data.writer(allocator), sig_len);
-    try sct_data.writer(allocator).writeAll(&[_]u8{0xFF} ** sig_len);
+    try appendU16(&sct_data, allocator, sig_len);
+    try sct_data.appendSlice(allocator, &[_]u8{0xFF} ** sig_len);
 
     return sct_data.toOwnedSlice(allocator);
 }
 
 fn buildSctList(allocator: std.mem.Allocator, scts: []const []const u8) ![]u8 {
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     errdefer list.deinit(allocator);
 
     for (scts) |sct_bytes| {
-        try writeU16(list.writer(allocator), @intCast(sct_bytes.len));
-        try list.writer(allocator).writeAll(sct_bytes);
+        try appendU16(&list, allocator, @intCast(sct_bytes.len));
+        try list.appendSlice(allocator, sct_bytes);
     }
 
     return list.toOwnedSlice(allocator);
@@ -99,22 +103,22 @@ test "parseList - multiple SCTs" {
 
     // Create 3 different SCTs with unique log IDs
     for (0..3) |i| {
-        var sct_data = std.ArrayList(u8){};
+        var sct_data = std.ArrayList(u8).empty;
         defer sct_data.deinit(testing.allocator);
 
-        try sct_data.writer(testing.allocator).writeByte(0); // version
+        try sct_data.append(testing.allocator, 0); // version
 
         // Unique log ID for each SCT
         var log_id: [32]u8 = undefined;
         @memset(&log_id, @intCast(i));
-        try sct_data.writer(testing.allocator).writeAll(&log_id);
+        try sct_data.appendSlice(testing.allocator, &log_id);
 
-        try writeU64(sct_data.writer(testing.allocator), 1609459200000 + i); // unique timestamp
-        try writeU16(sct_data.writer(testing.allocator), 0); // no extensions
-        try sct_data.writer(testing.allocator).writeByte(4); // SHA-256
-        try sct_data.writer(testing.allocator).writeByte(3); // ECDSA
-        try writeU16(sct_data.writer(testing.allocator), 71); // signature length
-        try sct_data.writer(testing.allocator).writeAll(&[_]u8{0xAA} ** 71); // signature
+        try appendU64(&sct_data, testing.allocator, 1609459200000 + i); // unique timestamp
+        try appendU16(&sct_data, testing.allocator, 0); // no extensions
+        try sct_data.append(testing.allocator, 4); // SHA-256
+        try sct_data.append(testing.allocator, 3); // ECDSA
+        try appendU16(&sct_data, testing.allocator, 71); // signature length
+        try sct_data.appendSlice(testing.allocator, &[_]u8{0xAA} ** 71); // signature
 
         scts_array[i] = try sct_data.toOwnedSlice(testing.allocator);
     }
@@ -143,22 +147,22 @@ test "parseList - multiple SCTs" {
 // ============================================================================
 
 test "parseList - SCT with extensions" {
-    var sct_data = std.ArrayList(u8){};
+    var sct_data = std.ArrayList(u8).empty;
     defer sct_data.deinit(testing.allocator);
 
-    try sct_data.writer(testing.allocator).writeByte(0); // version
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{0x42} ** 32); // log ID
-    try writeU64(sct_data.writer(testing.allocator), 1234567890000); // timestamp
+    try sct_data.append(testing.allocator, 0); // version
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0x42} ** 32); // log ID
+    try appendU64(&sct_data, testing.allocator, 1234567890000); // timestamp
 
     // Extensions with some data
     const ext_data = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
-    try writeU16(sct_data.writer(testing.allocator), ext_data.len);
-    try sct_data.writer(testing.allocator).writeAll(&ext_data);
+    try appendU16(&sct_data, testing.allocator, ext_data.len);
+    try sct_data.appendSlice(testing.allocator, &ext_data);
 
-    try sct_data.writer(testing.allocator).writeByte(4); // SHA-256
-    try sct_data.writer(testing.allocator).writeByte(3); // ECDSA
-    try writeU16(sct_data.writer(testing.allocator), 71);
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{0xBB} ** 71);
+    try sct_data.append(testing.allocator, 4); // SHA-256
+    try sct_data.append(testing.allocator, 3); // ECDSA
+    try appendU16(&sct_data, testing.allocator, 71);
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0xBB} ** 71);
 
     const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(sct_bytes);
@@ -183,17 +187,17 @@ test "parseList - different signature algorithms" {
     };
 
     for (test_cases) |tc| {
-        var sct_data = std.ArrayList(u8){};
+        var sct_data = std.ArrayList(u8).empty;
         defer sct_data.deinit(testing.allocator);
 
-        try sct_data.writer(testing.allocator).writeByte(0); // version
-        try sct_data.writer(testing.allocator).writeAll(&[_]u8{0x55} ** 32); // log ID
-        try writeU64(sct_data.writer(testing.allocator), 1609459200000);
-        try writeU16(sct_data.writer(testing.allocator), 0); // no extensions
-        try sct_data.writer(testing.allocator).writeByte(tc.hash);
-        try sct_data.writer(testing.allocator).writeByte(tc.sig);
-        try writeU16(sct_data.writer(testing.allocator), 71);
-        try sct_data.writer(testing.allocator).writeAll(&[_]u8{0xCC} ** 71);
+        try sct_data.append(testing.allocator, 0); // version
+        try sct_data.appendSlice(testing.allocator, &[_]u8{0x55} ** 32); // log ID
+        try appendU64(&sct_data, testing.allocator, 1609459200000);
+        try appendU16(&sct_data, testing.allocator, 0); // no extensions
+        try sct_data.append(testing.allocator, tc.hash);
+        try sct_data.append(testing.allocator, tc.sig);
+        try appendU16(&sct_data, testing.allocator, 71);
+        try sct_data.appendSlice(testing.allocator, &[_]u8{0xCC} ** 71);
 
         const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
         defer testing.allocator.free(sct_bytes);
@@ -229,17 +233,17 @@ test "parseList - zero-length SCT" {
 }
 
 test "parseList - invalid version" {
-    var sct_data = std.ArrayList(u8){};
+    var sct_data = std.ArrayList(u8).empty;
     defer sct_data.deinit(testing.allocator);
 
-    try sct_data.writer(testing.allocator).writeByte(1); // Invalid version (must be 0)
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{0x00} ** 32);
-    try writeU64(sct_data.writer(testing.allocator), 1609459200000);
-    try writeU16(sct_data.writer(testing.allocator), 0);
-    try sct_data.writer(testing.allocator).writeByte(4);
-    try sct_data.writer(testing.allocator).writeByte(3);
-    try writeU16(sct_data.writer(testing.allocator), 71);
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{0x00} ** 71);
+    try sct_data.append(testing.allocator, 1); // Invalid version (must be 0)
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0x00} ** 32);
+    try appendU64(&sct_data, testing.allocator, 1609459200000);
+    try appendU16(&sct_data, testing.allocator, 0);
+    try sct_data.append(testing.allocator, 4);
+    try sct_data.append(testing.allocator, 3);
+    try appendU16(&sct_data, testing.allocator, 71);
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0x00} ** 71);
 
     const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(sct_bytes);
@@ -252,11 +256,11 @@ test "parseList - invalid version" {
 
 test "parseList - SCT too short" {
     // SCT must be at least 43 bytes (1 + 32 + 8 + 2)
-    var sct_data = std.ArrayList(u8){};
+    var sct_data = std.ArrayList(u8).empty;
     defer sct_data.deinit(testing.allocator);
 
-    try sct_data.writer(testing.allocator).writeByte(0); // version
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{0x00} ** 32); // log ID
+    try sct_data.append(testing.allocator, 0); // version
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0x00} ** 32); // log ID
     // Missing rest of fields
 
     const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
@@ -269,17 +273,17 @@ test "parseList - SCT too short" {
 }
 
 test "parseList - truncated signature" {
-    var sct_data = std.ArrayList(u8){};
+    var sct_data = std.ArrayList(u8).empty;
     defer sct_data.deinit(testing.allocator);
 
-    try sct_data.writer(testing.allocator).writeByte(0);
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{0x00} ** 32);
-    try writeU64(sct_data.writer(testing.allocator), 1609459200000);
-    try writeU16(sct_data.writer(testing.allocator), 0);
-    try sct_data.writer(testing.allocator).writeByte(4);
-    try sct_data.writer(testing.allocator).writeByte(3);
-    try writeU16(sct_data.writer(testing.allocator), 100); // Claims 100 bytes
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{0x00} ** 50); // But only provides 50
+    try sct_data.append(testing.allocator, 0);
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0x00} ** 32);
+    try appendU64(&sct_data, testing.allocator, 1609459200000);
+    try appendU16(&sct_data, testing.allocator, 0);
+    try sct_data.append(testing.allocator, 4);
+    try sct_data.append(testing.allocator, 3);
+    try appendU16(&sct_data, testing.allocator, 100); // Claims 100 bytes
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0x00} ** 50); // But only provides 50
 
     const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(sct_bytes);
@@ -291,16 +295,16 @@ test "parseList - truncated signature" {
 }
 
 test "parseList - zero-length signature" {
-    var sct_data = std.ArrayList(u8){};
+    var sct_data = std.ArrayList(u8).empty;
     defer sct_data.deinit(testing.allocator);
 
-    try sct_data.writer(testing.allocator).writeByte(0);
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{0x00} ** 32);
-    try writeU64(sct_data.writer(testing.allocator), 1609459200000);
-    try writeU16(sct_data.writer(testing.allocator), 0);
-    try sct_data.writer(testing.allocator).writeByte(4);
-    try sct_data.writer(testing.allocator).writeByte(3);
-    try writeU16(sct_data.writer(testing.allocator), 0); // Zero-length signature
+    try sct_data.append(testing.allocator, 0);
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0x00} ** 32);
+    try appendU64(&sct_data, testing.allocator, 1609459200000);
+    try appendU16(&sct_data, testing.allocator, 0);
+    try sct_data.append(testing.allocator, 4);
+    try sct_data.append(testing.allocator, 3);
+    try appendU16(&sct_data, testing.allocator, 0); // Zero-length signature
 
     const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(sct_bytes);
@@ -312,18 +316,18 @@ test "parseList - zero-length signature" {
 }
 
 test "parseList - extra data after SCT" {
-    var sct_data = std.ArrayList(u8){};
+    var sct_data = std.ArrayList(u8).empty;
     defer sct_data.deinit(testing.allocator);
 
-    try sct_data.writer(testing.allocator).writeByte(0);
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{0x00} ** 32);
-    try writeU64(sct_data.writer(testing.allocator), 1609459200000);
-    try writeU16(sct_data.writer(testing.allocator), 0);
-    try sct_data.writer(testing.allocator).writeByte(4);
-    try sct_data.writer(testing.allocator).writeByte(3);
-    try writeU16(sct_data.writer(testing.allocator), 71);
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{0x00} ** 71);
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{ 0xFF, 0xFF }); // Extra data
+    try sct_data.append(testing.allocator, 0);
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0x00} ** 32);
+    try appendU64(&sct_data, testing.allocator, 1609459200000);
+    try appendU16(&sct_data, testing.allocator, 0);
+    try sct_data.append(testing.allocator, 4);
+    try sct_data.append(testing.allocator, 3);
+    try appendU16(&sct_data, testing.allocator, 71);
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0x00} ** 71);
+    try sct_data.appendSlice(testing.allocator, &[_]u8{ 0xFF, 0xFF }); // Extra data
 
     const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(sct_bytes);
@@ -339,22 +343,22 @@ test "parseList - extra data after SCT" {
 // ============================================================================
 
 test "parseList - maximum size signature" {
-    var sct_data = std.ArrayList(u8){};
+    var sct_data = std.ArrayList(u8).empty;
     defer sct_data.deinit(testing.allocator);
 
-    try sct_data.writer(testing.allocator).writeByte(0);
-    try sct_data.writer(testing.allocator).writeAll(&[_]u8{0xFF} ** 32);
-    try writeU64(sct_data.writer(testing.allocator), 0xFFFFFFFFFFFFFFFF); // Max timestamp
-    try writeU16(sct_data.writer(testing.allocator), 0);
-    try sct_data.writer(testing.allocator).writeByte(6); // SHA-512
-    try sct_data.writer(testing.allocator).writeByte(1); // RSA
+    try sct_data.append(testing.allocator, 0);
+    try sct_data.appendSlice(testing.allocator, &[_]u8{0xFF} ** 32);
+    try appendU64(&sct_data, testing.allocator, 0xFFFFFFFFFFFFFFFF); // Max timestamp
+    try appendU16(&sct_data, testing.allocator, 0);
+    try sct_data.append(testing.allocator, 6); // SHA-512
+    try sct_data.append(testing.allocator, 1); // RSA
 
     // Large RSA signature (e.g., 4096-bit RSA = 512 bytes)
     const sig_len: u16 = 512;
-    try writeU16(sct_data.writer(testing.allocator), sig_len);
+    try appendU16(&sct_data, testing.allocator, sig_len);
     var sig: [512]u8 = undefined;
     @memset(&sig, 0xEE);
-    try sct_data.writer(testing.allocator).writeAll(&sig);
+    try sct_data.appendSlice(testing.allocator, &sig);
 
     const sct_bytes = try sct_data.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(sct_bytes);
@@ -374,12 +378,12 @@ test "parseList - list with trailing data" {
     const sct_bytes = try buildMinimalSct(testing.allocator);
     defer testing.allocator.free(sct_bytes);
 
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(testing.allocator);
 
-    try writeU16(list.writer(testing.allocator), @intCast(sct_bytes.len));
-    try list.writer(testing.allocator).writeAll(sct_bytes);
-    try list.writer(testing.allocator).writeByte(0xFF); // Extra byte after list
+    try appendU16(&list, testing.allocator, @intCast(sct_bytes.len));
+    try list.appendSlice(testing.allocator, sct_bytes);
+    try list.append(testing.allocator, 0xFF); // Extra byte after list
 
     const list_bytes = try list.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(list_bytes);

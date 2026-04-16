@@ -29,6 +29,11 @@ inline fn traceHandshake(comptime fmt: []const u8, args: anytype) void {
     if (handshake_trace_enabled) logger.debugPrint(fmt, args);
 }
 
+/// Zig 0.16 compat: std.crypto.random was removed; obtain entropy via the global IO instance.
+fn cryptoRandom(buf: []u8) void {
+    std.Io.Threaded.global_single_threaded.io().random(buf);
+}
+
 /// TLS 1.3 handshake message types (RFC 8446 §4).
 pub const HsType = enum(u8) {
     /// ClientHello message (RFC 8446 §4.1.2).
@@ -250,9 +255,9 @@ pub const X25519Error = error{
 pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) X25519Error!X25519Result {
     var sk: [32]u8 = undefined;
     defer std.crypto.secureZero(u8, &sk);
-    std.crypto.random.bytes(&sk);
+    cryptoRandom(&sk);
     // SAFETY: recoverPublicKey only fails when the private key is the all-zero point (producing
-    // a weak public key). Since sk is filled from std.crypto.random.bytes, the probability of
+    // a weak public key). Since sk is filled from cryptoRandom, the probability of
     // generating an all-zero 32-byte key is ~2^-256, which is cryptographically negligible.
     const pk = std.crypto.dh.X25519.recoverPublicKey(sk) catch unreachable;
     var shared: ?[32]u8 = null;

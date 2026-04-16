@@ -424,7 +424,7 @@ pub const TransportParameters = struct {
     /// - RFC 9000 §18.2: Parameter definitions and constraints
     pub fn encode(self: *const TransportParameters, allocator: std.mem.Allocator) ![]u8 {
         // RFC 9000 §18: Build parameter list using ArrayList
-        var list = std.ArrayList(u8){};
+        var list = std.ArrayList(u8).empty;
         errdefer list.deinit(allocator);
 
         // Helper to encode a parameter
@@ -1130,7 +1130,7 @@ test "RFC 9000 §18.2 - stateless_reset_token validation" {
 // RFC 9000 §7.4: Test unknown parameters are ignored
 test "RFC 9000 §7.4 - unknown parameters ignored" {
     // Manually construct parameters with unknown ID 0x9999
-    var list = std.ArrayList(u8){};
+    var list = std.ArrayList(u8).empty;
     defer list.deinit(testing.allocator);
 
     // Add known parameter

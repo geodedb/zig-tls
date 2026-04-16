@@ -184,7 +184,7 @@ pub fn main() !void {
 
     std.debug.print("   // In TLS handshake after receiving Certificate message:\n", .{});
     std.debug.print("   const chain_der = [_][]const u8{{ leaf_der, intermediate_der, root_der }};\n", .{});
-    std.debug.print("   const now = std.time.timestamp();\n", .{});
+    std.debug.print("   const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, std.time.ns_per_s)));\n", .{});
     std.debug.print("   \n", .{});
     std.debug.print("   x509.validateChain(\n", .{});
     std.debug.print("       allocator,\n", .{});

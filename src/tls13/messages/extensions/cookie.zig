@@ -76,6 +76,12 @@
 
 const std = @import("std");
 
+/// Zig 0.16 compat: milliTimestamp() was removed; use Io clock.
+fn milliTimestamp() i64 {
+    const ts = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real);
+    return @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_ms));
+}
+
 /// Maximum cookie size (64 KB - 1 per RFC wire format)
 pub const MAX_COOKIE_SIZE: usize = 65535;
 
@@ -251,7 +257,7 @@ pub fn generateCookie(
     errdefer allocator.free(cookie);
 
     // Get current timestamp (milliseconds since UNIX epoch)
-    const timestamp = std.time.milliTimestamp();
+    const timestamp = milliTimestamp();
     std.mem.writeInt(i64, cookie[32..40], timestamp, .big);
 
     // Compute HMAC over: client_random || transcript_hash || timestamp
@@ -313,7 +319,7 @@ pub fn verifyCookie(
     const timestamp = std.mem.readInt(i64, cookie[32..40], .big);
 
     // Check freshness
-    const now = std.time.milliTimestamp();
+    const now = milliTimestamp();
     const age_ms = now - timestamp;
     if (age_ms < 0 or age_ms > max_age_seconds * 1000) return false;
 
@@ -414,9 +420,9 @@ test "generateCookie and verifyCookie - valid flow" {
 
     const server_secret = "super_secret_key_32_bytes_long!";
     var client_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&client_random);
+    std.testing.io.random(&client_random);
     var transcript_hash: [32]u8 = undefined;
-    std.crypto.random.bytes(&transcript_hash);
+    std.testing.io.random(&transcript_hash);
 
     // Generate cookie
     const cookie = try generateCookie(allocator, server_secret, client_random, &transcript_hash);
@@ -435,9 +441,9 @@ test "verifyCookie - invalid HMAC" {
 
     const server_secret = "super_secret_key_32_bytes_long!";
     var client_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&client_random);
+    std.testing.io.random(&client_random);
     var transcript_hash: [32]u8 = undefined;
-    std.crypto.random.bytes(&transcript_hash);
+    std.testing.io.random(&transcript_hash);
 
     // Generate cookie
     const cookie = try generateCookie(allocator, server_secret, client_random, &transcript_hash);
@@ -458,10 +464,10 @@ test "verifyCookie - wrong client random" {
     const server_secret = "super_secret_key_32_bytes_long!";
     var client_random1: [32]u8 = undefined;
     var client_random2: [32]u8 = undefined;
-    std.crypto.random.bytes(&client_random1);
-    std.crypto.random.bytes(&client_random2);
+    std.testing.io.random(&client_random1);
+    std.testing.io.random(&client_random2);
     var transcript_hash: [32]u8 = undefined;
-    std.crypto.random.bytes(&transcript_hash);
+    std.testing.io.random(&transcript_hash);
 
     // Generate cookie with client_random1
     const cookie = try generateCookie(allocator, server_secret, client_random1, &transcript_hash);
@@ -479,9 +485,9 @@ test "verifyCookie - wrong secret" {
     const server_secret1 = "super_secret_key_32_bytes_long!";
     const server_secret2 = "different_secret_key_32_bytes!!";
     var client_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&client_random);
+    std.testing.io.random(&client_random);
     var transcript_hash: [32]u8 = undefined;
-    std.crypto.random.bytes(&transcript_hash);
+    std.testing.io.random(&transcript_hash);
 
     // Generate cookie with secret1
     const cookie = try generateCookie(allocator, server_secret1, client_random, &transcript_hash);
@@ -497,9 +503,9 @@ test "verifyCookie - invalid size" {
 
     const server_secret = "super_secret_key_32_bytes_long!";
     var client_random: [32]u8 = undefined;
-    std.crypto.random.bytes(&client_random);
+    std.testing.io.random(&client_random);
     var transcript_hash: [32]u8 = undefined;
-    std.crypto.random.bytes(&transcript_hash);
+    std.testing.io.random(&transcript_hash);
 
     // Cookie must be exactly 40 bytes
     const short_cookie = [_]u8{0} ** 39;
