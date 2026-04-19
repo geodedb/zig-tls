@@ -45,9 +45,7 @@ const std = @import("std");
 
 // Re-export test modules for discovery
 pub const section_4_certificate_structure = @import("section_4_certificate_structure.zig");
-
-// TODO: Create additional test modules
-// pub const section_6_path_validation = @import("section_6_path_validation.zig");
+pub const section_6_path_validation = @import("section_6_path_validation.zig");
 
 test {
     std.testing.refAllDecls(@This());
