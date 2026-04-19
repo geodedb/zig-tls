@@ -573,9 +573,15 @@ pub const TransportParameters = struct {
             const length = len_result.value;
             offset += len_result.n;
 
-            // RFC 9000 §18: Ensure we have enough data for value
-            const len: usize = @intCast(length);
-            if (offset + len > data.len) return error.Truncated;
+            // SEC-058: Validate bounds in u64 space BEFORE narrowing to usize.
+            // QUIC varints allow values up to 2^62-1; on 32-bit targets
+            // (usize=u32) a length >= 2^32 would panic in @intCast before
+            // the bounds check could run. Comparing in u64 is safe on all
+            // targets and produces error.Truncated for any oversize value.
+            const remaining_u64: u64 = @as(u64, data.len) - @as(u64, offset);
+            if (length > remaining_u64) return error.Truncated;
+
+            const len: usize = @intCast(length); // safe now: length <= usize range
             const value = data[offset .. offset + len];
             offset += len;
 
