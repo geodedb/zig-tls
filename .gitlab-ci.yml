@@ -76,9 +76,25 @@ stages:
   - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
   - zig version
 
+# Hidden template: cache the extracted Zig toolchain directory + the
+# build's .zig-cache between jobs. Keyed on ZIG_VERSION so toolchain
+# bumps invalidate cleanly; .zig-cache keyed on branch so unrelated
+# branches do not poison each other.
+.cache-zig: &cache-zig
+  cache:
+    - key: "zig-toolchain-${ZIG_VERSION}"
+      paths:
+        - "zig-${ZIG_VERSION}/"
+      policy: pull-push
+    - key: "zig-cache-${CI_COMMIT_REF_SLUG}"
+      paths:
+        - ".zig-cache/"
+      policy: pull-push
+
 # Override zig-format component to use the project's ZIG_VERSION.
 # The v1.2.1 component defaults to 0.14.0 and does not accept a version input.
 zig-format:
+  <<: *cache-zig
   before_script:
     - *install-zig
 
@@ -86,6 +102,7 @@ zig-format:
 build:
   stage: build
   image: debian:bookworm-slim
+  <<: *cache-zig
   before_script:
     - *install-zig
   script:
@@ -95,6 +112,7 @@ build:
 test:
   stage: test
   image: debian:bookworm-slim
+  <<: *cache-zig
   before_script:
     - *install-zig
   script:
@@ -106,6 +124,7 @@ test:
 test-release-safe:
   stage: test
   image: debian:bookworm-slim
+  <<: *cache-zig
   before_script:
     - *install-zig
   script:
@@ -117,6 +136,7 @@ test-release-safe:
 test-release-fast:
   stage: test
   image: debian:bookworm-slim
+  <<: *cache-zig
   before_script:
     - *install-zig
   script:
@@ -128,6 +148,7 @@ test-release-fast:
 test-release-small:
   stage: test
   image: debian:bookworm-slim
+  <<: *cache-zig
   before_script:
     - *install-zig
   script:
@@ -162,10 +183,18 @@ fuzz:
       - zig-out/fuzz/
     expire_in: 30 days
   cache:
-    key: "fuzz-corpus-${CI_COMMIT_REF_SLUG}"
-    paths:
-      - zig-out/fuzz/
-    policy: pull-push
+    - key: "fuzz-corpus-${CI_COMMIT_REF_SLUG}"
+      paths:
+        - zig-out/fuzz/
+      policy: pull-push
+    - key: "zig-toolchain-${ZIG_VERSION}"
+      paths:
+        - "zig-${ZIG_VERSION}/"
+      policy: pull-push
+    - key: "zig-cache-${CI_COMMIT_REF_SLUG}"
+      paths:
+        - ".zig-cache/"
+      policy: pull-push
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
