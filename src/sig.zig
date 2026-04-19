@@ -119,8 +119,23 @@ comptime {
     }
 }
 
+/// Comptime-gated trace helper. When `sig_trace_enabled` is `false` (the
+/// default and only allowed value in release builds) the body is
+/// dead-code-eliminated, so `traceSig(...)` compiles down to a no-op and
+/// leaves zero runtime cost. All internal crypto-trace prints in this
+/// module must route through this helper rather than calling
+/// `std.debug.print` directly (GAP-0118 / QUAL-320).
 inline fn traceSig(comptime fmt: []const u8, args: anytype) void {
-    if (sig_trace_enabled) std.debug.print(fmt, args);
+    if (comptime sig_trace_enabled) std.debug.print(fmt, args);
+}
+
+/// Variant for trace blocks that dump a byte buffer; same comptime gating.
+inline fn traceSigBytes(prefix: []const u8, bytes: []const u8) void {
+    if (comptime sig_trace_enabled) {
+        std.debug.print("{s}", .{prefix});
+        for (bytes) |b| std.debug.print("{x:0>2} ", .{b});
+        std.debug.print("\n", .{});
+    }
 }
 
 /// TLS 1.3 signature algorithms supported by this implementation.
@@ -561,14 +576,10 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
             // Preferred: parse PKCS#8 -> ECPrivateKey -> scalar. Fallback to legacy pattern scan.
             var sk: [32]u8 = undefined;
             defer std.crypto.secureZero(u8, &sk);
-            if (sig_trace_enabled) std.debug.print("[SIG] Starting ECDSA P-256 signature, privkey_der len={d}\n", .{privkey_der.len});
+            traceSig("[SIG] Starting ECDSA P-256 signature, privkey_der len={d}\n", .{privkey_der.len});
             if (parsePkcs8EcdsaP256PrivateKey(privkey_der, &sk)) |ok| {
                 _ = ok; // already written into sk
-                if (sig_trace_enabled) {
-                    std.debug.print("[SIG] Successfully parsed PKCS#8, scalar: ", .{});
-                    for (sk) |b| std.debug.print("{x:0>2} ", .{b});
-                    std.debug.print("\n", .{});
-                }
+                traceSigBytes("[SIG] Successfully parsed PKCS#8, scalar: ", &sk);
             } else |err| switch (err) {
                 error.BadKey, error.Unsupported, error.Parse => {
                     // Legacy heuristic fallback (scan for 0x04 0x20 <32-bytes>) used by early tests.
@@ -589,18 +600,13 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
             // Build signing context content
             var ts_buf: [512]u8 = undefined;
             const to_sign = tls13_build_context_and_hash(alg, context, transcript_hash, &ts_buf);
-            if (sig_trace_enabled) std.debug.print("[SIG] Message to sign len={d}\n", .{to_sign.len});
+            traceSig("[SIG] Message to sign len={d}\n", .{to_sign.len});
             const secret = try Ecdsa.SecretKey.fromBytes(sk);
             const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret);
             // Pass message then optional random noise (null => deterministic per RFC6979)
             const signature = try key_pair.sign(to_sign, null);
-            if (sig_trace_enabled) {
-                std.debug.print("[SIG] Generated signature r=\n", .{});
-                for (signature.r[0..8]) |b| std.debug.print("{x:0>2}\n", .{b});
-                std.debug.print("..., s=\n", .{});
-                for (signature.s[0..8]) |b| std.debug.print("{x:0>2}\n", .{b});
-                std.debug.print("...\n", .{});
-            }
+            traceSigBytes("[SIG] Generated signature r=", signature.r[0..8]);
+            traceSigBytes("[SIG] ..., s=", signature.s[0..8]);
 
             // Manually DER-encode (SEQUENCE { r INTEGER, s INTEGER }) per RFC 3279/5480
             const r_full = signature.r; // [32]u8
