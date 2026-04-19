@@ -716,6 +716,7 @@ All 11 remaining open issues from the third review have been implemented:
 - **Impact/Risk:** Low.
 - **Recommended fix:** Delete stale dirs; update `.gitignore`; ensure Zig package cache lives outside the repo.
 - **Acceptance criteria:** Stale dirs removed; `.gitignore` updated; `du -sh zig-pkg/` reduced.
+- **Resolution:** 2026-04-19 -- Stale `zig-pkg/thread_pool-0.2.0-11B1Bjc9OQCpsTlU23uENRGidyB6DoKgKTODN2-LpFGU/` dir removed from working tree (`du -sh zig-pkg/` went from 12.5M -> 8.4M, matching only the active `...YxUmEL` hash referenced from `build.zig.zon:38`). `.gitignore:24` already excludes `zig-pkg/`, so no new entry required. Status: **Resolved**.
 
 ### GAP-0114: run_tests.sh stale hard-coded test counts
 
