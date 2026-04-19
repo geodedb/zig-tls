@@ -40,7 +40,7 @@ pub fn build(b: *std.Build) void {
     // PERF-024: Test-only allocator wrapper that tracks allocation counts
     // and byte totals. Consumed by tests/perf/*.zig to assert allocation
     // regressions (PERF-201, PERF-207). Not for production use.
-    _ = b.addModule("counting_allocator", .{
+    const counting_allocator_mod = b.addModule("counting_allocator", .{
         .root_source_file = b.path("src/testing/counting_allocator.zig"),
     });
 
@@ -155,6 +155,18 @@ pub fn build(b: *std.Build) void {
     const tls13_full_mod = b.addModule("tls13_full", .{
         .root_source_file = b.path("src/tls13_full.zig"),
         .target = target,
+    });
+
+    // RFC 8446 §4: Handshake State Machine (ClientHelloInfo.parse, phase
+    // tracking, CRYPTO buffering). Exposed as a standalone module so
+    // allocation-count benchmarks (tests/bench_allocs.zig) can import
+    // ClientHelloInfo directly without pulling in the full tls13 module.
+    const handshake_state_mod = b.addModule("handshake_state", .{
+        .root_source_file = b.path("src/tls13/handshake_state.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "tls13_full", .module = tls13_full_mod },
+        },
     });
 
     // RFC 8446: TLS 1.3 Core Protocol
@@ -1128,4 +1140,29 @@ pub fn build(b: *std.Build) void {
 
     const run_bench = b.addRunArtifact(bench_exe);
     bench_step.dependOn(&run_bench.step);
+
+    // ========================================================================
+    // Allocation-Count Baseline Harness (PERF-024 / PERF-201)
+    // ========================================================================
+    //
+    // Run with: zig build bench-allocs -Doptimize=ReleaseFast
+    // Prints the number of allocations performed by ClientHelloInfo.parse
+    // against a CountingAllocator. Used to establish the pre-PERF-201
+    // baseline (~14 allocs) and confirm the post-fix target (≤3 allocs).
+
+    const bench_allocs_step = b.step("bench-allocs", "Allocation-count baseline for hot paths");
+    const bench_allocs_exe = b.addExecutable(.{
+        .name = "bench-allocs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/bench_allocs.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "counting_allocator", .module = counting_allocator_mod },
+                .{ .name = "handshake_state", .module = handshake_state_mod },
+            },
+        }),
+    });
+    const run_bench_allocs = b.addRunArtifact(bench_allocs_exe);
+    bench_allocs_step.dependOn(&run_bench_allocs.step);
 }
