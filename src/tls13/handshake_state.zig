@@ -232,11 +232,9 @@ pub const ClientHelloInfo = struct {
     /// Parse ClientHello message body and allocate owned copies.
     /// Callers must call deinit() to free allocated memory.
     pub fn parse(allocator: std.mem.Allocator, body: []const u8) !ClientHelloInfo {
-        // Import parse logic from tls13_full
         var parsed = try tls13_full.parseClientHello(allocator, body);
         errdefer freeParsedClientHello(allocator, &parsed);
 
-        // Validation
         const HandshakeError = error{
             NoCipherSuite,
             UnsupportedVersion,
@@ -245,88 +243,73 @@ pub const ClientHelloInfo = struct {
         };
 
         if (parsed.cipher_suites.len == 0) return HandshakeError.NoCipherSuite;
-        const versions = parsed.supported_versions orelse return HandshakeError.UnsupportedVersion;
-        if (!supportsTls13Version(versions)) return HandshakeError.UnsupportedVersion;
+        const versions_view = parsed.supported_versions orelse return HandshakeError.UnsupportedVersion;
+        if (!supportsTls13Version(versions_view)) return HandshakeError.UnsupportedVersion;
 
         const key_share = parsed.key_share orelse return HandshakeError.MissingKeyShare;
         if (key_share.group != .x25519) return HandshakeError.UnsupportedKeyShareGroup;
 
-        // Allocate owned copies
-        const session_id_copy = try allocator.dupe(u8, parsed.session_id);
-        errdefer if (session_id_copy.len != 0) allocator.free(session_id_copy);
-
-        const cipher_suites_copy = try allocator.dupe(tls13_full.CipherSuite, parsed.cipher_suites);
-        errdefer if (cipher_suites_copy.len != 0) allocator.free(cipher_suites_copy);
-
-        var sigalgs_copy: ?[]tls13_full.SignatureScheme = null;
-        if (parsed.signature_algorithms) |algs| {
-            sigalgs_copy = try allocator.dupe(tls13_full.SignatureScheme, algs);
-        }
-        errdefer if (sigalgs_copy) |buf| if (buf.len != 0) allocator.free(buf);
-
-        const versions_copy = try allocator.dupe(u8, versions);
-        errdefer if (versions_copy.len != 0) allocator.free(versions_copy);
-
-        const key_bytes = try allocator.dupe(u8, key_share.key_exchange);
-        errdefer if (key_bytes.len != 0) allocator.free(key_bytes);
-
+        // PERF-201: Own `raw` once and reslice views to it instead of duping every field.
         const raw_copy = try allocator.dupe(u8, body);
-        errdefer if (raw_copy.len != 0) allocator.free(raw_copy);
+        errdefer allocator.free(raw_copy);
 
-        var tp_copy: ?[]u8 = null;
-        if (parsed.quic_transport_parameters) |tp| {
-            tp_copy = try allocator.dupe(u8, tp);
-        }
-        errdefer if (tp_copy) |buf| if (buf.len != 0) allocator.free(buf);
-
-        var alpn_copy: ?[][]u8 = null;
-        if (parsed.alpn_list) |list| {
-            const dest = try allocator.alloc([]u8, list.len);
-            errdefer allocator.free(dest);
-
-            var copied_count: usize = 0;
-            errdefer {
-                while (copied_count != 0) {
-                    copied_count -= 1;
-                    const proto = dest[copied_count];
-                    if (proto.len != 0) allocator.free(proto);
-                }
+        const reslice = struct {
+            fn into(raw: []u8, src_body: []const u8, view: []const u8) []u8 {
+                const off = @intFromPtr(view.ptr) - @intFromPtr(src_body.ptr);
+                return raw[off .. off + view.len];
             }
-
-            while (copied_count < list.len) : (copied_count += 1) {
-                const proto_copy = try allocator.dupe(u8, list[copied_count]);
-                dest[copied_count] = proto_copy;
-            }
-
-            alpn_copy = dest;
-        }
-        errdefer if (alpn_copy) |list| {
-            if (list.len != 0) {
-                for (list) |proto| {
-                    if (proto.len != 0) allocator.free(proto);
-                }
-                allocator.free(list);
+            fn intoOpt(raw: []u8, src_body: []const u8, view: ?[]const u8) ?[]u8 {
+                if (view) |v| return into(raw, src_body, v);
+                return null;
             }
         };
 
-        var psk_copy: ?PreSharedKeyInfo = null;
+        const session_id_ref = reslice.into(raw_copy, body, parsed.session_id);
+        const versions_ref = reslice.into(raw_copy, body, versions_view);
+        const key_bytes_ref = reslice.into(raw_copy, body, key_share.key_exchange);
+        const tp_ref = reslice.intoOpt(raw_copy, body, parsed.quic_transport_parameters);
+
+        // Take ownership of the owned inner lists — move, don't copy.
+        const cipher_suites_owned = parsed.cipher_suites;
+        parsed.cipher_suites = &.{};
+
+        var sigalgs_owned: ?[]tls13_full.SignatureScheme = null;
+        if (parsed.signature_algorithms) |algs| {
+            sigalgs_owned = algs;
+            parsed.signature_algorithms = null;
+        }
+
+        // ALPN: outer array is owned; inner slices are views into body → reslice to raw.
+        var alpn_owned: ?[][]u8 = null;
+        if (parsed.alpn_list) |list| {
+            const dest = try allocator.alloc([]u8, list.len);
+            errdefer allocator.free(dest);
+            var i: usize = 0;
+            while (i < list.len) : (i += 1) {
+                dest[i] = reslice.into(raw_copy, body, list[i]);
+            }
+            // Free parsed's outer array; inner slices are views we just resliced.
+            allocator.free(list);
+            parsed.alpn_list = null;
+            alpn_owned = dest;
+        }
+
+        // PSK identities + binders: keep duped for security isolation.
+        var psk_owned: ?PreSharedKeyInfo = null;
         if (parsed.pre_shared_key) |psk_ext| {
             const ids = try allocator.alloc(OwnedPskIdentity, psk_ext.identities.len);
             var ids_filled: usize = 0;
             errdefer {
-                while (ids_filled != 0) {
-                    ids_filled -= 1;
-                    const ident = ids[ids_filled];
-                    if (ident.identity.len != 0) allocator.free(ident.identity);
+                var k: usize = 0;
+                while (k < ids_filled) : (k += 1) {
+                    if (ids[k].identity.len != 0) allocator.free(ids[k].identity);
                 }
                 allocator.free(ids);
             }
-
             while (ids_filled < psk_ext.identities.len) : (ids_filled += 1) {
                 const src = psk_ext.identities[ids_filled];
-                const dup = try allocator.dupe(u8, src.identity);
                 ids[ids_filled] = .{
-                    .identity = dup,
+                    .identity = try allocator.dupe(u8, src.identity),
                     .obfuscated_ticket_age = src.obfuscated_ticket_age,
                 };
             }
@@ -334,76 +317,59 @@ pub const ClientHelloInfo = struct {
             const binders = try allocator.alloc([]u8, psk_ext.binders.len);
             var binders_filled: usize = 0;
             errdefer {
-                while (binders_filled != 0) {
-                    binders_filled -= 1;
-                    const binder = binders[binders_filled];
-                    if (binder.len != 0) allocator.free(binder);
+                var k: usize = 0;
+                while (k < binders_filled) : (k += 1) {
+                    if (binders[k].len != 0) allocator.free(binders[k]);
                 }
                 allocator.free(binders);
             }
-
             while (binders_filled < psk_ext.binders.len) : (binders_filled += 1) {
-                const src = psk_ext.binders[binders_filled];
-                const dup = try allocator.dupe(u8, src);
-                binders[binders_filled] = dup;
+                binders[binders_filled] = try allocator.dupe(u8, psk_ext.binders[binders_filled]);
             }
 
-            psk_copy = .{ .identities = ids, .binders = binders };
+            psk_owned = .{ .identities = ids, .binders = binders };
         }
-        // QUAL-127: errdefer for psk_copy — if a subsequent allocation (e.g. psk_modes_copy)
-        // fails, we must free the owned identities, binders, and their backing slices.
-        errdefer if (psk_copy) |psk| {
-            for (psk.identities) |ident| {
-                if (ident.identity.len != 0) allocator.free(ident.identity);
-            }
-            if (psk.identities.len != 0) allocator.free(psk.identities);
-            for (psk.binders) |binder| {
-                if (binder.len != 0) allocator.free(binder);
-            }
-            if (psk.binders.len != 0) allocator.free(psk.binders);
-        };
 
-        // RFC 8446 §4.2.9: Copy psk_key_exchange_modes if present
-        var psk_modes_copy: ?[]u8 = null;
+        var psk_modes_ref: ?[]u8 = null;
         if (parsed.psk_key_exchange_modes) |modes| {
-            psk_modes_copy = try allocator.dupe(u8, modes);
+            psk_modes_ref = reslice.into(raw_copy, body, modes);
         }
-        errdefer if (psk_modes_copy) |buf| if (buf.len != 0) allocator.free(buf);
 
         const info = ClientHelloInfo{
             .random = parsed.random,
-            .session_id = session_id_copy,
-            .cipher_suites = cipher_suites_copy,
-            .signature_algorithms = sigalgs_copy,
-            .supported_versions = versions_copy,
-            .key_share = .{ .group = key_share.group, .key = key_bytes },
-            .quic_transport_parameters = tp_copy,
-            .alpn_list = alpn_copy,
+            .session_id = session_id_ref,
+            .cipher_suites = cipher_suites_owned,
+            .signature_algorithms = sigalgs_owned,
+            .supported_versions = versions_ref,
+            .key_share = .{ .group = key_share.group, .key = key_bytes_ref },
+            .quic_transport_parameters = tp_ref,
+            .alpn_list = alpn_owned,
             .early_data = parsed.early_data,
-            .pre_shared_key = psk_copy,
-            .psk_key_exchange_modes = psk_modes_copy,
+            .pre_shared_key = psk_owned,
+            .psk_key_exchange_modes = psk_modes_ref,
             .raw = raw_copy,
         };
 
+        // `parsed` now has moved-out fields nulled; this call cleans up anything else.
         freeParsedClientHello(allocator, &parsed);
         return info;
     }
 
     /// Free all allocated memory from ClientHelloInfo.
+    ///
+    /// PERF-201: session_id, supported_versions, key_share.key,
+    /// quic_transport_parameters, psk_key_exchange_modes, and the inner ALPN
+    /// slices are views into self.raw — do NOT free each individually.
     pub fn deinit(self: *ClientHelloInfo, allocator: std.mem.Allocator) void {
-        if (self.session_id.len != 0) allocator.free(self.session_id);
         if (self.cipher_suites.len != 0) allocator.free(self.cipher_suites);
         if (self.signature_algorithms) |list| if (list.len != 0) allocator.free(list);
-        if (self.supported_versions.len != 0) allocator.free(self.supported_versions);
-        if (self.key_share.key.len != 0) allocator.free(self.key_share.key);
-        if (self.quic_transport_parameters) |buf| if (buf.len != 0) allocator.free(buf);
+
         if (self.alpn_list) |list| {
-            for (list) |proto| {
-                if (proto.len != 0) allocator.free(proto);
-            }
+            // Inner slices view self.raw; only free the outer array.
             if (list.len != 0) allocator.free(list);
         }
-        if (self.pre_shared_key) |*psk| {
+
+        if (self.pre_shared_key) |psk| {
             for (psk.identities) |ident| {
                 if (ident.identity.len != 0) allocator.free(ident.identity);
             }
@@ -413,7 +379,7 @@ pub const ClientHelloInfo = struct {
             }
             if (psk.binders.len != 0) allocator.free(psk.binders);
         }
-        if (self.psk_key_exchange_modes) |buf| if (buf.len != 0) allocator.free(buf);
+
         if (self.raw.len != 0) allocator.free(self.raw);
     }
 };
