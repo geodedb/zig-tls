@@ -882,6 +882,11 @@ test "parallel aead seal - basic" {
     const nonce = [_]u8{0x02} ** 12;
     const plaintext = "test data for encryption";
 
+    var filled: usize = 0;
+    defer {
+        for (outputs[0..filled]) |out| allocator.free(out);
+    }
+
     for (&inputs, 0..) |*input, i| {
         input.* = .{
             .suite = .aes_128_gcm,
@@ -891,8 +896,8 @@ test "parallel aead seal - basic" {
             .plaintext = plaintext,
         };
         outputs[i] = try allocator.alloc(u8, plaintext.len + 16);
+        filled = i + 1;
     }
-    defer for (&outputs) |out| allocator.free(out);
 
     parallelAeadSeal(&inputs, &outputs, &results);
 
@@ -914,6 +919,11 @@ test "parallel aead seal - chacha20" {
     const nonce = [_]u8{0x02} ** 12;
     const plaintext = "test";
 
+    var filled: usize = 0;
+    defer {
+        for (outputs[0..filled]) |out| allocator.free(out);
+    }
+
     for (&inputs, 0..) |*input, i| {
         input.* = .{
             .suite = .chacha20_poly1305,
@@ -923,8 +933,8 @@ test "parallel aead seal - chacha20" {
             .plaintext = plaintext,
         };
         outputs[i] = try allocator.alloc(u8, plaintext.len + 16);
+        filled = i + 1;
     }
-    defer for (&outputs) |out| allocator.free(out);
 
     parallelAeadSeal(&inputs, &outputs, &results);
 
