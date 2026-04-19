@@ -89,13 +89,6 @@ pub const Callbacks = mod.Callbacks;
 pub const Context = mod.Context;
 
 // ============================================================================
-// Engine (Legacy)
-// ============================================================================
-
-/// Legacy minimal driver for tests (being phased out).
-pub const Engine = mod.Engine;
-
-// ============================================================================
 // Encryption and State Management
 // ============================================================================
 
@@ -234,24 +227,8 @@ pub const parseHandshakeOne = mod.parseHandshakeOne;
 /// Generate X25519 keypair and optional shared secret.
 pub const x25519KeypairAndShared = mod.x25519KeypairAndShared;
 
-/// Encode minimal ClientHello (testing).
-pub const encodeMinimalClientHello = mod.encodeMinimalClientHello;
-
-/// Encode minimal ServerHello (testing).
-pub const encodeMinimalServerHello = mod.encodeMinimalServerHello;
-
 /// Parse minimal Hello public key (testing).
 pub const parseMinimalHelloPub = mod.parseMinimalHelloPub;
-
-// ============================================================================
-// Session Tickets (from context.zig)
-// ============================================================================
-
-/// Session ticket store.
-pub const TicketStore = mod.TicketStore;
-
-/// Session ticket entry.
-pub const TicketEntry = mod.TicketEntry;
 
 // ============================================================================
 // Tests

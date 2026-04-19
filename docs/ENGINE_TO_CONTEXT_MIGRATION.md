@@ -1,7 +1,12 @@
 # Engine to Context Migration Guide
 
-> **Status:** Engine is marked **LEGACY** in `src/tls13/engine.zig`. New code should use Context.
-> **Last updated:** 2026-03-24
+> **Status:** Migration complete (2026-04-19). `src/tls13/engine.zig`
+> has been deleted from the tree; all public `Engine`, `TicketStore`,
+> `TicketEntry`, `encodeMinimalClientHello`, and
+> `encodeMinimalServerHello` re-exports have been removed from
+> `src/tls13/mod.zig` and `src/tls13.zig`. This document is retained
+> as a historical reference for anyone porting pre-2026-04 code.
+> **Last updated:** 2026-04-19
 
 ## Overview
 

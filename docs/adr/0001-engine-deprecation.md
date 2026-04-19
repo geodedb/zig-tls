@@ -2,7 +2,21 @@
 
 ## Status
 
-Accepted (2026-04-19)
+Accepted -- implemented (2026-04-19)
+
+Engine deleted in commit landing on main after this ADR update. No
+downstream caller or test referenced `Engine`, `TicketStore`,
+`TicketEntry`, `encodeMinimalClientHello`, or `encodeMinimalServerHello`
+outside of engine.zig itself and the re-export barrel files
+(`src/tls13/mod.zig`, `src/tls13.zig`), so the deletion is a single
+atomic change with no caller-facing migration. The Engine-only tests
+(OOM propagation via `FailingAllocator`, X25519 `IdentityElement`
+rejection, `parseRealServerHello` supported_versions checks) have
+equivalent behavioural coverage through `handshake_state.zig`
+FailingAllocator tests and the existing RFC 8446 §4.2.1 extension
+tests in `tests/rfc8446/section_4_2_extensions.zig`; the
+`parseMinimalHelloPub` canonical definition already lived in
+`src/tls13/messages.zig` and is unaffected.
 
 ## Context
 

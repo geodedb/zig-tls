@@ -208,12 +208,6 @@ pub const parseHandshakeOne = messages.parseHandshakeOne;
 /// Generate X25519 keypair and optional shared secret.
 pub const x25519KeypairAndShared = messages.x25519KeypairAndShared;
 
-/// Encode minimal ClientHello (testing).
-pub const encodeMinimalClientHello = engine.encodeMinimalClientHello;
-
-/// Encode minimal ServerHello (testing).
-pub const encodeMinimalServerHello = engine.encodeMinimalServerHello;
-
 /// Parse minimal Hello public key (testing).
 pub const parseMinimalHelloPub = messages.parseMinimalHelloPub;
 
@@ -243,21 +237,6 @@ pub const ApiError = types.ApiError;
 
 /// Handshake protocol errors.
 pub const HandshakeError = types.HandshakeError;
-
-// ============================================================================
-// Engine (Legacy)
-// ============================================================================
-
-const engine = @import("engine.zig");
-
-/// Legacy minimal driver for tests (being phased out).
-pub const Engine = engine.Engine;
-
-/// Session ticket store.
-pub const TicketStore = engine.TicketStore;
-
-/// Session ticket entry.
-pub const TicketEntry = engine.TicketEntry;
 
 // ============================================================================
 
