@@ -35,6 +35,7 @@ const std = @import("std");
 pub const section_4_1_2_client_hello = @import("section_4_1_2_client_hello.zig");
 pub const section_4_1_3_server_hello = @import("section_4_1_3_server_hello.zig");
 pub const section_4_2_extensions = @import("section_4_2_extensions.zig");
+pub const section_4_3_encrypted_extensions = @import("section_4_3_encrypted_extensions.zig");
 pub const section_4_4_1_transcript = @import("section_4_4_1_transcript.zig");
 pub const section_4_4_4_finished = @import("section_4_4_4_finished.zig");
 pub const section_5_record_protocol = @import("section_5_record_protocol.zig");
