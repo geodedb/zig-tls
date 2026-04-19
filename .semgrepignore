@@ -1,0 +1,6 @@
+# SEC-063: Exclude RFC specification text from semgrep scans.
+# The specs/ tree contains verbatim RFC bodies (RFC 8446, RFC 9001,
+# RFC 5280, etc.) that routinely trip secret/credential heuristics with
+# example keys, IVs, and base64 blobs. Those are published test vectors,
+# not secrets.
+specs/**/*.txt
