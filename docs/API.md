@@ -47,6 +47,63 @@ TLS 1.3 configuration parameters.
 | `server_key_der` | `?[]const u8` | DER private key (server) |
 | `allow_insecure` | `bool` | Skip cert validation (testing) |
 | `enable_early_data` | `bool` | Enable 0-RTT |
+| `request_client_cert` | `bool` | Server: request client cert (mTLS) |
+| `client_cert_der` | `?[]const u8` | Client: DER cert for mTLS |
+| `client_key_der` | `?[]const u8` | Client: PKCS#8 private key for mTLS |
+| `client_auth_ca_certs` | `?[]const []const u8` | Server: trusted CA DNs for mTLS |
+
+### Mutual TLS (mTLS)
+
+The library supports RFC 8446 §4.3.2 client authentication during the
+initial handshake. Post-handshake client auth is intentionally not
+supported (forbidden by RFC 9001 §4.4 for QUIC).
+
+**Server-side (request a client certificate):**
+
+```zig
+const cfg = ztls.Config{
+    .role = .Server,
+    .server_cert_der = cert_der,
+    .server_key_der = key_der,
+    .request_client_cert = true,          // send CertificateRequest
+    .client_auth_ca_certs = &trusted_ca_dns, // optional DN list
+    // ...
+};
+```
+
+When `request_client_cert` is `true`, the server emits a
+`CertificateRequest` message after `EncryptedExtensions`. The optional
+`client_auth_ca_certs` field is a slice of DER-encoded X.509
+distinguished names, which the server advertises in the
+`certificate_authorities` extension to help the client pick a suitable
+credential.
+
+**Client-side (respond with a certificate):**
+
+```zig
+const cfg = ztls.Config{
+    .role = .Client,
+    .server_name = "example.com",
+    .client_cert_der = my_cert_der, // DER X.509v3 certificate
+    .client_key_der  = my_key_der,  // matching PKCS#8 private key
+    // ...
+};
+```
+
+`client_cert_der` and `client_key_der` must both be set together; the
+private key must correspond to the certificate's Subject Public Key
+Info. If the server requests authentication but the client has no
+credential, the client responds with an empty `Certificate` message
+(per RFC 8446 §4.4.2.4), which servers typically treat as a handshake
+failure.
+
+**Semantic constraints enforced by the context:**
+
+- Setting `client_cert_der` without `client_key_der` (or vice versa)
+  is rejected at handshake start.
+- Server-role contexts ignore `client_cert_der` / `client_key_der`.
+- Client-role contexts ignore `request_client_cert` /
+  `client_auth_ca_certs`.
 
 ### Callbacks
 
