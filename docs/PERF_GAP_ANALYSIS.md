@@ -143,8 +143,8 @@ Context driver (production) is well-optimized with zero-alloc appendOutboundFram
 | PERF-208 | P3 | 3.5 | [!151](https://gitlab.com/devnw/zig/tls/-/issues/151) | sendClientHello2 body/msg dual-alloc + memcpy. Fix: reserve 4-byte header in buildClientHello. |
 | PERF-209 | P3 | 2.0 | [!155](https://gitlab.com/devnw/zig/tls/-/issues/155) | ThreadPool uses page_allocator; audit per-task heap pressure. `confidence::suspected`. |
 | PERF-210 | Info | 1.0 | [!158](https://gitlab.com/devnw/zig/tls/-/issues/158) | xorNonce per-byte loop (readability; likely vectorized in ReleaseFast). |
-| PERF-211 | Info | 0.5 | [!183](https://gitlab.com/devnw/zig/tls/-/issues/183) | deriveNonce NRVO handles it; close candidate. |
-| PERF-212 | **BLOCKER** | -- | [!163](https://gitlab.com/devnw/zig/tls/-/issues/163) | `zig build bench` broken (std.time.Timer / graph.environ_map drift). **Blocks validation.** |
+| PERF-211 | Info | 0.5 | [!183](https://gitlab.com/devnw/zig/tls/-/issues/183) | **Won't Do** -- Zig/LLVM NRVO already elides the `[12]u8` return copy at `src/record/aead.zig:286,579` into the caller stack slot. No remediation needed; closing as false positive with measured rationale. |
+| PERF-212 | Resolved | -- | [!163](https://gitlab.com/devnw/zig/tls/-/issues/163) | **Resolved** -- `tests/bench.zig` already ported to Zig 0.16 clock API (commit 17b508c). Phase 12 baseline confirms `zig build bench` runs green end-to-end. |
 | PERF-213 | P3 | 3.5 | [!165](https://gitlab.com/devnw/zig/tls/-/issues/165) | O(N^2) name-constraint accumulation in validateChain; 2 fresh ArrayLists per iter. Fix: top-down single-pass. `confidence::confirmed`. |
 | PERF-214 | P3 | 3.0 | [!169](https://gitlab.com/devnw/zig/tls/-/issues/169) | parseCertSignature fallback re-walks full DER when parseCert's best-effort extraction left fields empty. Fix: fail-loud. |
 | PERF-215 | P3 | 2.5 | [!172](https://gitlab.com/devnw/zig/tls/-/issues/172) | HRR second-CH path re-runs full 14-alloc parse. Folds into PERF-201 fix. |
