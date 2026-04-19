@@ -235,7 +235,7 @@ Remaining PERF-208..211, PERF-213..218 are out of this plan's scope and remain O
 | 60 | PERF-213 | P3 | 3.5 | O(N^2) name-constraint accumulation in validateChain | app | `src/x509.zig:1693-1743` | ~50-200ns/chain (2 fresh ArrayLists per iter) | [#165](https://gitlab.com/devnw/zig/tls/-/issues/165) | Top-down single-pass accumulation | git blame owner | Backlog | Open |
 | 61 | PERF-214 | P3 | 3.0 | parseCertSignature fallback re-walks full DER | app | `src/x509.zig:1756-1767`, `:948-964` | ~5-15us/cert when parseCert's best-effort left fields empty | [#169](https://gitlab.com/devnw/zig/tls/-/issues/169) | Fail loud in parseCert | git blame owner | Backlog | Open |
 | 62 | PERF-215 | P3 | 2.5 | HRR second-CH path re-runs full 14-alloc parse | app | `src/tls13/handshake_state.zig:469-474`; `src/tls13/context.zig:1117-1124` | Doubles PERF-201 cost on HRR handshakes | [#172](https://gitlab.com/devnw/zig/tls/-/issues/172) | Folds into PERF-201 fix | git blame owner | Backlog | Open |
-| 63 | PERF-216 | P3 | 4.0 | SHA-384 transcript updates wasted on pre-lockHash CHs | app | `src/tls13/transcript.zig:149-158` | ~3-7us/handshake (SHA-384 discarded >95% of traffic) | [#177](https://gitlab.com/devnw/zig/tls/-/issues/177) | Speculative SHA-256 lock with raw-input replay | git blame owner | Backlog | Open |
+| 63 | PERF-216 | P3 | 4.0 | SHA-384 transcript updates wasted on pre-lockHash CHs | app | `src/tls13/transcript.zig:149-158` | ~3-7us/handshake (SHA-384 discarded >95% of traffic) | [#177](https://gitlab.com/devnw/zig/tls/-/issues/177) | `lockHash` hoisted to cipher-selection sites in context.zig (server:1953, client:2342). Commit 9146aa80. | Claude | 2026-04-19 | Closed |
 | 64 | PERF-217 | P3 | 3.0 | CryptoBuffer.outbound empty -> 3-6 reallocs | app | `src/tls13/context.zig:581`, `:1427-1437` | ~200-600ns/handshake (3-6 realloc+memcpy) | [#179](https://gitlab.com/devnw/zig/tls/-/issues/179) | ensureTotalCapacity(4096) for .Handshake at init | git blame owner | Backlog | Open |
 | 65 | PERF-218 | P3 | 1.5 | EE ALPN duped on every receive | app | `src/tls13/context.zig:3067,3080` | ~20-40ns/handshake (1 unnecessary small alloc) | [#182](https://gitlab.com/devnw/zig/tls/-/issues/182) | Hold pointer into config.alpn_protocols; skip dupe | git blame owner | Backlog | Open |
 
@@ -2587,6 +2587,13 @@ zig build bench -Doptimize=ReleaseFast
 **Impact:** ~3-7 us/handshake saved on SHA-256 paths; ~1-2 us penalty on rare SHA-384 paths. Net positive >95% of traffic.
 
 **Confidence:** `confidence::suspected` -- needs PERF-212 to validate.
+
+**Status: Closed** -- The accepted remediation diverges from the original "buffer + replay" sketch: instead of deferring both hashes, the implementation hoists `lockHash` to the earliest moment the cipher suite is known. This eliminates the wasted work for the exact reason PERF-216 identified (the unused hash is never finalized) without the complexity of a raw-input replay buffer. Call sites:
+
+- Server: `src/tls13/context.zig:1953` in `negotiateCipherAndKeys`, called immediately after `chooseCipherSuite` and before any handshake-response bytes are emitted.
+- Client: `src/tls13/context.zig:2342` in `handleServerHello`, called immediately after the cipher suite is parsed out of ServerHello and before `transcript.update(server_hello_bytes)` continues with subsequent flight messages.
+
+In both cases the unused SHA-256/SHA-384 state is only fed the single ClientHello (client-side) or ClientHello+ServerHello prefix (server-side) before being abandoned -- i.e. at most one SHA block of wasted work per handshake, which is the theoretical minimum for a two-hash negotiation model. The remaining hot-path transcript updates (EncryptedExtensions, Certificate, CertificateVerify, Finished) feed only the selected hash. Commit: 9146aa80.
 
 ---
 
