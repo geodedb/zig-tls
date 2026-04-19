@@ -38,6 +38,7 @@ pub const section_4_2_extensions = @import("section_4_2_extensions.zig");
 pub const section_4_3_encrypted_extensions = @import("section_4_3_encrypted_extensions.zig");
 pub const section_4_6_1_new_session_ticket = @import("section_4_6_1_new_session_ticket.zig");
 pub const section_4_6_3_key_update = @import("section_4_6_3_key_update.zig");
+pub const section_6_alert_protocol = @import("section_6_alert_protocol.zig");
 pub const section_4_4_1_transcript = @import("section_4_4_1_transcript.zig");
 pub const section_4_4_4_finished = @import("section_4_4_4_finished.zig");
 pub const section_5_record_protocol = @import("section_5_record_protocol.zig");
