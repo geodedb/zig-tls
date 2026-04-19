@@ -1,21 +1,56 @@
 # Security Gap Analysis
 
-> **Last updated:** 2026-03-25 (Phase 10 closure)
+> **Last updated:** 2026-04-18 (Phase 11 remediation — SEC-057..060 closed; SEC-061 remains open)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Phase 10 -- Adversarial review: 8 new findings (SEC-049 through SEC-056); all resolved (5 closed, 3 Info accepted as risk)
+> **Review phase:** Phase 11 -- Audit pass on main: identified 1 HIGH regression (SEC-057), 1 MEDIUM (SEC-058 32-bit), 1 LOW test hygiene (SEC-059), 1 MEDIUM operational CI/CD gap (SEC-060), 1 LOW supply-chain hardening (SEC-061). 6 prior HIGH/CRITICAL resolutions verified intact. **2026-04-18 remediation:** SEC-057, SEC-058, SEC-059, SEC-060 resolved in-branch; SEC-061 remains open under its 180-day SLA.
+
+## Phase 11 Alert (RESOLVED 2026-04-18)
+
+**SEC-057 (HIGH regression, Risk 60) — CLOSED 2026-04-18:** `src/tls13/messages/client_hello.zig:403-404` used `@enumFromInt(alg)` on attacker-controlled `signature_algorithms` values filtered only by range, not by the exhaustive enum set. Result: **pre-auth remote DoS** against any TLS 1.3 server using this parser. Panic in Debug / ReleaseSafe / ReleaseSmall; UB in ReleaseFast. Fixed by replacing the unchecked cast with `std.enums.fromInt(SignatureScheme, alg) orelse continue;`. Regression test at `tests/security/sec057_sigalg_panic.zig`. Commits: 98ccfad (test), 39a20b3 (fix). Confidential issue [#162](https://gitlab.com/devnw/zig/tls/-/issues/162) to be closed post-merge.
 
 ## Summary
 
 | Risk Level | Open | Closed | Won't Do | Acceptable Risk | Total |
 |-----------|------|--------|----------|-----------------|-------|
 | Critical  | 0    | 0      | 0        | 0               | 0     |
-| High      | 0    | 10     | 0        | 0               | 10    |
-| Medium    | 0    | 16     | 0        | 0               | 16    |
-| Low       | 0    | 19     | 4        | 0               | 23    |
+| High      | 0    | 11     | 0        | 0               | 11    |
+| Medium    | 0    | 18     | 0        | 0               | 18    |
+| Low       | 1    | 20     | 4        | 0               | 25    |
 | Info      | 0    | 3      | 1        | 3               | 7     |
-| **Total** | **0** | **48** | **5**   | **3**           | **56** |
+| **Total** | **1** | **52** | **5**   | **3**           | **61** |
 
-**Phase 10** added 8 new findings from adversarial review (SEC-049 through SEC-056). All resolved: 5 closed via code changes, 3 Info accepted as documented risk. Previous 48 findings remain resolved. **All 56 security findings are now fully resolved. Zero open security items.**
+**Phase 11** added 5 new findings (SEC-057 through SEC-061) plus 3 info-only notes (NEW-SEC-04, NEW-SEC-05, NEW-SEC-08). As of 2026-04-18, 4 of the 5 new findings (SEC-057, SEC-058, SEC-059, SEC-060) are closed by in-branch remediation; SEC-061 remains open under its 180-day SLA. Baseline returns to **0 Critical / 0 High open**.
+
+**Phase 10** added 8 new findings from adversarial review (SEC-049 through SEC-056). All resolved: 5 closed via code changes, 3 Info accepted as documented risk.
+
+### Phase 11 Findings (2026-04-18 audit)
+
+- **SEC-057** — **CLOSED 2026-04-18 / HIGH / Risk 60** (regression): Unauthenticated remote DoS via `@enumFromInt` on `signature_algorithms`. `src/tls13/messages/client_hello.zig:403-404`. Range filter `0x0401 ≤ alg ≤ 0x080b` admitted ~2034 values vs. 14 valid enum tags. Sibling `ExtensionType` parser at line 337 used safe `std.enums.fromInt(...) orelse` pattern. CWE-754 / A05:2021. Confidential issue: [#162](https://gitlab.com/devnw/zig/tls/-/issues/162). **Resolution:** 2026-04-18 — Replaced `@enumFromInt(alg)` with `std.enums.fromInt(SignatureScheme, alg) orelse continue` at `src/tls13/messages/client_hello.zig:406`. Regression test at `tests/security/sec057_sigalg_panic.zig` asserts no panic across the full 0x0401..0x080b range. Commits: 98ccfad, 39a20b3.
+- **SEC-058** — **CLOSED 2026-04-18 / Medium / Risk 36** (32-bit only): DoS via `@intCast(varint length)` before bounds check. `src/quic_transport_params.zig:572-578`. On 32-bit targets, a TP length ≥ 2^32 panicked in `@intCast` before the subsequent `offset + len > data.len` guard. CWE-190/681. Issue: [#167](https://gitlab.com/devnw/zig/tls/-/issues/167). **Resolution:** 2026-04-18 — Validated varint length in u64 space before narrowing cast at `src/quic_transport_params.zig:572-586`. Regression tests at `tests/security/sec058_tp_length_overflow.zig`. Commits: a05193c, aac7bbe.
+- **SEC-059** — **CLOSED 2026-04-18 / Low / Risk 4**: Missing `errdefer` in parallel AEAD tests. `src/parallel.zig:893,925`. Test allocator catches the leak; fix is hygiene. CWE-401. Issue: [#173](https://gitlab.com/devnw/zig/tls/-/issues/173). **Resolution:** 2026-04-18 — Added `filled` counter + scope-exit defer in both affected test loops at `src/parallel.zig:873-944`. Commit: 62c915b.
+- **SEC-060** — **CLOSED 2026-04-18 / Medium / Risk 24** (operational / SDL): Fuzz corpus not persisted (`artifacts: when: on_failure`) + `allow_failure: true` at both job and rule scope + 60s budget. `.gitlab-ci.yml:138-164`. **Root cause the CI lane failed to catch SEC-057.** OWASP A08/A09. Issue: [#181](https://gitlab.com/devnw/zig/tls/-/issues/181). **Resolution:** 2026-04-18 — CI fuzz job is now a real gate: removed `allow_failure:true`, added `cache:` stanza (pull-push, branch-keyed), extended rules to `merge_request_event`+`push`, and seeded the corpus with prior-regression inputs under `tests/fuzz/corpus/`. Commits: 53d581d, 67cb0c8.
+- **SEC-061** — **OPEN / Low / Risk 6**: CI catalog components pinned to mutable tags (`@v1.7.1`, `@v1.2.1`) rather than immutable commit SHAs. `.gitlab-ci.yml:11-24`. 8 imports affected. Internal catalog mitigates risk. CWE-829 / A08:2021. Issue: [#184](https://gitlab.com/devnw/zig/tls/-/issues/184). **SLA 180 days.**
+
+#### Phase 11 Informational Notes (no issue filed)
+
+- **NEW-SEC-04**: Audited all 8 other production `@enumFromInt` sites — all are safe (operate on values already constrained by exhaustive parse-then-match or are on trusted internal data). Only `client_hello.zig:404` (SEC-057) was unsafe.
+- **NEW-SEC-05**: Audited `@intCast` sites on attacker-controlled lengths — all other sites bound the source value appropriately before narrowing. Only `quic_transport_params.zig:577` (SEC-058) is missing the 32-bit guard.
+- **NEW-SEC-08**: Dependency pinning in `build.zig.zon:36-43` is correct — each dep is pinned via URL tarball + commit SHA + content hash. This is the "correct" pattern that `.gitlab-ci.yml` should emulate for its catalog imports (SEC-061).
+
+#### Phase 11 Regression Verification (prior HIGH/CRITICAL fixes — all intact)
+
+| Prior ID | Prior Title | File(s) | Verified Intact |
+|----------|-------------|---------|-----------------|
+| SEC-054 | Memory leak in `parseClientHello` on error paths (errdefer) | `client_hello.zig:295-497` | INTACT |
+| SEC-029 | Hostname validation fail-open when `server_name` null | `context.zig:2955`, `types.zig` | INTACT |
+| SEC-031 | mTLS client cert missing `clientAuth` EKU | `x509.zig:321-332`, `context.zig:3172` | INTACT |
+| SEC-028 | Client did not validate server cipher against offered list | `context.zig:2511-2522` | INTACT |
+| SEC-026 | OCSP `compareSlices` non-constant-time | `ocsp.zig:143` | INTACT |
+| SEC-046 | PSK identity comparison non-constant-time | `context.zig:1825` | INTACT |
+
+**SEC-057 was the only regression/new High-severity finding this phase. Remediated 2026-04-18 (see Resolution note above).**
+
+---
 
 ### Phase 10 Findings (Adversarial Review)
 
@@ -106,6 +141,11 @@
 
 | Rank | ID | Severity | Risk Score | Finding | Component | CWE / OWASP | Evidence | Issue URL | Fix | Owner | Due | Status |
 |------|----|----------|------------|---------|-----------|-------------|----------|-----------|-----|-------|-----|--------|
+| 0a | **SEC-057** | **High** | **60** | **Unauthenticated remote DoS via `@enumFromInt` on signature_algorithms (regression)** | `client_hello.zig` | CWE-754 / A05:2021 | `src/tls13/messages/client_hello.zig:403-404` | [#162](https://gitlab.com/devnw/zig/tls/-/issues/162) (confidential) | Replaced unchecked `@enumFromInt(alg)` with `std.enums.fromInt(SignatureScheme, alg) orelse continue;` matching `ExtensionType` pattern at line 337 | Claude | 2026-04-18 | **Closed** |
+| 0b | **SEC-058** | **Medium** | **36** | DoS via `@intCast(varint length)` before bounds check on 32-bit builds | `quic_transport_params.zig` | CWE-190, CWE-681 / A05:2021 | `src/quic_transport_params.zig:572-578` | [#167](https://gitlab.com/devnw/zig/tls/-/issues/167) | Compared `length` in u64 vs `data.len` / `maxInt(usize)` before `@intCast` | Claude | 2026-04-18 | **Closed** |
+| 0c | **SEC-060** | **Medium** | **24** | Fuzz corpus not persisted + `allow_failure:true` hides regressions (root cause of SEC-057 CI miss) | `.gitlab-ci.yml` | CWE-1269 / A08:2021, A09:2021 | `.gitlab-ci.yml:138-164` | [#181](https://gitlab.com/devnw/zig/tls/-/issues/181) | Removed `allow_failure: true`, persisted corpus via branch-keyed cache, extended rules, seeded regression corpus | Claude | 2026-04-18 | **Closed** |
+| 0d | **SEC-061** | **Low** | **6** | CI catalog components pinned to mutable tags, not immutable SHAs | `.gitlab-ci.yml` | CWE-829 / A08:2021 | `.gitlab-ci.yml:11-24` | [#184](https://gitlab.com/devnw/zig/tls/-/issues/184) | Pin 8 catalog imports to 40-char commit SHAs (or protect tags against force-update) | -- | 2026-10-15 (180d) | **Open** |
+| 0e | **SEC-059** | **Low** | **4** | Missing `errdefer` in parallel AEAD tests (test hygiene) | `parallel.zig` | CWE-401 / A04:2021 | `src/parallel.zig:893, 925` | [#173](https://gitlab.com/devnw/zig/tls/-/issues/173) | Added `filled` counter + scope-exit defer freeing `outputs[0..filled]` | Claude | 2026-04-18 | **Closed** |
 | 1 | SEC-029 | High | 80 | Hostname validation silently skipped when server_name is null | `context.zig`, `x509.zig` | CWE-295 / A07:2021 | `context.zig:2955`, `types.zig:218` | -- | Fail-closed: MissingServerName error when server_name is null | Claude | 2026-03-24 | Closed |
 | 2 | SEC-028 | High | 64 | Client does not validate server-selected cipher suite was in offered list | `context.zig` | CWE-757 / A02:2021 | `context.zig:2511-2522` | -- | Cipher suite validated against offered list per RFC 8446 Section 4.1.3 | Claude | 2026-03-24 | Closed |
 | 3 | SEC-030 | Medium | 48 | Self-signed cert bypasses EKU, hostname, and KeyUsage checks | `x509.zig` | CWE-295, CWE-863 / A07:2021 | `x509.zig:1567-1572` | -- | Hostname and EKU checks now applied to self-signed certs | Claude | 2026-03-24 | Closed |
@@ -126,19 +166,19 @@
 | 18 | SEC-015 | High | 14.0 | Context ECDHE `server_priv` not zeroized | `context.zig` | CWE-226 / A02:2021 | `context.zig:2153` | [#87](https://gitlab.com/devnw/zig/tls/-/issues/87) | Added `defer secureZero(u8, &server_priv)` in context.zig | Claude | 2026-03-24 | Closed |
 | 19 | SEC-016 | High | 13.0 | Context ECDHE shared secret not zeroized (server+client) | `context.zig` | CWE-226 / A02:2021 | `context.zig:2163,2677` | [#91](https://gitlab.com/devnw/zig/tls/-/issues/91) | Changed `const shared` to `var shared`; added `defer secureZero` on both paths | Claude | 2026-03-24 | Closed |
 | 20 | SEC-007 | Medium | 12.6 | No CRL checking; OCSP is optional | `x509.zig` | CWE-299 / A07:2021 | `x509.zig:1451-1479` | -- | Document limitation; add `require_ocsp` enforcement path | -- | 90 days | Closed |
-| 21 | SEC-037 | Low | 12 | sendClientHello2 does not explicitly clamp X25519 private key | `context.zig` | CWE-326 / A02:2021 | `context.zig:1543-1549` | -- | Explicit X25519 clamping added (priv[0]&=248, priv[31]&=127|=64) | Claude | 2026-03-24 | Closed |
+| 21 | SEC-037 | Low | 12 | sendClientHello2 does not explicitly clamp X25519 private key | `context.zig` | CWE-326 / A02:2021 | `context.zig:1543-1549` | -- | Explicit X25519 clamping added (priv[0]&=248, priv[31]&=127\|=64) | Claude | 2026-03-24 | Closed |
 | 22 | SEC-038 | Info | 12 | Global mutable TrustStore creates theoretical TOCTOU window | `x509.zig` | CWE-367 / A04:2021 | `x509.zig:134-155` | -- | Won't Do: Benign; Zig lacks dynamic library unloading | -- | -- | Won't Do |
 | 23 | SEC-017 | Medium | 10.0 | TicketStore unbounded growth (DoS) | `engine.zig` | CWE-770 / A05:2021 | `engine.zig:128-151` | [#93](https://gitlab.com/devnw/zig/tls/-/issues/93) | Added max_tickets=16 with FIFO eviction; secrets zeroized on eviction | Claude | 2026-03-24 | Closed |
 | 24 | SEC-018 | Medium | 10.0 | CRYPTO inbound/inbox buffer unbounded (Context + Engine) | `context.zig`, `engine.zig` | CWE-770 / A05:2021 | `context.zig:1033`, `engine.zig:437` | [#95](https://gitlab.com/devnw/zig/tls/-/issues/95) | Added 64KB MAX_HANDSHAKE_BUFFER limit in both context.zig and engine.zig | Claude | 2026-03-24 | Closed |
 | 25 | SEC-019 | Medium | 9.0 | Engine `allow_insecure` no release guard | `engine.zig` | CWE-295 / A05:2021 | `engine.zig:207` | [#96](https://gitlab.com/devnw/zig/tls/-/issues/96) | Added `setAllowInsecure` with `@panic` in release builds matching Context pattern | Claude | 2026-03-24 | Closed |
-| 26 | SEC-040 | Low | 8 | `startClientHandshake` missing X25519 clamping | `context.zig` | CWE-326 / A02:2021 | `context.zig:2181-2187` | [#126](https://gitlab.com/devnw/zig/tls/-/issues/126) | Explicit X25519 clamping added (priv[0]&=248, priv[31]&=127|=64) | Claude | 2026-03-24 | Closed |
+| 26 | SEC-040 | Low | 8 | `startClientHandshake` missing X25519 clamping | `context.zig` | CWE-326 / A02:2021 | `context.zig:2181-2187` | [#126](https://gitlab.com/devnw/zig/tls/-/issues/126) | Explicit X25519 clamping added (priv[0]&=248, priv[31]&=127\|=64) | Claude | 2026-03-24 | Closed |
 | 27 | SEC-039 | Info | 8 | Handshake trace may leak error details in production | `context.zig` | CWE-209 / A09:2021 | `context.zig:121-126` | -- | `@compileError` guard added for `handshake_trace_enabled` in release builds | Claude | 2026-03-24 | Closed |
 | 28 | SEC-020 | Medium | 8.0 | Engine Finished verification failure is non-fatal | `engine.zig` | CWE-287 / A07:2021 | `engine.zig:768-792` | [#97](https://gitlab.com/devnw/zig/tls/-/issues/97) | Finished failure now returns `error.HandshakeFailure`; prevents app data exchange | Claude | 2026-03-24 | Closed |
 | 29 | SEC-021 | Medium | 8.0 | Engine cert validation failure non-fatal in processing loop | `engine.zig` | CWE-295 / A07:2021 | `engine.zig:621-765` | [#98](https://gitlab.com/devnw/zig/tls/-/issues/98) | Added `cert_ok` check to `handshakeComplete()`; cert failure now gates handshake | Claude | 2026-03-24 | Closed |
 | 30 | SEC-008 | Medium | 7.0 | `x25519KeypairAndShared` missing sk zeroize on error (engine.zig) | `engine.zig` | CWE-226 / A02:2021 | `engine.zig:1723-1736` | -- | Added `defer std.crypto.secureZero` | Claude | 2026-03-24 | Closed |
 | 31 | SEC-023 | Medium | 7.0 | `x25519KeypairAndShared` priv_key not zeroized on success path | `messages.zig` | CWE-226 / A02:2021 | `messages.zig:191-209` | [#76](https://gitlab.com/devnw/zig/tls/-/issues/76) | Added `defer secureZero(u8, &sk)` on all paths in messages.zig | Claude | 2026-03-24 | Closed |
 | 32 | SEC-046 | Low | 6 | PSK identity comparison non-constant-time | `context.zig` | CWE-208 / A02:2021 | `context.zig:1825` | -- | Replaced `std.mem.eql` with `timing_safe.compare` for PSK identity lookup | Claude | 2026-03-24 | Closed |
-| 33 | SEC-048 | Low | 6 | Server `negotiateCipherAndKeys` missing X25519 clamping | `context.zig` | CWE-326 / A02:2021 | `context.zig:1959-1965` | [#127](https://gitlab.com/devnw/zig/tls/-/issues/127) | Explicit X25519 clamping added (priv[0]&=248, priv[31]&=127|=64) | Claude | 2026-03-24 | Closed |
+| 33 | SEC-048 | Low | 6 | Server `negotiateCipherAndKeys` missing X25519 clamping | `context.zig` | CWE-326 / A02:2021 | `context.zig:1959-1965` | [#127](https://gitlab.com/devnw/zig/tls/-/issues/127) | Explicit X25519 clamping added (priv[0]&=248, priv[31]&=127\|=64) | Claude | 2026-03-24 | Closed |
 | 34 | SEC-009 | Low | 6.0 | `x25519KeypairAndShared` returns value instead of error on failure | `messages.zig` | CWE-252 / A07:2021 | `messages.zig:228-248` | -- | Returns `X25519Error!X25519Result` error union; callers must handle error | Claude | 2026-03-24 | Closed |
 | 35 | SEC-024 | Low | 5.0 | Certificate chain no depth limit | `x509.zig` | CWE-770 / A05:2021 | `x509.zig:1480` | [#99](https://gitlab.com/devnw/zig/tls/-/issues/99) | Added `max_chain_depth=10` guard before allocation in x509.zig | Claude | 2026-03-24 | Closed |
 | 36 | SEC-050 | Medium | 4.5 | Private key not zeroed on error in `startClientHandshake` | `context.zig` | CWE-226 / A02:2021 | `context.zig:2134-2144` | -- | Added `defer secureZero` for X25519 priv in `startClientHandshake` and `sendClientHello2` | Claude | 2026-03-25 | **Closed** |
@@ -167,6 +207,193 @@
 
 ## Findings by Area
 
+### Phase 11 — Findings (2026-04-18)
+
+#### SEC-057: Unauthenticated remote DoS via `@enumFromInt` on signature_algorithms (High, Risk 60) — CLOSED 2026-04-18 (regression)
+
+**Summary:** `src/tls13/messages/client_hello.zig:403-404` filters attacker-supplied signature scheme codes by a permissive numeric range (`0x0401..=0x080b`) then calls `@enumFromInt(alg)` without verifying the value is a member of the exhaustive `SignatureScheme` enum (14 valid tags; ~2034 values in range). Unknown-but-in-range values cause a safety-checked panic in Debug/ReleaseSafe/ReleaseSmall and undefined behavior in ReleaseFast.
+
+**Impact:** Pre-auth remote denial of service against any TLS 1.3 server using this parser. No data compromise; process-termination impact only.
+
+**Likelihood:** Impact 3 x Likelihood 5 (pre-auth, remote, trivial, 1-packet) x 4 = **60**. CVSS-ish 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H).
+
+**Evidence:** `src/tls13/messages/client_hello.zig:400-405`:
+
+```zig
+while (a_pos + 2 <= 2 + algs_len) : (a_pos += 2) {
+    const alg = helpers.readU16(ext_data[a_pos .. a_pos + 2]);
+    if (alg >= 0x0401 and alg <= 0x080b) {
+        try algs.append(allocator, @enumFromInt(alg)); // unchecked
+    }
+}
+```
+
+Sibling safe pattern at `client_hello.zig:337` for `ExtensionType`:
+
+```zig
+const ext = std.enums.fromInt(core_types.ExtensionType, ext_type) orelse { ... continue; };
+```
+
+**Attack scenario:** A ClientHello containing `signature_algorithms` extension with any in-range but non-enumerated value (e.g., `0x0500`) crashes the process. Repeatable with no auth.
+
+**Fix guidance:** Replace line 404 with:
+
+```zig
+if (std.enums.fromInt(core_types.SignatureScheme, alg)) |scheme| {
+    try algs.append(allocator, scheme);
+}
+```
+
+Drop the hand-rolled range check; `fromInt` is both correct and exhaustive.
+
+**Acceptance criteria:**
+
+- No `@enumFromInt(SignatureScheme, ...)` on attacker bytes in this file.
+- Regression test: ClientHello with `0x0500` in `signature_algorithms` parses without panic.
+- Fuzz target covering the full `signature_algorithms` extension byte range passes across Debug, ReleaseSafe, ReleaseSmall, ReleaseFast.
+
+**References:** CWE-754, CWE-1284, RFC 8446 §4.2.3 ("SHOULD ignore any algorithms that it does not recognize"), OWASP A05:2021.
+
+**Affected paths:** `src/tls13/messages/client_hello.zig:400-405`.
+
+**Issue:** [#162](https://gitlab.com/devnw/zig/tls/-/issues/162) (confidential — HIGH security).
+
+**SLA:** 30 days (by 2026-05-18).
+
+**Root-cause for CI miss:** SEC-060.
+
+**Resolution:** 2026-04-18 — Replaced `@enumFromInt(alg)` with `std.enums.fromInt(SignatureScheme, alg) orelse continue` at `src/tls13/messages/client_hello.zig:406`. Regression test at `tests/security/sec057_sigalg_panic.zig` asserts no panic across the full 0x0401..0x080b range. Commits: 98ccfad, 39a20b3.
+
+---
+
+#### SEC-058: DoS via `@intCast(varint length)` before bounds check on 32-bit builds (Medium, Risk 36) — CLOSED 2026-04-18
+
+**Summary:** In `src/quic_transport_params.zig:572-578`, the varint-decoded u64 length value is narrowed with `@intCast` to `usize` **before** the `offset + len > data.len` bounds check. On 32-bit targets, a length ≥ 2^32 panics in `@intCast` — the subsequent bounds check that would have rejected the value safely never runs.
+
+**Impact:** Remote DoS against 32-bit builds (project supports 32-bit per commit 7ec244a). 64-bit builds unaffected because `usize == u64`.
+
+**Likelihood:** Impact 3 x Likelihood 3 (pre-auth remote, needs 32-bit target) x 4 = **36**.
+
+**Evidence:**
+
+```zig
+const len_result = try varint.decode(data[offset..]);
+const length = len_result.value;       // u64 varint
+offset += len_result.n;
+const len: usize = @intCast(length);   // 32-bit panic if length >= 2^32
+if (offset + len > data.len) return error.Truncated;
+```
+
+**Fix guidance:** Compare in u64 first:
+
+```zig
+if (length > @as(u64, data.len - offset)) return error.Truncated;
+const len: usize = @intCast(length);
+```
+
+**Acceptance criteria:** All varint length narrowings in this file are guarded in u64 before `@intCast`; 32-bit cross-compile target passes tests; fuzz target does not panic on oversized length.
+
+**References:** RFC 9000 §16, §18; CWE-190; CWE-681; OWASP A05:2021.
+
+**Affected paths:** `src/quic_transport_params.zig:572-578`.
+
+**Issue:** [#167](https://gitlab.com/devnw/zig/tls/-/issues/167).
+
+**SLA:** 90 days (by 2026-07-17).
+
+**Resolution:** 2026-04-18 — Validated varint length in u64 space before narrowing cast at `src/quic_transport_params.zig:572-586`. Regression tests at `tests/security/sec058_tp_length_overflow.zig`. Commits: a05193c, aac7bbe.
+
+---
+
+#### SEC-060: Fuzz corpus not persisted + `allow_failure:true` hides regressions (Medium, Risk 24) — CLOSED 2026-04-18
+
+**Summary:** `.gitlab-ci.yml:138-164` fuzz job combines three neutralizing settings: 60-second budget, `artifacts: when: on_failure` (corpus discarded on success), and `allow_failure: true` (job-level and rule-level). Net effect: the fuzz lane cannot gate merges and cannot accumulate coverage across runs.
+
+**Impact:** The fuzz control is present but inert. SEC-057 would have been caught by a real fuzz lane but landed on `main` because the lane does not fail pipelines. This is the root-cause of the SEC-057 slip.
+
+**Likelihood:** Observed failure mode; Likelihood 3. Impact 2 (amplifier, not direct vuln). Risk **24**.
+
+**Evidence:** `.gitlab-ci.yml:138-164` — see issue #181 for full quote.
+
+**Fix guidance:**
+
+1. Remove `allow_failure: true` at job level (optionally keep on `web` manual rule only).
+2. Persist corpus: `artifacts: when: always` + `cache: { key: fuzz-corpus-…, paths: [zig-out/fuzz/] }`.
+3. Raise scheduled budget to ≥ 10 minutes; shard by target.
+4. Add scheduled nightly fuzz and surface crashes via issue-creation automation.
+
+**Acceptance criteria:** Scheduled fuzz pipeline fails on real crash; corpus persists across runs; fuzz budget ≥ 600s on schedules; SECURITY.md documents the fuzz pipeline.
+
+**References:** CWE-1269; OWASP A08/A09; SLSA.
+
+**Affected paths:** `.gitlab-ci.yml:138-164`.
+
+**Issue:** [#181](https://gitlab.com/devnw/zig/tls/-/issues/181).
+
+**SLA:** 90 days (recommend expedite to 30 — this gates SEC-057 verification).
+
+**Resolution:** 2026-04-18 — CI fuzz job is now a real gate: removed `allow_failure:true`, added `cache:` stanza (pull-push, branch-keyed), extended rules to `merge_request_event`+`push`, and seeded the corpus with prior-regression inputs under `tests/fuzz/corpus/`. Commits: 53d581d, 67cb0c8.
+
+---
+
+#### SEC-061: CI catalog components pinned to mutable tags (Low, Risk 6) — OPEN
+
+**Summary:** `.gitlab-ci.yml:11-24` imports 8 catalog components via mutable tag references (`@v1.7.1`, `@v1.2.1`). A compromised or mistakenly-moved tag silently alters pipeline behavior (sast, dependency-scanning, secrets, gitleaks, zig-format, sbom-generate, sbom-scan, release-semantic).
+
+**Impact:** Supply-chain hardening gap. Catalog is internal to devnw, so trust is high, but principle of least authority favors immutable refs.
+
+**Likelihood:** Impact 3 x Likelihood 0.5 x 4 = **6**.
+
+**Evidence:** `.gitlab-ci.yml:11-24` (8 `- component:` lines).
+
+**Fix guidance:** Pin to 40-char commit SHAs, or protect tags against force-update/force-delete on the catalog project and document the guarantee. Compare with `build.zig.zon:36-43` (URL + SHA + content hash — the correct supply-chain pattern; see NEW-SEC-08 info note).
+
+**Acceptance criteria:** All 8 imports at immutable refs, or protected tags + drift-alert CI job; documented in SECURITY.md.
+
+**References:** CWE-829; OWASP A08:2021; SLSA Build L3.
+
+**Affected paths:** `.gitlab-ci.yml:11-24`.
+
+**Issue:** [#184](https://gitlab.com/devnw/zig/tls/-/issues/184).
+
+**SLA:** 180 days (by 2026-10-15).
+
+---
+
+#### SEC-059: Missing `errdefer` in parallel AEAD tests (Low, Risk 4) — CLOSED 2026-04-18
+
+**Summary:** Two tests in `src/parallel.zig` allocate per-iteration output buffers inside a loop without `errdefer` guarding partial progress. `std.testing.allocator` catches the functional consequence of any leak today; the fix is hygiene.
+
+**Impact:** Test-only. Production code path is not affected.
+
+**Likelihood:** Impact 1 x Likelihood 1 x 4 = **4**.
+
+**Evidence:** `src/parallel.zig:893` (aes_128_gcm test) and `src/parallel.zig:925` (chacha20_poly1305 test).
+
+**Fix guidance:** Track `allocated: usize` and add `errdefer for (outputs[0..allocated]) |out| allocator.free(out);`.
+
+**Acceptance criteria:** Both tests free partial progress on error; no UAF from blanket `defer for &outputs`.
+
+**References:** CWE-401.
+
+**Affected paths:** `src/parallel.zig:893, 925`.
+
+**Issue:** [#173](https://gitlab.com/devnw/zig/tls/-/issues/173).
+
+**SLA:** 180 days.
+
+**Resolution:** 2026-04-18 — Added `filled` counter + scope-exit defer in both affected test loops at `src/parallel.zig:873-944`. Commit: 62c915b.
+
+---
+
+#### Phase 11 Informational Notes (no issue filed)
+
+- **NEW-SEC-04 (all other `@enumFromInt` sites safe):** Audited the full set of production `@enumFromInt` sites aside from SEC-057. All 8 other sites operate on values that have already been range-or-set-validated (e.g., `quic_transport_params.zig:583` on parameter IDs already accepted by an exhaustive switch, or values derived from internal state). Only `client_hello.zig:404` had an unchecked attacker-to-enum path.
+- **NEW-SEC-05 (all other `@intCast` on attacker lengths safe):** Audited `@intCast` sites on attacker-controlled length fields. All other sites either bound the source value to a known-safe maximum before narrowing, or operate on values already limited by MAX_HANDSHAKE_BUFFER (see SEC-018). Only `quic_transport_params.zig:577` lacks the u64 bound check needed for 32-bit correctness (SEC-058).
+- **NEW-SEC-08 (dependency pinning is correct):** `build.zig.zon:36-43` pins external Zig dependencies by URL tarball + SHA + content hash — the correct immutable-reference pattern. This is the gold-standard to which SEC-061 (CI catalog tags) should be raised.
+
+---
+
 ### Authentication and Signing
 
 #### SEC-001: Client mTLS always signs with ed25519 (High, Risk 42.0) -- CLOSED
@@ -180,6 +407,7 @@
 **Evidence:**
 
 `src/tls13/context.zig:2691`:
+
 ```zig
 const sig_scheme = self.negotiated_signature orelse .ed25519;
 ```
@@ -189,12 +417,14 @@ The server-side path correctly negotiates via `selectServerSignatureScheme()` at
 **Attack scenario:** A server requests client authentication with an ECDSA P-256 certificate. The client signs with Ed25519 algorithm regardless of the actual key type. The server rejects the CertificateVerify, causing a handshake failure. In the worst case, if a server is lenient, a mismatched algorithm could cause undefined cryptographic behavior.
 
 **Fix guidance:**
+
 1. Parse the `signature_algorithms` extension from the CertificateRequest message on the client side.
 2. Match the client's private key type against the server's offered algorithms.
 3. Set `self.negotiated_signature` to the matched scheme before reaching the signing code at line 2691.
 4. Return `HandshakeError.NoSignatureScheme` if no compatible algorithm is found.
 
 **Acceptance criteria:**
+
 - Client mTLS succeeds with ECDSA P-256 certificates against OpenSSL/BoringSSL servers.
 - Client mTLS succeeds with Ed25519 certificates.
 - Handshake fails cleanly (not silently) when no compatible algorithm exists.
@@ -221,11 +451,13 @@ The server-side path correctly negotiates via `selectServerSignatureScheme()` at
 **Evidence:**
 
 `src/tls13/context.zig:2277`:
+
 ```zig
 else => .ed25519, // Default fallback
 ```
 
 `src/tls13/context.zig:2697`:
+
 ```zig
 else => .ed25519,
 ```
@@ -233,6 +465,7 @@ else => .ed25519,
 **Fix guidance:** Replace `else => .ed25519` with `else => return error.UnsupportedSignatureScheme` in both locations.
 
 **Acceptance criteria:**
+
 - Unknown signature schemes produce an explicit error, not a silent fallback.
 - All existing tests pass (no test relies on the fallback behavior).
 
@@ -255,6 +488,7 @@ else => .ed25519,
 **Evidence:**
 
 `src/tls13/engine.zig:768-792`:
+
 ```zig
 if (p.typ == .finished and self.ecdhe_secret != null) {
     // ... verification logic ...
@@ -272,12 +506,14 @@ When `ok` is `false`, the function does not return an error. It continues proces
 **How to verify:** Trace all callers of `writeAppData` and `onRecvApplicationData` to verify they check `self.finished_verified`. If any path allows data exchange without checking, this is confirmed as CWE-287.
 
 **Fix guidance:** Return an error immediately when Finished verification fails:
+
 ```zig
 self.updateFinishedVerified(ok);
 if (!ok) return error.FinishedVerificationFailed;
 ```
 
 **Acceptance criteria:**
+
 - Failed Finished verification produces an immediate error return.
 - No application data can be sent or received after a Finished failure.
 - Existing tests pass.
@@ -303,6 +539,7 @@ if (!ok) return error.FinishedVerificationFailed;
 **Evidence:**
 
 `src/tls13/engine.zig:621-724`:
+
 ```zig
 if (p.typ == .certificate) {
     if (self.allow_insecure) {
@@ -323,6 +560,7 @@ Multiple failure paths set `peer_cert_ok = false` but none return an error. Addi
 **Fix guidance:** Return an error immediately when certificate validation fails, or verify and document that `peer_cert_ok == false` prevents all data exchange.
 
 **Acceptance criteria:**
+
 - Certificate validation failure aborts the handshake or prevents data exchange.
 - EKU absence is explicitly handled.
 - Existing tests pass.
@@ -350,6 +588,7 @@ Multiple failure paths set `peer_cert_ok = false` but none return an error. Addi
 **Evidence:**
 
 `src/tls13/context.zig:285-291` (VULNERABLE):
+
 ```zig
 pub fn clear(self: *Self) void {
     self.value = Secret.empty();
@@ -361,6 +600,7 @@ pub fn clear(self: *Self) void {
 ```
 
 `src/tls13/secrets.zig:79-80` (CORRECT):
+
 ```zig
 pub fn clear(self: *Self) void {
     std.crypto.secureZero(u8, &self.value.bytes);
@@ -372,6 +612,7 @@ pub fn clear(self: *Self) void {
 **Fix guidance:** Add `std.crypto.secureZero(u8, &self.value.bytes);` as the first line of `SecretSlot.clear()` in `context.zig:285`, exactly matching the pattern in `secrets.zig`.
 
 **Acceptance criteria:**
+
 - `SecretSlot.clear()` in context.zig calls `secureZero` before reassignment.
 - Unit test confirms bytes are zeroed after `clear()`.
 
@@ -396,6 +637,7 @@ pub fn clear(self: *Self) void {
 **Evidence:**
 
 `src/sig.zig:559`:
+
 ```zig
 var sk: [32]u8 = undefined;
 ```
@@ -405,6 +647,7 @@ The `sk` variable is populated at lines 561-581 and used at line 590, but there 
 **Fix guidance:** Add `defer std.crypto.secureZero(u8, &sk);` immediately after the declaration at line 559.
 
 **Acceptance criteria:**
+
 - `sk` is zeroized via `secureZero` after every exit path from the ECDSA branch.
 - Existing signing tests pass unchanged.
 
@@ -427,6 +670,7 @@ The `sk` variable is populated at lines 561-581 and used at line 590, but there 
 **Evidence:**
 
 `src/sig.zig:544-545` (FIXED for seed):
+
 ```zig
 var seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
 defer std.crypto.secureZero(u8, &seed);
@@ -451,6 +695,7 @@ defer std.crypto.secureZero(u8, &seed);
 **Evidence:**
 
 `src/sig.zig:544-547`:
+
 ```zig
 var seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
 defer std.crypto.secureZero(u8, &seed);  // seed IS zeroized (fix from cf6586c)
@@ -460,16 +705,19 @@ const kp = try Ed25519.KeyPair.generateDeterministic(seed);  // kp is NOT zeroiz
 The `kp` variable contains `KeyPair.secret_key` (64 bytes) plus the 32-byte public key. It is declared `const`, preventing `defer secureZero`.
 
 **Attack scenario:**
+
 1. Server uses Ed25519 certificate for TLS 1.3 authentication.
 2. Attacker triggers a memory disclosure or captures a core dump.
 3. Attacker reads the stack frame containing the un-zeroized 64-byte expanded secret key.
 4. Attacker uses the recovered key to forge CertificateVerify signatures.
 
 **Fix guidance:**
+
 1. Change `const kp` to `var kp` at line 547.
 2. Add `defer std.crypto.secureZero(u8, std.mem.asBytes(&kp));` immediately after.
 
 **Acceptance criteria:**
+
 - `kp` is declared as `var` (not `const`).
 - `defer std.crypto.secureZero(u8, std.mem.asBytes(&kp))` is present.
 - Ed25519 signing tests pass without regression.
@@ -496,6 +744,7 @@ The `kp` variable contains `KeyPair.secret_key` (64 bytes) plus the 32-byte publ
 **Evidence:**
 
 `src/tls13/context.zig:2153-2165`:
+
 ```zig
 var server_priv: [32]u8 = undefined;
 std.crypto.random.bytes(&server_priv);
@@ -515,6 +764,7 @@ const shared = std.crypto.dh.X25519.scalarmult(server_priv, client_pub) catch {
 No `defer std.crypto.secureZero(u8, &server_priv);` exists. The private key is also NOT zeroized on error paths (lines 2157, 2164).
 
 **Attack scenario:**
+
 1. TLS server handles client connections using X25519 key exchange.
 2. Attacker captures encrypted TLS traffic (passive recording).
 3. Attacker later obtains a memory dump of the server process.
@@ -524,6 +774,7 @@ No `defer std.crypto.secureZero(u8, &server_priv);` exists. The private key is a
 **Fix guidance:** Add `defer std.crypto.secureZero(u8, &server_priv);` immediately after line 2154.
 
 **Acceptance criteria:**
+
 - `defer secureZero` present after `server_priv` generation.
 - Error paths also benefit from the defer.
 - Handshake tests pass.
@@ -549,6 +800,7 @@ No `defer std.crypto.secureZero(u8, &server_priv);` exists. The private key is a
 **Evidence:**
 
 **Server path** -- `src/tls13/context.zig:2163`:
+
 ```zig
 const shared = std.crypto.dh.X25519.scalarmult(server_priv, client_pub) catch {
     return HandshakeError.UnsupportedKeyShareGroup;
@@ -556,6 +808,7 @@ const shared = std.crypto.dh.X25519.scalarmult(server_priv, client_pub) catch {
 ```
 
 **Client path** -- `src/tls13/context.zig:2677`:
+
 ```zig
 const shared = std.crypto.dh.X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
 const sh_snapshot = self.transcripts.handshake.finalize(self.hash_kind);
@@ -567,6 +820,7 @@ Neither location has `defer secureZero`.
 **Fix guidance:** Change `const shared` to `var shared` on both paths and add `defer std.crypto.secureZero(u8, &shared);`.
 
 **Acceptance criteria:**
+
 - `shared` declared as `var` on both server and client ECDHE paths.
 - `defer secureZero` present on both paths.
 - Handshake tests (including mTLS) pass.
@@ -592,6 +846,7 @@ Neither location has `defer secureZero`.
 **Evidence:**
 
 `src/tls13/engine.zig:1729-1733` (VULNERABLE):
+
 ```zig
 if (std.crypto.dh.X25519.scalarmult(&sh, sk, peer_pub)) {
     shared = sh;
@@ -599,6 +854,7 @@ if (std.crypto.dh.X25519.scalarmult(&sh, sk, peer_pub)) {
 ```
 
 `src/tls13/messages.zig:201-205` (CORRECT):
+
 ```zig
 const sh = std.crypto.dh.X25519.scalarmult(sk, peer_pub) catch {
     std.crypto.secureZero(u8, &sk);
@@ -609,6 +865,7 @@ const sh = std.crypto.dh.X25519.scalarmult(sk, peer_pub) catch {
 **Fix guidance:** Match the `messages.zig` pattern: zeroize `sk` on error and return a zeroed `priv_key`.
 
 **Acceptance criteria:**
+
 - On `scalarmult` failure, `sk` is zeroized and returned `priv_key` is all zeros.
 - Function behavior matches `messages.zig` implementation.
 
@@ -631,6 +888,7 @@ const sh = std.crypto.dh.X25519.scalarmult(sk, peer_pub) catch {
 **Evidence:**
 
 `src/tls13/messages.zig:191-209`:
+
 ```zig
 pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) ... {
     var sk: [32]u8 = undefined;
@@ -645,6 +903,7 @@ pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) ... {
 **Fix guidance:** Add `defer std.crypto.secureZero(u8, &sk);` after line 193. Zig copies values into the return struct before defer runs, so the caller still receives the key.
 
 **Acceptance criteria:**
+
 - `defer secureZero(u8, &sk)` added after key generation.
 - Error path zeroization still functions correctly.
 - Existing tests pass.
@@ -670,6 +929,7 @@ pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) ... {
 **Evidence:**
 
 `src/tls13/context.zig:2134-2144`:
+
 ```zig
 var priv: [32]u8 = undefined;
 std.crypto.random.bytes(&priv);
@@ -678,6 +938,7 @@ if (some_condition) return error.SomeError; // line 2143: priv leaked on stack
 ```
 
 `src/tls13/context.zig:2165-2226`:
+
 ```zig
 self.client_priv = priv;
 // ... subsequent try calls without errdefer to zero client_priv ...
@@ -686,17 +947,20 @@ self.client_priv = priv;
 Same pattern in `sendClientHello2` at `context.zig:1561`.
 
 **Attack scenario:**
+
 1. Client initiates TLS handshake.
 2. Handshake fails at an early stage after key generation but before cleanup.
 3. Attacker obtains core dump or exploits a separate memory disclosure.
 4. X25519 private key is recovered from the stack frame or Context struct.
 
 **Fix guidance:**
+
 1. Add `defer std.crypto.secureZero(u8, &priv);` immediately after `var priv` declaration.
 2. Add `errdefer std.crypto.secureZero(u8, &self.client_priv.?);` after assigning `self.client_priv = priv`.
 3. Apply the same pattern in `sendClientHello2` at line 1561.
 
 **Acceptance criteria:**
+
 - `priv` is zeroed on all exit paths (success and error) via `defer secureZero`.
 - `self.client_priv` is zeroed on error paths via `errdefer`.
 - Same fix applied to `sendClientHello2`.
@@ -723,16 +987,19 @@ Same pattern in `sendClientHello2` at `context.zig:1561`.
 **Evidence:**
 
 `src/tls13/context.zig:2317-2343`:
+
 ```zig
 const shared = std.crypto.dh.X25519.scalarmult(self.client_priv.?, peer_pub) catch { ... };
 // client_priv is no longer needed but remains in self until deinit()
 ```
 
 **Fix guidance:**
+
 1. After successful `scalarmult`, immediately zero `self.client_priv` via `std.crypto.secureZero(u8, &self.client_priv.?)`.
 2. Set `self.client_priv = null` after zeroing.
 
 **Acceptance criteria:**
+
 - `client_priv` is zeroed and nulled immediately after DH shared secret computation.
 - Handshake completes successfully (no code reads `client_priv` after this point except HRR, which regenerates it).
 - Existing tests pass.
@@ -760,6 +1027,7 @@ const shared = std.crypto.dh.X25519.scalarmult(self.client_priv.?, peer_pub) cat
 **Evidence:**
 
 `src/tls13/engine.zig:128-151`:
+
 ```zig
 pub const TicketStore = struct {
     tickets: ArrayListUnmanaged(TicketEntry) = .{},
@@ -775,6 +1043,7 @@ No maximum capacity check, no eviction policy, no ticket expiry enforcement.
 **Fix guidance:** Add `MAX_TICKETS` constant (e.g., 128) and FIFO eviction in `store()`. Zeroize evicted ticket secrets.
 
 **Acceptance criteria:**
+
 - `TicketStore` enforces a maximum number of tickets.
 - Oldest tickets are evicted with secret zeroization.
 - Session resumption tests pass.
@@ -800,11 +1069,13 @@ No maximum capacity check, no eviction policy, no ticket expiry enforcement.
 **Evidence:**
 
 `src/tls13/context.zig:1033`:
+
 ```zig
 try stream.inbound.appendSlice(self.allocator, data);
 ```
 
 `src/tls13/engine.zig:437`:
+
 ```zig
 try self.inbox.appendSlice(self.allocator, data);
 ```
@@ -812,6 +1083,7 @@ try self.inbox.appendSlice(self.allocator, data);
 **Fix guidance:** Add `MAX_HANDSHAKE_BUFFER` constant (e.g., 65536) and check before appending.
 
 **Acceptance criteria:**
+
 - Maximum buffer size enforced in both locations.
 - Normal handshakes (including large certificate chains) still work.
 - Oversized messages produce a clear error.
@@ -837,6 +1109,7 @@ try self.inbox.appendSlice(self.allocator, data);
 **Evidence:**
 
 `src/x509.zig:1480`:
+
 ```zig
 pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, ...) !void {
     // No check on chain_der.len
@@ -866,6 +1139,7 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, ..
 **Evidence:**
 
 `src/tls13/client_hello.zig:295-497`:
+
 ```zig
 // Multiple allocations without corresponding errdefer:
 // e.g., allocated slices for extensions, cipher_suites, etc.
@@ -873,16 +1147,19 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, ..
 ```
 
 **Attack scenario:**
+
 1. Attacker sends crafted ClientHello that passes initial validation but fails at a later parsing stage.
 2. Memory allocated for early-parsed fields is not freed on the error path.
 3. Repeated requests gradually exhaust server memory.
 4. Server becomes unresponsive or crashes with OOM.
 
 **Fix guidance:**
+
 1. Add `errdefer` for each allocation in `parseClientHello` to free on error.
 2. Consider using an arena allocator scoped to the parse operation.
 
 **Acceptance criteria:**
+
 - All allocations in `parseClientHello` have corresponding `errdefer` frees.
 - Memory does not grow when processing repeated malformed ClientHello messages.
 - Existing parsing tests pass.
@@ -910,11 +1187,13 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, ..
 **Evidence:**
 
 `src/tls13/config.zig:271`:
+
 ```zig
 allow_insecure: bool = false,
 ```
 
 Compare with `src/sig.zig:117-120`:
+
 ```zig
 comptime {
     if (sig_trace_enabled and @import("builtin").mode != .Debug) {
@@ -926,11 +1205,13 @@ comptime {
 No equivalent guard exists for `allow_insecure`.
 
 **Fix guidance:** Since `allow_insecure` is a runtime config field (not a comptime constant), a `comptime` check cannot directly apply. Options:
+
 1. Add a runtime warning log when `allow_insecure` is `true` in release mode.
 2. Add a separate comptime constant `allow_insecure_override` that must be set to permit `allow_insecure = true` in release builds.
 3. Document prominently that `allow_insecure` must never be used in production.
 
 **Acceptance criteria:**
+
 - Release builds with `allow_insecure = true` produce a visible warning or require an explicit opt-in.
 - Default behavior (false) is unchanged.
 
@@ -953,6 +1234,7 @@ No equivalent guard exists for `allow_insecure`.
 **Evidence:**
 
 `src/tls13/engine.zig:207`:
+
 ```zig
 allow_insecure: bool = false,
 ```
@@ -982,6 +1264,7 @@ Doc comment warns against production use, but there is no programmatic guard.
 **Evidence:**
 
 `src/tls13/engine.zig:688-693`:
+
 ```zig
 if (leaf.eku) |eku| {
     if (!eku.server_auth) {
@@ -1016,18 +1299,21 @@ if (leaf.eku) |eku| {
 **Evidence:**
 
 `src/x509.zig:1451-1479` documents the limitation explicitly:
-```
+
+```text
 This function does NOT perform certificate revocation checking.
 ...
 A certificate that has been revoked by its CA may still pass validation
 ```
 
 **Fix guidance:** This is a known architectural limitation. Recommended mitigations:
+
 1. Make `require_ocsp` default to `true` for internet-facing deployments.
 2. Document the limitation in the public API and deployment guides.
 3. Long-term: implement CRL fetching or integrate with an external revocation service.
 
 **Acceptance criteria:**
+
 - `require_ocsp` enforcement is documented and easy to enable.
 - Users are warned when operating without revocation checking on long-lived certificates.
 
@@ -1038,6 +1324,7 @@ A certificate that has been revoked by its CA may still pass validation
 **SLA:** 90 days
 
 **Resolution:** CRL limitation documented in 3 locations:
+
 1. `src/x509.zig:1533-1564` -- comprehensive CRL limitation documentation with workarounds (already present)
 2. `src/tls13/config.zig:252,267` -- `require_ocsp` field with documentation (already present)
 3. `src/lib.zig` -- CRL limitation added to "Known Limitations" section and x509 module doc comment with SEC-007 reference, pointing users to `require_ocsp = true` mitigation
@@ -1057,6 +1344,7 @@ A certificate that has been revoked by its CA may still pass validation
 **Evidence:**
 
 `src/tls13/messages.zig:201-205`:
+
 ```zig
 const sh = std.crypto.dh.X25519.scalarmult(sk, peer_pub) catch {
     std.crypto.secureZero(u8, &sk);
@@ -1103,6 +1391,7 @@ const sh = std.crypto.dh.X25519.scalarmult(sk, peer_pub) catch {
 **Evidence:**
 
 `src/ocsp.zig:140-141`:
+
 ```zig
 pub fn compareSlices(expected: []const u8, actual: []const u8) bool {
     return expected.len == actual.len and std.mem.eql(u8, expected, actual);
@@ -1164,16 +1453,19 @@ pub fn compareSlices(expected: []const u8, actual: []const u8) bool {
 **Evidence:**
 
 `src/tls13/messages/server_hello.zig:145`:
+
 ```zig
 return std.mem.eql(u8, &random, &HELLO_RETRY_REQUEST_RANDOM);
 ```
 
 `src/tls13/messages/server_hello.zig:167`:
+
 ```zig
 return std.mem.eql(u8, last_8, &TLS12_DOWNGRADE_SENTINEL);
 ```
 
 `src/tls13/messages/server_hello.zig:189`:
+
 ```zig
 return std.mem.eql(u8, last_8, &TLS11_DOWNGRADE_SENTINEL);
 ```
@@ -1201,6 +1493,7 @@ return std.mem.eql(u8, last_8, &TLS11_DOWNGRADE_SENTINEL);
 **Evidence:**
 
 `src/sig.zig:564-566`:
+
 ```zig
 if (sig_trace_enabled) {
     std.debug.print("[SIG] Successfully parsed PKCS#8, scalar: ", .{});
@@ -1208,6 +1501,7 @@ if (sig_trace_enabled) {
 ```
 
 `src/sig.zig:117-120` (GUARD):
+
 ```zig
 comptime {
     if (sig_trace_enabled and @import("builtin").mode != .Debug) {
@@ -1237,30 +1531,35 @@ comptime {
 **Evidence:**
 
 `src/tls13/engine.zig:114`:
+
 ```zig
 const engine_trace_enabled = false;
 // No @compileError guard for release builds
 ```
 
 `src/tls13/transcript.zig:78`:
+
 ```zig
 const transcript_trace_enabled = false;
 // No @compileError guard for release builds
 ```
 
 `src/tls13/messages.zig:17`:
+
 ```zig
 const messages_trace_enabled = false;
 // No @compileError guard for release builds
 ```
 
 `src/ocsp.zig:22`:
+
 ```zig
 const ocsp_trace_enabled = false;
 // No @compileError guard for release builds
 ```
 
 Compare with the guarded pattern in `context.zig:121-126`:
+
 ```zig
 comptime {
     if (handshake_trace_enabled and @import("builtin").mode != .Debug) {
@@ -1272,6 +1571,7 @@ comptime {
 **Fix guidance:** Add `@compileError` guards for each of the 4 trace flags, matching the pattern in `context.zig`. This is a 15-minute fix.
 
 **Acceptance criteria:**
+
 - All 4 trace flags have `@compileError` guards in non-Debug builds.
 - Setting any trace flag to `true` in release mode produces a compile error.
 - Debug builds with trace flags enabled still work correctly.
@@ -1297,12 +1597,14 @@ comptime {
 **Evidence:**
 
 `src/tls13/messages.zig:178`:
+
 ```zig
 logger.debugPrint("error parsing message: {}", .{err});
 // Not gated by messages_trace_enabled
 ```
 
 `src/tls13/engine.zig:660+`:
+
 ```zig
 logger.debugPrint("certificate validation error: {}", .{err});
 // Not gated by engine_trace_enabled
@@ -1333,19 +1635,25 @@ logger.debugPrint("certificate validation error: {}", .{err});
 **Evidence:**
 
 `src/sig.zig:620`:
+
 ```zig
 out[o] = @intCast(seq_len);
 ```
+
 `src/sig.zig:624`:
+
 ```zig
 out[o] = @intCast(r_len);
 ```
+
 `src/sig.zig:634`:
+
 ```zig
 out[o] = @intCast(s_len);
 ```
 
 Guard at `src/sig.zig:615`:
+
 ```zig
 if (seq_len + 2 >= 128) return error.Encode;
 ```
@@ -1371,6 +1679,7 @@ if (seq_len + 2 >= 128) return error.Encode;
 **Evidence:**
 
 `src/asn1.zig:465-474`:
+
 ```zig
 pub fn readInteger(tlv: TLV) u64 {
     var result: u64 = 0;
@@ -1385,6 +1694,7 @@ pub fn readInteger(tlv: TLV) u64 {
 **Fix guidance:** Add a length check: `if (tlv.val.len > 8) return error.IntegerOverflow;`. Change the return type to `!u64` or `error{IntegerOverflow}!u64`.
 
 **Acceptance criteria:**
+
 - `readInteger` returns an error for integers > 8 bytes.
 - All existing callers handle the error (or remain unaffected because they pass small values).
 - Existing X.509 parsing tests pass.
@@ -1410,6 +1720,7 @@ pub fn readInteger(tlv: TLV) u64 {
 **Evidence:**
 
 `src/tls13/messages.zig:91`:
+
 ```zig
 // Writes length as 3 bytes (24-bit) without checking overflow
 std.mem.writeInt(u24, buf[1..4], @intCast(body.len), .big);
@@ -1440,6 +1751,7 @@ std.mem.writeInt(u24, buf[1..4], @intCast(body.len), .big);
 **Evidence:**
 
 `src/tls13/context.zig:2492-2494`:
+
 ```zig
 const suite_value: u16 = readU16(body[pos .. pos + 2]);
 const cipher_suite = std.meta.intToEnum(tls13_full.CipherSuite, suite_value) catch return HandshakeError.NoCipherSuite;
@@ -1449,17 +1761,20 @@ self.negotiated_cipher_suite = cipher_suite;
 The code only checks that the value is a valid `CipherSuite` enum variant. It does not verify that this suite was in the list offered in the ClientHello.
 
 **Attack scenario:**
+
 1. Client offers only AES-256-GCM cipher suites in its ClientHello.
 2. Malicious server responds with AES-128-GCM (weaker but still a valid enum value).
 3. Client accepts the downgraded cipher suite without complaint.
 4. All session traffic uses the weaker algorithm the client intended to exclude.
 
 **Fix guidance:**
+
 1. Store the list of cipher suites offered in the ClientHello (or reference the config).
 2. After parsing `cipher_suite` from ServerHello, verify it appears in the offered list.
 3. If not found, return `HandshakeError.IllegalParameter` and send an `illegal_parameter` alert.
 
 **Acceptance criteria:**
+
 - Client rejects ServerHello containing a cipher suite not in the offered list.
 - Test: configure client with restricted cipher suite list, mock server responds with excluded suite, verify handshake fails with `IllegalParameter`.
 - Normal handshakes with valid suite selection still succeed.
@@ -1487,11 +1802,13 @@ The code only checks that the value is a valid `CipherSuite` enum variant. It do
 **Evidence:**
 
 `src/tls13/context.zig:2934`:
+
 ```zig
 const server_name = if (self.config.server_name) |sni| sni else "";
 ```
 
 `src/x509.zig:1511`:
+
 ```zig
 if (server_name.len != 0 and !matchDnsName(&certs[0], server_name)) return error.NameMismatch;
 ```
@@ -1499,6 +1816,7 @@ if (server_name.len != 0 and !matchDnsName(&certs[0], server_name)) return error
 When `server_name` is `""`, the `server_name.len != 0` check is false, so `matchDnsName` is never called. Any certificate with a valid chain passes validation regardless of its subject/SAN.
 
 **Attack scenario:**
+
 1. Application creates TLS context without setting `server_name` (using default null).
 2. Attacker obtains a valid certificate for `evil.com` from a public CA.
 3. Attacker performs MITM on the connection, presenting the `evil.com` certificate.
@@ -1506,11 +1824,13 @@ When `server_name` is `""`, the `server_name.len != 0` check is false, so `match
 5. Connection succeeds; attacker can read and modify all traffic.
 
 **Fix guidance:**
+
 1. When `server_name` is null and `allow_insecure` is false, return an error from the client handshake path. Hostname validation must be mandatory for secure connections.
 2. Alternatively, require `server_name` to be non-null in `Context.init()` when operating in secure mode.
 3. Document that `server_name` is security-critical and must always be set.
 
 **Acceptance criteria:**
+
 - Client handshake with null `server_name` and `allow_insecure = false` produces a clear error.
 - Client handshake with a valid `server_name` continues to work correctly.
 - `allow_insecure = true` still allows null `server_name` for testing.
@@ -1540,6 +1860,7 @@ When `server_name` is `""`, the `server_name.len != 0` check is false, so `match
 **Evidence:**
 
 `src/x509.zig:1503-1526`:
+
 ```zig
 const is_single_self_signed = chain_der.len == 1 and
     std.mem.eql(u8, certs[0].subject_der, certs[0].issuer_der);
@@ -1565,11 +1886,13 @@ if (!is_single_self_signed) {
 The `if (!is_single_self_signed)` branch contains all hostname, EKU, and KeyUsage checks. The `else` branch only checks `CA=true`.
 
 **Fix guidance:**
+
 1. Apply hostname validation to self-signed certificates (remove the `is_single_self_signed` exemption for `matchDnsName`).
 2. Consider applying EKU checks as well, or document the intentional exemption with a clear security rationale.
 3. At minimum, hostname validation should never be skipped for any certificate type.
 
 **Acceptance criteria:**
+
 - Self-signed certificates are validated against `server_name`.
 - Self-signed certificate with wrong hostname returns `NameMismatch`.
 - Existing self-signed trust anchor tests updated to use matching hostnames.
@@ -1595,6 +1918,7 @@ The `if (!is_single_self_signed)` branch contains all hostname, EKU, and KeyUsag
 **Evidence:**
 
 `src/tls13/context.zig:3135-3148`:
+
 ```zig
 if (!self.config.allow_insecure) {
     // RFC 5280 Section 6: Validate client certificate chain
@@ -1613,6 +1937,7 @@ if (!self.config.allow_insecure) {
 ```
 
 Inside `validateChain`, line 1512 checks `eku.server_auth`:
+
 ```zig
 if (certs[0].eku) |eku| if (!eku.server_auth) return error.EkuNotAllowed;
 ```
@@ -1620,10 +1945,12 @@ if (certs[0].eku) |eku| if (!eku.server_auth) return error.EkuNotAllowed;
 No `clientAuth` EKU check is performed anywhere in the mTLS validation path.
 
 **Fix guidance:**
+
 1. Add an `eku_mode` parameter to `validateChain` (or a separate `validateClientChain` function) that checks `eku.client_auth` instead of `eku.server_auth` for client certificates.
 2. Alternatively, add the `clientAuth` EKU check in the mTLS handler after `validateChain` returns.
 
 **Acceptance criteria:**
+
 - Client certificates with `clientAuth` EKU pass mTLS validation.
 - Client certificates with only `serverAuth` EKU (no `clientAuth`) are rejected.
 - Client certificates without any EKU still pass (per RFC 5280 permissiveness).
@@ -1651,6 +1978,7 @@ No `clientAuth` EKU check is performed anywhere in the mTLS validation path.
 **Evidence:**
 
 `src/x509.zig:552-573` (no range check on month/day):
+
 ```zig
 const month = try std.fmt.parseInt(u8, bytes[2..4], 10);
 const day = try std.fmt.parseInt(u8, bytes[4..6], 10);
@@ -1659,6 +1987,7 @@ return unixSecondsFromYMDHMS(year, month, day, hh, mm, ss);
 ```
 
 `src/x509.zig:532-539` (OOB access path):
+
 ```zig
 fn daysBeforeMonth(year: u16, month: u8) i64 {
     const mdays = [_]u8{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
@@ -1674,6 +2003,7 @@ fn daysBeforeMonth(year: u16, month: u8) i64 {
 When `month >= 14`, the loop variable `m` reaches 13, and `mdays[13 - 1] = mdays[12]` is out of bounds (array has indices 0-11).
 
 **Fix guidance:** Add validation at the start of `parseDerTime` or `unixSecondsFromYMDHMS`:
+
 ```zig
 if (month < 1 or month > 12) return error.InvalidTime;
 if (day < 1 or day > 31) return error.InvalidTime;
@@ -1681,6 +2011,7 @@ if (hh > 23 or mm > 59 or ss > 59) return error.InvalidTime;
 ```
 
 **Acceptance criteria:**
+
 - `parseDerTime` returns an error for month=0, month=13, day=0, day=32.
 - Valid DER time strings continue to parse correctly.
 - Test with boundary values: month=1, month=12, day=1, day=31.
@@ -1708,6 +2039,7 @@ if (hh > 23 or mm > 59 or ss > 59) return error.InvalidTime;
 **Evidence:**
 
 `src/x509.zig:1152-1162`:
+
 ```zig
 pub fn matchesNameConstraint(name: []const u8, constraint: []const u8) bool {
     if (constraint.len > 0 and constraint[0] == '.') {
@@ -1725,6 +2057,7 @@ Both comparisons use `std.mem.eql` which is byte-exact.
 **Fix guidance:** Replace `std.mem.eql(u8, ...)` with `std.ascii.eqlIgnoreCase(...)` in both comparison paths. DNS names are ASCII and case-insensitive per RFC 4343.
 
 **Acceptance criteria:**
+
 - `matchesNameConstraint("www.Example.COM", ".example.com")` returns true.
 - `matchesNameConstraint("EXAMPLE.COM", "example.com")` returns true.
 - Existing name constraint tests updated with mixed-case scenarios.
@@ -1754,6 +2087,7 @@ Both comparisons use `std.mem.eql` which is byte-exact.
 **Evidence:**
 
 `build.zig.zon:37`:
+
 ```zig
 .spice = .{
     .url = "https://gitlab.com/devnw/zig/spice/-/archive/main/spice-main.tar.gz",
@@ -1764,11 +2098,13 @@ Both comparisons use `std.mem.eql` which is byte-exact.
 The URL contains `/main/` indicating it tracks the mutable default branch.
 
 **Fix guidance:** Pin the dependency to a specific commit SHA or tagged release:
+
 ```zig
 .url = "https://gitlab.com/devnw/zig/spice/-/archive/<commit-sha>/spice-<commit-sha>.tar.gz",
 ```
 
 **Acceptance criteria:**
+
 - Dependency URL references a specific immutable commit SHA or tag, not a branch name.
 - Build still succeeds with the pinned version.
 - Document the update process for the pinned dependency.
@@ -1796,6 +2132,7 @@ The URL contains `/main/` indicating it tracks the mutable default branch.
 **Evidence:**
 
 `src/tls13/context.zig:1454-1455`:
+
 ```zig
 const sid_len: usize = body[pos];
 pos += 1 + sid_len;
@@ -1806,6 +2143,7 @@ The next check at line 1458 (`if (pos + 2 + 1 > body.len)`) would catch the over
 **Fix guidance:** Add explicit bounds check: `if (pos + 1 + sid_len > body.len) return HandshakeError.UnexpectedMessage;` immediately after reading `sid_len`.
 
 **Acceptance criteria:**
+
 - HRR with `sid_len` exceeding remaining body length returns `UnexpectedMessage`.
 - Valid HRR messages still parse correctly.
 
@@ -1830,6 +2168,7 @@ The next check at line 1458 (`if (pos + 2 + 1 > body.len)`) would catch the over
 **Evidence:**
 
 `src/tls13/context.zig:1532-1538`:
+
 ```zig
 var priv: [32]u8 = undefined;
 std.crypto.random.bytes(&priv);
@@ -1844,6 +2183,7 @@ self.client_pub = pub_key;
 **Fix guidance:** Add `std.crypto.secureZero(u8, &self.client_priv);` before `self.client_priv = priv;` to clear the old key. Also add `defer std.crypto.secureZero(u8, &priv);` to clear the stack copy.
 
 **Acceptance criteria:**
+
 - Old `client_priv` is securely zeroed before being overwritten on the HRR path.
 - Stack-local `priv` is zeroed after copy to `self.client_priv`.
 - HRR handshake tests pass.
@@ -1869,6 +2209,7 @@ self.client_pub = pub_key;
 **Evidence:**
 
 `src/tls13/context.zig:1532-1534`:
+
 ```zig
 var priv: [32]u8 = undefined;
 std.crypto.random.bytes(&priv);
@@ -1880,6 +2221,7 @@ No explicit clamping step (`priv[0] &= 248; priv[31] &= 127; priv[31] |= 64;`) b
 **Fix guidance:** Add explicit clamping after `random.bytes` for consistency with other code paths and defense-in-depth. This makes the code self-documenting about X25519 key requirements.
 
 **Acceptance criteria:**
+
 - Explicit clamping applied to the private key before use.
 - Handshake tests pass.
 - Comment documents why clamping is applied (defense-in-depth).
@@ -1907,6 +2249,7 @@ No explicit clamping step (`priv[0] &= 248; priv[31] &= 127; priv[31] |= 64;`) b
 **Evidence:**
 
 `src/x509.zig:134-155`:
+
 ```zig
 const TrustStoreState = struct {
     store: ?TrustStore = null,
@@ -1953,16 +2296,19 @@ var g_trust_store_state: TrustStoreState = .{};
 **Evidence:**
 
 `src/tls13/context.zig:2950`:
+
 ```zig
 traceHandshake("Client: Certificate chain validation failed: {}\\n", .{err});
 ```
 
 `src/tls13/context.zig:3146`:
+
 ```zig
 traceHandshake("Server: Client certificate chain validation failed: {}\n", .{err});
 ```
 
 Compare with the secret trace guard pattern in `src/sig.zig:117-120`:
+
 ```zig
 comptime {
     if (sig_trace_enabled and @import("builtin").mode != .Debug) {
@@ -1976,6 +2322,7 @@ No equivalent guard exists for `handshake_trace_enabled`.
 **Fix guidance:** Add a `@compileError` guard for `handshake_trace_enabled` matching the pattern used for `sig_trace_enabled`, or ensure trace output does not include error details (only generic "validation failed" without the error enum).
 
 **Acceptance criteria:**
+
 - Handshake trace in release builds either (a) produces a compile error or (b) omits error-specific details.
 - Debug builds retain full error tracing.
 
@@ -2006,6 +2353,7 @@ No equivalent guard exists for `handshake_trace_enabled`.
 **Evidence:**
 
 **VULNERABLE** -- `src/tls13/engine.zig:1473-1476`:
+
 ```zig
 const master = blk2: {
     const derived = ks.deriveSecretHash(self.hash_kind, &handshake_secret, "derived", &[_]u8{});
@@ -2014,10 +2362,12 @@ const master = blk2: {
 ```
 
 Two errors:
+
 1. Line 1474: `&[_]u8{}` (length 0) passed as context hash. RFC 8446 requires `Hash("")` -- a 32-byte (SHA-256) or 48-byte (SHA-384) digest of the empty string.
 2. Line 1475: `&[_]u8{}` (length 0) passed as IKM. RFC 8446 requires `0^HashLen` -- 32 or 48 zero bytes.
 
 **CORRECT** -- `src/tls13/key_derivation.zig:340-348`:
+
 ```zig
 const eh = emptyHash(hash);
 const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", eh.slice());
@@ -2026,6 +2376,7 @@ const master = ks.extractHash(hash, derived.slice(), zero_ikm.slice());
 ```
 
 **Attack scenario:**
+
 1. Application uses the Engine API for TLS 1.3.
 2. Handshake traffic keys derive correctly (via `deriveHandshakeTraffic`).
 3. `computeApplicationSecrets` at line 1473-1476 derives the master secret with wrong inputs.
@@ -2035,6 +2386,7 @@ const master = ks.extractHash(hash, derived.slice(), zero_ikm.slice());
 **How to verify:** Compare Engine `computeApplicationSecrets` output against RFC 8448 test vectors or against Context `deriveApplicationTraffic` output for identical handshake transcripts and shared secrets.
 
 **Fix guidance:** Replace the inline derivation with the correct pattern:
+
 ```zig
 const master = blk2: {
     const eh = key_derivation_mod.emptyHash(self.hash_kind);
@@ -2043,9 +2395,11 @@ const master = blk2: {
     break :blk2 ks.extractHash(self.hash_kind, derived.slice(), zero_ikm.slice());
 };
 ```
+
 Or call `key_derivation_mod.deriveApplicationTraffic()` directly.
 
 **Acceptance criteria:**
+
 - `computeApplicationSecrets` uses `Hash("")` (emptyHash) as context for Derive-Secret
 - `computeApplicationSecrets` uses `HashLen` zeros (zeroSecret) as IKM for HKDF-Extract
 - Engine produces the same application traffic secrets as the Context path for identical inputs
@@ -2079,6 +2433,7 @@ Or call `key_derivation_mod.deriveApplicationTraffic()` directly.
 **Evidence:**
 
 `src/tls13/context.zig:2122-2126`:
+
 ```zig
 var priv: [32]u8 = undefined;
 std.crypto.random.bytes(&priv);
@@ -2091,6 +2446,7 @@ No explicit clamping (`priv[0] &= 248; priv[31] &= 127; priv[31] |= 64;`) before
 **Fix guidance:** Add explicit X25519 clamping after `random.bytes`, matching the SEC-037 pattern at `context.zig:1543-1549`.
 
 **Acceptance criteria:**
+
 - Explicit clamping applied before `recoverPublicKey`
 - Comment references RFC 7748 Section 5
 - All X25519 key generation paths consistently clamp
@@ -2120,6 +2476,7 @@ No explicit clamping (`priv[0] &= 248; priv[31] &= 127; priv[31] |= 64;`) before
 **Evidence:**
 
 `src/tls13/context.zig:1907-1909`:
+
 ```zig
 var server_priv: [32]u8 = undefined;
 defer std.crypto.secureZero(u8, &server_priv);
@@ -2131,6 +2488,7 @@ No explicit clamping step before `recoverPublicKey` at line 1911.
 **Fix guidance:** Add explicit clamping after `random.bytes`, matching the SEC-037 pattern.
 
 **Acceptance criteria:**
+
 - Explicit clamping applied before `recoverPublicKey`
 - Server handshake tests pass
 
@@ -2155,6 +2513,7 @@ No explicit clamping step before `recoverPublicKey` at line 1911.
 **Evidence:**
 
 `src/tls13/messages.zig:237-256`:
+
 ```zig
 pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) X25519Error!X25519Result {
     var sk: [32]u8 = undefined;
@@ -2196,6 +2555,7 @@ Zig stdlib clamping (verified in `std.crypto.dh.X25519.clampedMul`): the scalar 
 **Evidence:**
 
 `src/tls13/context.zig:1776`:
+
 ```zig
 std.mem.eql(u8, ident.identity, self.config.external_psk_identity.?)
 ```
@@ -2203,6 +2563,7 @@ std.mem.eql(u8, ident.identity, self.config.external_psk_identity.?)
 **Fix guidance:** Replace with `std.crypto.timing_safe.eql` after verifying length equality. This is defense-in-depth; the data is not secret.
 
 **Acceptance criteria:**
+
 - PSK identity comparison uses constant-time comparison
 - PSK handshake tests pass
 
@@ -2227,6 +2588,7 @@ std.mem.eql(u8, ident.identity, self.config.external_psk_identity.?)
 **Evidence:**
 
 `src/tls13/key_derivation.zig:218-222`:
+
 ```zig
 const derived = ks.deriveSecretHash(hash, early_secret, "derived", eh.slice());
 const handshake_secret = ks.extractHash(hash, derived.slice(), ecdhe_secret);
@@ -2239,6 +2601,7 @@ All are `const`; no `defer secureZero` is possible without changing to `var`.
 **Fix guidance:** Change `const` to `var` for intermediate values and add `defer` zeroization. The return value will be copied before defer runs.
 
 **Acceptance criteria:**
+
 - `derived` and `handshake_secret` intermediates are zeroized after use
 - Handshake tests pass
 
@@ -2261,6 +2624,7 @@ All are `const`; no `defer secureZero` is possible without changing to `var`.
 **Evidence:**
 
 `src/tls13/key_derivation.zig:340-351`:
+
 ```zig
 const eh = emptyHash(hash);
 const derived = ks.deriveSecretHash(hash, handshake_secret, "derived", eh.slice());
@@ -2274,6 +2638,7 @@ const exporter_master = ks.deriveSecretHash(hash, &master, "exp master", transcr
 **Fix guidance:** Change `derived`, `zero_ikm`, and `master` to `var` and add `defer secureZero`.
 
 **Acceptance criteria:**
+
 - `derived`, `zero_ikm`, and `master` intermediates zeroized after use
 - Application traffic derivation tests pass
 
@@ -2296,6 +2661,7 @@ const exporter_master = ks.deriveSecretHash(hash, &master, "exp master", transcr
 **Evidence:**
 
 `src/key_schedule.zig:143-150`:
+
 ```zig
 .sha256 => {
     var arr: [Sha256.digest_length]u8 = undefined;
@@ -2314,6 +2680,7 @@ No `defer secureZero(u8, &arr)` after the expand call.
 **Fix guidance:** Add `defer std.crypto.secureZero(u8, &arr);` after `@memcpy` in both branches.
 
 **Acceptance criteria:**
+
 - `arr` is zeroized after HKDF-Expand completes
 - Key schedule tests pass
 
@@ -2338,21 +2705,25 @@ No `defer secureZero(u8, &arr)` after the expand call.
 **Evidence:**
 
 `src/tls13/context.zig:506`:
+
 ```zig
 .alpn_list = if (info.alpn_list) |list| @as([]const []const u8, @ptrCast(list)) else null,
 ```
 
 `src/tls13/context.zig:512`:
+
 ```zig
 .identities = @as([]const ClientHelloPskIdentityView, @ptrCast(psk.identities)),
 ```
 
 `src/tls13/context.zig:514`:
+
 ```zig
 .binders = @as([]const []const u8, @ptrCast(psk.binders)),
 ```
 
 **Fix guidance:** Replace `@ptrCast` with explicit field-by-field construction of the view types, or add comptime assertions verifying layout equivalence:
+
 ```zig
 comptime {
     std.debug.assert(@sizeOf(OwnedPskIdentity) == @sizeOf(ClientHelloPskIdentityView));
@@ -2361,6 +2732,7 @@ comptime {
 ```
 
 **Acceptance criteria:**
+
 - Either `@ptrCast` is replaced with safe conversions, or comptime layout assertions are added
 - PSK handshake tests pass
 
@@ -2387,6 +2759,7 @@ comptime {
 **Evidence:**
 
 `src/key_schedule.zig:134`:
+
 ```zig
 var fbb: [256]u8 = undefined;
 var fba = std.heap.FixedBufferAllocator.init(&fbb);
@@ -2397,6 +2770,7 @@ No zeroing after use. The allocated info is freed via `defer alloc.free(info)` b
 **Fix guidance:** Add `defer @memset(&fbb, 0);` for defense-in-depth. Low priority since the data is non-secret.
 
 **Acceptance criteria:**
+
 - `fbb` buffer is zeroized after use (defense-in-depth)
 
 **References:** CWE-226, OWASP A02:2021
@@ -2409,10 +2783,23 @@ No zeroing after use. The allocated info is freed via `defer alloc.free(info)` b
 
 ## Roadmap
 
+### Phase 11 Open Items (prioritized)
+
+| ID | Severity | Task | Effort | SLA | Issue | Status |
+|----|----------|------|--------|-----|-------|--------|
+| SEC-057 | High | Replaced `@enumFromInt(SignatureScheme, alg)` with `std.enums.fromInt(...) orelse continue;` | 15 min | 30 days (2026-05-18) | [#162](https://gitlab.com/devnw/zig/tls/-/issues/162) (conf.) | **Closed 2026-04-18** |
+| SEC-058 | Medium | Guarded varint length in u64 vs `data.len` / `maxInt(usize)` before `@intCast` | 30 min | 90 days (2026-07-17) | [#167](https://gitlab.com/devnw/zig/tls/-/issues/167) | **Closed 2026-04-18** |
+| SEC-060 | Medium | Removed `allow_failure: true`; persisted corpus via cache; extended rules; seeded corpus | 1-2 days | 90 days (recommend 30) | [#181](https://gitlab.com/devnw/zig/tls/-/issues/181) | **Closed 2026-04-18** |
+| **SEC-061** | Low | Pin 8 CI catalog components to 40-char SHAs or enable protected tags + drift monitor | 1 day | 180 days (2026-10-15) | [#184](https://gitlab.com/devnw/zig/tls/-/issues/184) | **Open** |
+| SEC-059 | Low | Added `filled` counter + scope-exit defer freeing `outputs[0..filled]` in 2 parallel AEAD tests | 15 min | 180 days | [#173](https://gitlab.com/devnw/zig/tls/-/issues/173) | **Closed 2026-04-18** |
+
 ### Quick Wins (< 1 day)
 
 | ID | Task | Effort | Status |
 |----|------|--------|--------|
+| SEC-057 | Replaced `@enumFromInt(SignatureScheme, alg)` at `client_hello.zig:406` with safe `std.enums.fromInt(...) orelse continue;` | 15 min | **Closed 2026-04-18** |
+| SEC-058 | Compared varint length in u64 before `@intCast` at `quic_transport_params.zig:572-586` | 30 min | **Closed 2026-04-18** |
+| SEC-059 | Added `filled` counter + scope-exit defer freeing partial allocations in 2 parallel AEAD tests | 15 min | **Closed 2026-04-18** |
 | SEC-040 | Add explicit X25519 clamping in `startClientHandshake` | 15 min | Closed |
 | SEC-048 | Add explicit X25519 clamping in `negotiateCipherAndKeys` | 15 min | Closed |
 | SEC-046 | Replace `std.mem.eql` with `timing_safe` for PSK identity comparison | 15 min | Closed |
@@ -2462,6 +2849,8 @@ No zeroing after use. The allocated info is freed via `defer alloc.free(info)` b
 | SEC-021 | Make cert validation failure fatal or verify `peer_cert_ok` gates data flow | 1-2 days | Closed |
 | SEC-050 | Add `defer secureZero` on `priv` + errdefer for `client_priv` in `startClientHandshake` and `sendClientHello2` | 1-2 days | **Closed** |
 | SEC-054 | Add errdefer for allocated slices in `parseClientHello` error paths | 1-2 days | **Closed** |
+| SEC-060 | Removed `allow_failure: true`, persisted fuzz corpus via branch-keyed cache, extended rules, seeded regression corpus | 1-2 days | **Closed 2026-04-18** |
+| **SEC-061** | Pin 8 CI catalog components to immutable SHAs (or protect tags + add drift alert) | 1 day | **Open** |
 
 ### Strategic (> 5 days)
 
@@ -2481,6 +2870,7 @@ No zeroing after use. The allocated info is freed via `defer alloc.free(info)` b
 - **Phase 5 additions**: Cipher suite negotiation RFC compliance, hostname validation fail-open analysis, X.509 self-signed bypass, DER time parsing safety, name constraint case sensitivity, mTLS EKU validation, supply chain dependency pinning, HRR rekey path audit.
 - **Phase 7 additions**: Engine key schedule correctness audit (emptyHash vs empty slice, zeroSecret vs empty IKM), X25519 clamping consistency across all key generation paths, PSK identity timing analysis, key derivation intermediate zeroization audit, `@ptrCast` type safety review.
 - **Phase 10 additions**: Adversarial review of trace flag compile guards across all files, error-path key zeroization audit (`startClientHandshake`, `sendClientHello2`), ASN.1 integer overflow analysis, ClientHello memory leak audit, post-DH private key lifetime analysis, unconditional debug logging in error paths, handshake message length overflow analysis.
+- **Phase 11 additions (2026-04-18)**: Full audit of all `@enumFromInt` sites operating on attacker-controlled bytes (9 sites; 1 unsafe → SEC-057); full audit of `@intCast` on attacker-controlled length fields for 32-bit correctness (1 gap → SEC-058); CI/CD pipeline control-failure audit (2 findings → SEC-060, SEC-061); test-hygiene allocator-leak audit in `parallel.zig` (→ SEC-059); regression-verification of 6 prior High-severity resolutions (all intact).
 
 ## Confidence Notes
 
@@ -2542,3 +2932,8 @@ No zeroing after use. The allocated info is freed via `defer alloc.free(info)` b
 | SEC-054 | `confidence::suspected` | Pattern-matched: no errdefer visible in client_hello.zig:295-497; confirm by tracing all allocations and error paths |
 | SEC-055 | `confidence::confirmed` | Code review: client_priv not zeroed/nulled after scalarmult at context.zig:2317-2343; stays until deinit() |
 | SEC-056 | `confidence::confirmed` | Code review: unconditional debugPrint calls at messages.zig:178 and engine.zig:660+; not gated by trace flags |
+| SEC-057 | `confidence::confirmed` | Code review + deep-reviewer: `@enumFromInt(alg)` at client_hello.zig:404 is unchecked; range filter admits ~2034 non-enum values vs 14 valid tags; sibling line 337 uses safe `std.enums.fromInt` pattern; confirm with regression test injecting `0x0500` |
+| SEC-058 | `confidence::confirmed` | Code review: `@intCast(length)` at quic_transport_params.zig:577 runs before `offset + len > data.len` check; varint u64 can exceed `usize` on 32-bit per RFC 9000 §16 (max 2^62-1) |
+| SEC-059 | `confidence::confirmed` | Code review: no `errdefer` guarding partial loop allocations at parallel.zig:893 and :925; `std.testing.allocator` masks but does not fix |
+| SEC-060 | `confidence::confirmed` | Observed: `.gitlab-ci.yml:138-164` contains job-level `allow_failure: true`, `artifacts: when: on_failure`, 60s timeout; SEC-057 slipped through this lane |
+| SEC-061 | `confidence::suspected` | Observed: `.gitlab-ci.yml:11-24` pins 8 catalog components to `@v1.7.1`/`@v1.2.1`; would be confirmed by checking catalog tag-protection policy |
