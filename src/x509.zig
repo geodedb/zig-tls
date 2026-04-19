@@ -1670,30 +1670,46 @@ fn runChainChecks(
     }
 
     // Name Constraints Enforcement (RFC 5280 §4.2.1.10, §6.1.4)
-    // For each certificate, validate its SAN names against name constraints from issuers above it
+    // For each certificate, validate its SAN names against name constraints from issuers above it.
+    //
+    // PERF-213 / PERF-221 / PERF-222: Single-pass accumulation.
+    //   * Hoist the accumulator ArrayLists outside the outer loop so we
+    //     allocate once per validateChain call instead of once per cert.
+    //   * Pre-pass: sum permitted/excluded entries across every cert in the
+    //     chain. The same union of issuer constraints is rebuilt for each
+    //     cert position, so the sum is a tight upper bound for the
+    //     accumulator capacity at any step.
+    //   * Between positions we call clearRetainingCapacity() to keep the
+    //     amortised-O(1) append without releasing the backing buffer.
     if (!is_single_self_signed) {
+        var total_permitted: usize = 0;
+        var total_excluded: usize = 0;
+        for (certs) |c| {
+            if (c.name_constraints) |nc| {
+                total_permitted += nc.permitted_dns.len;
+                total_excluded += nc.excluded_dns.len;
+            }
+        }
+
+        var accumulated_permitted = try std.ArrayList([]const u8).initCapacity(alloc, total_permitted);
+        defer accumulated_permitted.deinit(alloc);
+        var accumulated_excluded = try std.ArrayList([]const u8).initCapacity(alloc, total_excluded);
+        defer accumulated_excluded.deinit(alloc);
+
         i = 0;
         while (i < certs.len) : (i += 1) {
             const cert = &certs[i];
 
-            // Collect name constraints from all issuers (certificates above this one)
-            // PERF-041: Pre-size to 4 to avoid first few reallocations.
-            var accumulated_permitted = try std.ArrayList([]const u8).initCapacity(alloc, 4);
-            defer accumulated_permitted.deinit(alloc);
-            var accumulated_excluded = try std.ArrayList([]const u8).initCapacity(alloc, 4);
-            defer accumulated_excluded.deinit(alloc);
+            // Reuse buffers without releasing their backing storage.
+            accumulated_permitted.clearRetainingCapacity();
+            accumulated_excluded.clearRetainingCapacity();
 
             var issuer_idx = i + 1;
             while (issuer_idx < certs.len) : (issuer_idx += 1) {
                 if (certs[issuer_idx].name_constraints) |nc| {
-                    // Accumulate permitted constraints
-                    for (nc.permitted_dns) |p| {
-                        try accumulated_permitted.append(alloc, p);
-                    }
-                    // Accumulate excluded constraints
-                    for (nc.excluded_dns) |e| {
-                        try accumulated_excluded.append(alloc, e);
-                    }
+                    // Safe: capacity is the grand total across the chain.
+                    accumulated_permitted.appendSliceAssumeCapacity(nc.permitted_dns);
+                    accumulated_excluded.appendSliceAssumeCapacity(nc.excluded_dns);
                 }
             }
 
