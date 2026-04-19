@@ -1605,37 +1605,18 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
     return validateChainEx(alloc, chain_der, now_unix, server_name, allow_insecure, eku_purpose, null);
 }
 
-/// PERF-016: Extended validateChain that accepts an optional pre-resolved TrustStore.
-///
-/// When `trust_store_override` is provided (`.{ .override = ... }`), it is used
-/// directly without acquiring the global RwLock. When null, the global trust
-/// store is read once via `getTrustStore()`.
-///
-/// This allows callers that cache the trust store at init time (e.g., Context)
-/// to avoid RwLock contention on every handshake.
-pub fn validateChainEx(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, allow_insecure: bool, eku_purpose: EkuPurpose, trust_store_override: ?TrustStore) !void {
-    if (allow_insecure) return;
-    if (chain_der.len == 0) return error.EmptyChain;
-
-    // SEC-024: Hard cap on certificate chain depth before parsing.
-    // Prevents resource exhaustion from pathologically deep chains.
-    // 10 is generous; typical chains are 2-4 certificates.
-    const max_chain_depth = 10;
-    if (chain_der.len > max_chain_depth) return error.PathLenExceeded;
-
-    // Parse all certs
-    var certs = try alloc.alloc(Certificate, chain_der.len);
-    var parsed_count: usize = 0;
-    defer {
-        for (certs[0..parsed_count]) |c| c.deinit(alloc);
-        alloc.free(certs);
-    }
-    var i: usize = 0;
-    while (i < chain_der.len) : (i += 1) {
-        certs[i] = try parseCert(alloc, chain_der[i]);
-        parsed_count += 1;
-    }
-
+/// PERF-207: Chain validation pipeline extracted from validateChainEx.
+/// Operates on pre-parsed certs so the caller can either free them
+/// (validateChainEx) or retain the leaf (validateChainReturnParsed).
+fn runChainChecks(
+    alloc: std.mem.Allocator,
+    certs: []Certificate,
+    chain_der: []const []const u8,
+    now_unix: i64,
+    server_name: []const u8,
+    eku_purpose: EkuPurpose,
+    trust_store_override: ?TrustStore,
+) !void {
     // Special case: single self-signed certificate (trust anchor)
     const is_single_self_signed = chain_der.len == 1 and
         std.mem.eql(u8, certs[0].subject_der, certs[0].issuer_der);
@@ -1668,7 +1649,7 @@ pub fn validateChainEx(alloc: std.mem.Allocator, chain_der: []const []const u8, 
     }
 
     // Intermediates must be CA and within pathLenConstraint
-    i = 1;
+    var i: usize = 1;
     while (i < certs.len) : (i += 1) {
         const c = certs[i];
         // BasicConstraints CA required for all but leaf
@@ -1779,4 +1760,98 @@ pub fn validateChainEx(alloc: std.mem.Allocator, chain_der: []const []const u8, 
             }
         }
     }
+}
+
+/// PERF-016: Extended validateChain that accepts an optional pre-resolved TrustStore.
+///
+/// When `trust_store_override` is provided (`.{ .override = ... }`), it is used
+/// directly without acquiring the global RwLock. When null, the global trust
+/// store is read once via `getTrustStore()`.
+///
+/// This allows callers that cache the trust store at init time (e.g., Context)
+/// to avoid RwLock contention on every handshake.
+pub fn validateChainEx(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, allow_insecure: bool, eku_purpose: EkuPurpose, trust_store_override: ?TrustStore) !void {
+    if (allow_insecure) return;
+    if (chain_der.len == 0) return error.EmptyChain;
+
+    // SEC-024: Hard cap on certificate chain depth before parsing.
+    // Prevents resource exhaustion from pathologically deep chains.
+    // 10 is generous; typical chains are 2-4 certificates.
+    const max_chain_depth = 10;
+    if (chain_der.len > max_chain_depth) return error.PathLenExceeded;
+
+    // Parse all certs
+    var certs = try alloc.alloc(Certificate, chain_der.len);
+    var parsed_count: usize = 0;
+    defer {
+        for (certs[0..parsed_count]) |c| c.deinit(alloc);
+        alloc.free(certs);
+    }
+    {
+        var i: usize = 0;
+        while (i < chain_der.len) : (i += 1) {
+            certs[i] = try parseCert(alloc, chain_der[i]);
+            parsed_count += 1;
+        }
+    }
+
+    try runChainChecks(alloc, certs, chain_der, now_unix, server_name, eku_purpose, trust_store_override);
+}
+
+/// PERF-207: Like `validateChainEx`, but returns the parsed leaf certificate
+/// so callers (e.g. src/tls13/context.zig handshake handlers) do not re-invoke
+/// `parseCert(chain[0])`.
+///
+/// On success, the caller owns the returned `Certificate` and must call
+/// `deinit(alloc)` on it. On error, all internal parses are freed.
+///
+/// When `allow_insecure=true`, validation is skipped BUT the leaf is still
+/// parsed and returned — callers still need it for CertificateVerify.
+pub fn validateChainReturnParsed(
+    alloc: std.mem.Allocator,
+    chain_der: []const []const u8,
+    now_unix: i64,
+    server_name: []const u8,
+    allow_insecure: bool,
+    eku_purpose: EkuPurpose,
+    trust_store_override: ?TrustStore,
+) !Certificate {
+    if (chain_der.len == 0) return error.EmptyChain;
+
+    // SEC-024: Hard cap on certificate chain depth before parsing.
+    const max_chain_depth = 10;
+    if (chain_der.len > max_chain_depth) return error.PathLenExceeded;
+
+    var certs = try alloc.alloc(Certificate, chain_der.len);
+    defer alloc.free(certs);
+    var parsed_count: usize = 0;
+    errdefer {
+        // On error, free all parsed certs including leaf.
+        for (certs[0..parsed_count]) |c| c.deinit(alloc);
+    }
+
+    {
+        var i: usize = 0;
+        while (i < chain_der.len) : (i += 1) {
+            certs[i] = try parseCert(alloc, chain_der[i]);
+            parsed_count += 1;
+        }
+    }
+
+    if (!allow_insecure) {
+        try runChainChecks(alloc, certs, chain_der, now_unix, server_name, eku_purpose, trust_store_override);
+    }
+
+    // Success: caller takes the leaf; free intermediate + root.
+    const leaf = certs[0];
+    {
+        var i: usize = 1;
+        while (i < parsed_count) : (i += 1) {
+            certs[i].deinit(alloc);
+        }
+    }
+    // Prevent errdefer from re-freeing: mark as released.
+    parsed_count = 0;
+
+    return leaf;
 }

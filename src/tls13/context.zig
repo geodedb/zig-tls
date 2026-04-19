@@ -2799,8 +2799,9 @@ pub const Context = struct {
         // - Extended Key Usage (id-kp-serverAuth)
         // - Basic Constraints enforcement
         // - Signature verification along the chain
-        // PERF-016: Use validateChainEx with cached trust store to avoid RwLock.
-        x509.validateChainEx(
+        // PERF-207: validate + parse leaf in one pass (avoids re-parsing chain[0]).
+        // PERF-016: Uses cached trust store to avoid RwLock contention.
+        var leaf_parsed = x509.validateChainReturnParsed(
             self.allocator,
             chain,
             now_unix,
@@ -2812,17 +2813,15 @@ pub const Context = struct {
             traceHandshake("Client: Certificate chain validation failed: {}\\n", .{err});
             return HandshakeError.CertificateValidationFailed;
         };
+        defer leaf_parsed.deinit(self.allocator);
 
         // RFC 6960 + RFC 8446 §4.4.2.1: OCSP stapling validation
         // RFC 8446 §4.4.3: Verify CertificateVerify signature
         // Both OCSP validation and signature verification need the parsed leaf cert,
         // so we consolidate into a single block to avoid redundant parsing.
         if (!self.config.allow_insecure) {
-            // PERF-037: Parse the leaf certificate once and reuse for both
-            // OCSP validation and CertificateVerify signature verification.
-            var leaf_parsed = try x509.parseCert(self.allocator, chain[0]);
-            defer leaf_parsed.deinit(self.allocator);
-
+            // PERF-037/PERF-207: leaf_parsed is reused for OCSP validation and
+            // CertificateVerify signature verification below.
             if (self.config.require_ocsp) {
                 // OCSP is required - fail if not present
                 if (self.peer_ocsp_response == null) {
@@ -2999,8 +2998,9 @@ pub const Context = struct {
             // Skip hostname validation for client certs (no SNI to match against)
             const now_unix = unixTimestamp();
             // SEC-031: Pass client_auth EKU purpose for mTLS client certs
-            // PERF-016: Use validateChainEx with cached trust store to avoid RwLock.
-            x509.validateChainEx(
+            // PERF-207: validate + parse leaf in one pass (avoids re-parsing chain[0]).
+            // PERF-016: Uses cached trust store to avoid RwLock contention.
+            var client_leaf = x509.validateChainReturnParsed(
                 self.allocator,
                 chain,
                 now_unix,
@@ -3012,6 +3012,7 @@ pub const Context = struct {
                 traceHandshake("Server: Client certificate chain validation failed: {}\n", .{err});
                 return HandshakeError.CertificateValidationFailed;
             };
+            defer client_leaf.deinit(self.allocator);
 
             // Verify CertificateVerify signature with client context string
             const transcript_hash = self.transcripts.handshake.finalize(self.hash_kind);
@@ -3031,10 +3032,6 @@ pub const Context = struct {
             const sig_alg = sig.fromTls13SignatureScheme(parsed.algorithm) catch {
                 return HandshakeError.UnsupportedSignatureAlgorithm;
             };
-
-            // Extract SPKI from leaf certificate for signature verification
-            const client_leaf = try x509.parseCert(self.allocator, chain[0]);
-            defer client_leaf.deinit(self.allocator);
 
             const verified = try sig.verifyCertificateVerify(
                 sig_alg,
