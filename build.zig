@@ -286,6 +286,13 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "quic_tls", .module = key_schedule_mod },
             },
         },
+        .{
+            .name = "sec057_sigalg_panic",
+            .source = "tests/security/sec057_sigalg_panic.zig",
+            .imports = &.{
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
     };
 
     for (tests) |test_info| {
