@@ -4,7 +4,7 @@ This document describes the architecture of the ztls TLS 1.3 library.
 
 ## Module Structure
 
-```
+```text
 src/
 ├── lib.zig                 # Main library entry point and re-exports
 ├── tls13.zig               # TLS 1.3 backward-compatibility layer
@@ -37,9 +37,15 @@ src/
 ├── sig.zig                 # Signature verification
 ├── asn1.zig                # ASN.1 DER decoder
 ├── alert.zig               # TLS alert protocol
-├── zero_rtt.zig            # 0-RTT anti-replay support
+├── zero_rtt.zig            # 0-RTT anti-replay support (shipped)
 ├── ocsp.zig                # OCSP stapling
 ├── sct.zig                 # Signed Certificate Timestamps
+├── parallel.zig            # Thread-pool-backed parallel chain validation
+├── varint.zig              # QUIC/TLS variable-length integer codec
+├── byteorder.zig           # Endianness helpers (big-endian writers)
+├── quic_logger.zig         # Structured logger for QUIC/TLS events
+├── tls13_full.zig          # Full-message builders for TLS 1.3 flights
+├── rfc_compliance_test.zig # Aggregate RFC-compliance tests
 └── quic_transport_params.zig # QUIC transport parameter encoding
 ```
 
@@ -95,7 +101,7 @@ QUIC uses distinct encryption levels that map to handshake stages:
 
 Implements RFC 8446 Section 7.1 key derivation:
 
-```
+```text
                             0
                             |
                             v
@@ -150,6 +156,7 @@ pub const Transcript = struct {
 ```
 
 The transcript hash is used for:
+
 - Deriving traffic secrets
 - Finished message verify_data
 - CertificateVerify signature
@@ -172,7 +179,8 @@ pub const AeadCipher = struct {
 ```
 
 Nonce derivation (RFC 8446 Section 5.3):
-```
+
+```text
 nonce = base_iv XOR pad64(sequence_number)
 ```
 
@@ -191,6 +199,7 @@ pub fn validateChain(
 ```
 
 Validation steps:
+
 1. Parse all certificates in chain
 2. Check leaf validity period (notBefore/notAfter)
 3. Verify server_name matches SAN or CN
@@ -205,7 +214,7 @@ Validation steps:
 
 ### Client Handshake Flow
 
-```
+```text
 ┌─────────┐                                           ┌─────────┐
 │  QUIC   │                                           │   TLS   │
 │ Layer   │                                           │ Context │
@@ -245,7 +254,7 @@ Validation steps:
 
 ### Secret Installation Flow
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
 │                    Secret Derivation Pipeline                     │
 ├──────────────────────────────────────────────────────────────────┤
@@ -292,6 +301,7 @@ pub fn deriveInitialSecretV1(dcid: []const u8) [32]u8 {
 ### 2. Zero External Dependencies
 
 Uses only Zig standard library:
+
 - `std.crypto.kdf.hkdf` - HKDF operations
 - `std.crypto.aead` - AEAD ciphers (AES-GCM, ChaCha20-Poly1305)
 - `std.crypto.hash` - SHA-256, SHA-384
@@ -301,6 +311,7 @@ Uses only Zig standard library:
 ### 3. QUIC-Native Design
 
 Designed for QUIC integration (RFC 9001):
+
 - No traditional TLS record layer
 - Direct CRYPTO frame processing
 - Encryption level abstraction
@@ -309,6 +320,7 @@ Designed for QUIC integration (RFC 9001):
 ### 4. Interoperability First
 
 Compatible with real-world implementations:
+
 - quic-go
 - quinn (Rust)
 - msquic
@@ -332,6 +344,7 @@ Compatible with real-world implementations:
 ### AEAD Usage Limits
 
 RFC 8446 Section 5.5 limits enforced:
+
 - AES-GCM: 2^24 messages before key rotation
 - ChaCha20-Poly1305: 2^36 messages
 
@@ -360,6 +373,7 @@ RFC 8446 Section 5.5 limits enforced:
 ### Unit Tests
 
 Per-module tests in source files:
+
 ```bash
 zig test src/key_schedule.zig
 zig test src/record.zig
@@ -369,12 +383,14 @@ zig test src/x509.zig
 ### RFC Test Vectors
 
 Official vectors from RFC appendices:
+
 - RFC 8446 Appendix A - TLS 1.3 vectors
 - RFC 9001 Appendix A.1 - QUIC initial secret vectors
 
 ### Conformance Tests
 
 Parity testing against:
+
 - BoringSSL (HKDF, AEAD, signatures)
 - OpenSSL 3.x (EVP API, X.509)
 
@@ -396,6 +412,7 @@ make test-conformance
 External Zig libraries: **None**
 
 All cryptographic operations use `std.crypto`:
+
 - `std.crypto.kdf.hkdf` - Key derivation
 - `std.crypto.aead.aes_gcm` - AES-GCM
 - `std.crypto.aead.chacha_poly` - ChaCha20-Poly1305
