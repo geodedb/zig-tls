@@ -139,26 +139,38 @@ test-release-small:
 # Runs with a 60-second timeout so the job always terminates.
 #
 # Exit-code semantics:
-#   rc=0  : fuzzer stopped cleanly before timeout (no crash)
-#   rc=124: timeout reached (expected in CI) - pass
-#   other : fuzzer found a crash - fail the job
+#   rc=0   : fuzzer stopped cleanly before timeout (no crash)
+#   rc=124 : timeout reached (expected in CI) - pass
+#   other  : fuzzer found a crash - FAIL THE JOB
+#
+# Seed corpus under tests/fuzz/corpus/ is copied into zig-out/fuzz/ before
+# the run so prior-regression inputs are exercised first. The evolved
+# corpus is persisted via GitLab cache so every run continues coverage
+# from the previous one.
 fuzz:
   stage: fuzz
   image: debian:bookworm-slim
   before_script:
     - *install-zig
+    - mkdir -p zig-out/fuzz
+    - if [ -d tests/fuzz/corpus ]; then cp -R tests/fuzz/corpus/. zig-out/fuzz/; fi
   script:
     - timeout 60 zig build test --fuzz; rc=$?; if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then exit $rc; fi
   artifacts:
-    when: on_failure
+    when: always
     paths:
       - zig-out/fuzz/
-    expire_in: 1 week
+    expire_in: 30 days
+  cache:
+    key: "fuzz-corpus-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - zig-out/fuzz/
+    policy: pull-push
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
-      allow_failure: true
-  allow_failure: true
   needs:
     - build
