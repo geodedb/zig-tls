@@ -45,6 +45,8 @@ const std = @import("std");
 
 // Re-export test modules for discovery
 pub const section_4_certificate_structure = @import("section_4_certificate_structure.zig");
+pub const section_4_2_extensions = @import("section_4_2_extensions.zig");
+pub const section_5_crl = @import("section_5_crl.zig");
 pub const section_6_path_validation = @import("section_6_path_validation.zig");
 
 test {
