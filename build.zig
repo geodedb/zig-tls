@@ -430,6 +430,9 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "quic_tls", .module = key_schedule_mod },
                 .{ .name = "record", .module = record_mod },
                 .{ .name = "tls13_full", .module = tls13_full_mod },
+                // GAP-0120: RFC 8446 §4.6.3 KeyUpdate tests use the
+                // higher-level `tls13` module for post-handshake APIs.
+                .{ .name = "tls13", .module = tls13_mod },
             },
         }),
     });
