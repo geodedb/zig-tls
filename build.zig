@@ -328,6 +328,14 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "handshake_state", .module = handshake_state_mod },
             },
         },
+        .{
+            .name = "perf_validate_chain_parsed",
+            .source = "tests/perf/test_validate_chain_parsed.zig",
+            .imports = &.{
+                .{ .name = "counting_allocator", .module = counting_allocator_mod },
+                .{ .name = "x509", .module = x509_mod },
+            },
+        },
     };
 
     for (tests) |test_info| {
