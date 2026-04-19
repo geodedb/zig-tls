@@ -1,6 +1,6 @@
 # GAP Analysis
 
-> **Last updated:** 2026-03-25 (Phase 10 closure)
+> **Last updated:** 2026-04-18 (Phase 4 audit tracking sync)
 > **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 
@@ -11,16 +11,16 @@
 | Severity | Original | Closed | Won't Do | Open |
 |----------|----------|--------|----------|------|
 | Critical | 8        | 8      | 0        | 0    |
-| High     | 19       | 19     | 0        | 0    |
-| Medium   | 36       | 35     | 1        | 0    |
-| Low      | 36       | 27     | 6        | 3    |
-| **Total**| **99**   | **89** | **7**    | **3**|
+| High     | 21       | 20     | 0        | 1    |
+| Medium   | 43       | 38     | 1        | 4    |
+| Low      | 45       | 27     | 6        | 12   |
+| **Total**| **117**  | **93** | **7**    | **17** |
 
 ### Implementation Status
 
-**Closed: 89 findings** - All implemented and verified
+**Closed: 93 findings** - All implemented and verified (includes GAP-0097: parallel module now publicly exported from `src/lib.zig:414` per commit b31f035; GAP-0111/0112/0117 closed 2026-04-19 via Build Toolchain Sync plan)
 **Won't Do: 7 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133), GAP-0099 (issue tracker maintenance, separate from code), GAP-0093 (2 skipped tests require stdlib features not yet available)
-**Open: 3 findings** - GAP-0097 (parallel module unused at runtime), GAP-0098 (7 unused public symbols), plus 1 Low open item from earlier reviews
+**Open: 17 findings** - GAP-0098 (7 unused public symbols, Low); GAP-0100..GAP-0110 and GAP-0113..GAP-0116 from 2026-04-18 Phase 4 gap-detector sweep (1 High, 4 Medium, 10 Low remaining after 2026-04-19 closures); plus 1 Low open item from earlier reviews
 
 ### Fourteenth Review (2026-03-25) -- Phase 10 Gap-Detector Sweep + Closure
 
@@ -188,6 +188,7 @@ Phase 3 gap-detector identified 5 documentation/tracking inconsistencies. All Lo
 #### QUAL-019 Update
 
 The catch unreachable count is now **29** (was 27). Updated file list:
+
 - `src/key_schedule.zig` (12) -- unchanged
 - `src/varint.zig` (11) -- unchanged
 - `src/parallel.zig` (3) -- **NEW** (added during GAP-0073 implementation)
@@ -205,6 +206,7 @@ exceedance ratio is now 4.37x (was 4.48x).
 #### Stale GitLab Issues Note
 
 The following GitLab issues were closed with evidence comments during the Eleventh Review (GAP-0094):
+
 - [#4](https://gitlab.com/devnw/zig/tls/-/issues/4) -- PSK / NewSessionTicket: **CLOSED** (GAP-0070, GAP-0071, GAP-003, GAP-010)
 - [#14](https://gitlab.com/devnw/zig/tls/-/issues/14) -- RFC 8446 Appendix A Test Vectors: **CLOSED** (GAP-004)
 - [#15](https://gitlab.com/devnw/zig/tls/-/issues/15) -- PSK Binder Verification: **CLOSED**
@@ -218,6 +220,7 @@ The following GitLab issues were closed with evidence comments during the Eleven
 Phase 9 closed 10 items across all 4 tracking files and marked 12 as Won't Do, 5 as Deferred:
 
 **Security (8 items resolved):**
+
 1. SEC-009 (Low): **CLOSED** -- `x25519KeypairAndShared` returns `X25519Error!X25519Result` error union. File: `src/tls13/messages.zig:228-248`
 2. SEC-045 (Info): **CLOSED** -- `@ptrCast` replaced with field-by-field conversion. File: `src/tls13/context.zig:452-489`
 3. SEC-039 (Info): **CLOSED** -- `@compileError` guard added for handshake trace in release builds. File: `src/tls13/context.zig:121-126`
@@ -263,6 +266,7 @@ Phase 9 closed 10 items across all 4 tracking files and marked 12 as Won't Do, 5
 Phase 8 closed 12 items across all 4 tracking files:
 
 **Security (7 items):**
+
 1. SEC-047 (HIGH): **CLOSED** -- `computeApplicationSecrets` in engine.zig now uses `emptyHash()` and `zeroSecret()` per RFC 8446 Section 7.1 key schedule. File: `src/tls13/engine.zig:1510-1516`
 2. SEC-040 (Low): **CLOSED** -- X25519 clamping added in `startClientHandshake`. File: `src/tls13/context.zig:2181-2187`
 3. SEC-048 (Low): **CLOSED** -- X25519 clamping added in `negotiateCipherAndKeys`. File: `src/tls13/context.zig:1959-1965`
@@ -293,6 +297,7 @@ Phase 3 gap-detector identified 8 new gaps (GAP-0087 through GAP-0094) and resol
 Also closed 7 stale GitLab issues (#4, #14, #15, #19, #71, #83, #89) with evidence comments.
 
 **Resolved:**
+
 1. GAP-0082 (Low): **RESOLVED** -- Tracking inconsistency resolved by filing GitLab issue
    [#115](https://gitlab.com/devnw/zig/tls/-/issues/115) as separate tracking item for
    `on_session_ticket` callback. The gap (QUAL-074 marked Closed but work incomplete) is
@@ -302,6 +307,7 @@ Also closed 7 stale GitLab issues (#4, #14, #15, #19, #71, #83, #89) with eviden
    PERF-016 (#103), PERF-019 (#104), PERF-023 (#105), PERF-026 (#106).
 
 **Documentation accuracy gaps (GAP-0087 through GAP-0091) -- RESOLVED:**
+
 1. GAP-0087 (Medium): **RESOLVED** -- RELEASE_NOTES.md line 63 corrected: "CRL parsing and validation"
    replaced with "CRL support not yet implemented (see lib.zig)". Section header changed to partial.
    - Issue: [#128](https://gitlab.com/devnw/zig/tls/-/issues/128)
@@ -367,6 +373,7 @@ Also closed 7 stale GitLab issues (#4, #14, #15, #19, #71, #83, #89) with eviden
 ### Fifth Review Remediations (2026-03-23)
 
 Full codebase audit identified and closed 14 additional findings:
+
 1. SEC-001/002+PERF-001: Custom RSA-PSS timing oracle + 60-100x perf regression replaced with stdlib (Critical)
 2. GAP-016: SHA-384 key derivation hardcoded 32-byte zero IKM/salt fixed to use Hash.length (Critical)
 3. RL-007: parseCert dangling stack pointer for SAN DNS list fixed with heap allocation (Critical)
@@ -385,6 +392,7 @@ Full codebase audit identified and closed 14 additional findings:
 ### Fourth Review Remediations (2026-01-30)
 
 All 11 remaining open issues from the third review have been implemented:
+
 1. ✅ Server authentication enforcement (High, #37)
 2. ✅ OCSP stapling enforcement (High, #38)
 3. ✅ CertificateVerify algorithm policy (Medium, #41)
@@ -475,6 +483,7 @@ All 11 remaining open issues from the third review have been implemented:
 ## Gaps
 
 ### GAP-0093: 3 skipped tests indicate incomplete coverage [WON'T DO]
+
 - **Issue:** [#134](https://gitlab.com/devnw/zig/tls/-/issues/134)
 - **Category:** Test
 - **Severity:** Low
@@ -489,6 +498,7 @@ All 11 remaining open issues from the third review have been implemented:
   - `tests/openssl_conformance.zig:448-450` -- ChaCha20-Poly1305 conformance test skipped (build-dependent, `EVP_chacha20_poly1305` may return null)
 
 ### GAP-0095: PSK conformance test compile error -- duplicate const Secret [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Bug
 - **Severity:** High
@@ -506,6 +516,7 @@ All 11 remaining open issues from the third review have been implemented:
 - **Acceptance criteria:** `zig build test-conformance` passes with 0 compile errors and 0 test failures.
 
 ### GAP-0096: README test count stale [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Docs
 - **Severity:** Low
@@ -514,21 +525,8 @@ All 11 remaining open issues from the third review have been implemented:
 - **Evidence:** `README.md:81,85-88,97` -- all test count references updated
 - **Resolved date:** 2026-03-25
 
-### GAP-0097: parallel module built but never imported at runtime
-- **Issue:** TBD (--skip-issues mode)
-- **Category:** Code Quality
-- **Severity:** Medium
-- **Requirement source:** Code quality -- unused code elimination
-- **Current state (evidence):**
-  - `src/parallel.zig` -- 1,016 lines, complete module with real crypto implementations
-  - `build.zig:227` -- only wired as a test dependency, not as part of the library module
-  - No `@import("parallel.zig")` in `src/lib.zig` or any other runtime source file
-- **Why this is a gap:** 1,016 lines of production code with real crypto (x509 chain validation, HKDF key derivation) is built but never reachable from any library consumer. Either it is intended public API that was never exposed, or it is dead code inflating the build.
-- **Impact/Risk:** Dead code increases maintenance burden; if the module is intended for production use, consumers cannot access it.
-- **Recommended fix:** Either (a) wire into `lib.zig` public API with documentation, (b) mark as experimental with a compile-time warning, or (c) remove if not needed.
-- **Acceptance criteria:** Module is either importable via the public API, clearly marked experimental, or removed.
-
 ### GAP-0098: 7 unused public symbols
+
 - **Issue:** TBD (--skip-issues mode)
 - **Category:** Code Quality
 - **Severity:** Low
@@ -546,7 +544,275 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** For each symbol: remove if truly unused, or add test coverage and document as intentional public API.
 - **Acceptance criteria:** Each symbol is either removed, tested, or explicitly documented as intentional public API.
 
+### GAP-0100: Remote DoS via @enumFromInt on unfiltered signature_algorithms entry
+
+- **Issue:** [#136](https://gitlab.com/devnw/zig/tls/-/issues/136)
+- **Category:** Security (REGRESSION)
+- **Severity:** High
+- **Requirement source:** Safe parsing of untrusted bytes (RFC 8446 §4.2.3); sibling precedent at `src/tls13/messages/client_hello.zig:337` (ExtensionType) already uses the safe idiom.
+- **Current state (evidence):**
+  - `src/tls13/messages/client_hello.zig:401-405` -- range `0x0401..=0x080b` admits ~2063 u16 values; `SignatureScheme` enum is exhaustive and defines far fewer tags. Any non-tag value hits unchecked `@enumFromInt` -> panic (Debug/ReleaseSafe/ReleaseSmall) or UB (ReleaseFast).
+- **Why this is a gap:** Attacker-controlled bytes in a ClientHello's `signature_algorithms` extension crash the peer pre-handshake. CVSS v3.1 ~7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H).
+- **Impact/Risk:** Remote pre-handshake DoS against any TLS listener. ReleaseFast path gives the attacker an arbitrary enum-tag coercion into downstream signature verification.
+- **Recommended fix:** Replace with the safe idiom already used for ExtensionType:
+
+  ```zig
+  const scheme = std.enums.fromInt(core_types.SignatureScheme, alg) orelse continue;
+  try algs.append(allocator, scheme);
+  ```
+
+  Remove the numeric range gate; membership is already encoded in the enum.
+- **Acceptance criteria:**
+  - `client_hello.zig:403-404` no longer uses unchecked `@enumFromInt`
+  - Fuzz/exhaustive u16 test: no panic, no UB on any sig_alg value
+  - Repo-wide audit of `@enumFromInt` over attacker-controlled bytes
+
+### GAP-0101: 32-bit DoS via @intCast(varint length) before bounds check
+
+- **Issue:** [#137](https://gitlab.com/devnw/zig/tls/-/issues/137)
+- **Category:** Security
+- **Severity:** Medium
+- **Requirement source:** RFC 9000 §18 -- malformed params must produce clean protocol errors. 32-bit ARM is supported (commit `7ec244a`).
+- **Current state (evidence):**
+  - `src/quic_transport_params.zig:573-578` -- `@intCast(length)` to `usize` precedes the bounds check.
+- **Why this is a gap:** On 32-bit targets (`usize=u32`), any varint length ≥ 2^32 panics in ReleaseSafe (UB in ReleaseFast) before reaching the clean `Truncated` return path.
+- **Impact/Risk:** Peer-controllable DoS on 32-bit deployments via malformed transport-parameters blob. CVSS v3.1 ~5.3.
+- **Recommended fix:** Compare in u64 first or use `std.math.cast`:
+
+  ```zig
+  if (length > data.len - offset) return error.Truncated;
+  const len: usize = @intCast(length);
+  ```
+
+- **Acceptance criteria:**
+  - No `@intCast(length)` before the bounds check
+  - Test: `length = 0x1_0000_0000` returns `error.Truncated`, no panic
+  - Repo-wide audit of similar patterns
+
+### GAP-0102: validateChain parses+discards leaf, caller re-parses
+
+- **Issue:** [#138](https://gitlab.com/devnw/zig/tls/-/issues/138)
+- **Category:** Performance
+- **Severity:** Medium
+- **Requirement source:** Performance gap analysis -- hot handshake path.
+- **Current state (evidence):**
+  - `src/x509.zig:1625-1637` -- `validateChain` parses leaf then discards
+  - `src/tls13/context.zig:2823` and `:3036` -- both callers re-parse the leaf for SPKI extraction
+- **Why this is a gap:** One full ASN.1 leaf-parse per handshake on each of the server and client verify paths, doubling the work.
+- **Impact/Risk:** Measurable per-handshake CPU on ECDSA leaves; no correctness impact.
+- **Recommended fix:** `validateChain` returns (or emits) the parsed leaf; both callers consume it instead of re-parsing.
+- **Acceptance criteria:** Neither `context.zig:2823` nor `:3036` calls `parseCert(chain[0])` after validation; `zig build bench` shows a measurable handshake-rate improvement.
+
+### GAP-0103: sendClientHello2 body/msg dual-alloc+memcpy
+
+- **Issue:** [#139](https://gitlab.com/devnw/zig/tls/-/issues/139)
+- **Category:** Performance
+- **Severity:** Low
+- **Requirement source:** Performance gap analysis -- per-handshake allocation reduction.
+- **Current state (evidence):**
+  - `src/tls13/context.zig:2244-2255` -- body alloc then outer-message alloc + memcpy of body with a 4-byte prepended handshake header.
+- **Why this is a gap:** Avoidable allocation + memcpy on the client-send hot path.
+- **Impact/Risk:** Small but deterministic per-handshake overhead.
+- **Recommended fix:** Reserve 4-byte header slot in the body buffer, write past offset 4, backfill the header in place. Single allocation, no memcpy.
+- **Acceptance criteria:** `sendClientHello2` issues one allocation; no body-to-outer memcpy; conformance tests pass.
+
+### GAP-0104: thread_pool uses page_allocator
+
+- **Issue:** [#140](https://gitlab.com/devnw/zig/tls/-/issues/140)
+- **Category:** Performance
+- **Severity:** Low (suspected)
+- **Requirement source:** Performance gap analysis -- parallel module allocator audit.
+- **Current state (evidence):**
+  - `src/parallel.zig:78` -- thread_pool wired with `page_allocator`.
+- **Why this is a gap:** If thread_pool allocates per-task, every task pays the OS page-allocator tax; `smp_allocator` would be faster.
+- **Impact/Risk:** Unknown without internal-allocator inspection.
+- **Recommended fix:** Audit thread_pool allocation pattern. If per-task: switch to `std.heap.smp_allocator`. If init-only: document and close.
+- **Acceptance criteria:** Allocation pattern documented; if per-task, allocator changed with benchmark delta; otherwise close with rationale.
+
+### GAP-0105: xorNonce/deriveNonce micro-optimization candidates
+
+- **Issue:** [#141](https://gitlab.com/devnw/zig/tls/-/issues/141)
+- **Category:** Performance
+- **Severity:** Low (suspected)
+- **Requirement source:** Performance gap analysis -- AEAD hot path profiling.
+- **Current state (evidence):**
+  - `src/record/aead.zig` -- xorNonce/deriveNonce on every record.
+- **Why this is a gap:** Likely already auto-vectorized but unconfirmed; benchmark + asm review needed.
+- **Impact/Risk:** Depends on whether headroom exists.
+- **Recommended fix:** Add isolated benchmark; inspect asm on x86_64/aarch64; adopt `@Vector` only if the compiler isn't already vectorizing (and only while preserving constant-time properties).
+- **Acceptance criteria:** Benchmark added; asm reviewed; close as "already optimal" or land improvement with measured delta.
+
+### GAP-0106: zig build bench broken locally
+
+- **Issue:** [#142](https://gitlab.com/devnw/zig/tls/-/issues/142)
+- **Category:** CI-CD
+- **Severity:** Low
+- **Requirement source:** Build/CI health -- benchmark harness must run locally to drive perf work (GAP-0102/0105).
+- **Current state (evidence):**
+  - `build.zig` bench target uses `std.time.Timer` (0.16 API drift) and `graph.environ_map` (0.15.2-only).
+- **Why this is a gap:** Perf regressions cannot be detected locally.
+- **Impact/Risk:** Blocks perf validation work.
+- **Recommended fix:** Update to the 0.16 `std.time.Timer` API; replace `graph.environ_map` with its 0.16 equivalent; add a CI job for `zig build bench`.
+- **Acceptance criteria:** `zig build bench` succeeds on 0.16.0; CI exercises it.
+
+### GAP-0107: BidirSecrets/SecretSchedule duplicated in context.zig + secrets.zig
+
+- **Issue:** [#143](https://gitlab.com/devnw/zig/tls/-/issues/143)
+- **Category:** Code Quality / Maintainability
+- **Severity:** Medium
+- **Requirement source:** Single source of truth for cryptographic types.
+- **Current state (evidence):**
+  - `src/tls13/context.zig:300-353`
+  - `src/tls13/secrets.zig:117-166`
+- **Why this is a gap:** Security-relevant duplication; silent drift between copies would mis-derive secrets.
+- **Impact/Risk:** High-blast-radius latent bug.
+- **Recommended fix:** Canonicalize on `secrets.zig`; delete duplicates in `context.zig`; update all callers to import the canonical types.
+- **Acceptance criteria:** Single definition of `BidirSecrets` and `SecretSchedule`; tests pass.
+
+### GAP-0108: parseMinimalHelloPub duplicated
+
+- **Issue:** [#144](https://gitlab.com/devnw/zig/tls/-/issues/144)
+- **Category:** Code Quality / Cleanup
+- **Severity:** Low
+- **Requirement source:** Duplication cleanup.
+- **Current state (evidence):**
+  - `src/tls13/engine.zig:1951`
+  - `src/tls13/messages.zig:288`
+- **Why this is a gap:** Same logic defined twice; maintenance risk.
+- **Impact/Risk:** Low.
+- **Recommended fix:** Keep `messages.zig` version; delete `engine.zig` copy; engine callers import from `messages`.
+- **Acceptance criteria:** Single definition; tests pass.
+
+### GAP-0109: RSA-PSS verify triple copy-paste
+
+- **Issue:** [#145](https://gitlab.com/devnw/zig/tls/-/issues/145)
+- **Category:** Code Quality / Maintainability (crypto)
+- **Severity:** Medium
+- **Requirement source:** Cryptographic primitives should have one implementation.
+- **Current state (evidence):**
+  - `src/parallel.zig:373-433`
+  - `src/sig.zig:370+`
+- **Why this is a gap:** Multiple RSA-PSS verify paths raise audit surface and divergence risk.
+- **Impact/Risk:** A security fix to one copy can miss the others.
+- **Recommended fix:** Canonicalize on `sig.zig`; `parallel.zig` imports from it; delete duplicated helper logic.
+- **Acceptance criteria:** Single RSA-PSS verify implementation; signature tests pass.
+
+### GAP-0110: 10-level nesting in engine.zig EE handler
+
+- **Issue:** [#146](https://gitlab.com/devnw/zig/tls/-/issues/146)
+- **Category:** Code Quality / Readability
+- **Severity:** Medium
+- **Requirement source:** Readability/maintainability guidelines.
+- **Current state (evidence):**
+  - `src/tls13/engine.zig:815-848` -- switch/if/while nests up to 10 levels in the EncryptedExtensions demux.
+- **Why this is a gap:** Hides per-extension validation and early returns; hard to review.
+- **Impact/Risk:** Audit/maintenance risk.
+- **Recommended fix:** Extract per-extension handlers (`handleEEExt_SupportedGroups`, etc.); dispatcher becomes a flat switch; target max nesting depth of 3.
+- **Acceptance criteria:** EE handler max-nesting <= 3; behavior unchanged (conformance tests pass).
+
+### GAP-0111: flake.nix references missing nix/quic.nix [CLOSED]
+
+- **Issue:** [#148](https://gitlab.com/devnw/zig/tls/-/issues/148)
+- **Category:** CI-CD / Build Blocker
+- **Severity:** High
+- **Status:** Closed (2026-04-19)
+- **Requirement source:** Reproducible builds -- Nix flake must work on clean clone.
+- **Current state (evidence):**
+  - `flake.nix:56` and `:61` -- `pkgs.callPackage ./nix/quic.nix {...}`
+  - `ls nix/` -- directory does not exist.
+- **Why this is a gap:** `nix build` / `nix develop` fail out-of-the-box.
+- **Impact/Risk:** Any downstream consumer using the flake is broken.
+- **Recommended fix:** Either add `nix/quic.nix` or remove the `quicPkg`/`quicDebugPkg` attributes from `flake.nix`.
+- **Acceptance criteria:** `nix build .#default` and `nix develop` both succeed on clean clone; optionally add CI coverage.
+- **Resolution:** 2026-04-19 -- Deleted `flake.nix` and `flake.lock` entirely (they referenced a `nix/quic.nix` that had never been committed; derivation was unmaintained and had no active consumers). Consumers build via `zig build`. Commits: 802351b.
+
+### GAP-0112: Zig min-version drift (zon 0.15.1 vs CI 0.16.0) [CLOSED]
+
+- **Issue:** [#149](https://gitlab.com/devnw/zig/tls/-/issues/149)
+- **Category:** Docs / CI-CD
+- **Severity:** Medium
+- **Status:** Closed (2026-04-19)
+- **Requirement source:** Documentation accuracy.
+- **Current state (evidence):**
+  - `build.zig.zon:28` -- `0.15.1`
+  - `README.md:10, 34, 263` -- 0.16.0
+  - `CHANGELOG.md:48`; `.gitlab-ci.yml:27`; `Makefile:193`
+- **Why this is a gap:** Users reading `build.zig.zon` pick the wrong toolchain and fail to build.
+- **Impact/Risk:** Onboarding failures; confusion.
+- **Recommended fix:** Choose 0.16.0 as canonical; align all 5 surfaces.
+- **Acceptance criteria:** All surfaces reference 0.16.0; 0.15.x rejected with clear error.
+- **Resolution:** 2026-04-19 -- Raised `build.zig.zon:28` `.minimum_zig_version` to `0.16.0`; aligned `README.md:10/34/263`, `Makefile:193`, and a new `CHANGELOG.md [Unreleased]` block. Historical `[0.1.0]` block and v1.0.0 `RELEASE_NOTES.md` preserved. Commits: 79c3b10, 09a5805.
+
+### GAP-0113: stale thread_pool cache dirs in zig-pkg/
+
+- **Issue:** [#152](https://gitlab.com/devnw/zig/tls/-/issues/152)
+- **Category:** Code Quality / Cleanup
+- **Severity:** Low
+- **Requirement source:** Repo hygiene.
+- **Current state (evidence):**
+  - `zig-pkg/thread_pool-0.2.0-11B1Bjc9OQCp*` -- multiple stale dirs, ~4.1M total.
+- **Why this is a gap:** VCS bloat + contributor confusion about committed deps.
+- **Impact/Risk:** Low.
+- **Recommended fix:** Delete stale dirs; update `.gitignore`; ensure Zig package cache lives outside the repo.
+- **Acceptance criteria:** Stale dirs removed; `.gitignore` updated; `du -sh zig-pkg/` reduced.
+
+### GAP-0114: run_tests.sh stale hard-coded test counts
+
+- **Issue:** [#153](https://gitlab.com/devnw/zig/tls/-/issues/153)
+- **Category:** CI-CD / Tests
+- **Severity:** Medium
+- **Requirement source:** Test harness integrity.
+- **Current state (evidence):**
+  - `run_tests.sh:18-24` -- only 4 of ~17 test modules tracked; `zero_rtt.zig` expects 3, actual 5.
+- **Why this is a gap:** Harness silently lies about pass/fail for untracked modules; can drop tests without signal.
+- **Impact/Risk:** False confidence in CI.
+- **Recommended fix:** Drop hard-coded counts and rely on Zig's reporting, or auto-discover via `zig test --list-tests`.
+- **Acceptance criteria:** All ~17 modules exercised; script fails loudly on dropped tests.
+
+### GAP-0115: pre-commit zig-fmt doesn't cover tests/
+
+- **Issue:** [#156](https://gitlab.com/devnw/zig/tls/-/issues/156)
+- **Category:** CI-CD
+- **Severity:** Low
+- **Requirement source:** Formatting consistency.
+- **Current state (evidence):**
+  - `.pre-commit-config.yaml:100-107` -- zig-fmt scoped only to `src/`.
+- **Why this is a gap:** Test formatting drifts (see GAP-0116).
+- **Impact/Risk:** Cosmetic.
+- **Recommended fix:** Widen pattern to `^(src|tests)/.*\.zig$`; normalize tests/ once.
+- **Acceptance criteria:** Pre-commit runs on tests/; `zig fmt --check tests/` clean.
+
+### GAP-0116: two test files fail zig fmt --check
+
+- **Issue:** [#159](https://gitlab.com/devnw/zig/tls/-/issues/159)
+- **Category:** Code Quality / Cleanup
+- **Severity:** Low
+- **Requirement source:** Formatting consistency.
+- **Current state (evidence):**
+  - `tests/conformance/boringssl/post_quantum_readiness.zig:406`
+  - `tests/sct_openssl_conformance.zig:47, 88, 125, 135, 170`
+- **Why this is a gap:** Surfaces once GAP-0115 widens the pre-commit scope.
+- **Impact/Risk:** Low; cosmetic.
+- **Recommended fix:** `zig fmt` over the two files.
+- **Acceptance criteria:** `zig fmt --check tests/` clean.
+
+### GAP-0117: GitLab CI has no cache: stanza [CLOSED]
+
+- **Issue:** [#161](https://gitlab.com/devnw/zig/tls/-/issues/161)
+- **Category:** CI-CD / Performance
+- **Severity:** Medium
+- **Status:** Closed (2026-04-19)
+- **Requirement source:** CI pipeline performance.
+- **Current state (evidence):**
+  - `.gitlab-ci.yml` -- no `cache:` key at any scope; each job re-downloads Zig + dep cache (~300 MB/pipeline).
+- **Why this is a gap:** Slower pipelines; wasted egress and CI cost.
+- **Impact/Risk:** Medium -- pipeline drag on every MR.
+- **Recommended fix:** Add `cache:` keyed on `build.zig.zon` covering `.zig-cache/` and the Zig install dir.
+- **Acceptance criteria:** Warm pipeline time reduced by >= 30%; cold pipelines still work.
+- **Resolution:** 2026-04-19 -- Added `.cache-zig` YAML anchor with two caches (Zig toolchain keyed on `ZIG_VERSION`, `.zig-cache` keyed on branch slug) and applied it to every Zig-installing job. `glab ci lint` confirmed valid. Commits: 21fca95.
+
 ### GAP-0099: 19 GitLab issues remain open despite documented resolution [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Docs
 - **Severity:** Low
@@ -588,6 +854,7 @@ All 11 remaining open issues from the third review have been implemented:
 **Confidence:** Confirmed
 
 **Changes Made:**
+
 1. Changed `computeDigest` to return `ComputeDigestError![]const u8` error union
 2. SHA-1 case now returns `error.Sha1NotSupported` instead of incorrect hash
 3. Callers use `catch` to skip SHA-1 SingleResponses and try next
@@ -616,6 +883,7 @@ All 11 remaining open issues from the third review have been implemented:
 **Confidence:** Confirmed
 
 **Changes Made:**
+
 1. `Engine.deinit()` now zeroizes all sensitive material:
    - `my_priv` (X25519 private key)
    - `ecdhe_buf` (shared secret)
@@ -650,6 +918,7 @@ std.crypto.secureZero(u8, &self.ecdhe_buf);
 **Confidence:** Confirmed
 
 **Changes Made:**
+
 1. **context.zig** - Added error logging for all callbacks:
    - `confirmPeerFinished()`: Logs `on_peer_finished` callback errors
    - `bumpPhaseAfterFinished()`: Logs `on_handshake_complete` callback errors
@@ -690,6 +959,7 @@ Upon detailed review, the `catch unreachable` instances fall into two categories
    - X25519 `recoverPublicKey`: Only fails on all-zero key (cryptographic impossibility from random)
 
 **Decision:** These are acceptable because:
+
 - Inputs are validated before the operations
 - The operations mathematically cannot fail with valid inputs
 - Converting to error handling would add complexity without security benefit
@@ -762,6 +1032,7 @@ At 2^24 records (AES-GCM limit), key update is required long before u64 max is a
 **CWE:** [CWE-295](https://cwe.mitre.org/data/definitions/295.html) - Improper Certificate Validation
 
 **Changes Made:**
+
 1. Changed default from `true` to `false` at line 171
 2. Changed init function to use `false` at line 216
 3. Added comprehensive security warning documentation
@@ -787,6 +1058,7 @@ allow_insecure: bool = false,
 **CWE:** [CWE-532](https://cwe.mitre.org/data/definitions/532.html) - Insertion of Sensitive Information into Log File
 
 **Changes Made:**
+
 1. Added compile-time safety checks in all three files
 2. Build will fail with `@compileError` if tracing enabled in release builds
 
@@ -809,6 +1081,7 @@ comptime {
 **CWE:** [CWE-178](https://cwe.mitre.org/data/definitions/178.html) - Improper Handling of Case Sensitivity
 
 **Changes Made:**
+
 1. Added `toLowerAscii()` helper function for ASCII lowercase conversion
 2. Added `eqlAsciiCI()` function for case-insensitive string comparison
 3. Updated `matchDnsName()` to use case-insensitive comparison per RFC 4343
@@ -835,6 +1108,7 @@ fn eqlAsciiCI(a: []const u8, b: []const u8) bool {
 **CWE:** [CWE-384](https://cwe.mitre.org/data/definitions/384.html) - Session Fixation
 
 **Changes Made:**
+
 1. Added `PersistentAntiReplayStore` interface with VTable for dynamic dispatch
 2. Documented Redis implementation example in code comments
 3. Defined clear error handling semantics (fail-closed on backend errors)
@@ -871,6 +1145,7 @@ if (o != out.len) return error.Encode;
 
 **Changes Made:**
 Added `specs/README.md` explaining:
+
 - Contents are RFC specification documents
 - Example keys are publicly documented test vectors
 - Security scanners may flag these as false positives
@@ -891,6 +1166,7 @@ Added `specs/README.md` explaining:
 **CWE:** [CWE-287](https://cwe.mitre.org/data/definitions/287.html) - Improper Authentication
 
 **Changes Made:**
+
 1. Added `computeBinderTranscriptHash()` helper function
 2. Implemented full binder verification in `selectPsk()`
 3. Constant-time comparison to prevent timing attacks
@@ -1123,6 +1399,7 @@ None. All findings have clear remediation paths.
 **CWE:** [CWE-287](https://cwe.mitre.org/data/definitions/287.html) - Improper Authentication
 
 **Changes Made:**
+
 1. Tracked PSK selection status in `driveServerHandshakeFlight()`
 2. Enforced Certificate/CertificateVerify requirement unless PSK-only mode
 3. Returns `HandshakeError.MissingCertificate` when no cert and no PSK
@@ -1154,6 +1431,7 @@ if (self.config.server_cert_der) |cert_der| {
 **CWE:** [CWE-295](https://cwe.mitre.org/data/definitions/295.html) - Improper Certificate Validation
 
 **Changes Made:**
+
 1. Added `peer_ocsp_response` and `peer_sct_list` fields to Context
 2. Store OCSP and SCT data from Certificate message
 3. Enforce `require_ocsp` in `handleCertificateVerify()`
@@ -1186,6 +1464,7 @@ if (self.peer_ocsp_response) |ocsp_bytes| {
 **CWE:** [CWE-327](https://cwe.mitre.org/data/definitions/327.html) - Use of Broken Crypto
 
 **Changes Made:**
+
 1. Added algorithm policy check in `handleCertificateVerify()`
 2. Validates algorithm against `config.supported_signature_schemes`
 3. Returns `UnsupportedSignatureAlgorithm` if not in policy
@@ -1215,6 +1494,7 @@ if (!algorithm_supported) {
 **CWE:** [CWE-294](https://cwe.mitre.org/data/definitions/294.html) - Authentication Bypass
 
 **Changes Made:**
+
 1. Added basic sanity check for `obfuscated_ticket_age` (max 14 days)
 2. Documented callback responsibility for full age validation
 3. Added comprehensive RFC 8446 §4.2.11.1 documentation
@@ -1242,6 +1522,7 @@ if (ident.obfuscated_ticket_age > max_ticket_age_ms * 2) {
 
 **Changes Made:**
 The `PersistentAntiReplayStore` interface already exists with comprehensive documentation including:
+
 1. Security requirements (atomic check-and-set)
 2. Redis implementation example
 3. TTL considerations (7 days + skew)
@@ -1260,6 +1541,7 @@ The `PersistentAntiReplayStore` interface already exists with comprehensive docu
 **CWE:** [CWE-327](https://cwe.mitre.org/data/definitions/327.html) - Use of Broken Crypto
 
 **Changes Made:**
+
 1. Replaced hardcoded cipher suites with `config.supported_cipher_suites`
 2. Updated both ClientHello paths (initial + HRR)
 3. Falls back to safe defaults if config empty
@@ -1289,6 +1571,7 @@ for (cipher_suites) |suite| {
 **CWE:** [CWE-295](https://cwe.mitre.org/data/definitions/295.html) - Improper Certificate Validation
 
 **Changes Made:**
+
 1. Added `peer_sct_list` storage in Context
 2. Enforced `require_scts` in `handleCertificateVerify()`
 3. Parsed and validated SCT list
@@ -1304,7 +1587,7 @@ if (self.config.require_scts) {
 if (self.peer_sct_list) |sct_bytes| {
     const parsed_scts = sct.parseList(...) catch return HandshakeError.SctParsingFailed;
     defer self.allocator.free(parsed_scts);
-    
+
     if (self.config.on_sct_list) |callback| {
         callback(parsed_scts) catch return HandshakeError.SctCallbackRejected;
     }
@@ -1323,6 +1606,7 @@ if (self.peer_sct_list) |sct_bytes| {
 **CWE:** [CWE-345](https://cwe.mitre.org/data/definitions/345.html) - Data Integrity Issues
 
 **Changes Made:**
+
 1. Added `psk_seen` flag to extension parsing loop
 2. Returns `PskNotLastExtension` error if any extension follows PSK
 3. Checks both known and unknown extensions
@@ -1334,7 +1618,7 @@ while (parsing extensions) {
     if (psk_seen and ext != .pre_shared_key) {
         return error.PskNotLastExtension; // RFC 8446 §4.2.11
     }
-    
+
     if (ext == .pre_shared_key) {
         psk_seen = true;
     }
@@ -1353,6 +1637,7 @@ while (parsing extensions) {
 **CWE:** [CWE-345](https://cwe.mitre.org/data/definitions/345.html) - Data Integrity Issues
 
 **Changes Made:**
+
 1. Added `psk_key_exchange_modes` to ClientHelloView and ClientHelloInfo
 2. Enforced extension presence in `selectPsk()`
 3. Validated `psk_dhe_ke` (0x01) mode for forward secrecy
@@ -1384,6 +1669,7 @@ if (!supports_psk_dhe_ke) {
 **CWE:** [CWE-400](https://cwe.mitre.org/data/definitions/400.html) - Uncontrolled Resource Consumption
 
 **Changes Made:**
+
 1. Added `zero_rtt_limits: zero_rtt.ZeroRttLimits` field to Config
 2. Imported zero_rtt module in config.zig
 3. Documented security considerations and defaults (16KB)
@@ -1408,6 +1694,7 @@ zero_rtt_limits: zero_rtt.ZeroRttLimits = .{},
 
 **Changes Made:**
 Already complete - comprehensive documentation exists:
+
 1. `tests/test_certs/README.md` with security warnings
 2. Warning headers in all `.pem` key files
 3. Documentation of test-only purpose
@@ -1423,6 +1710,7 @@ Already complete - comprehensive documentation exists:
 **Test Execution:** 416/420 tests pass (2 skipped, 2 require update)
 
 **Known Test Issues:**
+
 - Two PSK-related tests fail due to missing `psk_key_exchange_modes` extension
 - This is expected: tests predate RFC 8446 §4.2.9 enforcement
 - Test failures validate that enforcement is working correctly
@@ -1437,5 +1725,5 @@ Already complete - comprehensive documentation exists:
 | Date | Author | Changes |
 |------|--------|---------|
 | 2026-03-25 | Claude Code | **Phase 10 gap-detector sweep**: Added 5 new gaps (GAP-0095 through GAP-0099). Verified GAP-0093 still open. Total open: 9. |
+| 2026-04-18 | Claude Code | **Phase 4 audit-tracking sync (/codepros:audit)**: Closed GAP-0097 (parallel module exported from `src/lib.zig:414` per commit b31f035; moved to RESOLVED). Added 18 new gaps GAP-0100..GAP-0117 (2 High: GAP-0100 sig_algs `@enumFromInt` DoS, GAP-0111 flake.nix missing `nix/quic.nix`; 6 Medium; 10 Low). GAP-0118 tracked as duplicate of GAP-0112 and not filed. Filed GitLab issues #136, #137, #138, #139, #140, #141, #142, #143, #144, #145, #146, #148, #149, #152, #153, #156, #159, #161. Total open: 20. |
 | 2026-01-30 | Claude Code | **Fourth implementation phase**: All 11 remaining gaps closed. Added server authentication enforcement, OCSP/SCT validation, cipher suite policy, PSK validation, extension order checks, and 0-RTT limits. **ALL 40 FINDINGS NOW CLOSED** ✅ |
-
