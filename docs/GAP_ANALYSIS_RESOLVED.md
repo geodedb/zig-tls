@@ -5,7 +5,10 @@
 
 ---
 
+## Pre-Phase Closures
+
 ### GAP-0082: QUAL-074 on_session_ticket callback not wired [RESOLVED]
+
 - **Issue:** [#115](https://gitlab.com/devnw/zig/tls/-/issues/115) (open -- tracks remaining callback work)
 - **Category:** Code Quality / API Contract
 - **Resolution:** Tracking inconsistency resolved. QUAL-074 was marked Closed but the
@@ -18,6 +21,7 @@
 - **Resolved date:** 2026-03-24
 
 ### GAP-0084: 9 open PERF items have no GitLab issues [RESOLVED]
+
 - **Issue:** N/A (tracking gap, no dedicated issue)
 - **Category:** CI-CD / Tracking
 - **Resolution:** Of the 9 PERF items originally without GitLab issues:
@@ -33,6 +37,7 @@
 - **Resolved date:** 2026-03-24
 
 ### GAP-0094: 7 closable GitLab issues remain open despite code implemented [RESOLVED]
+
 - **Issue:** [#135](https://gitlab.com/devnw/zig/tls/-/issues/135) (closed)
 - **Category:** Docs / Tracking
 - **Resolution:** All 7 stale issues closed with evidence comments:
@@ -52,6 +57,7 @@
 ## Phase 9 Closures (2026-03-24)
 
 ### SEC-009: x25519KeypairAndShared returns value instead of error on failure [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Security / Error Handling
 - **Resolution:** Function now returns `X25519Error!X25519Result` error union. Callers are forced
@@ -60,6 +66,7 @@
 - **Resolved date:** 2026-03-24
 
 ### SEC-045: @ptrCast on PSK binder/identity bypasses type safety [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Security / Type Safety
 - **Resolution:** Replaced `@ptrCast` with explicit field-by-field conversion for PSK identities,
@@ -68,6 +75,7 @@
 - **Resolved date:** 2026-03-24
 
 ### SEC-039: Handshake trace may leak error details in production [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Security / Logging
 - **Resolution:** Added `@compileError` guard for `handshake_trace_enabled` in release builds,
@@ -76,6 +84,7 @@
 - **Resolved date:** 2026-03-24
 
 ### SEC-010: OCSP digest comparison uses std.mem.eql [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Security / Timing Side-channel
 - **Resolution:** Won't Do. Non-secret public data (certificate hashes). `std.mem.eql` is
@@ -83,6 +92,7 @@
 - **Resolved date:** 2026-03-24
 
 ### SEC-011: Downgrade sentinel detection uses std.mem.eql [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Security / Timing Side-channel
 - **Resolution:** Won't Do. Sentinel values are public RFC 8446 constants. Timing leakage
@@ -90,6 +100,7 @@
 - **Resolved date:** 2026-03-24
 
 ### SEC-012: Debug trace logs private key scalar [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Security / Information Disclosure
 - **Resolution:** Won't Do. Compile-time guard already prevents this trace in release builds.
@@ -97,6 +108,7 @@
 - **Resolved date:** 2026-03-24
 
 ### SEC-013: @intCast in DER encoding [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Security / Integer Safety
 - **Resolution:** Won't Do. P-256 DER lengths always fit u8. Zig's `@intCast` is runtime
@@ -104,6 +116,7 @@
 - **Resolved date:** 2026-03-24
 
 ### SEC-038: Global mutable TrustStore TOCTOU window [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Security / Race Condition
 - **Resolution:** Won't Do. Benign; Zig lacks dynamic library unloading. Trust store changes
@@ -111,6 +124,7 @@
 - **Resolved date:** 2026-03-24
 
 ### QUAL-114: 22+ allocator.dupe without errdefer [CLOSED]
+
 - **Issue:** [#119](https://gitlab.com/devnw/zig/tls/-/work_items/119)
 - **Category:** Code Quality / Error Handling
 - **Resolution:** All 4 files verified: engine.zig (12 sites, QUAL-122/129), context.zig
@@ -120,6 +134,7 @@
 - **Resolved date:** 2026-03-24
 
 ### QUAL-118: SecretSlot struct duplicated [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Deduplication
 - **Resolution:** context.zig now imports SecretSlot from secrets.zig instead of maintaining
@@ -128,6 +143,7 @@
 - **Resolved date:** 2026-03-24
 
 ### QUAL-125: HashDigestCache dead code removed [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Dead Code
 - **Resolution:** Removed 23-line unused HashDigestCache definition from context.zig.
@@ -136,6 +152,7 @@
 - **Resolved date:** 2026-03-24
 
 ### QUAL-124: readU16 helper duplicated [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Deduplication
 - **Resolution:** Won't Do. sct.zig intentionally avoids tls13 imports (documented in code).
@@ -143,6 +160,7 @@
 - **Resolved date:** 2026-03-24
 
 ### PERF-045: hkdfLabel still allocates via FBA [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Performance / Allocation
 - **Resolution:** Direct stack buffer at `src/key_schedule.zig:312` replaces FBA allocation.
@@ -151,6 +169,7 @@
 - **Resolved date:** 2026-03-24
 
 ### PERF-037: Redundant leaf cert re-parse [CLOSED]
+
 - **Issue:** [#118](https://gitlab.com/devnw/zig/tls/-/issues/118)
 - **Category:** Performance / Redundant Work
 - **Resolution:** Single parse shared for OCSP validation and signature verification.
@@ -159,6 +178,7 @@
 - **Resolved date:** 2026-03-24
 
 ### PERF-038: sendClientFinished 3-4 allocating encodeHandshake calls [CLOSED]
+
 - **Issue:** [#120](https://gitlab.com/devnw/zig/tls/-/issues/120)
 - **Category:** Performance / Allocation
 - **Resolution:** `appendOutboundFramed` replaces 4 `encodeHandshake` calls. Zero-alloc
@@ -167,6 +187,7 @@
 - **Resolved date:** 2026-03-24
 
 ### PERF-019: Extension buffers built separately then appended [CLOSED]
+
 - **Issue:** [#104](https://gitlab.com/devnw/zig/tls/-/issues/104)
 - **Category:** Performance / Allocation
 - **Resolution:** sendClientHello2 uses appendOutboundFramed for zero-alloc framing.
@@ -175,6 +196,7 @@
 - **Resolved date:** 2026-03-24
 
 ### PERF-021: Nested O(n*m) cipher suite negotiation loops [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Performance / Algorithm Complexity
 - **Resolution:** Won't Do. Acceptable at current sizes (TLS 1.3 defines only 5 cipher suites;
@@ -182,18 +204,21 @@
 - **Resolved date:** 2026-03-24
 
 ### PERF-033: No CI performance regression detection [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Performance / CI Infrastructure
 - **Resolution:** Won't Do. CI infrastructure concern, not library code.
 - **Resolved date:** 2026-03-24
 
 ### PERF-044: Benchmark uses page_allocator [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Performance / Test Infrastructure
 - **Resolution:** Won't Do. Test infrastructure only; does not affect library code.
 - **Resolved date:** 2026-03-24
 
 ### GAP-0076: CRL distribution point checking absent [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** General / Feature
 - **Resolution:** Won't Do. By design; OCSP stapling is the chosen revocation checking
@@ -201,6 +226,7 @@
 - **Resolved date:** 2026-03-24
 
 ### GAP-0077: Minimal ClientHello/ServerHello encoders [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** General / Legacy Code
 - **Resolution:** Won't Do. Will resolve via Engine deprecation (PERF-026). These minimal
@@ -208,6 +234,7 @@
 - **Resolved date:** 2026-03-24
 
 ### GAP-0092: GitLab issue #12 false claims [WON'T DO]
+
 - **Issue:** [#133](https://gitlab.com/devnw/zig/tls/-/issues/133)
 - **Category:** General / Issue Tracker Maintenance
 - **Resolution:** Won't Do. Issue tracker maintenance tracked by Issue #133.
@@ -218,6 +245,7 @@
 ## Phase 8 Closures (2026-03-24)
 
 ### GAP-0087: RELEASE_NOTES.md falsely claims CRL parsing and validation [CLOSED]
+
 - **Issue:** [#128](https://gitlab.com/devnw/zig/tls/-/issues/128)
 - **Category:** Documentation Accuracy
 - **Resolution:** RELEASE_NOTES.md line 63 corrected: "CRL parsing and validation" replaced with
@@ -227,6 +255,7 @@
 - **Resolved date:** 2026-03-24
 
 ### GAP-0088: RELEASE_NOTES.md falsely claims AIA support [CLOSED]
+
 - **Issue:** [#129](https://gitlab.com/devnw/zig/tls/-/issues/129)
 - **Category:** Documentation Accuracy
 - **Resolution:** RELEASE_NOTES.md line 64 corrected: "Authority Information Access (AIA)" marked
@@ -235,6 +264,7 @@
 - **Resolved date:** 2026-03-24
 
 ### GAP-0089: RELEASE_NOTES.md falsely claims certificate policy enforcement [CLOSED]
+
 - **Issue:** [#130](https://gitlab.com/devnw/zig/tls/-/issues/130)
 - **Category:** Documentation Accuracy
 - **Resolution:** RELEASE_NOTES.md line 65 corrected: "Certificate policy enforcement" marked as
@@ -243,6 +273,7 @@
 - **Resolved date:** 2026-03-24
 
 ### GAP-0090: RELEASE_NOTES.md falsely claims FFDHE key exchange [CLOSED]
+
 - **Issue:** [#131](https://gitlab.com/devnw/zig/tls/-/issues/131)
 - **Category:** Documentation Accuracy
 - **Resolution:** RELEASE_NOTES.md line 78 corrected: ffdhe2048/3072/4096 now states "wire format
@@ -251,6 +282,7 @@
 - **Resolved date:** 2026-03-24
 
 ### GAP-0091: RELEASE_NOTES.md overstates P-256/P-384 key exchange support [CLOSED]
+
 - **Issue:** [#132](https://gitlab.com/devnw/zig/tls/-/issues/132)
 - **Category:** Documentation Accuracy
 - **Resolution:** RELEASE_NOTES.md lines 76-77 corrected: secp256r1/secp384r1 clarified as
@@ -260,6 +292,7 @@
 - **Resolved date:** 2026-03-24
 
 ### SEC-047: Engine computeApplicationSecrets incorrect key schedule [CLOSED]
+
 - **Issue:** [#123](https://gitlab.com/devnw/zig/tls/-/issues/123) (confidential)
 - **Category:** Security / Key Schedule
 - **Resolution:** `computeApplicationSecrets` in engine.zig now uses `emptyHash()` for context
@@ -269,6 +302,7 @@
 - **Resolved date:** 2026-03-24
 
 ### SEC-040: startClientHandshake missing X25519 clamping [CLOSED]
+
 - **Issue:** [#126](https://gitlab.com/devnw/zig/tls/-/issues/126)
 - **Category:** Security / Defense-in-depth
 - **Resolution:** Explicit X25519 clamping (priv[0]&=248, priv[31]&=127|=64) added per RFC 7748
@@ -277,6 +311,7 @@
 - **Resolved date:** 2026-03-24
 
 ### SEC-048: Server negotiateCipherAndKeys missing X25519 clamping [CLOSED]
+
 - **Issue:** [#127](https://gitlab.com/devnw/zig/tls/-/issues/127)
 - **Category:** Security / Defense-in-depth
 - **Resolution:** Explicit X25519 clamping added to server key generation path for consistency.
@@ -284,6 +319,7 @@
 - **Resolved date:** 2026-03-24
 
 ### SEC-046: PSK identity comparison non-constant-time [CLOSED]
+
 - **Issue:** N/A (no dedicated GitLab issue)
 - **Category:** Security / Timing Side-channel
 - **Resolution:** Replaced `std.mem.eql` with `std.crypto.timing_safe.compare` for PSK identity
@@ -292,6 +328,7 @@
 - **Resolved date:** 2026-03-24
 
 ### QUAL-115: setTransportParameters silently swallows OOM [CLOSED]
+
 - **Issue:** [#122](https://gitlab.com/devnw/zig/tls/-/work_items/122)
 - **Category:** Code Quality / API Contract
 - **Resolution:** Changed return type from `void` to `!void` and replaced `catch return` with
@@ -300,6 +337,7 @@
 - **Resolved date:** 2026-03-24
 
 ### QUAL-120: quic_transport_params.zig decode() missing errdefer [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Error Handling
 - **Resolution:** Added `errdefer params.deinit(allocator)` immediately after params initialization.
@@ -308,6 +346,7 @@
 - **Resolved date:** 2026-03-24
 
 ### QUAL-121: Engine cert handling converts OOM to cert-invalid [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Error Handling
 - **Resolution:** Replaced 3 instances of `catch { break :blk false }` with `try` in cert handling,
@@ -316,6 +355,7 @@
 - **Resolved date:** 2026-03-24
 
 ### PERF-039: tls13_build_context_and_hash heap allocation [CLOSED]
+
 - **Issue:** [#121](https://gitlab.com/devnw/zig/tls/-/issues/121)
 - **Category:** Performance / Allocation
 - **Resolution:** Changed function signature to accept caller-provided `*[512]u8` stack buffer.
@@ -328,6 +368,7 @@
 ## Phase 10 Closures (2026-03-25)
 
 ### GAP-0095: PSK conformance test compile error -- duplicate const Secret [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Bug / Test
 - **Resolution:** Removed duplicate `const Secret = ks.Secret;` at line 87. Conformance tests went
@@ -336,6 +377,7 @@
 - **Resolved date:** 2026-03-25
 
 ### GAP-0096: README test count stale [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Docs
 - **Resolution:** Updated README test counts from 853 to 1000 (551 unit + 449 conformance).
@@ -344,6 +386,7 @@
 - **Resolved date:** 2026-03-25
 
 ### GAP-0093: 3 skipped tests indicate incomplete coverage [WON'T DO]
+
 - **Issue:** [#134](https://gitlab.com/devnw/zig/tls/-/issues/134)
 - **Category:** Test
 - **Resolution:** Won't Do. 2 of 3 skipped tests require Zig stdlib features not yet available
@@ -352,6 +395,7 @@
 - **Resolved date:** 2026-03-25
 
 ### GAP-0099: 19 GitLab issues remain open despite documented resolution [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Docs / Tracking
 - **Resolution:** Won't Do. Issue tracker maintenance is a separate administrative task from
@@ -359,6 +403,7 @@
 - **Resolved date:** 2026-03-25
 
 ### SEC-050: Private key not zeroed on error in startClientHandshake [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Security / Key Material Zeroization
 - **Resolution:** Added `defer secureZero` for X25519 private key in `startClientHandshake` and
@@ -367,6 +412,7 @@
 - **Resolved date:** 2026-03-25
 
 ### SEC-055: client_priv retained after DH computation [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Security / Key Material Zeroization
 - **Resolution:** Zeroed `client_priv` after DH computation in `handleServerHello`. Private key
@@ -375,6 +421,7 @@
 - **Resolved date:** 2026-03-25
 
 ### SEC-049: Missing @compileError guards on 4 trace flags [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Security / Information Disclosure Defense-in-Depth
 - **Resolution:** Added `@compileError` guards on all 4 trace flags in `engine.zig`, `transcript.zig`,
@@ -383,6 +430,7 @@
 - **Resolved date:** 2026-03-25
 
 ### SEC-054: Memory leak in parseClientHello on error paths [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Security / Memory Safety
 - **Resolution:** Added errdefer for all allocated slices in `parseClientHello`. Memory properly
@@ -391,6 +439,7 @@
 - **Resolved date:** 2026-03-25
 
 ### SEC-052: ASN.1 readInteger silent truncation >8 bytes [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Security / Integer Safety
 - **Resolution:** Added `IntegerOverflow` guard in `readInteger` for values >8 bytes. Rejects
@@ -399,6 +448,7 @@
 - **Resolved date:** 2026-03-25
 
 ### QUAL-206: Redundant condition in engine.zig [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Cleanup
 - **Resolution:** Removed redundant `if (elen >= 2)` inside `if (elen >= 3)` block in engine.zig.
@@ -406,6 +456,7 @@
 - **Resolved date:** 2026-03-25
 
 ### QUAL-204: Magic hex constants in engine.zig [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Readability
 - **Resolution:** Replaced all magic hex extension type constants (0x0010, 0x0039, 0x0033, etc.)
@@ -414,6 +465,7 @@
 - **Resolved date:** 2026-03-25
 
 ### QUAL-210: TicketEntryView exported but unused [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Cleanup
 - **Resolution:** Removed unused `TicketEntryView` exports from `mod.zig` and `tls13.zig`.
@@ -421,6 +473,7 @@
 - **Resolved date:** 2026-03-25
 
 ### QUAL-128: context.zig 11 dupe sites without errdefer [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Error Handling
 - **Resolution:** Added errdefer at 8 `allocator.dupe` sites in context.zig that lacked coverage.
@@ -428,6 +481,7 @@
 - **Resolved date:** 2026-03-25
 
 ### QUAL-207: 17 .? unwraps in context.zig [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Safety
 - **Resolution:** Added 10 SAFETY comments for `.?` unwraps documenting invariants. Converted
@@ -436,6 +490,7 @@
 - **Resolved date:** 2026-03-25
 
 ### QUAL-201: parseCert 396 lines with inline extension sub-parsers [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Maintainability
 - **Resolution:** Extracted 7 extension sub-parsers from `parseCert`, reducing it from 396 to 194 lines.
@@ -445,6 +500,7 @@
 - **Resolved date:** 2026-03-25
 
 ### QUAL-202: Deep nesting in x509.zig addressed by parseCert extraction [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Readability
 - **Resolution:** Nesting depth in x509.zig reduced as a direct consequence of QUAL-201 extraction.
@@ -453,6 +509,7 @@
 - **Resolved date:** 2026-03-25
 
 ### QUAL-203: OCSP error mapping loses diagnostic info [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Code Quality / API Contract
 - **Resolution:** Added trace logging to 8 critical OCSP parse points. Fixed `.?` unwraps to
@@ -461,6 +518,7 @@
 - **Resolved date:** 2026-03-25
 
 ### QUAL-093: CI pipeline lacks build caching [WON'T DO]
+
 - **Issue:** [#94](https://gitlab.com/devnw/zig/tls/-/work_items/94)
 - **Category:** CI-CD / Infrastructure
 - **Resolution:** Won't Do. CI pipeline caching is infrastructure configuration, not library code.
@@ -468,6 +526,7 @@
 - **Resolved date:** 2026-03-25
 
 ### QUAL-130: Stale line counts in QUAL-069 [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Cleanup
 - **Resolution:** Won't Do. Cosmetic doc update of a deferred item. The actual line count is
@@ -475,6 +534,7 @@
 - **Resolved date:** 2026-03-25
 
 ### QUAL-123: build.zig over 800 lines [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Code Quality / Maintainability
 - **Resolution:** Won't Do. Large build.zig files are idiomatic for Zig projects with many test
@@ -482,6 +542,7 @@
 - **Resolved date:** 2026-03-25
 
 ### PERF-202: sendKeyUpdate allocates 5-byte buffer [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Performance / Allocation
 - **Resolution:** sendKeyUpdate uses inline 5-byte stack buffer instead of heap allocation
@@ -490,6 +551,7 @@
 - **Resolved date:** 2026-03-25
 
 ### PERF-203: HRR client path uses allocating encodeHandshake [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Performance / Allocation
 - **Resolution:** HRR client path uses stack header for transcript update instead of allocating
@@ -498,6 +560,7 @@
 - **Resolved date:** 2026-03-25
 
 ### PERF-204: HRR server path uses allocating encodeHandshake [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Performance / Allocation
 - **Resolution:** HRR server path uses stack header + appendOutboundFramed instead of allocating
@@ -506,6 +569,7 @@
 - **Resolved date:** 2026-03-25
 
 ### PERF-042: Per-cert allocator.dupe in handleCertificate loop [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Performance / Allocation
 - **Resolution:** handleCertificate uses single contiguous buffer for cert chain instead of
@@ -514,6 +578,7 @@
 - **Resolved date:** 2026-03-25
 
 ### PERF-016: Global trust store RwLock contention [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Performance / Contention
 - **Resolution:** Cached trust store in Context avoids RwLock on every handshake. Trust store
@@ -522,6 +587,7 @@
 - **Resolved date:** 2026-03-25
 
 ### PERF-041: Zero-capacity ArrayList in validateChain name constraints [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Performance / Allocation
 - **Resolution:** ArrayList pre-sized to 4 in validateChain name constraints, avoiding
@@ -530,6 +596,7 @@
 - **Resolved date:** 2026-03-25
 
 ### PERF-043: Context struct hot/cold field mixing [CLOSED]
+
 - **Issue:** N/A
 - **Category:** Performance / Cache Locality
 - **Resolution:** Context struct fields reordered hot->warm->cold for improved cache locality.
@@ -538,8 +605,29 @@
 - **Resolved date:** 2026-03-25
 
 ### PERF-206: Benchmark suite lacks allocation tracking [WON'T DO]
+
 - **Issue:** N/A
 - **Category:** Performance / Test Infrastructure
 - **Resolution:** Won't Do. Test infrastructure only; does not affect library code or runtime
   performance. Allocation tracking is a benchmark enhancement, not a code defect.
 - **Resolved date:** 2026-03-25
+
+---
+
+## Phase 4 Closures (2026-04-18)
+
+### GAP-0097: parallel module built but never imported at runtime [RESOLVED]
+
+- **Issue:** N/A (no matching GitLab issue was ever filed for this gap)
+- **Category:** Code Quality
+- **Resolution:** The `parallel` module is now publicly exported from the root library API.
+  Commit `b31f035` ("feat(tls): export parallel module from public root API") adds
+  `pub const parallel = @import("parallel");` at `src/lib.zig:414` with documentation
+  for `parallelCertificateValidate`, `parallelSignatureVerify`, `parallelAeadSeal`,
+  `parallelKeyDerive`, and pool lifecycle helpers. A smoke test proves the re-export
+  works end-to-end. Latent Zig 0.16 compat issues masked by the module's prior
+  unreachability were fixed in the same commit.
+- **Evidence:**
+  - `src/lib.zig:414` -- `pub const parallel = @import("parallel");`
+  - `git show b31f035 --stat` -- `build.zig | 1 +`, `src/lib.zig | 16 ++++++++++++++++`, `src/parallel.zig | 4 +---`
+- **Resolved date:** 2026-04-18

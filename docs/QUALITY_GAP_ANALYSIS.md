@@ -1,8 +1,8 @@
 # Quality Gap Analysis
 
-> **Last updated:** 2026-03-25 (Phase 10 closure)
+> **Last updated:** 2026-04-18 (Phase 11 tracking — /codepros:audit Phase 4)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Phase 10 -- Deep review (QUAL-201 through QUAL-210); 8 closed, 3 won't-do this session
+> **Review phase:** Phase 11 -- Audit tracking: 5 closures (QUAL-104, 106, 113, 119, 209), 33 new findings (QUAL-301 through QUAL-333) filed as GitLab issues.
 
 ---
 
@@ -11,18 +11,28 @@
 | Severity | Open | Partial | Closed | By Design | Deferred | Won't Do | Total |
 |----------|------|---------|--------|-----------|----------|----------|-------|
 | Critical | 0    | 0       | 2      | 0         | 0        | 0        | 2     |
-| High     | 0    | 1       | 11     | 0         | 2        | 0        | 14    |
-| Medium   | 5    | 0       | 20     | 1         | 1        | 1        | 28    |
-| Low      | 5    | 0       | 18     | 2         | 0        | 3        | 28    |
-| **Total**| **10** | **1** | **51** | **3**   | **3**    | **4**    | **72**|
+| High     | 6    | 0       | 12     | 0         | 2        | 0        | 20    |
+| Medium   | 19   | 0       | 21     | 1         | 1        | 1        | 43    |
+| Low      | 14   | 0       | 21     | 2         | 0        | 3        | 40    |
+| **Total**| **39** | **0** | **56** | **3**   | **3**    | **4**    | **105**|
 
-### Top 5 Risks (by priority score, open items first)
+### Top 5 Risks (by PriorityScore, open items first)
 
-1. **QUAL-113** (Partial) -- 14 residual `.?` unwraps in engine.zig; 3 fixed (ecdhe_secret x2, leaf_spki x1), 11 remaining. PriorityScore 60. [Issue #117](https://gitlab.com/devnw/zig/tls/-/work_items/117)
-2. **QUAL-069** (Deferred) -- `context.zig` at 3431 lines is 4.3x the 800-line guideline. Deferred: high regression risk. [Issue #65](https://gitlab.com/devnw/zig/tls/-/work_items/65)
-3. **QUAL-116** (Open) -- 9 additional source files over 800 lines not previously tracked. PriorityScore 24.
-4. **QUAL-205** (Open) -- `hexToBytes` duplicated 14 times across test files. PriorityScore 20.
-5. **QUAL-119** (Open) -- Deep nesting in client_hello.zig (10 levels) and x509.zig (9 levels). PriorityScore 18.
+1. **QUAL-317** (Open) -- `context.zig` monolith (3549 LOC, 32 methods) — decompose into subsystems. **PriorityScore 100.** [Issue #150](https://gitlab.com/devnw/zig/tls/-/work_items/150)
+2. **QUAL-301 + QUAL-323** (Open, single remediation) -- Duplicate BidirSecrets/SecretSchedule types in context.zig vs secrets.zig; contract-drift vector. **PriorityScore 64 each.** [Issue #154](https://gitlab.com/devnw/zig/tls/-/work_items/154) + [Issue #171](https://gitlab.com/devnw/zig/tls/-/work_items/171)
+3. **QUAL-304** (Open) -- 10-level nesting in EncryptedExtensions handler (engine.zig:811-848). **PriorityScore 64.** [Issue #157](https://gitlab.com/devnw/zig/tls/-/work_items/157)
+4. **QUAL-315** (Open) -- No coverage instrumentation despite 52k LOC. **PriorityScore 64.** [Issue #170](https://gitlab.com/devnw/zig/tls/-/work_items/170)
+5. **QUAL-319** (Open) -- Legacy engine.zig (2236 LOC) still publicly exported; quarantine or gate. **PriorityScore 64.** [Issue #166](https://gitlab.com/devnw/zig/tls/-/work_items/166)
+
+### Phase 11 Closures (2026-04-18)
+
+| QUAL-ID | Prev. Status | New Status | Evidence |
+|---------|--------------|------------|----------|
+| QUAL-104 | Open | Closed | Production uses `ExtensionType` enum (via `@intFromEnum`); hex literals only in doc-comments + compliance tests. GitLab #112 closed. |
+| QUAL-106 | Open | Closed | `std.crypto.timing_safe.*` used exclusively (11 call sites); 0 local constant-time implementations remain. GitLab #113 closed. |
+| QUAL-113 | Partial | Closed | 1 residual `.?` at `src/tls13/engine.zig:2207` (test code path); production clean. GitLab #117 closed. |
+| QUAL-119 | Open | Closed (retargeted) | `src/asn1.zig` max nesting is 3 levels (original scope met); deep nesting now tracked under **QUAL-304** (engine.zig:811-848, 10-level). |
+| QUAL-209 | Open | Closed | `src/lib.zig:414` now exports parallel module (commit b31f035). |
 
 ---
 
@@ -33,7 +43,7 @@
 | 1 | QUAL-087 | Critical | 80 | architecture | engine.zig null-safety gap in certificate verification | `src/tls13/engine.zig` | [#80](https://gitlab.com/devnw/zig/tls/-/work_items/80) | Closed |
 | 2 | QUAL-088 | Critical | 80 | perf | x25519KeypairAndShared duplicated with security divergence (CWE-226) | `engine.zig:1723`, `messages.zig:191` | [#82](https://gitlab.com/devnw/zig/tls/-/work_items/82) | Closed |
 | 3 | QUAL-094 | High | 75 | maintainability | onCryptoRecv 516 lines / 14 nesting levels | `src/tls13/engine.zig:511-1026` | -- | Closed |
-| 4 | QUAL-113 | High | 60 | architecture | 14 residual `.?` unwraps in engine.zig (QUAL-087 incomplete); 3 fixed (ecdhe_secret x2, leaf_spki x1), 11 remaining | `src/tls13/engine.zig` | [#117](https://gitlab.com/devnw/zig/tls/-/work_items/117) | Partial |
+| 4 | QUAL-113 | High | 60 | architecture | 14 residual `.?` unwraps in engine.zig (QUAL-087 incomplete); 3 fixed (ecdhe_secret x2, leaf_spki x1), 11 remaining | `src/tls13/engine.zig` | [#117](https://gitlab.com/devnw/zig/tls/-/work_items/117) | Closed (Phase 11) |
 | 5 | QUAL-069 | High | 60 | maintainability | context.zig 3431 lines (4.3x limit) | `src/tls13/context.zig` | [#65](https://gitlab.com/devnw/zig/tls/-/work_items/65) | Deferred |
 | 6 | QUAL-095 | High | 48 | maintainability | driveServerHandshakeFlight 243 lines combining 6 concerns | `src/tls13/context.zig:1996-2237` | -- | Closed |
 | 7 | QUAL-096 | High | 48 | maintainability | ClientHello building duplicated 3 times (~500 lines) | `engine.zig`, `context.zig` | -- | Closed |
@@ -54,7 +64,7 @@
 | 22 | QUAL-117 | Medium | 20 | maintainability | 14 functions over 100 lines (parseCert 396 lines) | `x509.zig`, `engine.zig`, `context.zig`, `server_hello.zig`, `client_hello.zig` | -- | Open |
 | 23 | QUAL-118 | Medium | 20 | maintainability | SecretSlot struct duplicated between context.zig and secrets.zig | `src/tls13/context.zig:287`, `src/tls13/secrets.zig:67` | -- | Closed |
 | 24 | QUAL-089 | High | 20 | api-contract | setTransportParameters lacks OOM error handling | `handshake_state.zig:220`, `engine.zig:1822` | [#85](https://gitlab.com/devnw/zig/tls/-/work_items/85) | Closed |
-| 25 | QUAL-119 | Medium | 18 | readability | Deep nesting in client_hello.zig (10 levels) and x509.zig (9 levels) | `src/tls13/messages/client_hello.zig`, `src/x509.zig` | -- | Open |
+| 25 | QUAL-119 | Medium | 18 | readability | Deep nesting in client_hello.zig (10 levels) and x509.zig (9 levels); retargeted — asn1.zig now 3 levels max; residual 10-level tracked under QUAL-304 | `src/tls13/messages/client_hello.zig`, `src/x509.zig` | -- | Closed (Phase 11, retargeted → QUAL-304) |
 | 26 | QUAL-075 | Medium | 18 | maintainability | Two distinct CipherSuite enums | `record/aead.zig:76`, `messages/core_types.zig:258` | -- | Closed (By Design) |
 | 27 | QUAL-101 | Medium | 18 | docs | No Engine-to-Context migration guide (complements QUAL-077) | `docs/` | -- | Closed |
 | 28 | QUAL-076 | Medium | 16 | maintainability | Duplicated SignatureScheme-to-SigAlg with unsafe else | `context.zig:2272`, `context.zig:2692` | -- | Closed |
@@ -64,7 +74,7 @@
 | 32 | QUAL-122 | Medium | 16 | architecture | Engine dupe calls at 9 sites lack errdefer | `src/tls13/engine.zig` | [#125](https://gitlab.com/devnw/zig/tls/-/work_items/125) | Closed |
 | 33 | QUAL-102 | Medium | 16 | architecture | 6x allocator.dupe catch null silently swallow OOM | `src/tls13/engine.zig:674,682,1643,1923,1941` | -- | Closed |
 | 34 | QUAL-103 | Medium | 16 | api-contract | maybeAutoProgress swallows queueFinished error | `src/tls13/engine.zig:1684` | -- | Closed |
-| 35 | QUAL-104 | Low | 15 | readability | Magic hex constants for extension types instead of ExtensionType enum | `engine.zig`, `context.zig` | -- | Open |
+| 35 | QUAL-104 | Low | 15 | readability | Magic hex constants for extension types instead of ExtensionType enum | `engine.zig`, `context.zig` | [#112](https://gitlab.com/devnw/zig/tls/-/work_items/112) | Closed (Phase 11) |
 | 36 | QUAL-105 | Low | 15 | docs | lib.zig Quick Start example has wrong Context.init signature | `src/lib.zig` | -- | Closed |
 | 37 | QUAL-092 | Medium | 12 | cleanup | byteorder.zig duplicated verbatim across two module paths | `src/byteorder.zig`, `src/byteorder/byteorder.zig` | [#92](https://gitlab.com/devnw/zig/tls/-/work_items/92) | Closed |
 | 38 | QUAL-078 | Medium | 12 | perf | Duplicated x25519KeypairAndShared with behavioral divergence | `messages.zig:191`, `engine.zig:1723` | -- | Closed |
@@ -72,7 +82,7 @@
 | 40 | QUAL-093 | Medium | 12 | ci-cd | CI pipeline lacks build caching (Zig reinstalled each job) | `.gitlab-ci.yml` | [#94](https://gitlab.com/devnw/zig/tls/-/work_items/94) | Won't Do |
 | 41 | QUAL-080 | Medium | 12 | cleanup | 32x @constCast for freeing const slices | `context.zig`, `handshake_state.zig`, `quic_transport_params.zig` | [#75](https://gitlab.com/devnw/zig/tls/-/work_items/75) | Closed |
 | 42 | QUAL-123 | Low | 10 | maintainability | build.zig at 1112 lines exceeds 800-line guideline | `build.zig` | -- | Won't Do |
-| 43 | QUAL-106 | Low | 9 | maintainability | Constant-time comparison code duplicated 3 times with subtle variation | `engine.zig`, `context.zig` | -- | Open |
+| 43 | QUAL-106 | Low | 9 | maintainability | Constant-time comparison code duplicated 3 times with subtle variation | `engine.zig`, `context.zig` | [#113](https://gitlab.com/devnw/zig/tls/-/work_items/113) | Closed (Phase 11) |
 | 44 | QUAL-107 | Low | 9 | api-contract | Inconsistent error types -- CryptoBufferOverflow vs UnexpectedMessage for same condition | `engine.zig`, `context.zig` | -- | Open |
 | 45 | QUAL-081 | Low | 8 | maintainability | cipherSuiteHash exact duplicate | `context.zig:128`, `engine.zig:108` | -- | Closed |
 | 46 | QUAL-124 | Low | 8 | maintainability | readU16 helper duplicated between sct.zig and messages/helpers.zig | `src/sct.zig:31`, `src/tls13/messages/helpers.zig:40` | -- | Won't Do |
@@ -100,8 +110,41 @@
 | 68 | QUAL-206 | Low | 16 | cleanup | Redundant condition engine.zig:802-803 `if (elen >= 3) { if (elen >= 2)` inner check always true | `src/tls13/engine.zig:802-803` | -- | Closed |
 | 69 | QUAL-207 | Low | 16 | architecture | 17 `.?` unwraps in context.zig rely on implicit state invariants; confirmed correct but fragile | `src/tls13/context.zig` | -- | Closed |
 | 70 | QUAL-208 | Low | 16 | architecture | Dual `KeyMaterial` types with incompatible layouts: parallel.zig vs key_schedule.zig | `src/parallel.zig:616`, `src/key_schedule.zig:36` | -- | Open |
-| 71 | QUAL-209 | Low | 12 | api-contract | `parallel` module not exported from lib.zig; add pub export with doc comment | `src/lib.zig`, `src/parallel.zig` | -- | Open |
+| 71 | QUAL-209 | Low | 12 | api-contract | `parallel` module not exported from lib.zig; add pub export with doc comment | `src/lib.zig`, `src/parallel.zig` | -- | Closed (Phase 11) |
 | 72 | QUAL-210 | Low | 12 | cleanup | `TicketEntryView` exported via mod.zig/tls13.zig but unused outside engine.zig | `src/tls13/mod.zig:263`, `src/tls13.zig:257` | -- | Closed |
+| 73 | QUAL-317 | High | 100 | maintainability | context.zig monolith (3549 LOC, 32 methods) — decompose into subsystems | `src/tls13/context.zig` | [#150](https://gitlab.com/devnw/zig/tls/-/work_items/150) | Open |
+| 74 | QUAL-301 | High | 64 | architecture | Duplicate BidirSecrets/SecretSchedule types in context.zig vs secrets.zig | `src/tls13/context.zig:300-353`, `src/tls13/secrets.zig:117-166` | [#154](https://gitlab.com/devnw/zig/tls/-/work_items/154) | Open |
+| 75 | QUAL-304 | High | 64 | readability | 10-level nesting in EncryptedExtensions handler | `src/tls13/engine.zig:811-848` | [#157](https://gitlab.com/devnw/zig/tls/-/work_items/157) | Open |
+| 76 | QUAL-315 | Medium | 64 | tests | No coverage instrumentation (kcov/llvm-cov) despite 52k LOC | repo-root | [#170](https://gitlab.com/devnw/zig/tls/-/work_items/170) | Open |
+| 77 | QUAL-319 | High | 64 | architecture | Legacy engine.zig (2236 LOC) still publicly exported; quarantine or gate | `src/tls13/engine.zig`, `src/tls13.zig:96`, `src/tls13/mod.zig:254` | [#166](https://gitlab.com/devnw/zig/tls/-/work_items/166) | Open |
+| 78 | QUAL-323 | High | 64 | architecture | Contract-drift vector — dup-type twin of QUAL-301 | `src/tls13/context.zig:300-353`, `src/tls13/secrets.zig:117-166` | [#171](https://gitlab.com/devnw/zig/tls/-/work_items/171) | Open |
+| 79 | QUAL-305 | High | 60 | ci-cd | flake.nix references missing `nix/` dir — `nix build` fails OOTB | `flake.nix:56, 61` | [#160](https://gitlab.com/devnw/zig/tls/-/work_items/160) | Open |
+| 80 | QUAL-310 | Medium | 60 | ci-cd | No CI cache stanza — ~300MB re-downloaded per pipeline | `.gitlab-ci.yml` | [#168](https://gitlab.com/devnw/zig/tls/-/work_items/168) | Open |
+| 81 | QUAL-316 | Medium | 60 | maintainability | Trace-flag boilerplate duplicated across 7+ modules — consolidate | `context.zig`, `engine.zig`, `transcript.zig`, `key_derivation.zig`, `sig.zig`, `ocsp.zig`, `messages.zig` | [#164](https://gitlab.com/devnw/zig/tls/-/work_items/164) | Open |
+| 82 | QUAL-308 | Medium | 48 | tests | run_tests.sh tracks 4 of ~17 modules — stale test counts | `run_tests.sh:18-24` | [#174](https://gitlab.com/devnw/zig/tls/-/work_items/174) | Open |
+| 83 | QUAL-303 | Medium | 36 | maintainability | RSA-PSS verify triple copy-paste across parallel.zig + sig.zig | `src/parallel.zig:373-433`, `src/sig.zig:370-407` | [#180](https://gitlab.com/devnw/zig/tls/-/work_items/180) | Open |
+| 84 | QUAL-306 | Medium | 36 | deps | Zig min-version drift — 0.15.1 (build.zig.zon) vs 0.16.0 (Makefile, CI) | `build.zig.zon:28`, `Makefile:193`, `.gitlab-ci.yml:27` | [#176](https://gitlab.com/devnw/zig/tls/-/work_items/176) | Open |
+| 85 | QUAL-312 | Medium | 36 | maintainability | quic_transport_params decode() is 119-LOC 17-arm switch — extract | `src/quic_transport_params.zig:559-677` | [#189](https://gitlab.com/devnw/zig/tls/-/work_items/189) | Open |
+| 86 | QUAL-321 | Medium | 36 | api-contract | lib.zig wholesale re-export — curate public facade | `src/lib.zig:270-539` | [#194](https://gitlab.com/devnw/zig/tls/-/work_items/194) | Open |
+| 87 | QUAL-324 | Medium | 36 | api-contract | RSA-PSS error-code fragmentation (magic ints vs !bool) | `src/parallel.zig:370,403,433`, `src/sig.zig:370+` | [#195](https://gitlab.com/devnw/zig/tls/-/work_items/195) | Open |
+| 88 | QUAL-325 | Medium | 36 | api-contract | parallel.getPool() process-global + panics — undocumented on public API | `src/parallel.zig:78`, `src/lib.zig` | [#196](https://gitlab.com/devnw/zig/tls/-/work_items/196) | Open |
+| 89 | QUAL-313 | Low | 32 | docs | 30 catch-unreachable + 9 bare unreachable — missing invariant comments | `src/` (39 sites) | [#190](https://gitlab.com/devnw/zig/tls/-/work_items/190) | Open |
+| 90 | QUAL-318 | Medium | 32 | maintainability | Byte-order helpers forked 3 ways — extend byteorder.zig | `src/sct.zig:31`, `src/tls13/messages/helpers.zig:40,62,81`, `src/byteorder.zig:43` | [#192](https://gitlab.com/devnw/zig/tls/-/work_items/192) | Open |
+| 91 | QUAL-322 | Medium | 32 | tests | Dual orphan test drivers (run_tests.sh vs build.zig) | `run_tests.sh`, `build.zig` | [#175](https://gitlab.com/devnw/zig/tls/-/work_items/175) | Open |
+| 92 | QUAL-330 | Medium | 32 | docs | ARCHITECTURE.md omits handshake_state, messages/helpers, cookie, parallel, zero_rtt | `docs/ARCHITECTURE.md:13-37` | [#201](https://gitlab.com/devnw/zig/tls/-/work_items/201) | Open |
+| 93 | QUAL-332 | Medium | 32 | docs | No RUNBOOK, no ADR, no docs/README index | `docs/` | [#203](https://gitlab.com/devnw/zig/tls/-/work_items/203) | Open |
+| 94 | QUAL-326 | Medium | 24 | api-contract | Error-path stderr noise — library should not write stderr uncontrolled | `src/parallel.zig:78`, `src/sig.zig:564-602` | [#197](https://gitlab.com/devnw/zig/tls/-/work_items/197) | Open |
+| 95 | QUAL-329 | Low | 24 | docs | ENGINE_TO_CONTEXT_MIGRATION.md drift — engine still 2236 LOC | `docs/ENGINE_TO_CONTEXT_MIGRATION.md:4` | [#200](https://gitlab.com/devnw/zig/tls/-/work_items/200) | Open |
+| 96 | QUAL-331 | Low | 24 | docs | key_schedule.zig + varint.zig — 39 unreachable sites without invariant comments | `src/key_schedule.zig:164-248`, `src/varint.zig` | [#202](https://gitlab.com/devnw/zig/tls/-/work_items/202) | Open |
+| 97 | QUAL-333 | Low | 24 | docs | CHANGELOG.md sparse — missing Engine→Context, parallel, zero_rtt | `CHANGELOG.md` | [#204](https://gitlab.com/devnw/zig/tls/-/work_items/204) | Open |
+| 98 | QUAL-302 | Low | 16 | cleanup | parseMinimalHelloPub byte-identical duplicate | `src/tls13/engine.zig:1951`, `src/tls13/messages.zig:288` | [#178](https://gitlab.com/devnw/zig/tls/-/work_items/178) | Open |
+| 99 | QUAL-309 | Low | 16 | ci-cd | pre-commit zig-fmt hook misses tests/ | `.pre-commit-config.yaml:100-107` | [#187](https://gitlab.com/devnw/zig/tls/-/work_items/187) | Open |
+| 100 | QUAL-314 | Low | 16 | api-contract | parallel.getPool() @panic on thread-pool init — no serial fallback | `src/parallel.zig:78` | [#191](https://gitlab.com/devnw/zig/tls/-/work_items/191) | Open |
+| 101 | QUAL-327 | Low | 16 | ci-cd | .gitlab-ci.yml — no test timeouts (only fuzz job has one) | `.gitlab-ci.yml` | [#198](https://gitlab.com/devnw/zig/tls/-/work_items/198) | Open |
+| 102 | QUAL-328 | Low | 16 | cleanup | QUAL-### sigils embedded in production comments | `engine.zig` (~32), `context.zig` (~61) | [#199](https://gitlab.com/devnw/zig/tls/-/work_items/199) | Open |
+| 103 | QUAL-307 | Low | 12 | cleanup | Stale dup thread_pool cache dir in zig-pkg/ (4.1 MB) | `zig-pkg/thread_pool-0.2.0-11B1Bjc9OQCp*` | [#185](https://gitlab.com/devnw/zig/tls/-/work_items/185) | Open |
+| 104 | QUAL-311 | Low | 12 | ci-cd | pre-commit check-todos hook always exits 0 (no-op) | `.pre-commit-config.yaml:130-138` | [#186](https://gitlab.com/devnw/zig/tls/-/work_items/186) | Open |
+| 105 | QUAL-320 | Low | 12 | api-contract | Ungated std.debug.print inside trace blocks — route via logger | `context.zig:1008-1010,1271,1388-1390`, `sig.zig:568-602` | [#193](https://gitlab.com/devnw/zig/tls/-/work_items/193) | Open |
 
 ---
 
@@ -122,13 +165,15 @@
 - **Issue:** [#65](https://gitlab.com/devnw/zig/tls/-/work_items/65)
 
 **File locations:**
+
 - `src/tls13/context.zig` -- 3581 lines
 
 **Description:**
 `context.zig` is 4.5x the 800-line guideline ceiling. It contains the `Context` struct, `Callbacks`, `ClientHelloView`, `ClientHelloInfo`, handshake state machine, key derivation orchestration, 0-RTT logic, mTLS flows, QUIC transport parameter handling, certificate verification, and CertificateVerify signing -- all in a single file. This makes code review slow, merge conflicts frequent, and bug isolation difficult.
 
 **Evidence:**
-```
+
+```text
 $ wc -l src/tls13/context.zig
 3581
 ```
@@ -137,6 +182,7 @@ For comparison, the next largest file is `engine.zig` at 2051 lines (also over-l
 
 **Recommendation:**
 Extract cohesive subsystems into separate modules:
+
 - `src/tls13/callbacks.zig` -- Callbacks struct and HandshakeMetadata
 - `src/tls13/client_hello_view.zig` -- ClientHelloView, ClientHelloInfo, parsing
 - `src/tls13/server_handshake.zig` -- driveServerHandshakeFlight, buildServerHello, sendEncryptedExtensions
@@ -167,6 +213,7 @@ done during Engine deprecation when the overall module count decreases.
 - **Status:** Closed (2026-03-24) -- Consolidated `ClientHelloInfo` into `handshake_state.zig` as the single source of truth. `context.zig` now imports `ClientHelloInfo` from `handshake_state` module.
 
 **File locations:**
+
 - `src/tls13/context.zig` -- `ClientHelloInfo` struct + `parseClientHelloInfo` + `deinit`
 - `src/tls13/handshake_state.zig` -- Near-identical `ClientHelloInfo` struct + `setClientHello` + `deinit`
 
@@ -197,13 +244,14 @@ Consolidate into a single `ClientHelloInfo` type in `handshake_state.zig` (or a 
 - **Status:** Closed (2026-03-24) -- Snapshotted transcript hash of ClientHello BEFORE appending ServerHello to transcript in context.zig, using `ch_only_hash` for 0-RTT early_secret derivation.
 
 **File locations:**
+
 - `src/tls13/context.zig:2173` -- `appendOutbound(.Initial, sh_msg, true)` adds ServerHello to transcript
 - `src/tls13/context.zig:2191` -- `self.transcripts.handshake.finalize(self.hash_kind)` used as "ClientHello hash"
 
 **Description:**
 RFC 8446 Section 7.1 specifies that the 0-RTT `client_early_traffic_secret` is derived using:
 
-```
+```text
 client_early_traffic_secret = Derive-Secret(early_secret, "c e traffic", ClientHello)
 ```
 
@@ -214,6 +262,7 @@ The comment at line 2190 says "Use transcript hash of ClientHello (before Server
 Note: The client-side code at line 2525-2528 correctly uses a separate `Transcript.init()` to compute the truncated ClientHello hash, so this bug is server-side only.
 
 **Evidence:**
+
 ```zig
 // Line 2173: ServerHello is added to transcript here
 try self.appendOutbound(.Initial, sh_msg, true);
@@ -231,6 +280,7 @@ const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(
 ```
 
 The `appendOutbound` function (line 1534-1539) updates the transcript when `update_transcript` is `true`:
+
 ```zig
 fn appendOutbound(self: *Context, level: EncryptionLevel, msg: []const u8, update_transcript: bool) !void {
     var stream = self.streams.buffer(level);
@@ -277,6 +327,7 @@ if (accept_early) {
 - **Status:** Closed (2026-03-24) -- Changed `catch` swallow patterns to `try` for callback error propagation. Callbacks now propagate errors to callers instead of logging and swallowing.
 
 **File locations:**
+
 - `src/tls13/context.zig:1183-1187` -- `on_peer_finished` callback error swallowed
 - `src/tls13/context.zig:1240-1244` -- `on_handshake_complete` callback error swallowed
 - `src/tls13/context.zig:2743-2747` -- `on_handshake_metadata` callback error swallowed
@@ -285,6 +336,7 @@ if (accept_early) {
 The `Callbacks` struct (line 161) declares callback signatures as `anyerror!void`, implying that errors will be propagated to the caller. However, all three lifecycle callbacks catch errors and only log them via `logger.debugPrint`, effectively swallowing them. A QUIC transport layer that returns an error from `on_secret_available` or `on_handshake_complete` expects the handshake to abort, but it will silently continue.
 
 **Evidence:**
+
 ```zig
 // Line 1182-1187
 if (self.callbacks.on_peer_finished) |cb| {
@@ -300,6 +352,7 @@ The same pattern repeats for `on_handshake_complete` (line 1242) and `on_handsha
 
 **Recommendation:**
 Either:
+
 1. Propagate callback errors with `try cb(self)` and let the caller handle them, OR
 2. Change the callback signature to `fn(...) void` (no error) and document that callbacks must not fail, OR
 3. Add an explicit `CallbackPolicy` enum (`.propagate` vs `.log_only`) so the caller can choose.
@@ -324,6 +377,7 @@ Option 1 is the simplest and most consistent with the declared `anyerror!void` s
 - **Status:** Deferred -- Different return types (`?[32]u8` vs `!void`) prevent direct consolidation without a larger refactor of both Engine and Context error handling patterns.
 
 **File locations:**
+
 - `src/tls13/engine.zig:1851-1898` -- `parseRealServerHello` (48 lines)
 - `src/tls13/context.zig:2567-2663` -- `handleServerHello` (97 lines, parsing portion ~60 lines)
 
@@ -333,7 +387,8 @@ Both functions parse a ServerHello body to extract the cipher suite, `supported_
 A bug fix to extension parsing in one location may not be applied to the other.
 
 **Evidence:**
-```
+
+```text
 engine.zig:1851:  fn parseRealServerHello(body: []const u8) ?[32]u8 {
 context.zig:2567: fn handleServerHello(self: *Context, body: []const u8) !void {
 ```
@@ -361,6 +416,7 @@ Extract a shared `ServerHelloFields` struct and a pure `parseServerHelloExtensio
 - **Status:** Closed (2026-03-24) -- Added `.new_session_ticket` branch to `handleHandshakeMessage` switch statement. Now explicitly handled in the switch, logs receipt for debugging.
 
 **File locations:**
+
 - `src/tls13/context.zig:1375-1377` -- `else` branch in `handleHandshakeMessage`
 
 **Description:**
@@ -395,6 +451,7 @@ Add a `.new_session_ticket` branch to `handleHandshakeMessage` that invokes the 
 - **Status:** Closed (By Design, 2026-03-24) -- The two CipherSuite enums serve different architectural layers: `aead.zig` operates at the record layer (no wire format needed) while `core_types.zig` operates at the handshake layer (wire values required). Unification would leak wire-format concerns into the record layer. Documented as intentional.
 
 **File locations:**
+
 - `src/record/aead.zig:76-80` -- `CipherSuite` as plain `enum` (3 variants, no backing integer)
 - `src/tls13/messages/core_types.zig:258-264` -- `CipherSuite` as `enum(u16)` (5 variants with wire values)
 
@@ -402,6 +459,7 @@ Add a `.new_session_ticket` branch to `handleHandshakeMessage` that invokes the 
 Two CipherSuite enums exist with different shapes:
 
 `record/aead.zig`:
+
 ```zig
 pub const CipherSuite = enum {
     TLS_AES_128_GCM_SHA256,
@@ -411,6 +469,7 @@ pub const CipherSuite = enum {
 ```
 
 `messages/core_types.zig`:
+
 ```zig
 pub const CipherSuite = enum(u16) {
     TLS_AES_128_GCM_SHA256 = 0x1301,
@@ -444,6 +503,7 @@ Remove the `aead.zig` `CipherSuite` enum and have `aead.zig` import from `core_t
 - **Status:** Closed (2026-03-24) -- Replaced inline switch blocks with `sig.fromTls13SignatureScheme()` calls in both server (line ~3161) and client (line ~3275) CertificateVerify paths. No more `else => .ed25519` fallback.
 
 **File locations:**
+
 - `src/tls13/context.zig:2272-2278` -- Server CertificateVerify signing
 - `src/tls13/context.zig:2692-2698` -- Client CertificateVerify signing (mTLS)
 
@@ -464,6 +524,7 @@ The `else => .ed25519` silently converts any unrecognized scheme to Ed25519, whi
 
 **Recommendation:**
 Replace both inline switches with:
+
 ```zig
 const sig_alg = try sig.fromTls13SignatureScheme(sig_scheme);
 ```
@@ -488,6 +549,7 @@ This surfaces unsupported schemes as errors rather than silently using Ed25519.
 - **Status:** Closed
 
 **File locations:**
+
 - `docs/` -- no migration guide present
 - `src/tls13/engine.zig` -- legacy Engine API (2051 lines)
 - `src/tls13/context.zig` -- new Context API (3581 lines)
@@ -497,6 +559,7 @@ The codebase contains two parallel TLS 1.3 implementations: `Engine` (the origin
 
 **Recommendation:**
 Create `docs/ENGINE_TO_CONTEXT_MIGRATION.md` covering:
+
 - Feature comparison table (Engine vs Context)
 - Deprecation status of Engine
 - Step-by-step migration for common use cases
@@ -520,6 +583,7 @@ Create `docs/ENGINE_TO_CONTEXT_MIGRATION.md` covering:
 - **Status:** Closed (2026-03-24) -- Subsumed by QUAL-088 fix. Engine.zig duplicate deleted; single implementation in messages.zig with `defer secureZero` on all paths.
 
 **File locations:**
+
 - `src/tls13/messages.zig:191-210` -- Uses `recoverPublicKey`, zeroizes `sk` on scalarmult failure
 - `src/tls13/engine.zig:1723-1736` -- DELETED (was insecure version)
 
@@ -527,6 +591,7 @@ Create `docs/ENGINE_TO_CONTEXT_MIGRATION.md` covering:
 Two copies of `x25519KeypairAndShared` exist with behavioral differences:
 
 `messages.zig` (secure version):
+
 ```zig
 const pk = std.crypto.dh.X25519.recoverPublicKey(sk) catch unreachable;
 // ...on error:
@@ -535,6 +600,7 @@ return .{ .priv_key = [_]u8{0} ** 32, .pub_key = pk, .shared = null };
 ```
 
 `engine.zig` (insecure version):
+
 ```zig
 std.crypto.dh.X25519.scalarmultBase(&pk, sk);
 // ...on error:
@@ -564,6 +630,7 @@ Delete the `engine.zig` copy. Have `engine.zig` import from `messages.zig` (or a
 - **Status:** Closed (2026-03-24) -- Separated corrupted doc comments for `on_ticket_lookup` and `fetch_certificate_chain` in context.zig Callbacks struct.
 
 **File locations:**
+
 - `src/tls13/context.zig:234-249`
 
 **Description:**
@@ -608,6 +675,7 @@ Separate the doc comments properly. Give each field its own `///` block. Verify 
 - **Issue:** [#75](https://gitlab.com/devnw/zig/tls/-/work_items/75)
 
 **File locations:**
+
 - `src/tls13/context.zig` -- 0 instances (was 16)
 - `src/tls13/handshake_state.zig` -- 0 instances (was 16)
 - `src/quic_transport_params.zig` -- 0 instances (was 1)
@@ -636,13 +704,16 @@ Changed field types from `[]const u8` to `[]u8` for allocator-owned data in `Han
 - **Status:** Closed (2026-03-24) -- Extracted `cipherSuiteHash` to `types.zig`. Both `context.zig` and `engine.zig` now import from `types.zig`.
 
 **File locations:**
+
 - `src/tls13/context.zig:128`
 - `src/tls13/engine.zig:108`
 
 **Description:**
+
 ```zig
 fn cipherSuiteHash(suite: tls13_full.CipherSuite) Hash { ... }
 ```
+
 This identical function exists in both files. It maps a `CipherSuite` to a `Hash` enum variant.
 
 **Recommendation:**
@@ -666,6 +737,7 @@ Extract to a shared module (e.g., `tls13/types.zig` or `tls13/config.zig`) and i
 - **Status:** Closed (By Design, 2026-03-24) -- The `inline fn` trace helpers use compile-time guards (`comptime { @compileError(...) }`) that prevent secret tracing in release builds. Because they are `inline fn`, they are eliminated entirely at compile time in release mode. Extracting to a shared module would lose the per-module `comptime` import-scoped guards. The duplication is intentional for compile-time safety.
 
 **File locations:**
+
 - `src/tls13/context.zig:120-124`
 - `src/tls13/engine.zig:100-104`
 - `src/tls13/messages.zig:19`
@@ -674,6 +746,7 @@ Extract to a shared module (e.g., `tls13/types.zig` or `tls13/config.zig`) and i
 
 **Description:**
 The same inline trace helper pattern is copied into 5 files:
+
 ```zig
 inline fn traceHandshake(comptime fmt: []const u8, args: anytype) void { ... }
 inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void { ... }
@@ -700,6 +773,7 @@ Define `traceHandshake` and `traceSecrets` once in a shared `tls13/trace.zig` mo
 - **Status:** Closed (2026-03-24) -- Removed duplicate `encodeMinimalClientHello` and `encodeMinimalServerHello` from messages.zig; updated mod.zig re-exports to point to engine.zig.
 
 **File locations:**
+
 - `src/tls13/messages.zig:218,234,255` -- canonical definitions
 - `src/tls13/engine.zig:1739,1750,1760` -- exact copies
 
@@ -727,6 +801,7 @@ Delete the copies in `engine.zig`. Import from `messages.zig` via `messages_mod`
 - **Status:** Closed (2026-03-24) -- Replaced all inline `(@as(u16, ...) << 8) | @as(u16, ...)` patterns with `readU16` helper calls across context.zig, handshake_state.zig, record/plaintext.zig, and record.zig.
 
 **File locations:**
+
 - `src/tls13/context.zig:314,2590`
 - `src/tls13/handshake_state.zig:351`
 - `src/record/plaintext.zig:229,384`
@@ -734,6 +809,7 @@ Delete the copies in `engine.zig`. Import from `messages.zig` via `messages_mod`
 
 **Description:**
 Multiple files use the inline pattern:
+
 ```zig
 (@as(u16, body[pos]) << 8) | @as(u16, body[pos + 1])
 ```
@@ -761,9 +837,11 @@ Replace all inline u16 big-endian reads with `readU16(bytes[pos..pos+2])` from `
 - **Status:** Closed (2026-03-24) -- Changed `pollCrypto` empty buffer error from `ApiError.Unimplemented` to `ApiError.NothingToRead` in context.zig.
 
 **File locations:**
+
 - `src/tls13/context.zig:1062-1069`
 
 **Description:**
+
 ```zig
 pub fn pollCrypto(self: *Context, allocator: std.mem.Allocator, level: EncryptionLevel) ![]u8 {
     var stream = self.streams.buffer(level);
@@ -795,6 +873,7 @@ Return `ApiError.WouldBlock` or change the return type to `?[]u8` returning `nul
 - **Status:** Closed (2026-03-24) -- Removed dead `deriveFinishedVerifyData` function and its dangling doc comment from messages/finished.zig; removed re-export from tls13_full.zig.
 
 **File locations:**
+
 - `src/tls13/messages/finished.zig:155-165` -- definition
 - `src/tls13_full.zig:163` -- re-exported but never called
 
@@ -825,6 +904,7 @@ Remove `deriveFinishedVerifyData` from `messages/finished.zig` and the re-export
 - **Issue:** [#80](https://gitlab.com/devnw/zig/tls/-/work_items/80)
 
 **File locations:**
+
 - `src/tls13/engine.zig:484` -- `self.ecdhe_secret.?` in trace block (no guard)
 - `src/tls13/engine.zig:488` -- `self.ecdhe_secret.?` passed to `deriveHandshakeTraffic`
 - `src/tls13/engine.zig:751` -- `self.leaf_spki.?` in CertificateVerify verification
@@ -836,6 +916,7 @@ Remove `deriveFinishedVerifyData` from `messages/finished.zig` and the re-export
 `engine.zig` contains 11+ `.?` optional unwraps on handshake state fields. While some are preceded by null checks (e.g., line 729 guards `leaf_spki`), others lack guards entirely (e.g., line 484 traces `ecdhe_secret.?` without a null check). In Debug/ReleaseSafe builds, null unwraps panic; in ReleaseFast/ReleaseSmall they produce undefined behavior. A malformed or out-of-order handshake message could trigger these paths before the fields are populated.
 
 **Evidence:**
+
 ```zig
 // Line 484: No null guard on ecdhe_secret before trace
 traceSecrets("onCryptoRecv: ECDHE secret first 4: {X:0>2} ...", .{ self.ecdhe_secret.?[0], ... });
@@ -866,6 +947,7 @@ Replace all `.?` unwraps with `orelse return error.InvalidState` or `if (field) 
 - **Issue:** [#82](https://gitlab.com/devnw/zig/tls/-/work_items/82)
 
 **File locations:**
+
 - `src/tls13/messages.zig:191-210` -- Secure version (zeroizes sk on error)
 - `src/tls13/engine.zig:1723-1738` -- DELETED (was insecure version)
 
@@ -873,6 +955,7 @@ Replace all `.?` unwraps with `orelse return error.InvalidState` or `if (field) 
 Two copies of `x25519KeypairAndShared` exist. The `engine.zig` version uses the older `scalarmultBase` API and returns the private key in the result struct without zeroizing it on error. The `defer secureZero` on the local `sk` variable executes after the return value (which copies `sk`) is constructed, so the returned `.priv_key` field contains the raw private key even on failure paths. This is CWE-226 (Sensitive Information in Resource Not Removed Before Reuse).
 
 **Evidence:**
+
 ```zig
 // engine.zig:1725 -- defer runs AFTER return copies sk into result
 defer std.crypto.secureZero(u8, &sk);
@@ -903,6 +986,7 @@ Delete `engine.zig:1723-1738`. Import from `messages.zig`.
 - **Issue:** [#85](https://gitlab.com/devnw/zig/tls/-/work_items/85)
 
 **File locations:**
+
 - `src/tls13/handshake_state.zig:220-222`
 - `src/tls13/context.zig:665-670`
 - `src/tls13/engine.zig:1822`
@@ -932,12 +1016,14 @@ Audit all transport parameter allocation paths for consistent OOM propagation. A
 - **Issue:** [#88](https://gitlab.com/devnw/zig/tls/-/work_items/88)
 
 **File locations:**
+
 - `src/tls13/engine.zig:836-877`
 
 **Description:**
 NewSessionTicket processing uses `continue` to silently skip malformed tickets (lines 841, 844, 845, 848, 850, 853, 856) and `catch` with log-only for ticket storage failures (line 869). Parse failures produce no error signal to the application. The duplicate `continue` at lines 844-845 is also a code smell (identical guard repeated).
 
 **Evidence:**
+
 ```zig
 // engine.zig:841-856: six continue statements silently skip tickets
 if (b.len < 4 + 4) continue;
@@ -973,12 +1059,14 @@ Replace silent `continue` with error returns or callback notification. Propagate
 - **Issue:** [#90](https://gitlab.com/devnw/zig/tls/-/work_items/90)
 
 **File locations:**
+
 - `src/tls13/engine.zig:487,781,867,923,1295,1323,1332,1337,1338,1470`
 
 **Description:**
 engine.zig contains 6+ inline key derivation sequences that repeat: `deriveEarlySecret` -> `deriveHandshakeTraffic` -> manual `ks.deriveSecretHash` with raw RFC 8446 label strings ("c ap traffic", "s ap traffic", "derived", "res master"). The centralized `key_derivation.zig` module provides `deriveApplicationTraffic()` as a single-call alternative that encapsulates the full Section 7.1 schedule. The inline patterns predate this module and were never refactored.
 
 **Evidence:**
+
 ```zig
 // engine.zig:1332-1338 -- manual master + application secret derivation
 const derived = ks.deriveSecretHash(self.hash_kind, &handshake_secret, "derived", &[_]u8{});
@@ -1009,6 +1097,7 @@ Replace inline derivations with `key_derivation_mod.deriveApplicationTraffic()` 
 - **Issue:** [#92](https://gitlab.com/devnw/zig/tls/-/work_items/92)
 
 **File locations:**
+
 - `src/byteorder.zig`
 - `src/byteorder/byteorder.zig` -- DELETED
 
@@ -1037,6 +1126,7 @@ Delete the redundant copy and unify import paths.
 - **Issue:** [#94](https://gitlab.com/devnw/zig/tls/-/work_items/94)
 
 **File locations:**
+
 - `.gitlab-ci.yml`
 
 **Description:**
@@ -1063,6 +1153,7 @@ Add `cache: { key: "zig-${ZIG_VERSION}", paths: ["zig-${ZIG_VERSION}/", ".zig-ca
 - **Status:** Closed -- onCryptoRecv decomposed into 6 handler methods (engine.zig)
 
 **File locations:**
+
 - `src/tls13/engine.zig:511-1026` -- `onCryptoRecv` function
 
 **Description:**
@@ -1071,12 +1162,14 @@ Add `cache: { key: "zig-${ZIG_VERSION}", paths: ["zig-${ZIG_VERSION}/", ".zig-ca
 This level of complexity makes the function extremely difficult to review, test individual branches, or reason about state transitions.
 
 **Evidence:**
-```
+
+```text
 engine.zig:511:  fn onCryptoRecv(self: *Engine, ...) ... {
 engine.zig:1026: }  // end of onCryptoRecv (516 lines)
 ```
 
 Nesting example (approximate):
+
 ```zig
 fn onCryptoRecv(...) {              // level 1
     while (...) {                    // level 2
@@ -1090,6 +1183,7 @@ fn onCryptoRecv(...) {              // level 1
 
 **Recommendation:**
 Decompose into 6 handler methods, one per handshake message type:
+
 - `handleClientHello()`
 - `handleServerHello()`
 - `handleEncryptedExtensions()`
@@ -1117,19 +1211,22 @@ The dispatch `switch` remains in `onCryptoRecv` but delegates to these methods.
 - **Status:** Closed
 
 **File locations:**
+
 - `src/tls13/context.zig:1996-2237` -- decomposed into sub-functions
 
 **Description:**
 `driveServerHandshakeFlight` handles the entire server-side handshake flight construction in a single 243-line function. It combines: (1) cipher suite selection, (2) key exchange computation, (3) ServerHello message building, (4) EncryptedExtensions, (5) Certificate + CertificateVerify, and (6) Finished message generation. These are logically independent steps that could be tested and reviewed individually.
 
 **Evidence:**
-```
+
+```text
 context.zig:1964: fn driveServerHandshakeFlight(self: *Context) !void {
 context.zig:2206: }  // 243 lines
 ```
 
 **Recommendation:**
 Extract into sequential helper methods:
+
 - `selectCipherSuiteAndKeyShare()` -- cipher selection + key exchange
 - `buildServerHello()` -- SH message construction
 - `buildEncryptedExtensions()` -- EE message
@@ -1156,6 +1253,7 @@ Extract into sequential helper methods:
 - **Status:** Closed -- ClientHello building unified via shared buildClientHello (client_hello.zig)
 
 **File locations:**
+
 - `src/tls13/engine.zig` -- `startClientHandshake`
 - `src/tls13/engine.zig` -- `sendClientHello2`
 - `src/tls13/context.zig` -- `queueRealClientHello`
@@ -1189,12 +1287,14 @@ Extract a shared `ClientHelloBuilder` struct or function that takes configuratio
 - **Status:** Closed
 
 **File locations:**
+
 - `src/tls13/engine.zig:529` -- `parseHandshakeOne` catch block
 
 **Description:**
 `parseHandshakeOne` returns `null` both when there is not enough data to parse a complete handshake message (legitimate "need more data" signal) and when it encounters an unrecognized or invalid message type. The calling code in `onCryptoRecv` treats `null` as "need more data" and returns to wait for the next read, effectively wedging the connection on malformed input. The caller cannot distinguish between "incomplete data" and "corrupt message" because both return `null`.
 
 **Evidence:**
+
 ```zig
 // engine.zig:529 (BEFORE)
 const parsed = parseHandshakeOne(data) catch null;
@@ -1217,6 +1317,7 @@ if (parsed == null) break;  // treats ALL parse failures as "need more data"
 - **Status:** Closed
 
 **File locations:**
+
 - `src/tls13/engine.zig:1728` -- `queueServerHandshakeFlight` return type
 
 **Description:**
@@ -1238,6 +1339,7 @@ if (parsed == null) break;  // treats ALL parse failures as "need more data"
 - **Status:** Closed
 
 **File locations:**
+
 - `src/tls13/context.zig` -- 3 HRR tests added at end of file
 
 **Description:**
@@ -1250,6 +1352,7 @@ No test function in the codebase exercises `Context` through an HRR flow. A sear
 
 **Recommendation:**
 Add integration tests that:
+
 1. Configure client with only one key share group
 2. Configure server to prefer a different group
 3. Verify HRR is triggered and the handshake completes successfully
@@ -1262,6 +1365,7 @@ Add integration tests that:
 **Effort:** M
 
 **Resolution:** Added 3 HRR tests to `src/tls13/context.zig`:
+
 1. "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" -- exercises full HRR flow, verifies hrr_received flag, ClientHello2 emission, key regeneration
 2. "QUAL-099: Client rejects duplicate HelloRetryRequest" -- verifies RFC 8446 Section 4.1.4 duplicate HRR rejection
 3. "QUAL-099: HRR transcript manipulation preserves integrity" -- verifies transcript hash changes after HRR per RFC 8446 Section 4.4.1
@@ -1279,6 +1383,7 @@ All 3 tests pass in `zig build test --summary all` (538/540 passed, 2 skipped).
 - **Status:** Closed
 
 **File locations:**
+
 - `src/tls13/config.zig:68-342` -- Config struct definition
 
 **Description:**
@@ -1287,6 +1392,7 @@ The `Config` struct (68-342, approximately 275 lines) contains numerous configur
 For example, it is unclear what happens if `server_cert_der` is set but `server_priv_key` is not, or what the valid range for `ticket_lifetime` is, or whether `alpn_protocols` must be non-empty for QUIC mode.
 
 **Evidence:**
+
 ```zig
 // config.zig -- fields lack doc comments describing constraints
 pub const Config = struct {
@@ -1298,6 +1404,7 @@ pub const Config = struct {
 
 **Recommendation:**
 Add `///` doc comments to every field in `Config` describing:
+
 - Purpose and semantics
 - Valid values or ranges
 - Default behavior
@@ -1323,6 +1430,7 @@ Add `///` doc comments to every field in `Config` describing:
 - **Cross-reference:** Complements QUAL-077. QUAL-077 tracks the existence of the guide; QUAL-101 tracks the content depth needed (API mapping table, behavioral differences, QUIC-specific migration steps).
 
 **File locations:**
+
 - `docs/` -- no migration guide present
 - `src/tls13/engine.zig` -- legacy Engine API
 - `src/tls13/context.zig` -- new Context API
@@ -1334,6 +1442,7 @@ This is a broader concern than QUAL-077 (which just notes the absence); QUAL-101
 
 **Recommendation:**
 Create `docs/ENGINE_TO_CONTEXT_MIGRATION.md` with:
+
 - Side-by-side API mapping table
 - Behavioral differences (error handling, callback model)
 - QUIC-specific migration steps
@@ -1357,6 +1466,7 @@ Create `docs/ENGINE_TO_CONTEXT_MIGRATION.md` with:
 - **Status:** Closed
 
 **File locations:**
+
 - `src/tls13/engine.zig:674` -- `allocator.dupe catch null`
 - `src/tls13/engine.zig:682` -- `allocator.dupe catch null`
 - `src/tls13/engine.zig:1643` -- `allocator.dupe catch null`
@@ -1382,6 +1492,7 @@ Five sites in `engine.zig` use `allocator.dupe(...) catch null` to silently swal
 - **Status:** Closed
 
 **File locations:**
+
 - `src/tls13/engine.zig:1684` -- `maybeAutoProgress` error swallow
 
 **Description:**
@@ -1404,6 +1515,7 @@ Five sites in `engine.zig` use `allocator.dupe(...) catch null` to silently swal
 - **Cross-reference:** QUAL-204 (Phase 3 deep review confirms additional magic hex in engine.zig: 0x0010, 0x0039, 0x0033; recommends `@intFromEnum(ExtensionType.xxx)` consistently)
 
 **File locations:**
+
 - `src/tls13/engine.zig` -- multiple occurrences
 - `src/tls13/context.zig` -- multiple occurrences
 
@@ -1411,6 +1523,7 @@ Five sites in `engine.zig` use `allocator.dupe(...) catch null` to silently swal
 Extension type checks throughout the codebase use raw hex constants (e.g., `0x002b` for `supported_versions`, `0x0033` for `key_share`, `0x0029` for `pre_shared_key`) rather than the `ExtensionType` enum values defined in `messages/core_types.zig`. This makes the code harder to read and more error-prone when adding new extension handling.
 
 **Evidence:**
+
 ```zig
 // Example from engine.zig / context.zig extension scanning loops:
 if (etype == 0x002b) { ... }     // should be ExtensionType.supported_versions
@@ -1438,6 +1551,7 @@ Replace all magic hex extension type constants with `ExtensionType` enum values.
 - **Status:** Closed (2026-03-24) -- Quick Start example in `lib.zig` corrected to use 2-parameter `Context.init(allocator, config)` signature
 
 **File locations:**
+
 - `src/lib.zig` -- Quick Start doc comment example
 
 **Description:**
@@ -1467,6 +1581,7 @@ Update the Quick Start example to match the actual `Context.init` signature.
 - **Status:** Open
 
 **File locations:**
+
 - `src/tls13/engine.zig` -- constant-time comparison (version 1)
 - `src/tls13/context.zig` -- constant-time comparison (version 2)
 - Third location with a third variation
@@ -1498,6 +1613,7 @@ Consolidate to a single constant-time comparison function (preferably `std.crypt
 - **Status:** Open
 
 **File locations:**
+
 - `src/tls13/engine.zig` -- uses `CryptoBufferOverflow`
 - `src/tls13/context.zig` -- uses `UnexpectedMessage` for same condition
 
@@ -1505,7 +1621,8 @@ Consolidate to a single constant-time comparison function (preferably `std.crypt
 When Engine and Context encounter the same error condition (e.g., a message that exceeds the expected buffer size or arrives at the wrong handshake state), they return different error types. This makes it difficult for callers to write consistent error handling code that works with both APIs, and complicates the migration from Engine to Context.
 
 **Evidence:**
-```
+
+```text
 // Same logical condition, different error types:
 engine.zig:  return error.CryptoBufferOverflow;
 context.zig: return error.UnexpectedMessage;
@@ -1532,6 +1649,7 @@ Define a shared error set in a common module (e.g., `tls13/errors.zig`) and use 
 - **Status:** Closed (2026-03-24) -- 11 unused imports removed across 6 files (varint.zig, tls13_full.zig, sig.zig, tls13.zig, context.zig, engine.zig)
 
 **File locations:**
+
 - `src/varint.zig`
 - `src/tls13_full.zig`
 - `src/tls13/sig.zig`
@@ -1565,6 +1683,7 @@ Remove the unused imports. Run `zig build test` to confirm nothing breaks.
 - **Cross-reference:** QUAL-074 (Closed -- new_session_ticket handling added to switch statement)
 
 **File locations:**
+
 - `src/tls13/context.zig:1207` -- TODO comment
 
 **Description:**
@@ -1591,12 +1710,14 @@ Verify whether the `on_new_session_ticket` callback is fully wired. If yes, remo
 - **Status:** Closed (by-design, 2026-03-24) -- notifyMetadata error handling documented as by-design: metadata notification is informational and should not abort the handshake
 
 **File locations:**
+
 - `src/tls13/context.zig:2660` -- `notifyMetadata` error handling
 
 **Description:**
 The `notifyMetadata` function calls the `on_handshake_metadata` callback and catches any error, logging it but not propagating it to the caller. This is the same pattern that was fixed in QUAL-072 for other callbacks (`on_peer_finished`, `on_handshake_complete`), but `notifyMetadata` was apparently missed in that remediation.
 
 **Evidence:**
+
 ```zig
 // context.zig:2660
 if (self.callbacks.on_handshake_metadata) |cb| {
@@ -1627,6 +1748,7 @@ Apply the same fix as QUAL-072: replace `catch |err| { log }` with `try cb(self,
 - **Status:** Closed (2026-03-24) -- Doc comment relocated to correct function; handleCertificate given its own accurate doc comment
 
 **File locations:**
+
 - `src/tls13/context.zig` -- doc comment above `handleCertificate`
 
 **Description:**
@@ -1653,13 +1775,15 @@ Move the doc comment to the correct function. Add an accurate doc comment to `ha
 - **Status:** Closed (2026-03-24) -- Engine.init signature formatted across multiple lines with one parameter per line
 
 **File locations:**
+
 - `src/tls13/engine.zig` -- `Engine.init` function signature
 
 **Description:**
 The `Engine.init` function signature is written as a single line of 262 characters. This exceeds any reasonable line length limit and makes the function signature difficult to read, review, and diff. Most style guides recommend 100-120 character line limits.
 
 **Evidence:**
-```
+
+```text
 // Single line, ~262 characters:
 pub fn init(allocator: std.mem.Allocator, config: Config, ...) Engine { ... }
 ```
@@ -1687,6 +1811,7 @@ Break the function signature across multiple lines, with one parameter per line.
 - **Cross-reference:** QUAL-087 (Closed -- this finding reopens the scope)
 
 **File locations:**
+
 - `src/tls13/engine.zig:669,673,944,970,971,979,1613,1663,1700,1786,1790,1798,1820`
 
 **Description:**
@@ -1694,6 +1819,7 @@ QUAL-087 was marked Closed after addressing certificate verification callback nu
 
 **Partial Resolution (Phase 8):**
 3 of the 14 unsafe `.?` unwraps have been replaced with safe patterns:
+
 - `ecdhe_secret.?` at engine.zig:698 -- replaced with `orelse return error.HandshakeFailure`
 - `ecdhe_secret.?` at engine.zig:705 -- uses the safe `ecdhe` local from the orelse above
 - `leaf_spki.?` at engine.zig:970 -- replaced with `orelse { ... self.peer_cert_ok = false; return; }`
@@ -1701,6 +1827,7 @@ QUAL-087 was marked Closed after addressing certificate verification callback nu
 11 remaining `.?` unwraps on `handshake_server_secret`, `handshake_client_secret`, `server_cert_der`, `server_priv_key`, `server_sig_alg`, and `alpn` still need safe conversion.
 
 **Evidence:**
+
 ```zig
 // engine.zig:669 -- No null guard on ecdhe_secret
 traceSecrets("... ECDHE secret first 4: ...", .{ self.ecdhe_secret.?[0], ... });
@@ -1734,6 +1861,7 @@ Replace all remaining `.?` unwraps with `orelse return error.InvalidState` or `i
 - **Issue:** [#119](https://gitlab.com/devnw/zig/tls/-/work_items/119)
 
 **File locations:**
+
 - `src/tls13/engine.zig` -- 12 sites: all covered (see QUAL-122/QUAL-129)
 - `src/tls13/context.zig` -- 11 sites: all covered (see QUAL-128, closed via prior commit)
 - `src/tls13/handshake_state.zig` -- 13 sites: all covered (see QUAL-127)
@@ -1776,18 +1904,21 @@ Comprehensive audit of all `allocator.dupe` sites across all 4 files. All sites 
 Changed `setTransportParameters` return type from `void` to `!void` and replaced `catch return` with `try`. OOM now propagates to callers. File: `src/tls13/context.zig:806`.
 
 **File locations:**
+
 - `src/tls13/context.zig:766`
 
 **Description:**
 `Context.setTransportParameters` uses `allocator.dupe(...) catch return` to silently swallow `error.OutOfMemory`. The function returns `void` instead of `!void`, so OOM cannot be propagated. QUIC connections proceed with missing transport parameters.
 
 **Evidence:**
+
 ```zig
 // context.zig:766
 const mutable_copy = self.allocator.dupe(u8, tp_bytes) catch return;
 ```
 
 Compare with engine.zig which correctly uses `try`:
+
 ```zig
 // engine.zig:1170
 self.local_tp = try self.allocator.dupe(u8, tp_encoded);
@@ -1814,6 +1945,7 @@ Change return type to `!void`. Replace `catch return` with `try`. Update callers
 - **Status:** Open
 
 **File locations:**
+
 - `src/x509.zig` -- 1736 lines (2.2x limit)
 - `src/record/aead.zig` -- 1337 lines (1.7x limit)
 - `src/tls13/messages/server_hello.zig` -- 1081 lines (1.4x limit)
@@ -1851,6 +1983,7 @@ Evaluate each file for extraction opportunities. Priority order by size: x509.zi
 - **Cross-reference:** QUAL-201 (Phase 3 deep review provides specific extraction plan for parseCert)
 
 **File locations:**
+
 - `src/x509.zig:697-1092` -- `parseCert` (396 lines)
 - `src/x509.zig:1574-1736` -- `validateChain` (163 lines)
 - `src/tls13/engine.zig` -- multiple 100+ line functions
@@ -1861,7 +1994,8 @@ Evaluate each file for extraction opportunities. Priority order by size: x509.zi
 14 functions exceed the 100-line guideline. `parseCert` at 396 lines is the largest. It contains ASN.1 DER parsing for X.509 certificates including version, serial number, signature algorithm, issuer, validity, subject, public key, and extensions -- all in a single function.
 
 **Evidence:**
-```
+
+```text
 x509.zig:697-1092 -- parseCert (396 lines)
 x509.zig:1574-1736 -- validateChain (163 lines)
 engine.zig -- multiple functions at 101-110 lines
@@ -1890,6 +2024,7 @@ Extract sub-functions: `parseCert` could become `parseTbsCertificate`, `parseCer
 - **Status:** Closed (2026-03-24) -- context.zig now imports SecretSlot from secrets.zig at line 287
 
 **File locations:**
+
 - `src/tls13/context.zig:278-296` -- `SecretSlot` definition
 - `src/tls13/secrets.zig:67-86` -- `SecretSlot` definition (canonical)
 
@@ -1897,6 +2032,7 @@ Extract sub-functions: `parseCert` could become `parseTbsCertificate`, `parseCer
 `SecretSlot` is defined identically in both `context.zig` and `secrets.zig`. The `secrets.zig` version is the canonical extracted module (also re-exported via `tls13/mod.zig:127` and `tls13.zig:146`), but `context.zig` retains its own local copy. Comments at `context.zig:71` and `context.zig:89` acknowledge this pending extraction. `BidirSecrets` and `SecretSchedule` are similarly duplicated.
 
 **Evidence:**
+
 ```zig
 // context.zig:278
 pub const SecretSlot = struct {
@@ -1943,6 +2079,7 @@ Delete `SecretSlot`, `BidirSecrets`, and `SecretSchedule` from `context.zig`. Im
 - **Cross-reference:** QUAL-202 (confirms same nesting depths; x509.zig nesting addressed by QUAL-201 parseCert extraction)
 
 **File locations:**
+
 - `src/tls13/messages/client_hello.zig` -- max nesting depth 10 (around line 419)
 - `src/x509.zig` -- max nesting depth 9 (around line 968)
 
@@ -1951,6 +2088,7 @@ QUAL-094 addressed 14-level nesting in `engine.zig:onCryptoRecv`, but other file
 
 **Evidence:**
 Measured via brace-counting analysis:
+
 - `client_hello.zig`: max depth 10 at line 419
 - `x509.zig`: max depth 9 at line 968
 
@@ -1975,6 +2113,7 @@ Extract deeply-nested blocks into named helper functions. Use early-return patte
 - **Status:** Closed
 
 **File locations:**
+
 - `src/quic_transport_params.zig:559-700` -- `TransportParameters.decode()`
 
 **Description:**
@@ -2001,6 +2140,7 @@ Added `errdefer params.deinit(allocator)` immediately after `var params = Transp
 - **Status:** Closed
 
 **File locations:**
+
 - `src/tls13/engine.zig:865-870`
 
 **Description:**
@@ -2008,6 +2148,7 @@ When `allocator.dupe` fails for `leaf.spki` during certificate processing, the e
 
 **Resolution:**
 Replaced `catch { break :blk false }` patterns with `try` in three locations within cert handling:
+
 - `allocator.alloc([]const u8, ...)` for chain_der array
 - `allocator.alloc(x509.Certificate, ...)` for parsed_certs array
 - `allocator.dupe(u8, leaf.spki)` for leaf SPKI
@@ -2070,6 +2211,7 @@ transferred to a struct that has a comprehensive deinit(). No code change needed
 - **Status:** Open
 
 **File locations:**
+
 - `build.zig` -- 1112 lines
 
 **Description:**
@@ -2096,6 +2238,7 @@ Extract test target builders, benchmark configuration, and module declarations i
 - **Status:** Won't Do (2026-03-24) -- sct.zig intentionally avoids tls13 imports (documented in code); trivial one-liner not worth shared module
 
 **File locations:**
+
 - `src/sct.zig:31` -- `readU16` definition
 - `src/tls13/messages/helpers.zig:40` -- `readU16` definition (canonical)
 
@@ -2123,6 +2266,7 @@ Delete `readU16` from `sct.zig`. Import from `messages/helpers.zig`.
 - **Status:** Closed (2026-03-24) -- Removed 23-line unused HashDigestCache definition from context.zig
 
 **File locations:**
+
 - `src/tls13/context.zig:419-440` -- `HashDigestCache` definition
 - `src/tls13/transcript.zig:398-420` -- `HashDigestCache` definition (canonical)
 
@@ -2195,6 +2339,7 @@ test. All 551 tests pass.
 - **Cross-reference:** QUAL-114 (umbrella)
 
 **File locations:**
+
 - `src/tls13/context.zig:1100,1133,1417,1449,2633,2645,2653,2670,2867,2882,2957,2969`
 
 **Description:**
@@ -2242,6 +2387,7 @@ catch-free block. No further errdefer additions needed.
 - **Status:** Open
 
 **File locations:**
+
 - `docs/QUALITY_GAP_ANALYSIS.md` -- QUAL-069 description
 
 **Description:**
@@ -2269,12 +2415,14 @@ Update QUAL-069 description to reflect current 3431-line count.
 - **Cross-reference:** QUAL-117 (umbrella for all 100+ line functions), QUAL-202 (nesting reduction addressed by this extraction)
 
 **File locations:**
+
 - `src/x509.zig:697-1092` -- `parseCert` (was 396 lines, now 194 lines)
 
 **Description:**
 `parseCert` was a single 396-line function that parsed X.509 DER certificates including ASN.1 TBS certificate structure, version, serial number, signature algorithm, issuer, validity, subject, public key, and 6 extension sub-parsers inlined directly into the function body: Subject Alternative Name (SAN), Basic Constraints, Key Usage, Extended Key Usage, Name Constraints, and Policy Constraints. Each sub-parser was a self-contained block of 20-60 lines that has now been extracted.
 
 **Evidence:**
+
 ```zig
 // x509.zig:697
 pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
@@ -2292,6 +2440,7 @@ Confirmed by `wc` and function boundary analysis: `parseCert` starts at line 697
 
 **Recommendation:**
 Extract 6 helper functions:
+
 - `parseSanExtension(ext_data) -> []SubjectAltName`
 - `parseBasicConstraints(ext_data) -> BasicConstraints`
 - `parseKeyUsage(ext_data) -> KeyUsage`
@@ -2320,6 +2469,7 @@ Each helper is a pure function operating on a slice of extension DER data. The m
 - **Cross-reference:** QUAL-119 (identical finding from Phase 2), QUAL-201 (x509.zig nesting resolved by parseCert extraction)
 
 **File locations:**
+
 - `src/tls13/messages/client_hello.zig:416-424` -- 10 levels of nesting in key_share extension parsing
 - `src/x509.zig:940-999` -- 9 levels of nesting in name constraints extension parsing
 
@@ -2329,6 +2479,7 @@ Phase 3 deep review independently confirmed the nesting depths reported in QUAL-
 The client_hello.zig 10-level nesting at lines 416-424 in key_share parsing requires separate attention (early-return patterns or helper extraction).
 
 **Recommendation:**
+
 - x509.zig: Addressed by QUAL-201 extraction. No separate action needed.
 - client_hello.zig: Extract key_share extension parsing into a `parseKeyShareExtension` helper, or use early-return/continue patterns to reduce nesting.
 
@@ -2351,12 +2502,14 @@ The client_hello.zig 10-level nesting at lines 416-424 in key_share parsing requ
   Fixed `.?` unwraps to `orelse` patterns. Diagnostic info now available via OCSP trace flag.
 
 **File locations:**
+
 - `src/ocsp.zig:138-319` -- 32 `catch return OcspError.MalformedResponse` sites
 
 **Description:**
 The OCSP response parser (`parseOcspResponse` and helpers) contains 32 instances of `catch return OcspError.MalformedResponse` that discard the original ASN.1 decoding error. When OCSP validation fails, the caller receives only `MalformedResponse` with no indication of which parsing step failed or what the underlying ASN.1 error was. This makes debugging OCSP failures in production extremely difficult -- especially for certificate chain issues where the OCSP responder returns a subtly malformed response.
 
 **Evidence:**
+
 ```zig
 // ocsp.zig:138
 const cert_tlv = dec.readTLV() catch return OcspError.MalformedResponse;
@@ -2376,6 +2529,7 @@ Confirmed count: `grep -c 'catch return' src/ocsp.zig` returns 32.
 
 **Recommendation:**
 Add `log.debug` before each `catch return` to preserve the original error for diagnostic purposes without changing the error type returned to callers:
+
 ```zig
 const cert_tlv = dec.readTLV() catch |err| {
     log.debug("OCSP: readTLV failed at cert_tlv: {}", .{err});
@@ -2405,6 +2559,7 @@ Alternatively, use an `errdefer`-based approach at the top of each parsing funct
 - **Cross-reference:** QUAL-104 (umbrella for all magic hex extension constants)
 
 **File locations:**
+
 - `src/tls13/engine.zig:801` -- `0x0010` (ALPN extension)
 - `src/tls13/engine.zig:817` -- `0x0039` (QUIC transport parameters)
 - `src/tls13/engine.zig:1345` -- `0x0010` (ALPN extension, second occurrence)
@@ -2415,6 +2570,7 @@ Alternatively, use an `errdefer`-based approach at the top of each parsing funct
 Phase 3 deep review identified additional magic hex constants in `engine.zig` beyond those tracked in QUAL-104. While `context.zig` uses `ExtensionType` enum values from `core_types.zig`, `engine.zig` uses raw hex literals for ALPN (`0x0010`), QUIC transport parameters (`0x0039`), and key_share (`0x0033`). This inconsistency between the two TLS implementations makes the code harder to audit and increases the risk of typos in extension type values.
 
 **Evidence:**
+
 ```zig
 // engine.zig:801 -- raw hex
 switch (etype) {
@@ -2449,6 +2605,7 @@ Replace all magic hex with `@intFromEnum(ExtensionType.xxx)` or switch on `@as(E
 - **Status:** Open
 
 **File locations:**
+
 - `tests/openssl_conformance.zig:92`
 - `tests/sig_unit_tests.zig:20`
 - `tests/rfc8446/section_4_1_2_client_hello.zig:44`
@@ -2468,6 +2625,7 @@ Replace all magic hex with `@intFromEnum(ExtensionType.xxx)` or switch on `@as(E
 The `hexToBytes` utility function is copy-pasted into 14 separate test files. Some copies take `comptime hex: []const u8` while others take `hex: []const u8` (runtime), creating a subtle signature divergence. A bug fix or improvement to hex parsing (e.g., handling uppercase vs lowercase) would need to be applied 14 times.
 
 **Evidence:**
+
 ```zig
 // Comptime variant (e.g., rfc8446/section_7_1_key_schedule.zig:72):
 fn hexToBytes(comptime hex: []const u8, out: []u8) void { ... }
@@ -2497,10 +2655,12 @@ Extract `hexToBytes` into a shared `tests/test_utils.zig` module. Export both co
 - **Status:** Closed (2026-03-25) -- Removed redundant `if (elen >= 2)` inside `if (elen >= 3)` block.
 
 **File locations:**
+
 - `src/tls13/engine.zig:802-803`
 
 **Description:**
 A redundant nested condition check:
+
 ```zig
 if (elen >= 3) {
     if (elen >= 2) {
@@ -2509,6 +2669,7 @@ if (elen >= 3) {
 The inner check `elen >= 2` is always true when the outer check `elen >= 3` passes. This is dead logic that adds a misleading nesting level without providing any guard value.
 
 **Evidence:**
+
 ```zig
 // engine.zig:802-803
 0x0010 => { // ALPN
@@ -2542,6 +2703,7 @@ Delete the inner `if (elen >= 2)` block and flatten the code by one nesting leve
 - **Cross-reference:** QUAL-113 (engine.zig `.?` unwraps -- different file/scope)
 
 **File locations:**
+
 - `src/tls13/context.zig` -- 17 `.?` unwraps on optional fields
 
 **Description:**
@@ -2570,6 +2732,7 @@ For the most critical paths (`negotiated_cipher_suite`, `server_secret_generated
 - **Status:** Open
 
 **File locations:**
+
 - `src/parallel.zig:616` -- `KeyMaterial` with `key: [32]u8`, `iv: [12]u8`, `hp_key: [32]u8`, `key_len: usize`
 - `src/key_schedule.zig:36` -- `KeyMaterial` with `key: [16]u8`, `iv: [12]u8`, `hp: [16]u8`
 
@@ -2599,6 +2762,7 @@ The `parallel.zig` version uses 32-byte fixed arrays with a `key_len` field to s
 
 **Recommendation:**
 Either:
+
 1. Unify into a single `KeyMaterial` type in `key_schedule.zig` that supports variable key lengths (use `key: [32]u8` + `key_len: usize`), or
 2. Rename `parallel.KeyMaterial` to `parallel.DerivedKeyMaterial` to avoid the naming collision.
 
@@ -2622,6 +2786,7 @@ Option 2 is lower risk since the parallel module is not yet exported.
 - **Status:** Open
 
 **File locations:**
+
 - `src/lib.zig` -- no `parallel` import or re-export
 - `src/parallel.zig` -- module exists with public API
 
@@ -2632,6 +2797,7 @@ The module is confirmed as intentional future/optional infrastructure (not dead 
 
 **Recommendation:**
 Add to `src/lib.zig`:
+
 ```zig
 /// Parallel operations for key derivation and certificate verification.
 /// Optional module for performance-sensitive applications.
@@ -2656,6 +2822,7 @@ pub const parallel = @import("parallel.zig");
 - **Status:** Closed (2026-03-25) -- Removed unused `TicketEntryView` exports from mod.zig and tls13.zig.
 
 **File locations:**
+
 - `src/tls13/mod.zig:263` -- `pub const TicketEntryView = engine.TicketEntryView;`
 - `src/tls13.zig:257` -- `pub const TicketEntryView = mod.TicketEntryView;`
 - `src/tls13/engine.zig:152` -- `TicketEntryView` struct definition
@@ -2664,7 +2831,8 @@ pub const parallel = @import("parallel.zig");
 `TicketEntryView` is defined in `engine.zig` and re-exported through two levels of public API (`mod.zig` and `tls13.zig`), but no code outside of `engine.zig` references it. The struct is used only by `TicketStore.lookup` and `Engine.peekTicket`, both internal to `engine.zig`. The re-exports add unused symbols to the public API surface.
 
 **Evidence:**
-```
+
+```text
 $ grep -rn 'TicketEntryView' src/
 src/tls13/mod.zig:263:pub const TicketEntryView = engine.TicketEntryView;
 src/tls13.zig:257:pub const TicketEntryView = mod.TicketEntryView;
@@ -2704,6 +2872,7 @@ The following items were investigated during Phase 3 deep review and confirmed a
 ## Findings by Category
 
 ### Architecture (14)
+
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-087 | Critical | engine.zig null-safety gap in certificate verification | Closed |
@@ -2722,6 +2891,7 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-109 | Low | TODO in context.zig:1207 -- QUAL-074 callback not wired (status inconsistent) | Closed |
 
 ### Maintainability (21)
+
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-094 | High | onCryptoRecv 516 lines / 14 nesting levels | Closed |
@@ -2747,6 +2917,7 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-081 | Low | cipherSuiteHash exact duplicate | Closed |
 
 ### API Contract (11)
+
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-115 | High | setTransportParameters silently swallows OOM via catch return | Closed |
@@ -2762,6 +2933,7 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-110 | Low | notifyMetadata callback error logged but not propagated | Closed (by-design) |
 
 ### Cleanup (9)
+
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-092 | Medium | byteorder.zig duplicated across two module paths | Closed |
@@ -2775,17 +2947,20 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-108 | Low | 14 unused imports across 7 files | Closed |
 
 ### Performance / Security (2)
+
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-088 | Critical | x25519KeypairAndShared duplicated with security divergence | Closed |
 | QUAL-078 | Medium | Duplicated x25519KeypairAndShared with behavioral divergence | Closed |
 
 ### Tests (1)
+
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-099 | Medium | No HRR test coverage in Context | Closed |
 
 ### Docs (6)
+
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-100 | Medium | Config field constraints undocumented | Closed |
@@ -2796,11 +2971,13 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-111 | Low | handleKeyUpdateMessage doc comment misplaced onto handleCertificate | Closed |
 
 ### CI/CD (1)
+
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-093 | Medium | CI pipeline lacks build caching | Won't Do |
 
 ### Readability (7)
+
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
 | QUAL-204 | Medium | Magic hex constants in engine.zig (0x0010, 0x0039, 0x0033) vs enum in context.zig | Closed |
@@ -2899,5 +3076,70 @@ The following items were investigated during Phase 3 deep review and confirmed a
 |----|---------|--------|--------|
 | QUAL-116 | Evaluate and split 9 source files over 800 lines | L | Open |
 | QUAL-117 | Decompose 14 functions over 100 lines (parseCert 396 lines) | L | Open |
+| QUAL-317 | Decompose context.zig monolith into subsystems (session_resumption, cert_orchestrator, hrr_state) | L | Open |
+| QUAL-319 | Engine quarantine: deprecation-gate or move legacy engine.zig under internal/ | M | Open |
 | QUAL-096 | Extract shared ClientHelloBuilder for all 3 call sites | L | Closed |
 | QUAL-069 | Split context.zig into sub-modules | L | Deferred |
+
+---
+
+## Phase 11 Findings -- /codepros:audit Phase 4 (2026-04-18)
+
+Thirty-three new findings captured from Phase 3 deep review and filed to GitLab with PriorityScore rubric `Impact x Likelihood x 4`. Highest-leverage remediations per reviewer are called out in Top 5 Risks above.
+
+### Phase 11 Findings Table
+
+| QUAL-ID | Sev | Score | Category | Finding | File:Line | Issue |
+|---------|-----|-------|----------|---------|-----------|-------|
+| QUAL-301 | High | 64 | architecture | Duplicate BidirSecrets/SecretSchedule types -- contract drift | `src/tls13/context.zig:300-353` vs `src/tls13/secrets.zig:117-166` | [#154](https://gitlab.com/devnw/zig/tls/-/work_items/154) |
+| QUAL-302 | Low | 16 | cleanup | parseMinimalHelloPub byte-identical duplicate | `engine.zig:1951`, `messages.zig:288` | [#178](https://gitlab.com/devnw/zig/tls/-/work_items/178) |
+| QUAL-303 | Medium | 36 | maintainability | RSA-PSS verify triple copy-paste across parallel.zig + sig.zig | `parallel.zig:373-433`, `sig.zig:370-407` | [#180](https://gitlab.com/devnw/zig/tls/-/work_items/180) |
+| QUAL-304 | High | 64 | readability | 10-level nesting in EncryptedExtensions handler | `engine.zig:811-848` | [#157](https://gitlab.com/devnw/zig/tls/-/work_items/157) |
+| QUAL-305 | High | 60 | ci-cd | flake.nix references missing nix/ dir -- nix build fails OOTB | `flake.nix:56, 61` | [#160](https://gitlab.com/devnw/zig/tls/-/work_items/160) |
+| QUAL-306 | Medium | 36 | deps | Zig min-version drift 0.15.1 vs 0.16.0 | `build.zig.zon:28`, `Makefile:193`, `.gitlab-ci.yml:27` | [#176](https://gitlab.com/devnw/zig/tls/-/work_items/176) |
+| QUAL-307 | Low | 12 | cleanup | Stale dup thread_pool cache dir (4.1 MB) | `zig-pkg/thread_pool-0.2.0-11B1Bjc9OQCp*` | [#185](https://gitlab.com/devnw/zig/tls/-/work_items/185) |
+| QUAL-308 | Medium | 48 | tests | run_tests.sh stale counts (4 of ~17 modules tracked) | `run_tests.sh:18-24` | [#174](https://gitlab.com/devnw/zig/tls/-/work_items/174) |
+| QUAL-309 | Low | 16 | ci-cd | pre-commit zig-fmt hook misses tests/ | `.pre-commit-config.yaml:100-107` | [#187](https://gitlab.com/devnw/zig/tls/-/work_items/187) |
+| QUAL-310 | Medium | 60 | ci-cd | No CI cache stanza -- ~300MB re-downloads per pipeline | `.gitlab-ci.yml` | [#168](https://gitlab.com/devnw/zig/tls/-/work_items/168) |
+| QUAL-311 | Low | 12 | ci-cd | pre-commit check-todos hook always exits 0 (no-op) | `.pre-commit-config.yaml:130-138` | [#186](https://gitlab.com/devnw/zig/tls/-/work_items/186) |
+| QUAL-312 | Medium | 36 | maintainability | quic_transport_params.zig decode() 119-LOC 17-arm switch | `quic_transport_params.zig:559-677` | [#189](https://gitlab.com/devnw/zig/tls/-/work_items/189) |
+| QUAL-313 | Low | 32 | docs | 30 catch-unreachable + 9 bare unreachable -- missing invariant comments | `src/` (39 sites) | [#190](https://gitlab.com/devnw/zig/tls/-/work_items/190) |
+| QUAL-314 | Low | 16 | api-contract | parallel.getPool() @panic; no serial fallback | `parallel.zig:78` | [#191](https://gitlab.com/devnw/zig/tls/-/work_items/191) |
+| QUAL-315 | Medium | 64 | tests | No coverage instrumentation despite 52k LOC | repo-root | [#170](https://gitlab.com/devnw/zig/tls/-/work_items/170) |
+| QUAL-316 | Medium | 60 | maintainability | Trace-flag boilerplate duplicated in 7+ modules | 7 modules | [#164](https://gitlab.com/devnw/zig/tls/-/work_items/164) |
+| QUAL-317 | High | 100 | maintainability | context.zig monolith (3549 LOC, 32 methods) -- highest leverage | `src/tls13/context.zig` | [#150](https://gitlab.com/devnw/zig/tls/-/work_items/150) |
+| QUAL-318 | Medium | 32 | maintainability | Byte-order helpers forked 3 ways | `sct.zig:31`, `messages/helpers.zig:40,62,81`, `byteorder.zig:43` | [#192](https://gitlab.com/devnw/zig/tls/-/work_items/192) |
+| QUAL-319 | High | 64 | architecture | engine.zig (2236 LOC LEGACY) still public -- quarantine or gate | `tls13.zig:96`, `tls13/mod.zig:254` | [#166](https://gitlab.com/devnw/zig/tls/-/work_items/166) |
+| QUAL-320 | Low | 12 | api-contract | Ungated std.debug.print inside trace blocks | `context.zig:1008-1010,1271,1388-1390`, `sig.zig:568-602` | [#193](https://gitlab.com/devnw/zig/tls/-/work_items/193) |
+| QUAL-321 | Medium | 36 | api-contract | Wholesale re-export from lib.zig -- curate public facade | `src/lib.zig:270-539` | [#194](https://gitlab.com/devnw/zig/tls/-/work_items/194) |
+| QUAL-322 | Medium | 32 | tests | Dual orphan test drivers (run_tests.sh vs build.zig) | repo-root | [#175](https://gitlab.com/devnw/zig/tls/-/work_items/175) |
+| QUAL-323 | High | 64 | architecture | Contract-drift vector -- dup-type twin of QUAL-301 | same as QUAL-301 | [#171](https://gitlab.com/devnw/zig/tls/-/work_items/171) |
+| QUAL-324 | Medium | 36 | api-contract | RSA-PSS error-code fragmentation (magic ints vs !bool) | `parallel.zig:370,403,433`, `sig.zig:370+` | [#195](https://gitlab.com/devnw/zig/tls/-/work_items/195) |
+| QUAL-325 | Medium | 36 | api-contract | parallel.getPool() process-global + panics -- undocumented | `parallel.zig:78`, `src/lib.zig` | [#196](https://gitlab.com/devnw/zig/tls/-/work_items/196) |
+| QUAL-326 | Medium | 24 | api-contract | Error-path stderr noise from library | `parallel.zig:78`, `sig.zig:564-602` | [#197](https://gitlab.com/devnw/zig/tls/-/work_items/197) |
+| QUAL-327 | Low | 16 | ci-cd | No per-job test timeouts (only fuzz has one) | `.gitlab-ci.yml` | [#198](https://gitlab.com/devnw/zig/tls/-/work_items/198) |
+| QUAL-328 | Low | 16 | cleanup | QUAL-### sigils embedded in production comments | `engine.zig` (~32), `context.zig` (~61) | [#199](https://gitlab.com/devnw/zig/tls/-/work_items/199) |
+| QUAL-329 | Low | 24 | docs | ENGINE_TO_CONTEXT_MIGRATION.md drift -- engine still 2236 LOC | `docs/ENGINE_TO_CONTEXT_MIGRATION.md:4` | [#200](https://gitlab.com/devnw/zig/tls/-/work_items/200) |
+| QUAL-330 | Medium | 32 | docs | ARCHITECTURE.md omits handshake_state, messages/helpers, cookie, parallel, zero_rtt | `docs/ARCHITECTURE.md:13-37` | [#201](https://gitlab.com/devnw/zig/tls/-/work_items/201) |
+| QUAL-331 | Low | 24 | docs | key_schedule.zig + varint.zig: 39 unreachable without invariant comments | `key_schedule.zig:164-248`, `varint.zig` | [#202](https://gitlab.com/devnw/zig/tls/-/work_items/202) |
+| QUAL-332 | Medium | 32 | docs | No RUNBOOK, no ADR, no docs/README index | `docs/` | [#203](https://gitlab.com/devnw/zig/tls/-/work_items/203) |
+| QUAL-333 | Low | 24 | docs | CHANGELOG.md sparse -- missing Engine-to-Context, parallel, zero_rtt | `CHANGELOG.md` | [#204](https://gitlab.com/devnw/zig/tls/-/work_items/204) |
+
+### Phase 11 Highest-Leverage Cluster (reviewer recommendation)
+
+1. **QUAL-317** (context monolith) -- PriorityScore 100. Strategic. Effort L.
+2. **QUAL-316** (trace boilerplate) -- PriorityScore 60. Effort M.
+3. **QUAL-301 + QUAL-323** (duplicate types, one logical issue) -- PriorityScore 64 each. Effort S (joint).
+4. **QUAL-319** (engine quarantine) -- PriorityScore 64. Effort M.
+5. **QUAL-310** (CI cache) -- PriorityScore 60. Effort S.
+6. **QUAL-305** (missing nix/ dir) -- PriorityScore 60. Effort S.
+7. **QUAL-322 + QUAL-308** (orphan test driver) -- PriorityScore 32 + 48. Effort S (joint).
+
+### Phase 11 Carry-Forward Verified Open
+
+- **QUAL-091** -- engine.zig legacy key schedule patterns (Deferred; cross-ref QUAL-319)
+- **QUAL-093** -- CI build caching (superseded by QUAL-310)
+- **QUAL-116** -- 9 source files over 800 lines
+- **QUAL-117** -- 14 functions over 100 lines
+- **QUAL-205** -- hexToBytes x14 in tests
+- **QUAL-208** -- Dual KeyMaterial types
