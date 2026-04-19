@@ -126,18 +126,6 @@ repos:
     pass_filenames: false
     stages: [pre-push]      # Only on push, may be slow
 
-      # Check for TODO/FIXME in committed code (warning only)
-  - id: check-todos
-    name: check for TODOs/FIXMEs
-    entry: bash
-    args:
-    - -c
-    - |
-      git diff --cached --name-only | xargs grep -l -E "(TODO|FIXME|XXX|HACK)" 2>/dev/null && echo "Warning: Found TODO/FIXME markers in staged files" && exit 0 || exit 0
-    language: system
-    pass_filenames: false
-    verbose: true
-
 # =============================================================================
 # CI configuration
 # =============================================================================
