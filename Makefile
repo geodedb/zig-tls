@@ -190,7 +190,7 @@ help:
 	@echo "  make clean build test   # Clean rebuild and test"
 	@echo ""
 	@echo "Requirements:"
-	@echo "  - Zig 0.15.1 or compatible"
+	@echo "  - Zig 0.16.0 or compatible"
 	@echo "  - OpenSSL development libraries (for conformance tests)"
 	@echo ""
 	@echo "For more information, see BUILD_SYSTEM.md"

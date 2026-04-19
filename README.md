@@ -7,7 +7,7 @@ A **TLS 1.3** implementation for QUIC written in Zig, strictly adhering to RFC 8
 | Aspect | Info |
 |--------|------|
 | API Stability | Production |
-| Zig Version | 0.15.1 |
+| Zig Version | 0.16.0 |
 | Platforms | Linux, macOS, Windows |
 
 ## Features
@@ -31,7 +31,7 @@ zig build test
 
 ## Requirements
 
-- **Zig 0.15.1** or compatible
+- **Zig 0.16.0** or compatible
 - **OpenSSL development libraries** (optional, for conformance tests)
 
 ## Building
@@ -77,11 +77,12 @@ zig build -Doptimize=ReleaseFast
 
 ## Test Results
 
-```
+```text
 Build Summary: All steps succeeded; 1000 tests passed ✅
 ```
 
 **Comprehensive Test Coverage:**
+
 - **551 unit tests** - Per-module tests with RFC subsection references (553 total, 2 skipped)
 - **449 conformance tests** - BoringSSL and OpenSSL parity testing
   - Cryptographic operations (HKDF, AEAD, signatures)
@@ -96,7 +97,7 @@ Build Summary: All steps succeeded; 1000 tests passed ✅
 
 ## Project Structure
 
-```
+```text
 src/
 ├── lib.zig               # Main library entry point
 ├── tls13.zig             # TLS 1.3 handshake state machine
@@ -170,12 +171,14 @@ pub fn main() !void {
 The project includes comprehensive conformance tests to ensure compatibility with industry-standard TLS implementations:
 
 ### BoringSSL Conformance
+
 - HKDF-Extract and HKDF-Expand parity
 - QUIC initial secret derivation (RFC 9001)
 - AEAD cipher compatibility
 - Alert code mapping
 
 ### OpenSSL 3.x Conformance
+
 - EVP API compatibility
 - Cipher suite availability
 - Hash function parity
@@ -219,6 +222,7 @@ make clean build
 ## Implementation Status
 
 ### ✅ Completed
+
 - TLS 1.3 handshake state machine
 - HKDF key schedule (RFC 8446 §7, RFC 9001 §5.1)
 - AEAD record protection (AES-GCM, ChaCha20-Poly1305)
@@ -229,6 +233,7 @@ make clean build
 - QUIC integration interfaces
 
 ### 🚧 Future Work
+
 - HKDF-Expand-Label wrapper (tracked in test vectors)
 - OCSP stapling and SCT support
 - Full certificate chain validation
@@ -260,4 +265,4 @@ Apache-2.0 License - see [LICENSE](LICENSE) for details.
 
 ---
 
-Built with Zig 0.15.1 | TLS 1.3 | QUIC-Native | RFC-Compliant
+Built with Zig 0.16.0 | TLS 1.3 | QUIC-Native | RFC-Compliant

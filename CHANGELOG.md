@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Minimum supported Zig version raised to 0.16.0 (stdlib APIs used by the bench harness were removed after 0.15.x).
+- Removed the `flake.nix` / `flake.lock` Nix derivation (it referenced a `nix/quic.nix` that was never committed; consumers build via `zig build` directly).
+
 ## [0.1.0] - 2026-01-24
 
 This release marks the initial open source release of ztls under the Apache-2.0 license.
