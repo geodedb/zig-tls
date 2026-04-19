@@ -40,6 +40,7 @@ pub const section_4_4_4_finished = @import("section_4_4_4_finished.zig");
 pub const section_5_record_protocol = @import("section_5_record_protocol.zig");
 pub const section_7_1_key_schedule = @import("section_7_1_key_schedule.zig");
 pub const appendix_a_vectors = @import("appendix_a_vectors.zig");
+pub const section_b_4_cipher_suite_parity = @import("section_b_4_cipher_suite_parity.zig");
 
 test {
     std.testing.refAllDecls(@This());
