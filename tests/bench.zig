@@ -24,9 +24,21 @@ const tls13_full = @import("tls13_full");
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const Ed25519 = std.crypto.sign.Ed25519;
 
+/// Monotonic-nanosecond wall reader. Zig 0.16 removed `std.time.Timer` and
+/// `std.time.Instant` in favor of `std.Io.Clock`, which requires an `Io`
+/// instance. For a standalone benchmark we go one layer lower and read
+/// `CLOCK_MONOTONIC` directly via `std.posix.system.clock_gettime`, which
+/// is what the new `Io.Threaded` backend ultimately calls on POSIX anyway.
+fn nowMonotonicNs() ?u64 {
+    var ts: std.posix.timespec = undefined;
+    if (std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts) != 0) return null;
+    const sec_ns = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s;
+    return sec_ns + @as(u64, @intCast(ts.nsec));
+}
+
 /// Simple timer-based benchmark runner.
 fn benchmarkFn(comptime name: []const u8, comptime iterations: u32, func: anytype) void {
-    var timer = std.time.Timer.start() catch {
+    const start_ns = nowMonotonicNs() orelse {
         std.debug.print("[bench] {s}: timer unavailable, skipping\n", .{name});
         return;
     };
@@ -34,7 +46,11 @@ fn benchmarkFn(comptime name: []const u8, comptime iterations: u32, func: anytyp
     while (i < iterations) : (i += 1) {
         func();
     }
-    const elapsed_ns = timer.read();
+    const end_ns = nowMonotonicNs() orelse {
+        std.debug.print("[bench] {s}: timer unavailable mid-run, skipping\n", .{name});
+        return;
+    };
+    const elapsed_ns = end_ns - start_ns;
     const per_op_ns = elapsed_ns / iterations;
     std.debug.print("[bench] {s}: {d} iterations, {d}ns total, {d}ns/op\n", .{
         name,
