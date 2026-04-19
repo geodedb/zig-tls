@@ -320,6 +320,14 @@ pub fn build(b: *std.Build) void {
             .source = "src/testing/counting_allocator.zig",
             .imports = &.{},
         },
+        .{
+            .name = "perf_clienthello_allocs",
+            .source = "tests/perf/test_clienthello_allocs.zig",
+            .imports = &.{
+                .{ .name = "counting_allocator", .module = counting_allocator_mod },
+                .{ .name = "handshake_state", .module = handshake_state_mod },
+            },
+        },
     };
 
     for (tests) |test_info| {
