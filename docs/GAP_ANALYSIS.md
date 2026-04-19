@@ -1,8 +1,14 @@
 # GAP Analysis
 
-> **Last updated:** 2026-04-18 (Phase 4 audit tracking sync)
+> **Last updated:** 2026-04-19 (Phase 4 gap-sync -- closes GAP-0100/0101, adds GAP-0118..0126)
 > **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
+>
+> **Ledger vs tracker drift note (2026-04-19):** The ledger counts below are the authoritative
+> ledger view. The GitLab issue tracker may show additional historical issues whose code
+> resolution predates this review cycle; those are tracked via "Won't Do -- issue tracker
+> maintenance" entries (GAP-0092, GAP-0099) and are intentionally not double-counted here.
+> New Phase 4 issues #227-235 correspond to GAP-0118..0126 in 1:1 order.
 
 ---
 
@@ -11,16 +17,16 @@
 | Severity | Original | Closed | Won't Do | Open |
 |----------|----------|--------|----------|------|
 | Critical | 8        | 8      | 0        | 0    |
-| High     | 21       | 20     | 0        | 1    |
-| Medium   | 43       | 38     | 1        | 4    |
-| Low      | 45       | 27     | 6        | 12   |
-| **Total**| **117**  | **93** | **7**    | **17** |
+| High     | 22       | 21     | 0        | 4    |
+| Medium   | 48       | 39     | 1        | 10   |
+| Low      | 48       | 27     | 6        | 10   |
+| **Total**| **126**  | **95** | **7**    | **24** |
 
 ### Implementation Status
 
-**Closed: 93 findings** - All implemented and verified (includes GAP-0097: parallel module now publicly exported from `src/lib.zig:414` per commit b31f035; GAP-0111/0112/0117 closed 2026-04-19 via Build Toolchain Sync plan)
+**Closed: 95 findings** - All implemented and verified (includes GAP-0097: parallel module now publicly exported from `src/lib.zig:414` per commit b31f035; GAP-0111/0112/0117 closed 2026-04-19 via Build Toolchain Sync plan; GAP-0100/0101 closed 2026-04-19 in Phase 4 gap-sync)
 **Won't Do: 7 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133), GAP-0099 (issue tracker maintenance, separate from code), GAP-0093 (2 skipped tests require stdlib features not yet available)
-**Open: 17 findings** - GAP-0098 (7 unused public symbols, Low); GAP-0100..GAP-0110 and GAP-0113..GAP-0116 from 2026-04-18 Phase 4 gap-detector sweep (1 High, 4 Medium, 10 Low remaining after 2026-04-19 closures); plus 1 Low open item from earlier reviews
+**Open: 24 findings** - 17 carried from prior cycle (GAP-0098, GAP-0102..GAP-0110, GAP-0113..GAP-0116 plus 2 earlier Low items) + 9 new Phase 4 findings (GAP-0118..GAP-0126) - 2 closed in Phase 4 (GAP-0100, GAP-0101)
 
 ### Fourteenth Review (2026-03-25) -- Phase 10 Gap-Detector Sweep + Closure
 
@@ -544,51 +550,6 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** For each symbol: remove if truly unused, or add test coverage and document as intentional public API.
 - **Acceptance criteria:** Each symbol is either removed, tested, or explicitly documented as intentional public API.
 
-### GAP-0100: Remote DoS via @enumFromInt on unfiltered signature_algorithms entry
-
-- **Issue:** [#136](https://gitlab.com/devnw/zig/tls/-/issues/136)
-- **Category:** Security (REGRESSION)
-- **Severity:** High
-- **Requirement source:** Safe parsing of untrusted bytes (RFC 8446 §4.2.3); sibling precedent at `src/tls13/messages/client_hello.zig:337` (ExtensionType) already uses the safe idiom.
-- **Current state (evidence):**
-  - `src/tls13/messages/client_hello.zig:401-405` -- range `0x0401..=0x080b` admits ~2063 u16 values; `SignatureScheme` enum is exhaustive and defines far fewer tags. Any non-tag value hits unchecked `@enumFromInt` -> panic (Debug/ReleaseSafe/ReleaseSmall) or UB (ReleaseFast).
-- **Why this is a gap:** Attacker-controlled bytes in a ClientHello's `signature_algorithms` extension crash the peer pre-handshake. CVSS v3.1 ~7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H).
-- **Impact/Risk:** Remote pre-handshake DoS against any TLS listener. ReleaseFast path gives the attacker an arbitrary enum-tag coercion into downstream signature verification.
-- **Recommended fix:** Replace with the safe idiom already used for ExtensionType:
-
-  ```zig
-  const scheme = std.enums.fromInt(core_types.SignatureScheme, alg) orelse continue;
-  try algs.append(allocator, scheme);
-  ```
-
-  Remove the numeric range gate; membership is already encoded in the enum.
-- **Acceptance criteria:**
-  - `client_hello.zig:403-404` no longer uses unchecked `@enumFromInt`
-  - Fuzz/exhaustive u16 test: no panic, no UB on any sig_alg value
-  - Repo-wide audit of `@enumFromInt` over attacker-controlled bytes
-
-### GAP-0101: 32-bit DoS via @intCast(varint length) before bounds check
-
-- **Issue:** [#137](https://gitlab.com/devnw/zig/tls/-/issues/137)
-- **Category:** Security
-- **Severity:** Medium
-- **Requirement source:** RFC 9000 §18 -- malformed params must produce clean protocol errors. 32-bit ARM is supported (commit `7ec244a`).
-- **Current state (evidence):**
-  - `src/quic_transport_params.zig:573-578` -- `@intCast(length)` to `usize` precedes the bounds check.
-- **Why this is a gap:** On 32-bit targets (`usize=u32`), any varint length ≥ 2^32 panics in ReleaseSafe (UB in ReleaseFast) before reaching the clean `Truncated` return path.
-- **Impact/Risk:** Peer-controllable DoS on 32-bit deployments via malformed transport-parameters blob. CVSS v3.1 ~5.3.
-- **Recommended fix:** Compare in u64 first or use `std.math.cast`:
-
-  ```zig
-  if (length > data.len - offset) return error.Truncated;
-  const len: usize = @intCast(length);
-  ```
-
-- **Acceptance criteria:**
-  - No `@intCast(length)` before the bounds check
-  - Test: `length = 0x1_0000_0000` returns `error.Truncated`, no panic
-  - Repo-wide audit of similar patterns
-
 ### GAP-0102: validateChain parses+discards leaf, caller re-parses
 
 - **Issue:** [#138](https://gitlab.com/devnw/zig/tls/-/issues/138)
@@ -810,6 +771,140 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** Add `cache:` keyed on `build.zig.zon` covering `.zig-cache/` and the Zig install dir.
 - **Acceptance criteria:** Warm pipeline time reduced by >= 30%; cold pipelines still work.
 - **Resolution:** 2026-04-19 -- Added `.cache-zig` YAML anchor with two caches (Zig toolchain keyed on `ZIG_VERSION`, `.zig-cache` keyed on branch slug) and applied it to every Zig-installing job. `glab ci lint` confirmed valid. Commits: 21fca95.
+
+### GAP-0118: std.debug.print residue in src/tls13/sig.zig (supersedes QUAL-326)
+
+- **Issue:** [#227](https://gitlab.com/devnw/zig/tls/-/issues/227)
+- **Category:** Code Quality / Observability
+- **Severity:** Medium
+- **Requirement source:** Logging hygiene -- production crypto code must route through the existing `sig_trace_enabled` compile-time flag, not unconditional `std.debug.print`. Supersedes QUAL-326 (#196).
+- **Current state (evidence):**
+  - `src/tls13/sig.zig:123` -- `std.debug.print(...)` trace
+  - `src/tls13/sig.zig:564-602` -- 8 further `std.debug.print(...)` sites in the RSA-PSS verify path
+  - `src/parallel.zig:78` -- confirmed clean (no `std.debug.print`)
+- **Why this is a gap:** QUAL-326 pointed at `parallel.zig:78`, which is clean. The real residue is in `sig.zig`. Ledger is wrong; this gap corrects the scope.
+- **Impact/Risk:** Unconditional stderr spam from crypto-sensitive paths; defeats downstream logger routing.
+- **Recommended fix:** Replace 9 call sites with `sig_trace_enabled`-gated logger or remove. Close QUAL-326 (#196) as superseded. Add CI grep guard.
+- **Acceptance criteria:** `rg "std\.debug\.print" src/` returns 0 matches (excluding zig-pkg/**); QUAL-326 closed as duplicate.
+
+### GAP-0119: RFC 5280 test coverage missing §4.2 / §5 / §6
+
+- **Issue:** [#228](https://gitlab.com/devnw/zig/tls/-/issues/228)
+- **Category:** Test / Security
+- **Severity:** High
+- **Requirement source:** RFC 5280 §4.2 (KU/EKU/NC/BC), §5 (CRL), §6 (path validation).
+- **Current state (evidence):**
+  - `tests/rfc5280/` -- directory listing shows only §4 section files; no `section_4_2_*.zig`, `section_5_*.zig`, `section_6_*.zig`.
+  - `src/x509.zig` implements chain validation, KU/EKU/NC/BC parsing, CRL parsing -- none covered by RFC-clause tests.
+- **Why this is a gap:** RFC conformance drift in the cert path validator is invisible to the RFC test grid.
+- **Impact/Risk:** Regressions in BasicConstraints pathLenConstraint, NameConstraints, or §6 state machine would not fail a targeted RFC test.
+- **Recommended fix:** Add 6+ `tests/rfc5280/section_*.zig` files (KU, EKU, NC, BC, CRL, §6 inputs+algorithm).
+- **Acceptance criteria:** 6+ new section files wired into `build.zig`; each cites its RFC clause; RFC coverage matrix entry added (GAP-0126).
+
+### GAP-0120: RFC 8446 test coverage missing §4.3 / §4.6 / §6 / §8
+
+- **Issue:** [#229](https://gitlab.com/devnw/zig/tls/-/issues/229)
+- **Category:** Test
+- **Severity:** High
+- **Requirement source:** RFC 8446 §4.3 (ServerHello ext), §4.6 (post-handshake: KeyUpdate, NewSessionTicket), §6 (Alert), §8 (0-RTT / anti-replay).
+- **Current state (evidence):**
+  - `tests/rfc8446/` -- no `section_4_3_*.zig`, `section_4_6_*.zig`, `section_6_*.zig`, `section_8_*.zig`.
+  - Implementations live in `src/tls13/context.zig` (KeyUpdate, NewSessionTicket, Alert dispatch), `src/zero_rtt.zig`, `src/tls13/config.zig` (ZeroRttLimits).
+- **Why this is a gap:** Post-handshake flow and 0-RTT replay regressions would not fail any targeted RFC test.
+- **Impact/Risk:** Silent drift in Alert state machine or replay window enforcement.
+- **Recommended fix:** Add 5+ section files (EE, NewSessionTicket, KeyUpdate, Alert, 0-RTT).
+- **Acceptance criteria:** 5+ new section files wired into `build.zig`; RFC coverage matrix entry added (GAP-0126).
+
+### GAP-0121: RFC 9001 test coverage missing §5.4 / §5.5 / §6 / §9
+
+- **Issue:** [#230](https://gitlab.com/devnw/zig/tls/-/issues/230)
+- **Category:** Test / QUIC Crypto
+- **Severity:** High
+- **Requirement source:** RFC 9001 §5.4 (header protection), §5.5 (retry integrity), §6 (key update), §9 (version negotiation).
+- **Current state (evidence):**
+  - `tests/rfc9001/` -- lacks `section_5_4_*.zig`, `section_5_5_*.zig`, `section_6_*.zig`, `section_9_*.zig`.
+  - Implementations in `src/parallel.zig` (deriveKeyMaterial emits `quic hp` secrets) and `src/tls13/context.zig` (QUIC KeyUpdate wiring) are not covered by RFC-clause tests.
+- **Why this is a gap:** Header-protection regression would leak packet-number confidentiality; Retry-integrity regression breaks QUIC interop.
+- **Impact/Risk:** Crypto regressions could ship silently.
+- **Recommended fix:** Add 4+ section files using RFC 9001 Appendix A vectors and known Retry packets.
+- **Acceptance criteria:** 4+ new section files wired into `build.zig`; RFC coverage matrix entry added (GAP-0126).
+
+### GAP-0122: GAP-0098 partial -- 6 unused public symbols remain
+
+- **Issue:** [#231](https://gitlab.com/devnw/zig/tls/-/issues/231)
+- **Category:** Bug / Resource (child of GAP-0098)
+- **Severity:** Medium
+- **Requirement source:** GAP-0098 acceptance criteria; code quality -- unused public API must be removed, tested, or documented.
+- **Current state (evidence):**
+  - `src/lib.zig:556` -- `deinitPool` now re-exported (closed portion of GAP-0098)
+  - `src/key_schedule.zig:619` -- `updateQuicSecret` still unused
+  - `src/key_schedule.zig:197` -- `updateQuicSecretHash` still unused
+  - `src/tls13_full.zig:138` -- `EncryptedExtensionsView` still unused
+  - `src/varint.zig:207` -- `encodeWithLen` still unused
+  - `src/cookie.zig:84` -- `RECOMMENDED_COOKIE_SIZE` still unused
+  - `src/quic_transport_params.zig:111-113` -- 3 varint re-exports still unused
+- **Why this is a gap:** GAP-0098 was marked partially closed but 6 of 7 symbols remain dead.
+- **Impact/Risk:** API surface bloat; misleads consumers.
+- **Recommended fix:** For each symbol: remove, add test coverage, or document as intentional.
+- **Acceptance criteria:** `rg -w <symbol>` shows at least one non-definition use per retained symbol; parent GAP-0098 updated.
+
+### GAP-0123: zig build test prints spurious listen=- failures on green tree
+
+- **Issue:** [#232](https://gitlab.com/devnw/zig/tls/-/issues/232)
+- **Category:** CI-CD / DX
+- **Severity:** Medium (suspected)
+- **Requirement source:** Developer experience -- clean green output when tests pass.
+- **Current state (evidence):**
+  - `zig build test` on a green tree prints `error: the following command failed: ./.zig-cache/o/<hash>/test --seed=... --listen=-` even though the same binary run directly exits 0.
+- **Why this is a gap:** CI logs are polluted; real failures may be missed.
+- **Impact/Risk:** Trust in the tests-passed signal erodes.
+- **Recommended fix:** Audit `build.zig` test-runner wiring for `--listen=-` EOF/close race; follow standard `addTestRunner` pattern.
+- **Acceptance criteria:** `zig build test` exits 0 with no `listen=-` error lines on a green tree.
+
+### GAP-0124: docs/API.md missing mTLS config fields
+
+- **Issue:** [#233](https://gitlab.com/devnw/zig/tls/-/issues/233)
+- **Category:** Docs
+- **Severity:** Medium
+- **Requirement source:** `docs/API.md` is the public API reference; every `pub` Config field should appear. Related to mTLS tracking issue #52.
+- **Current state (evidence):**
+  - `src/tls13/config.zig:341` -- `request_client_cert: bool = false,`
+  - `src/tls13/config.zig:375` -- `client_auth_ca_certs: ?[]const []const u8 = null,`
+  - `docs/API.md` -- no matches for either field name.
+- **Why this is a gap:** Consumers cannot discover mTLS support from the API reference.
+- **Impact/Risk:** Integration friction; duplicated questions.
+- **Recommended fix:** Add "Client Authentication (mTLS)" section to `docs/API.md` with field semantics and an end-to-end mutual-auth example; cross-link #52.
+- **Acceptance criteria:** Both fields documented with a working example; README feature matrix notes mTLS as supported.
+
+### GAP-0125: docs/ARCHITECTURE.md lists 0-RTT as future despite shipped zero_rtt.zig
+
+- **Issue:** [#234](https://gitlab.com/devnw/zig/tls/-/issues/234)
+- **Category:** Docs
+- **Severity:** Low
+- **Requirement source:** Documentation accuracy.
+- **Current state (evidence):**
+  - `docs/ARCHITECTURE.md:385` -- "Future Enhancements" list includes 0-RTT.
+  - `src/zero_rtt.zig` -- full 0-RTT module present (replay window, anti-replay store).
+  - `src/tls13/config.zig:162` -- `zero_rtt_limits: ZeroRttLimits`.
+  - GAP-0046 and `#46` (0-RTT early-data limits) closed 2026-01-30.
+- **Why this is a gap:** ARCHITECTURE.md understates implementation; reviewers may mis-scope new work.
+- **Impact/Risk:** Confusion; stale onboarding content.
+- **Recommended fix:** Remove 0-RTT from "Future Enhancements"; add a new "0-RTT / Early Data" subsection; audit the rest of the Future Enhancements list.
+- **Acceptance criteria:** ARCHITECTURE.md no longer lists 0-RTT as future; shipped-features section covers `zero_rtt.zig`.
+
+### GAP-0126: Missing ADR directory, RUNBOOK, and RFC coverage matrix
+
+- **Issue:** [#235](https://gitlab.com/devnw/zig/tls/-/issues/235)
+- **Category:** Docs
+- **Severity:** Medium
+- **Requirement source:** Industry practice for cryptographic libraries at this scale; unblocks GAP-0119/0120/0121 follow-through.
+- **Current state (evidence):**
+  - `docs/` inventory -- no `adr/`, `decisions/`, `RUNBOOK.md`, or `rfc_coverage.md`.
+  - `tests/rfc5280/`, `tests/rfc8446/`, `tests/rfc9001/` -- section files exist but are not indexed by RFC clause anywhere.
+- **Why this is a gap:** Architectural decisions, operations guidance, and RFC coverage are invisible to contributors and auditors.
+- **Impact/Risk:** Newcomer friction; audit drag; no obvious home for decisions like "OCSP over CRL" or "Context supersedes Engine".
+- **Recommended fix:** Add `docs/adr/` with retrospective ADRs, `docs/RUNBOOK.md`, and `docs/rfc_coverage.md`.
+- **Acceptance criteria:** ADR directory with template and 3+ retrospective ADRs; RUNBOOK linked from README; rfc_coverage.md linked from README and covering every `tests/rfc*/section_*.zig`.
 
 ### GAP-0099: 19 GitLab issues remain open despite documented resolution [WON'T DO]
 

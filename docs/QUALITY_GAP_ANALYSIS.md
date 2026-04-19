@@ -1,8 +1,8 @@
 # Quality Gap Analysis
 
-> **Last updated:** 2026-04-18 (Phase 11 tracking — /codepros:audit Phase 4)
+> **Last updated:** 2026-04-19 (Phase 12 tracking — /codepros:audit Phase 4)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Phase 11 -- Audit tracking: 5 closures (QUAL-104, 106, 113, 119, 209), 33 new findings (QUAL-301 through QUAL-333) filed as GitLab issues.
+> **Review phase:** Phase 12 -- Audit tracking: 10 new QUAL findings (QUAL-334 through QUAL-343) filed as GitLab issues (#204-#211, #214, #216). Phase 11 previously added QUAL-301..333.
 
 ---
 
@@ -11,10 +11,10 @@
 | Severity | Open | Partial | Closed | By Design | Deferred | Won't Do | Total |
 |----------|------|---------|--------|-----------|----------|----------|-------|
 | Critical | 0    | 0       | 2      | 0         | 0        | 0        | 2     |
-| High     | 6    | 0       | 12     | 0         | 2        | 0        | 20    |
-| Medium   | 19   | 0       | 21     | 1         | 1        | 1        | 43    |
-| Low      | 14   | 0       | 21     | 2         | 0        | 3        | 40    |
-| **Total**| **39** | **0** | **56** | **3**   | **3**    | **4**    | **105**|
+| High     | 7    | 0       | 12     | 0         | 2        | 0        | 21    |
+| Medium   | 26   | 0       | 21     | 1         | 1        | 1        | 50    |
+| Low      | 16   | 0       | 21     | 2         | 0        | 3        | 42    |
+| **Total**| **49** | **0** | **56** | **3**   | **3**    | **4**    | **115**|
 
 ### Top 5 Risks (by PriorityScore, open items first)
 
@@ -3143,3 +3143,55 @@ Thirty-three new findings captured from Phase 3 deep review and filed to GitLab 
 - **QUAL-117** -- 14 functions over 100 lines
 - **QUAL-205** -- hexToBytes x14 in tests
 - **QUAL-208** -- Dual KeyMaterial types
+
+---
+
+## Phase 12 Findings -- /codepros:audit Phase 4 (2026-04-19)
+
+Ten new findings filed to GitLab in Phase 12. Scoring rubric: `PriorityScore = Impact x Likelihood x 4`. All confirmed confidence (evidence cited in each issue). Findings target CI drift, duplicate types, long functions/files, documentation gaps, and a constant-only shim module.
+
+### Phase 12 Findings Table
+
+| QUAL-ID | Sev | Score | Category | Finding | File:Line | Issue |
+|---------|-----|-------|----------|---------|-----------|-------|
+| QUAL-334 | High | 48 | maintainability | zig fmt asymmetry -- pre-commit scopes src/+build.zig; 2 test files fail `zig fmt --check` | `.pre-commit-config.yaml:100-107`; `tests/conformance/boringssl/post_quantum_readiness.zig`; `tests/sct_openssl_conformance.zig` | [#204](https://gitlab.com/devnw/zig/tls/-/work_items/204) |
+| QUAL-335 | Medium | 24 | maintainability | Duplicate `KeyMaterial` struct -- extends QUAL-301/323 dup-type pattern | `src/key_schedule.zig:36`, `src/parallel.zig:595` | [#205](https://gitlab.com/devnw/zig/tls/-/work_items/205) |
+| QUAL-336 | Medium | 24 | maintainability | Duplicate `HandshakeState` -- public canonical shadowed by private struct in context.zig | `src/tls13/handshake_state.zig:419` (pub), `src/tls13/context.zig:437` (private) | [#206](https://gitlab.com/devnw/zig/tls/-/work_items/206) |
+| QUAL-337 | Medium | 36 | maintainability | Duplicate `CipherSuite` enum -- two independent definitions (not re-exports) | `src/record/aead.zig:86`, `src/tls13/messages/core_types.zig:258` | [#207](https://gitlab.com/devnw/zig/tls/-/work_items/207) |
+| QUAL-338 | Medium | 36 | maintainability | x509.zig 1857 LOC (3rd-largest); parseCert 193 LOC, runChainChecks 152 LOC | `src/x509.zig:928`, `src/x509.zig:1611` | [#208](https://gitlab.com/devnw/zig/tls/-/work_items/208) |
+| QUAL-339 | Medium | 36 | readability | parseClientHello 296 LOC + buildClientHello 210 LOC -- split per-extension | `src/tls13/messages/client_hello.zig:1170`, `:1211` | [#209](https://gitlab.com/devnw/zig/tls/-/work_items/209) |
+| QUAL-340 | Medium | 36 | readability | validateStapledResponse 199 LOC combines 4 validators | `src/ocsp.zig:330` | [#210](https://gitlab.com/devnw/zig/tls/-/work_items/210) |
+| QUAL-341 | Low | 16 | readability | verifySignature 114 LOC + signCertificateVerify 111 LOC -- scheme-dispatch tables | `src/parallel.zig:760`, `src/sig.zig:2398` | [#211](https://gitlab.com/devnw/zig/tls/-/work_items/211) |
+| QUAL-342 | Low | 12 | docs | key_schedule.zig 57% public-fn doc coverage; crypto-critical derivations missing RFC 8446 §7.1 cites | `src/key_schedule.zig` | [#214](https://gitlab.com/devnw/zig/tls/-/work_items/214) |
+| QUAL-343 | Medium | 24 | maintainability | src/tls13_full.zig 170 LOC constant-only shim; 7 test consumers -- usingnamespace or delete | `src/tls13_full.zig` | [#216](https://gitlab.com/devnw/zig/tls/-/work_items/216) |
+
+### Phase 12 Recommended Remediations
+
+- **QUAL-334**: Extend pre-commit `zig-fmt` args to include `tests/`; run `zig fmt tests/conformance/boringssl/post_quantum_readiness.zig tests/sct_openssl_conformance.zig`; align CI to same scope.
+- **QUAL-335**: Delete `src/parallel.zig:595 KeyMaterial`; re-export from `src/key_schedule.zig`.
+- **QUAL-336**: Canonicalize on `src/tls13/handshake_state.zig:HandshakeState`; remove private shadow in context.zig; define `HandshakeStateView` if a reduced struct is genuinely needed.
+- **QUAL-337**: Canonicalize on `src/tls13/messages/core_types.zig:CipherSuite` (the `enum(u16)` with wire values); convert `record/aead.zig` to import + alias; add comptime parity test.
+- **QUAL-338**: Split `parseCert` into per-extension OID handlers (pattern already used elsewhere in the codebase); split `runChainChecks` into named sub-checks with unit tests.
+- **QUAL-339**: Table-driven `ExtHandler` dispatch keyed on `ExtensionType`; one parse/build handler per extension.
+- **QUAL-340**: Split into `validateResponderId`, `validateSignature`, `validateValidity`, `validateCerts`.
+- **QUAL-341**: `std.EnumArray(SignatureScheme, SchemeOps)` dispatch for sign/verify ops.
+- **QUAL-342**: Add `///` doc comments to 10 undocumented public fns; cite RFC 8446 §7.1 per derivation (early/handshake/master secret, HKDF-Expand-Label).
+- **QUAL-343**: Prefer Option B (delete) per codebase-instinct "prefer deletion over patching"; migrate 7 test files to `src/tls13/messages.zig` imports and `git rm src/tls13_full.zig`.
+
+### Phase 12 Cross-References
+
+- **Engine deletion (QUAL-319) cascading impact.** If QUAL-319 closes (engine.zig deletion / quarantine), it would resolve or partially resolve:
+  - **QUAL-335** (KeyMaterial duplication) -- partial: `parallel.zig` copy would still need consolidation with `key_schedule.zig`, but engine-side crypto callers disappear.
+  - **QUAL-337** (CipherSuite dup) -- partial: engine's reliance on `record/aead.zig:CipherSuite` is a sizable consumer; removing engine reduces motivation to keep the split.
+  - **QUAL-304** (10-level nesting in engine.zig EncryptedExtensions handler) -- resolved: the nested code lives entirely in the legacy engine path.
+- **QUAL-117 (functions > 100 LOC)** is extended by QUAL-338/339/340/341 with precise file:line evidence and per-function remediations; QUAL-117 remains the umbrella.
+- **QUAL-116 (files > 800 LOC)** is extended by QUAL-338 (x509.zig 1857) and QUAL-343 (tls13_full.zig shim).
+- **QUAL-301/323 (duplicate types)** is extended by QUAL-335/336/337 — the dup-type pattern continues to surface across crypto-adjacent modules.
+
+### Phase 12 Highest-Leverage Cluster
+
+1. **QUAL-334** (Score 48) -- Quick win (S). Fixes live CI drift; unblocks clean formatting baseline.
+2. **QUAL-337** (Score 36) -- CipherSuite enum canonicalization is security-interop-adjacent.
+3. **QUAL-338, QUAL-339, QUAL-340** (Score 36 each) -- Coordinated refactor of the three long-function hotspots.
+4. **QUAL-343** (Score 24) -- Shim deletion; removes indirection + aligns with deletion-over-patching instinct.
+5. **QUAL-335, QUAL-336** (Score 24 each) -- Should land with or after the QUAL-319 engine decision.

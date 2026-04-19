@@ -1,8 +1,10 @@
 # Security Gap Analysis
 
-> **Last updated:** 2026-04-18 (Phase 11 remediation — SEC-057..060 closed; SEC-061 remains open)
+> **Last updated:** 2026-04-19 (Phase 12 audit — SEC-062, SEC-063, SEC-064 filed; SEC-061 updated with patch draft)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Phase 11 -- Audit pass on main: identified 1 HIGH regression (SEC-057), 1 MEDIUM (SEC-058 32-bit), 1 LOW test hygiene (SEC-059), 1 MEDIUM operational CI/CD gap (SEC-060), 1 LOW supply-chain hardening (SEC-061). 6 prior HIGH/CRITICAL resolutions verified intact. **2026-04-18 remediation:** SEC-057, SEC-058, SEC-059, SEC-060 resolved in-branch; SEC-061 remains open under its 180-day SLA.
+> **Review phase:** Phase 12 -- Cross-domain audit pass on main: added 3 new LOW findings (SEC-062 fuzz corpus under-seeding, SEC-063 Semgrep FP ignore, SEC-064 engine.zig deletion), updated SEC-061 with Phase 3 SHA-pinning patch draft. Posture remains **0 Critical / 0 High** open. Phase 11 history retained below.
+>
+> **Cross-domain banner:** Engine deletion (SEC-064) is a unanimous Phase 3 cross-domain recommendation (security + quality + perf reviewers). Tracked here as SEC-064 per delete-over-patch user rule.
 
 ## Phase 11 Alert (RESOLVED 2026-04-18)
 
@@ -15,13 +17,33 @@
 | Critical  | 0    | 0      | 0        | 0               | 0     |
 | High      | 0    | 11     | 0        | 0               | 11    |
 | Medium    | 0    | 18     | 0        | 0               | 18    |
-| Low       | 1    | 20     | 4        | 0               | 25    |
+| Low       | 4    | 20     | 4        | 0               | 28    |
 | Info      | 0    | 3      | 1        | 3               | 7     |
-| **Total** | **1** | **52** | **5**   | **3**           | **61** |
+| **Total** | **4** | **52** | **5**   | **3**           | **64** |
 
-**Phase 11** added 5 new findings (SEC-057 through SEC-061) plus 3 info-only notes (NEW-SEC-04, NEW-SEC-05, NEW-SEC-08). As of 2026-04-18, 4 of the 5 new findings (SEC-057, SEC-058, SEC-059, SEC-060) are closed by in-branch remediation; SEC-061 remains open under its 180-day SLA. Baseline returns to **0 Critical / 0 High open**.
+**Phase 12** (2026-04-19) filed 3 new LOW findings (SEC-062, SEC-063, SEC-064) from cross-domain review and attached the Phase 3 SHA-pinning patch draft to SEC-061. All 4 open findings are LOW. **Posture remains STRONG: 0 Critical / 0 High open.**
+
+**Phase 11** added 5 new findings (SEC-057 through SEC-061) plus 3 info-only notes (NEW-SEC-04, NEW-SEC-05, NEW-SEC-08). As of 2026-04-18, 4 of the 5 new findings (SEC-057, SEC-058, SEC-059, SEC-060) are closed by in-branch remediation; SEC-061 remains open under its 180-day SLA.
 
 **Phase 10** added 8 new findings from adversarial review (SEC-049 through SEC-056). All resolved: 5 closed via code changes, 3 Info accepted as documented risk.
+
+### Phase 12 Findings (2026-04-19 cross-domain audit)
+
+All 3 new findings are **LOW / Open**. They complement SEC-061 (still Open) and do not alter the 0 Critical / 0 High baseline.
+
+- **SEC-062** — **OPEN / Low / Risk 8** (suspected / test-coverage): QUIC transport-params fuzz corpus under-seeded. Only 1 seed (`tests/fuzz/corpus/quic_tp/sec058_length_overflow.bin`) vs 17+ RFC 9000 §18.2 / RFC 9001 §8.2 parameter kinds plus varint-edge / duplicate / server-only / GREASE / PreferredAddress variants. **Exploit scenario:** a decoder bug in an un-seeded param kind escapes early-stage fuzzing because coverage starts from a single length-overflow input — analogous-to SEC-058 bugs in neighboring kinds may ship. **Acceptance:** >=30 seeds covering each param-ID happy path, zero-length, max-varint (0x3fff_ffff_ffff_ffff), duplicates (e.g., two `initial_max_data`), server-only-on-client role violations, GREASE IDs (31N+27), TP length > record, malformed PreferredAddress. CWE-1287 / A09:2021. Issue: [#219](https://gitlab.com/devnw/zig/tls/-/issues/219). **SLA 180 days.**
+- **SEC-063** — **OPEN / Low / Risk 4** (confirmed / process): Semgrep false-positives on `specs/**/*.txt`. RFC canonical text samples (e.g., `specs/aead/rfc5116.txt`, `specs/ecdsa/rfc8032.txt`) trip PEM / key / entropy heuristics. **Exploit scenario:** none — pure alert-fatigue hardening; FP noise dilutes signal on real findings. **Acceptance:** add `.semgrepignore` entry `specs/**/*.txt` with SEC-063 comment; zero Semgrep findings under `specs/**/*.txt` on next scan; other paths unaffected; regression guard confirms real-code files still scanned. A09:2021 (alert fatigue). Issue: [#222](https://gitlab.com/devnw/zig/tls/-/issues/222). **SLA 180 days.**
+- **SEC-064** — **OPEN / Low / Risk 12** (confirmed / posture): Legacy `src/tls13/engine.zig` (2236 LOC) maintains a parallel handshake / ticket / TP parsing path duplicating the production `context.zig` code path. Per Phase 3 unanimous cross-domain recommendation (security + quality + perf) and the user `delete-over-patch` memory rule, the correct remediation is **full deletion**, not parallel patching. **Exploit scenario:** a hardening fix lands in `context.zig` but is missed in `engine.zig`; a later fuzz-harness retargeting or accidental re-exposure routes a live handshake through the stale parser, bypassing the fix (analogous to SEC-057-class divergence). **Acceptance:** (a) `src/tls13/mod.zig` re-exports have modern equivalents or are removed; (b) `rg 'Engine|TicketStore|TicketEntry|encodeMinimal' --type zig` returns zero external callers; (c) fuzz harnesses retargeted from engine to context; (d) `git rm src/tls13/engine.zig` applied; (e) `zig build test` and fuzz smoke green; (f) linked closures in QUALITY / PERF ledgers (QUAL-319 / PERF-023 / PERF-040). CWE-1041 / A04:2021. Issue: [#226](https://gitlab.com/devnw/zig/tls/-/issues/226). Cross-links: QUAL-319 ([#166](https://gitlab.com/devnw/zig/tls/-/issues/166)), PERF-023, PERF-040. **SLA 180 days.**
+
+#### Phase 12 SEC-061 update (no state change)
+
+Phase 3 security reviewer produced a concrete SHA-pinning patch template for `.gitlab-ci.yml:11-24` (8 imports). Patch draft and SHA-resolution procedure (`glab api projects/devnw%2Fci-catalog/repository/tags/v1.7.1` and `v1.2.1` for zig-format) were posted as a comment on [#184](https://gitlab.com/devnw/zig/tls/-/issues/184) on 2026-04-19. Issue remains **Open**; implementation deferred to a follow-up MR.
+
+#### Phase 12 Verification notes (no issue filed)
+
+- **NEW-03**: `src/quic_transport_params.zig:223` exhaustive-enum struct uses the non-exhaustive `_,` marker; the switch at `src/quic_transport_params.zig:675` employs a `_ =>` arm with `continue` per RFC 9000 §7.4 (ignore unknown TP IDs). **Confirmed clean — no finding filed.**
+
+---
 
 ### Phase 11 Findings (2026-04-18 audit)
 
@@ -29,7 +51,7 @@
 - **SEC-058** — **CLOSED 2026-04-18 / Medium / Risk 36** (32-bit only): DoS via `@intCast(varint length)` before bounds check. `src/quic_transport_params.zig:572-578`. On 32-bit targets, a TP length ≥ 2^32 panicked in `@intCast` before the subsequent `offset + len > data.len` guard. CWE-190/681. Issue: [#167](https://gitlab.com/devnw/zig/tls/-/issues/167). **Resolution:** 2026-04-18 — Validated varint length in u64 space before narrowing cast at `src/quic_transport_params.zig:572-586`. Regression tests at `tests/security/sec058_tp_length_overflow.zig`. Commits: a05193c, aac7bbe.
 - **SEC-059** — **CLOSED 2026-04-18 / Low / Risk 4**: Missing `errdefer` in parallel AEAD tests. `src/parallel.zig:893,925`. Test allocator catches the leak; fix is hygiene. CWE-401. Issue: [#173](https://gitlab.com/devnw/zig/tls/-/issues/173). **Resolution:** 2026-04-18 — Added `filled` counter + scope-exit defer in both affected test loops at `src/parallel.zig:873-944`. Commit: 62c915b.
 - **SEC-060** — **CLOSED 2026-04-18 / Medium / Risk 24** (operational / SDL): Fuzz corpus not persisted (`artifacts: when: on_failure`) + `allow_failure: true` at both job and rule scope + 60s budget. `.gitlab-ci.yml:138-164`. **Root cause the CI lane failed to catch SEC-057.** OWASP A08/A09. Issue: [#181](https://gitlab.com/devnw/zig/tls/-/issues/181). **Resolution:** 2026-04-18 — CI fuzz job is now a real gate: removed `allow_failure:true`, added `cache:` stanza (pull-push, branch-keyed), extended rules to `merge_request_event`+`push`, and seeded the corpus with prior-regression inputs under `tests/fuzz/corpus/`. Commits: 53d581d, 67cb0c8.
-- **SEC-061** — **OPEN / Low / Risk 6**: CI catalog components pinned to mutable tags (`@v1.7.1`, `@v1.2.1`) rather than immutable commit SHAs. `.gitlab-ci.yml:11-24`. 8 imports affected. Internal catalog mitigates risk. CWE-829 / A08:2021. Issue: [#184](https://gitlab.com/devnw/zig/tls/-/issues/184). **SLA 180 days.**
+- **SEC-061** — **OPEN / Low / Risk 6**: CI catalog components pinned to mutable tags (`@v1.7.1`, `@v1.2.1`) rather than immutable commit SHAs. `.gitlab-ci.yml:11-24`. 8 imports affected. Internal catalog mitigates risk. CWE-829 / A08:2021. Issue: [#184](https://gitlab.com/devnw/zig/tls/-/issues/184). **SLA 180 days.** **Phase 12 update (2026-04-19):** SHA-pinning patch draft posted to the issue (see Phase 12 section above); issue remains Open pending the follow-up MR.
 
 #### Phase 11 Informational Notes (no issue filed)
 

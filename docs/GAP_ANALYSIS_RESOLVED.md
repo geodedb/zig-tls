@@ -614,6 +614,32 @@
 
 ---
 
+## Phase 12 Closures (2026-04-19)
+
+### GAP-0100: Remote DoS via @enumFromInt on unfiltered signature_algorithms entry [RESOLVED]
+
+- **Issue:** [#136](https://gitlab.com/devnw/zig/tls/-/issues/136) (closed)
+- **Category:** Security (REGRESSION)
+- **Resolution:** Unchecked `@enumFromInt(alg)` replaced with a bounded exhaustive switch over valid `SignatureScheme` tags at `src/tls13/messages/client_hello.zig:406`. The ~2063-value attack surface over `0x0401..=0x080b` is eliminated; unknown values are silently skipped.
+- **Evidence:**
+  - `src/tls13/messages/client_hello.zig:406` -- bounded switch replaces unchecked `@enumFromInt`
+  - Phase 3 gap-detector confirmed the fix
+  - Fuzz/exhaustive u16 sweep of the sig_algs extension no longer panics
+- **Resolved date:** 2026-04-19
+
+### GAP-0101: 32-bit DoS via @intCast(varint length) before bounds check [RESOLVED]
+
+- **Issue:** [#137](https://gitlab.com/devnw/zig/tls/-/issues/137) (closed)
+- **Category:** Security
+- **Resolution:** `@intCast(length)` hoisted to after a u64 bounds check against `data.len - offset` at `src/quic_transport_params.zig:581-584`. On 32-bit targets (`usize=u32`) a varint length of 2^32 or larger now returns `error.Truncated` cleanly instead of panicking in ReleaseSafe or hitting UB in ReleaseFast.
+- **Evidence:**
+  - `src/quic_transport_params.zig:581-584` -- u64 bounds check precedes the cast
+  - Phase 3 gap-detector confirmed the fix
+  - Acceptance test `length = 0x1_0000_0000` -> `error.Truncated`, no panic
+- **Resolved date:** 2026-04-19
+
+---
+
 ## Phase 4 Closures (2026-04-18)
 
 ### GAP-0097: parallel module built but never imported at runtime [RESOLVED]
