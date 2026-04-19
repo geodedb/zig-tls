@@ -85,9 +85,9 @@ fn milliTimestamp() i64 {
 /// Maximum cookie size (64 KB - 1 per RFC wire format)
 pub const MAX_COOKIE_SIZE: usize = 65535;
 
-/// Recommended cookie size for HMAC-based cookies
-/// SHA-256 HMAC (32 bytes) + timestamp (8 bytes) = 40 bytes
-pub const RECOMMENDED_COOKIE_SIZE: usize = 40;
+// GAP-0122: RECOMMENDED_COOKIE_SIZE removed — no callers. Sizing is
+// embedder-specific (SHA-256 HMAC 32B + 8B timestamp = 40B is a sensible
+// default but doesn't warrant a public constant).
 
 /// Cookie parsing error
 pub const CookieError = error{

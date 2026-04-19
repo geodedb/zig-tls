@@ -189,19 +189,9 @@ pub fn updateTrafficSecretHash(hash: Hash, current_secret: *const Secret) Secret
     return next;
 }
 
-/// Update a QUIC traffic secret using the "quic ku" label as specified in RFC 9001 §6.
-/// This is used for QUIC key updates which differ from TLS 1.3 key updates.
-///
-/// ## RFC Reference
-/// RFC 9001 §6 - Key Update
-pub fn updateQuicSecretHash(hash: Hash, current_secret: *const Secret) Secret {
-    var next = Secret.empty();
-    next.len = @intCast(digestLength(hash));
-    // SAFETY: label "quic ku" (13 bytes with "tls13 " prefix) and empty context fit within
-    // the 256-byte fixed buffer; output size matches digest length. Allocation cannot fail.
-    expandLabelHash(hash, current_secret, "quic ku", &[_]u8{}, next.sliceMut()) catch unreachable;
-    return next;
-}
+// GAP-0122: updateQuicSecretHash removed — no internal or external callers
+// remained after the engine deletion. "quic ku" key-update callers now
+// derive directly via `expandLabelHash` in the QUIC key-update path.
 
 pub fn deriveKeyIvHpHash(hash: Hash, secret: *const Secret, v2: bool) KeyMaterial {
     var key: [16]u8 = undefined;
@@ -602,27 +592,8 @@ pub fn updateTrafficSecret(current_secret: [Sha256.digest_length]u8) [Sha256.dig
     return out;
 }
 
-/// Update a QUIC traffic secret using the "quic ku" label as specified in RFC 9001 §6.
-///
-/// Unlike TLS 1.3 key updates which use "traffic upd", QUIC uses "quic ku" for
-/// key updates to maintain separation from the TLS protocol.
-///
-/// ## Parameters
-/// - `current_secret`: Current QUIC application traffic secret (32 bytes)
-///
-/// ## Returns
-/// Next-generation QUIC application traffic secret (32 bytes)
-///
-/// ## RFC References
-/// - RFC 9001 §6 - Key Update in QUIC
-/// - RFC 9001 §6.1 - Initiating a Key Update
-pub fn updateQuicSecret(current_secret: [Sha256.digest_length]u8) [Sha256.digest_length]u8 {
-    var secret_wrapper = Secret.fromSlice(.sha256, current_secret[0..]);
-    const updated = updateQuicSecretHash(.sha256, &secret_wrapper);
-    var out: [Sha256.digest_length]u8 = undefined;
-    @memcpy(out[0..], updated.slice());
-    return out;
-}
+// GAP-0122: updateQuicSecret removed — no callers remained after engine
+// deletion. See updateQuicSecretHash removal note above.
 
 /// Generic secret derivation using HKDF-Expand-Label with custom label and context.
 ///

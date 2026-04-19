@@ -135,7 +135,8 @@ pub const HELLO_RETRY_REQUEST_RANDOM = server_hello_mod.HELLO_RETRY_REQUEST_RAND
 // Re-export EncryptedExtensions functions for backward compatibility
 pub const buildEncryptedExtensions = encrypted_extensions_mod.buildEncryptedExtensions;
 pub const parseEncryptedExtensions = encrypted_extensions_mod.parseEncryptedExtensions;
-pub const EncryptedExtensionsView = encrypted_extensions_mod.EncryptedExtensions;
+// GAP-0122: EncryptedExtensionsView removed — no callers. Use
+// `tls13_full.parseEncryptedExtensions` result type directly if needed.
 
 // Re-export Certificate types and functions for backward compatibility
 pub const ParsedCertificateMessage = certificate_mod.ParsedCertificateMessage;
