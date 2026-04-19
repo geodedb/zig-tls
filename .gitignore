@@ -25,6 +25,8 @@ zig-pkg/
 
 .vscode/
 .rightnow/
+.remember/
+docs/superpowers/
 
 # Binaries for programs and plugins
 *.exe
