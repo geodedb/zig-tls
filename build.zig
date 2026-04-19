@@ -37,6 +37,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // PERF-024: Test-only allocator wrapper that tracks allocation counts
+    // and byte totals. Consumed by tests/perf/*.zig to assert allocation
+    // regressions (PERF-201, PERF-207). Not for production use.
+    _ = b.addModule("counting_allocator", .{
+        .root_source_file = b.path("src/testing/counting_allocator.zig"),
+    });
+
     // ITU-T X.690: ASN.1 DER encoding/decoding
     // Used for X.509 certificate parsing
     const asn1_mod = b.addModule("asn1", .{
@@ -229,12 +236,8 @@ pub fn build(b: *std.Build) void {
     // Unit Tests - Test each module independently
     // ========================================================================
     //
-    // TODO(PERF-024): Add a CountingAllocator wrapper for debug/benchmark builds
-    // to measure allocations per handshake. This would enable automated regression
-    // detection for allocation-related performance findings (PERF-001, PERF-003,
-    // PERF-007, PERF-012, PERF-013). Implementation: wrap std.testing.allocator
-    // in a struct that tracks total_allocs, total_frees, peak_bytes, current_bytes.
-    // Add assertions like: assert(alloc_count_per_handshake < 50).
+    // PERF-024: CountingAllocator lives at src/testing/counting_allocator.zig
+    // and is consumed by tests/perf/*.zig to assert allocation-count regressions.
 
     const test_step = b.step("test", "Run all unit tests");
 
@@ -299,6 +302,11 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "quic_transport_params", .module = transport_params_mod },
             },
+        },
+        .{
+            .name = "counting_allocator",
+            .source = "src/testing/counting_allocator.zig",
+            .imports = &.{},
         },
     };
 
