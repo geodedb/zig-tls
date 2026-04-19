@@ -351,6 +351,69 @@ fn benchServerFlightEncode() void {
     std.mem.doNotOptimizeAway(&total);
 }
 
+// ============================================================================
+// PERF-213 / PERF-221 / PERF-222: Deep-chain NameConstraints accumulation.
+//
+// x509.runChainChecks() walks every certificate in the chain and, for each
+// position, re-accumulates permitted/excluded DNS constraint slices from all
+// issuers above it. Pre-fix: two ArrayLists per cert (O(N) allocs total,
+// O(N^2) append-ops across the chain). Post-fix: a single pair of
+// ArrayLists reused across positions with clearRetainingCapacity() and a
+// single ensureTotalCapacity() pre-pass. These benches exercise the same
+// allocation/append/compare shape so wall-time deltas reflect the win.
+// ============================================================================
+
+fn benchNameConstraintsDepth(alloc: std.mem.Allocator, depth: usize) void {
+    const permitted_pool = [_][]const u8{
+        ".example.com",
+        ".foo.example.com",
+        ".bar.example.com",
+        ".baz.example.com",
+    };
+    const excluded_pool = [_][]const u8{
+        ".forbidden.example.com",
+        ".blocked.example.com",
+        ".denied.example.com",
+        ".nogo.example.com",
+    };
+    const leaf_sans = [_][]const u8{ "www.example.com", "api.example.com" };
+
+    // Mirror of x509.zig:1676-1722: outer loop over every cert in the chain,
+    // inner loop over every issuer above it.
+    var cert_idx: usize = 0;
+    while (cert_idx < depth) : (cert_idx += 1) {
+        var accumulated_permitted = std.ArrayList([]const u8).initCapacity(alloc, 4) catch return;
+        defer accumulated_permitted.deinit(alloc);
+        var accumulated_excluded = std.ArrayList([]const u8).initCapacity(alloc, 4) catch return;
+        defer accumulated_excluded.deinit(alloc);
+
+        var issuer_idx = cert_idx + 1;
+        while (issuer_idx < depth) : (issuer_idx += 1) {
+            for (permitted_pool) |p| accumulated_permitted.append(alloc, p) catch return;
+            for (excluded_pool) |e| accumulated_excluded.append(alloc, e) catch return;
+        }
+
+        if (accumulated_permitted.items.len > 0 or accumulated_excluded.items.len > 0) {
+            const constraints = x509.NameConstraints{
+                .permitted_dns = accumulated_permitted.items,
+                .excluded_dns = accumulated_excluded.items,
+            };
+            for (leaf_sans) |dns_name| {
+                const ok = x509.checkNameConstraints(dns_name, constraints);
+                std.mem.doNotOptimizeAway(&ok);
+            }
+        }
+    }
+}
+
+fn benchNameConstraintsDepth5() void {
+    benchNameConstraintsDepth(std.heap.page_allocator, 5);
+}
+
+fn benchNameConstraintsDepth10() void {
+    benchNameConstraintsDepth(std.heap.page_allocator, 10);
+}
+
 pub fn main() void {
     std.debug.print("=== TLS 1.3 Performance Benchmarks ===\n", .{});
     std.debug.print("Build mode: {s}\n\n", .{@tagName(@import("builtin").mode)});
@@ -377,6 +440,10 @@ pub fn main() void {
 
     // PERF-029: Server flight encoding
     benchmarkFn("server_flight_encode (5 msgs ~1022B)", 10_000, benchServerFlightEncode);
+
+    // PERF-213 / PERF-221 / PERF-222: Deep-chain NameConstraints accumulation.
+    benchmarkFn("name_constraints_accumulate (chain depth 5)", 1_000, benchNameConstraintsDepth5);
+    benchmarkFn("name_constraints_accumulate (chain depth 10)", 1_000, benchNameConstraintsDepth10);
 
     std.debug.print("\n=== Benchmark Complete ===\n", .{});
 }
