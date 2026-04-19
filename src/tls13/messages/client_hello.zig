@@ -399,9 +399,12 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
                         var a_pos: usize = 2;
                         while (a_pos + 2 <= 2 + algs_len) : (a_pos += 2) {
                             const alg = helpers.readU16(ext_data[a_pos .. a_pos + 2]);
-                            // Add supported algorithms
-                            if (alg >= 0x0401 and alg <= 0x080b) {
-                                try algs.append(allocator, @enumFromInt(alg));
+                            // SEC-057: Only accept values that are actual enum tags.
+                            // The prior 0x0401..0x080b range check admitted ~2034
+                            // values not in the exhaustive SignatureScheme enum,
+                            // causing @enumFromInt to panic on malicious input.
+                            if (std.enums.fromInt(core_types.SignatureScheme, alg)) |scheme| {
+                                try algs.append(allocator, scheme);
                             }
                         }
 
