@@ -416,14 +416,24 @@ fn freeParsedClientHello(allocator: std.mem.Allocator, parsed: *tls13_full.Clien
 }
 
 /// Handshake state container (server stores ClientHello for parameter negotiation).
+///
+/// QUAL-336: Canonical single source of truth. Previously duplicated at
+/// `src/tls13/context.zig:437` which has been removed.
 pub const HandshakeState = struct {
     client_hello: ?ClientHelloInfo = null,
+    /// SEC-045: Pre-converted PSK identity views for type-safe clientHello().
+    /// Allocated alongside ClientHelloInfo and freed in reset().
+    psk_identity_views: ?[]ClientHelloPskIdentityView = null,
 
     pub fn init() HandshakeState {
         return .{};
     }
 
     pub fn reset(self: *HandshakeState, allocator: std.mem.Allocator) void {
+        if (self.psk_identity_views) |views| {
+            allocator.free(views);
+            self.psk_identity_views = null;
+        }
         if (self.client_hello) |*info| {
             info.deinit(allocator);
             self.client_hello = null;
@@ -436,6 +446,21 @@ pub const HandshakeState = struct {
         const HandshakeError = error{DuplicateClientHello};
         if (self.client_hello != null) return HandshakeError.DuplicateClientHello;
         const info = try ClientHelloInfo.parse(allocator, body);
+        errdefer {
+            var info_copy = info;
+            info_copy.deinit(allocator);
+        }
+        // SEC-045: Pre-convert PSK identities field-by-field to avoid @ptrCast at view time.
+        if (info.pre_shared_key) |psk| {
+            const views = try allocator.alloc(ClientHelloPskIdentityView, psk.identities.len);
+            for (psk.identities, 0..) |ident, i| {
+                views[i] = .{
+                    .identity = ident.identity,
+                    .obfuscated_ticket_age = ident.obfuscated_ticket_age,
+                };
+            }
+            self.psk_identity_views = views;
+        }
         self.client_hello = info;
     }
 
@@ -450,17 +475,14 @@ pub const HandshakeState = struct {
                 .supported_versions = info.supported_versions,
                 .key_share = .{ .group = info.key_share.group, .key = info.key_share.key },
                 .quic_transport_parameters = info.quic_transport_parameters,
-                // [][]u8 -> []const []const u8: safe cast, same memory layout
-                .alpn_list = if (info.alpn_list) |list|
-                    @as([]const []const u8, @ptrCast(list))
-                else
-                    null,
+                // SEC-045: [][]u8 coerces to []const []const u8 without @ptrCast.
+                .alpn_list = info.alpn_list,
                 .early_data = info.early_data,
                 .pre_shared_key = if (info.pre_shared_key) |psk| ClientHelloPreSharedKeyView{
-                    // []OwnedPskIdentity -> []const ClientHelloPskIdentityView: same layout
-                    .identities = @as([]const ClientHelloPskIdentityView, @ptrCast(psk.identities)),
-                    // [][]u8 -> []const []const u8: safe cast, same memory layout
-                    .binders = @as([]const []const u8, @ptrCast(psk.binders)),
+                    // SEC-045: Use pre-converted identity views (field-by-field, no @ptrCast).
+                    .identities = self.psk_identity_views orelse &.{},
+                    // SEC-045: [][]u8 coerces to []const []const u8 without @ptrCast.
+                    .binders = psk.binders,
                 } else null,
                 .psk_key_exchange_modes = info.psk_key_exchange_modes,
                 .raw = info.raw,

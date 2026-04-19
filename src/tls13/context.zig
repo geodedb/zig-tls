@@ -434,74 +434,26 @@ pub const ClientHelloView = handshake_state_mod.ClientHelloView;
 // QUAL-070: ClientHelloInfo consolidated in handshake_state.zig (canonical source).
 const ClientHelloInfo = handshake_state_mod.ClientHelloInfo;
 
-const HandshakeState = struct {
-    client_hello: ?ClientHelloInfo = null,
-    /// SEC-045: Pre-converted PSK identity views for type-safe clientHello().
-    /// Allocated alongside ClientHelloInfo and freed in reset().
-    psk_identity_views: ?[]ClientHelloPskIdentityView = null,
+// QUAL-336: HandshakeState canonicalized in handshake_state.zig. This file
+// previously shadowed it with a near-duplicate. Re-alias the canonical so
+// internal references keep working without an import update.
+const HandshakeState = handshake_state_mod.HandshakeState;
 
-    fn init() HandshakeState {
-        return .{};
+comptime {
+    // Field-parity guard: if anyone adds/renames a field on the canonical
+    // HandshakeState, this static assert forces a review of downstream
+    // context.zig invariants (e.g. reset ordering, SEC-045 PSK view lifetime).
+    const expected = [_][]const u8{ "client_hello", "psk_identity_views" };
+    const fields = std.meta.fields(HandshakeState);
+    if (fields.len != expected.len) {
+        @compileError("QUAL-336: HandshakeState field count changed; review context.zig invariants");
     }
-
-    fn reset(self: *HandshakeState, allocator: std.mem.Allocator) void {
-        if (self.psk_identity_views) |views| {
-            allocator.free(views);
-            self.psk_identity_views = null;
-        }
-        if (self.client_hello) |*info| {
-            info.deinit(allocator);
-            self.client_hello = null;
+    for (expected, fields) |want, have| {
+        if (!std.mem.eql(u8, want, have.name)) {
+            @compileError("QUAL-336: HandshakeState field rename; review context.zig invariants");
         }
     }
-
-    fn setClientHello(self: *HandshakeState, allocator: std.mem.Allocator, body: []const u8) !void {
-        if (self.client_hello != null) return HandshakeError.DuplicateClientHello;
-        const info = try ClientHelloInfo.parse(allocator, body);
-        errdefer {
-            var info_copy = info;
-            info_copy.deinit(allocator);
-        }
-        // SEC-045: Pre-convert PSK identities field-by-field to avoid @ptrCast at view time.
-        if (info.pre_shared_key) |psk| {
-            const views = try allocator.alloc(ClientHelloPskIdentityView, psk.identities.len);
-            for (psk.identities, 0..) |ident, i| {
-                views[i] = .{
-                    .identity = ident.identity,
-                    .obfuscated_ticket_age = ident.obfuscated_ticket_age,
-                };
-            }
-            self.psk_identity_views = views;
-        }
-        self.client_hello = info;
-    }
-
-    fn clientHello(self: *const HandshakeState) ?ClientHelloView {
-        if (self.client_hello) |*info| {
-            return ClientHelloView{
-                .random = info.random,
-                .session_id = info.session_id,
-                .cipher_suites = info.cipher_suites,
-                .signature_algorithms = info.signature_algorithms,
-                .supported_versions = info.supported_versions,
-                .key_share = .{ .group = info.key_share.group, .key = info.key_share.key },
-                .quic_transport_parameters = info.quic_transport_parameters,
-                // SEC-045: [][]u8 coerces to []const []const u8 without @ptrCast.
-                .alpn_list = info.alpn_list,
-                .early_data = info.early_data,
-                .pre_shared_key = if (info.pre_shared_key) |psk| ClientHelloPreSharedKeyView{
-                    // SEC-045: Use pre-converted identity views (field-by-field, no @ptrCast).
-                    .identities = self.psk_identity_views orelse &.{},
-                    // SEC-045: [][]u8 coerces to []const []const u8 without @ptrCast.
-                    .binders = psk.binders,
-                } else null,
-                .psk_key_exchange_modes = info.psk_key_exchange_modes,
-                .raw = info.raw,
-            };
-        }
-        return null;
-    }
-};
+}
 
 const HandshakeFlags = struct {
     peer_finished_verified: bool = false,
