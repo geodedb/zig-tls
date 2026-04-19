@@ -46,6 +46,8 @@ pub const appendix_a_initial_secrets = @import("appendix_a_initial_secrets.zig")
 pub const section_5_packet_protection = @import("section_5_packet_protection.zig");
 pub const section_5_4_header_protection = @import("section_5_4_header_protection.zig");
 pub const section_5_5_retry_integrity = @import("section_5_5_retry_integrity.zig");
+pub const section_6_key_update = @import("section_6_key_update.zig");
+pub const section_9_version_negotiation = @import("section_9_version_negotiation.zig");
 
 test {
     std.testing.refAllDecls(@This());

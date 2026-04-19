@@ -28,17 +28,18 @@ Legend:
 | 4.2.9   | PreSharedKey extension                   | [x]  | [p]  |
 | 4.2.10  | EarlyData extension                      | [x]  | [x]  |
 | 4.2.11  | PSK exchange modes                       | [x]  | [p]  |
-| 4.3.1   | EncryptedExtensions                      | [x]  | [ ]  |
+| 4.3.1   | EncryptedExtensions                      | [x]  | [x]  |
 | 4.3.2   | CertificateRequest (mTLS)                | [x]  | [x]  |
 | 4.4.2   | Certificate                              | [x]  | [x]  |
 | 4.4.3   | CertificateVerify                        | [x]  | [x]  |
 | 4.4.4   | Finished                                 | [x]  | [x]  |
-| 4.6.1   | NewSessionTicket                         | [x]  | [ ]  |
-| 4.6.3   | KeyUpdate                                | [x]  | [ ]  |
+| 4.6.1   | NewSessionTicket                         | [ ]  | [p]  |
+| 4.6.3   | KeyUpdate                                | [x]  | [x]  |
 | 5       | Record layer                             | [x]  | [x]  |
-| 6       | Alert protocol                           | [x]  | [ ]  |
+| 6       | Alert protocol                           | [x]  | [x]  |
 | 7       | Key schedule                             | [x]  | [x]  |
-| 8       | 0-RTT / anti-replay                      | [x]  | [ ]  |
+| 8       | 0-RTT / anti-replay                      | [x]  | [x]  |
+| B.4     | Cipher suite enum parity (QUAL-337)      | [x]  | [x]  |
 
 ## RFC 9001 -- TLS for QUIC
 
@@ -48,23 +49,23 @@ Legend:
 | 5.1     | Packet protection keys                   | [x]  | [x]  |
 | 5.2     | Initial secrets                          | [x]  | [x]  |
 | 5.3     | AEAD usage                               | [x]  | [x]  |
-| 5.4     | Header protection                        | [x]  | [ ]  |
-| 5.5     | Retry integrity                          | [x]  | [ ]  |
-| 6       | Key updates                              | [x]  | [ ]  |
-| 9       | Version negotiation                      | [p]  | [ ]  |
+| 5.4     | Header protection                        | [ ]  | [p]  |
+| 5.5     | Retry integrity                          | [ ]  | [p]  |
+| 6       | Key updates                              | [x]  | [x]  |
+| 9       | Version negotiation                      | [x]  | [x]  |
 
 ## RFC 5280 -- X.509 PKIX
 
 | Section | Clause                                   | Impl | Test |
 |---------|------------------------------------------|------|------|
 | 4.1     | Basic certificate fields                 | [x]  | [x]  |
-| 4.2.1.3 | KeyUsage extension                       | [x]  | [p]  |
+| 4.2.1.3 | KeyUsage extension                       | [x]  | [x]  |
 | 4.2.1.6 | SubjectAltName extension                 | [x]  | [x]  |
 | 4.2.1.9 | BasicConstraints extension               | [x]  | [x]  |
 | 4.2.1.10| NameConstraints extension                | [x]  | [x]  |
-| 4.2.1.12| ExtKeyUsage extension                    | [x]  | [p]  |
-| 5       | CRL processing                           | [x]  | [ ]  |
-| 6       | Certification path validation            | [x]  | [ ]  |
+| 4.2.1.12| ExtKeyUsage extension                    | [x]  | [x]  |
+| 5       | CRL processing                           | [ ]  | [p]  |
+| 6       | Certification path validation            | [x]  | [x]  |
 
 ## Follow-up
 
