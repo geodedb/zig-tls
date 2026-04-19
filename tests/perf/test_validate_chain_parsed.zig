@@ -32,5 +32,12 @@ test "PERF-207: validateChainReturnParsed returns leaf without caller re-parse" 
     defer leaf.deinit(ca.allocator());
 
     try std.testing.expect(leaf.tbs.len > 0);
-    ca.report("validateChainReturnParsed(1-cert)");
+    // NOTE: do not call `ca.report()` here. `std.debug.print` inside a
+    // test run under Zig's `--listen=-` test-runner protocol corrupts
+    // the framed stdout channel and causes `zig build test` to emit a
+    // spurious `failed command: ... --listen=-` diagnostic even though
+    // the test itself passes (GAP-0123). Diagnostic output belongs in
+    // a bench harness, not a test body.
+    try std.testing.expect(ca.stats.alloc_count >= 1);
+    try std.testing.expect(ca.stats.peak_live_bytes > 0);
 }
