@@ -591,8 +591,13 @@ pub const EncryptionLevel = enum {
     application,
 };
 
-/// Key material for an encryption level
-pub const KeyMaterial = struct {
+/// Key material derived from a QUIC traffic secret.
+///
+/// Distinct from `key_schedule.KeyMaterial` (16-byte TLS 1.3 AES-128-GCM
+/// keys). This struct supports variable-length keys (AES-128 for Initial,
+/// AES-256 for Handshake/Application) via `key_len` and uses the
+/// QUIC-specific `hp_key` field name for the header-protection key.
+pub const DerivedKeyMaterial = struct {
     key: [32]u8,
     iv: [12]u8,
     hp_key: [32]u8,
@@ -603,14 +608,14 @@ pub const KeyMaterial = struct {
 pub const KeyDeriveContext = struct {
     secrets: []const [32]u8,
     levels: []const EncryptionLevel,
-    results: []KeyMaterial,
+    results: []DerivedKeyMaterial,
 };
 
 /// Per-item chunk context for key derivation
 const KeyDeriveChunk = struct {
     secret: [32]u8,
     level: EncryptionLevel,
-    result: *KeyMaterial,
+    result: *DerivedKeyMaterial,
 };
 
 fn keyDeriveChunkTask(ctx_ptr: *anyopaque, _: *tp.TaskContext) void {
@@ -632,7 +637,7 @@ fn keyDeriveChunkTask(ctx_ptr: *anyopaque, _: *tp.TaskContext) void {
 pub fn parallelKeyDerive(
     secrets: []const [32]u8,
     levels: []const EncryptionLevel,
-    results: []KeyMaterial,
+    results: []DerivedKeyMaterial,
 ) void {
     std.debug.assert(secrets.len == levels.len);
     std.debug.assert(secrets.len == results.len);
@@ -668,7 +673,7 @@ pub fn parallelKeyDerive(
     }
 }
 
-fn deriveKeyMaterial(secret: [32]u8, level: EncryptionLevel) KeyMaterial {
+fn deriveKeyMaterial(secret: [32]u8, level: EncryptionLevel) DerivedKeyMaterial {
     // Derive key, IV, and header protection key from the traffic secret
     // using HKDF-Expand-Label per RFC 8446 Section 7.3 and RFC 9001 Section 5.1.
     //
@@ -682,7 +687,7 @@ fn deriveKeyMaterial(secret: [32]u8, level: EncryptionLevel) KeyMaterial {
 
     var wrapped_secret = ks.Secret.fromSlice(.sha256, &secret);
 
-    var result = KeyMaterial{
+    var result = DerivedKeyMaterial{
         .key = undefined,
         .iv = undefined,
         .hp_key = undefined,
@@ -946,7 +951,7 @@ test "parallel aead seal - chacha20" {
 test "parallel key derive" {
     var secrets: [4][32]u8 = undefined;
     var levels: [4]EncryptionLevel = undefined;
-    var results: [4]KeyMaterial = undefined;
+    var results: [4]DerivedKeyMaterial = undefined;
 
     for (&secrets, 0..) |*secret, i| {
         secret.* = [_]u8{@intCast(i + 1)} ** 32;
