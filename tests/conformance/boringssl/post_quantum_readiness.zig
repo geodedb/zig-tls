@@ -403,7 +403,7 @@ test "PQ: client preference order (PQ-first vs classical-first)" {
                 .HYBRID_ONLY => &[_]u16{
                     PQCodePoint.X25519_ML_KEM_768,
                     PQCodePoint.SECP256R1_ML_KEM_768,
-                        // No classical-only options
+                    // No classical-only options
                 },
             };
         }
