@@ -293,6 +293,13 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "tls13_full", .module = tls13_full_mod },
             },
         },
+        .{
+            .name = "sec058_tp_length_overflow",
+            .source = "tests/security/sec058_tp_length_overflow.zig",
+            .imports = &.{
+                .{ .name = "quic_transport_params", .module = transport_params_mod },
+            },
+        },
     };
 
     for (tests) |test_info| {
