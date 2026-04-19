@@ -608,6 +608,21 @@ pub const ClientHelloParams = struct {
     /// Digest length for the PSK binder (e.g. 32 for SHA-256, 48 for SHA-384).
     /// Only used when `include_psk` is true.
     psk_binder_len: u8 = 0,
+
+    /// PERF-208: When true, the returned `body` buffer starts with a
+    /// 4-byte handshake message header (`HsType.client_hello` + 3-byte
+    /// big-endian length) that has been written in place. This
+    /// eliminates the caller-side second allocation + memcpy previously
+    /// required to prepend the header before PSK binder computation.
+    /// When enabled:
+    ///   * `ClientHelloResult.body` is the full handshake message
+    ///     (4-byte header followed by the ClientHello body bytes) --
+    ///     NOT a body-only slice.
+    ///   * `ClientHelloResult.binder_offset`, when non-null, is an
+    ///     offset into `body` that already accounts for the 4-byte
+    ///     header; the caller must NOT add 4 to it.
+    ///   * `ClientHelloResult.binders_tail_len` is unchanged.
+    prepend_handshake_header: bool = false,
 };
 
 /// Result from `buildClientHello` containing the encoded body and optional
@@ -672,6 +687,18 @@ pub fn buildClientHello(allocator: std.mem.Allocator, params: ClientHelloParams)
     // Pre-allocate with a typical ClientHello size (~256 bytes).
     var buf = try std.ArrayList(u8).initCapacity(allocator, 256);
     errdefer buf.deinit(allocator);
+
+    // PERF-208: Optionally reserve the 4-byte handshake message header in
+    // the same buffer so callers don't need a second alloc+memcpy to
+    // prepend it. The length is backfilled after the body is built.
+    if (params.prepend_handshake_header) {
+        try buf.appendSlice(allocator, &.{ 0x01, 0x00, 0x00, 0x00 });
+    }
+
+    // Offset at which the ClientHello body starts (0 without header,
+    // 4 when prepended). All body-relative offsets computed via
+    // buf.items.len implicitly include this shift.
+    const body_start = buf.items.len;
 
     // --- ClientHello body ---
 
@@ -865,6 +892,15 @@ pub fn buildClientHello(allocator: std.mem.Allocator, params: ClientHelloParams)
     const exts_total: u16 = @intCast(buf.items.len - exts_start);
     buf.items[exts_len_offset] = @intCast(exts_total >> 8);
     buf.items[exts_len_offset + 1] = @intCast(exts_total & 0xff);
+
+    // PERF-208: Backfill the handshake header length prefix in place when
+    // the caller asked for a framed message.
+    if (params.prepend_handshake_header) {
+        const body_len_u32: u32 = @intCast(buf.items.len - body_start);
+        buf.items[1] = @intCast((body_len_u32 >> 16) & 0xff);
+        buf.items[2] = @intCast((body_len_u32 >> 8) & 0xff);
+        buf.items[3] = @intCast(body_len_u32 & 0xff);
+    }
 
     result.body = try buf.toOwnedSlice(allocator);
     return result;

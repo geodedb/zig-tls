@@ -336,6 +336,14 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "x509", .module = x509_mod },
             },
         },
+        .{
+            .name = "perf_clienthello2_allocs",
+            .source = "tests/perf/test_clienthello2_allocs.zig",
+            .imports = &.{
+                .{ .name = "counting_allocator", .module = counting_allocator_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
     };
 
     for (tests) |test_info| {

@@ -2227,6 +2227,12 @@ pub const Context = struct {
         } else null;
 
         // QUAL-096: Use shared ClientHello builder.
+        // PERF-208: Request a framed ClientHello so the 4-byte handshake
+        // header is reserved inside the same buffer as the body. This
+        // eliminates the previous second alloc + memcpy used to prepend
+        // the header before PSK binder computation. `ch_result.body` is
+        // now the full handshake message (header + body) and
+        // `ch_result.binder_offset` is already header-inclusive.
         const ch_result = try tls13_full.buildClientHello(self.allocator, .{
             .random = rnd,
             .client_pub = client_pubkey,
@@ -2240,22 +2246,16 @@ pub const Context = struct {
             .psk_identity = psk_identity,
             .psk_ticket_age = if (using_external_psk) 0 else self.config.resumption_ticket_age_add,
             .psk_binder_len = if (has_any_psk) @intCast(ks.digestLength(self.hash_kind)) else 0,
+            .prepend_handshake_header = true,
         });
         defer self.allocator.free(ch_result.body);
 
-        // PERF-015: Build the full handshake message (header + body) in one allocation
-        // so PSK binder computation can hash the complete message in-place.
-        const body_len: u32 = @intCast(ch_result.body.len);
-        const msg = try self.allocator.alloc(u8, 4 + ch_result.body.len);
-        defer self.allocator.free(msg);
-        msg[0] = @intFromEnum(HsType.client_hello);
-        msg[1] = @intCast((body_len >> 16) & 0xff);
-        msg[2] = @intCast((body_len >> 8) & 0xff);
-        msg[3] = @intCast(body_len & 0xff);
-        @memcpy(msg[4..], ch_result.body);
+        // `msg` is the fully-framed handshake message (HsType + 3-byte
+        // length + ClientHello body) in a single allocation.
+        const msg = ch_result.body;
 
         // Compute PSK binder if needed
-        if (ch_result.binder_offset) |body_binder_offset| {
+        if (ch_result.binder_offset) |msg_binder_offset| {
             const binder_len = ch_result.binder_len;
             if (binder_len == 0) return HandshakeError.CryptoError;
 
@@ -2265,7 +2265,8 @@ pub const Context = struct {
             const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, psk);
             const binder_key = key_derivation_mod.deriveBinderKey(self.hash_kind, &early_secret, using_external_psk);
 
-            // Truncate before binders list (offset relative to full msg including header)
+            // Truncate before binders list (offset is relative to the full
+            // framed msg including the handshake header).
             const truncated_len = msg.len - ch_result.binders_tail_len;
 
             // Hash truncated message (header is at msg[0..4])
@@ -2274,8 +2275,9 @@ pub const Context = struct {
             const transcript_hash = transcript.finalize(self.hash_kind);
 
             const binder = finished_mod.deriveFinishedVerifyData(self.hash_kind, &binder_key, transcript_hash);
-            // Binder offset in body + 4 for the handshake header
-            const msg_binder_offset = body_binder_offset + 4;
+            // PERF-208: binder_offset is absolute into msg (buildClientHello
+            // with prepend_handshake_header=true writes header-inclusive
+            // offsets). No +4 adjustment required.
             @memcpy(msg[msg_binder_offset..][0..binder_len], binder.slice()[0..binder_len]);
 
             if (self.config.enable_early_data) {
