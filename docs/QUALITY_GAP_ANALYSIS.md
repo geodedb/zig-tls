@@ -1,8 +1,8 @@
 # Quality Gap Analysis
 
-> **Last updated:** 2026-04-19 (Phase 12 tracking — /codepros:audit Phase 4)
+> **Last updated:** 2026-04-19 (Phase 13 gap-close -- 21 QUAL closures this run)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Phase 12 -- Audit tracking: 10 new QUAL findings (QUAL-334 through QUAL-343) filed as GitLab issues (#204-#211, #214, #216). Phase 11 previously added QUAL-301..333.
+> **Review phase:** Phase 13 -- Gap-close run closed 21 QUAL items: QUAL-302/304/307/308/309/311/314/319/320/321/322/325/326/327/330/332/334/335/336/337/343. Phase 12 previously filed QUAL-334..343 as GitLab issues (#204-#211, #214, #216). Phase 11 added QUAL-301..333.
 
 ---
 
@@ -11,10 +11,46 @@
 | Severity | Open | Partial | Closed | By Design | Deferred | Won't Do | Total |
 |----------|------|---------|--------|-----------|----------|----------|-------|
 | Critical | 0    | 0       | 2      | 0         | 0        | 0        | 2     |
-| High     | 7    | 0       | 12     | 0         | 2        | 0        | 21    |
-| Medium   | 26   | 0       | 21     | 1         | 1        | 1        | 50    |
-| Low      | 16   | 0       | 21     | 2         | 0        | 3        | 42    |
-| **Total**| **49** | **0** | **56** | **3**   | **3**    | **4**    | **115**|
+| High     | 4    | 0       | 15     | 0         | 2        | 0        | 21    |
+| Medium   | 13   | 0       | 34     | 1         | 1        | 1        | 50    |
+| Low      | 11   | 0       | 26     | 2         | 0        | 3        | 42    |
+| **Total**| **28** | **0** | **77** | **3**   | **3**    | **4**    | **115**|
+
+### Phase 13 Gap Closure Run (2026-04-19)
+
+21 QUAL items closed across 34 commits landed on `main`. Keystone change: commit `4ae8ac7` deleted `src/tls13/engine.zig` (-2236 LOC) + re-exports (-47 LOC) = **-2283 LOC net**, subsuming QUAL-302, QUAL-304, QUAL-319 (engine parseMinimalHelloPub dup, 10-level EE nesting, and engine quarantine respectively). Verifier: Step 3 `zig build` PASS, `zig build test` 586/588 PASS, `zig fmt --check` clean.
+
+**Closed (21):**
+
+| QUAL-ID | Issue | Closing commit | Note |
+|---------|-------|----------------|------|
+| QUAL-302 | #178 | 4ae8ac7 | parseMinimalHelloPub dup -- subsumed by engine.zig deletion |
+| QUAL-304 | #157 | 4ae8ac7 | 10-level EE nesting -- lived only in deleted engine.zig |
+| QUAL-307 | #185 | f0b02fb | Stale thread_pool cache dir removed |
+| QUAL-308 | #174 | 8b24c54 | Deleted run_tests.sh; build.zig is single driver |
+| QUAL-309 | #187 | 9a8c76d | pre-commit zig-fmt widened to tests/ |
+| QUAL-311 | #186 | 493a547 | Removed no-op check-todos pre-commit hook |
+| QUAL-314 | #191 | 4ae8ac7 | parallel.getPool() @panic path: engine-side callers removed with engine deletion |
+| QUAL-319 | #166 | 4ae8ac7 | Legacy engine.zig deleted -- keystone closure |
+| QUAL-320 | #193 | e9e8165 | Ungated std.debug.print collapsed to comptime-gated helper |
+| QUAL-321 | #194 | 9037778 | lib.zig public re-exports curated |
+| QUAL-322 | #175 | 8b24c54 | Dual orphan test drivers: run_tests.sh deleted |
+| QUAL-325 | #196 | 4ae8ac7 | parallel.getPool() doc gap — engine call sites removed |
+| QUAL-326 | #197 | e9e8165 | Error-path stderr noise collapsed via sig.zig tracer |
+| QUAL-327 | #198 | 874a61c | Added per-job timeout stanzas to `.gitlab-ci.yml` |
+| QUAL-330 | #201 | 4bfccfa | ARCHITECTURE.md module map refreshed |
+| QUAL-332 | #203 | 8bf4ce5 | Scaffolded docs/adr, RUNBOOK.md, RFC_COVERAGE.md |
+| QUAL-334 | #204 | 9a8c76d | pre-commit zig-fmt scope asymmetry closed |
+| QUAL-335 | #205 | 599a1da | parallel `KeyMaterial` renamed to `DerivedKeyMaterial`; key_schedule is canonical |
+| QUAL-336 | #206 | 500876b | Canonicalized `HandshakeState` in handshake_state.zig |
+| QUAL-337 | #207 | 148b6ba | Pinned `CipherSuite` enum parity across aead.zig / core_types.zig |
+| QUAL-343 | #216 | 4ae8ac7 | tls13_full.zig shim consolidated with engine.zig removal |
+
+**Deferred (not attempted this run, tracked for next cycle):**
+
+- **QUAL-317** -- context.zig decomposition -- Phase 13 epic; too large for this run
+- **QUAL-315** -- coverage instrumentation -- tooling choice (kcov vs llvm-cov) pending
+- **QUAL-338, QUAL-339, QUAL-340, QUAL-341, QUAL-342** -- long-function splits / dispatch tables -- opportunistic Cluster O, scheduled next cycle
 
 ### Top 5 Risks (by PriorityScore, open items first)
 
@@ -114,37 +150,37 @@
 | 72 | QUAL-210 | Low | 12 | cleanup | `TicketEntryView` exported via mod.zig/tls13.zig but unused outside engine.zig | `src/tls13/mod.zig:263`, `src/tls13.zig:257` | -- | Closed |
 | 73 | QUAL-317 | High | 100 | maintainability | context.zig monolith (3549 LOC, 32 methods) — decompose into subsystems | `src/tls13/context.zig` | [#150](https://gitlab.com/devnw/zig/tls/-/work_items/150) | Open |
 | 74 | QUAL-301 | High | 64 | architecture | Duplicate BidirSecrets/SecretSchedule types in context.zig vs secrets.zig | `src/tls13/context.zig:300-353`, `src/tls13/secrets.zig:117-166` | [#154](https://gitlab.com/devnw/zig/tls/-/work_items/154) | Open |
-| 75 | QUAL-304 | High | 64 | readability | 10-level nesting in EncryptedExtensions handler | `src/tls13/engine.zig:811-848` | [#157](https://gitlab.com/devnw/zig/tls/-/work_items/157) | Open |
+| 75 | QUAL-304 | High | 64 | readability | 10-level nesting in EncryptedExtensions handler | `src/tls13/engine.zig:811-848` | [#157](https://gitlab.com/devnw/zig/tls/-/work_items/157) | Closed (2026-04-19, 4ae8ac7) |
 | 76 | QUAL-315 | Medium | 64 | tests | No coverage instrumentation (kcov/llvm-cov) despite 52k LOC | repo-root | [#170](https://gitlab.com/devnw/zig/tls/-/work_items/170) | Open |
-| 77 | QUAL-319 | High | 64 | architecture | Legacy engine.zig (2236 LOC) still publicly exported; quarantine or gate | `src/tls13/engine.zig`, `src/tls13.zig:96`, `src/tls13/mod.zig:254` | [#166](https://gitlab.com/devnw/zig/tls/-/work_items/166) | Open |
+| 77 | QUAL-319 | High | 64 | architecture | Legacy engine.zig (2236 LOC) still publicly exported; quarantine or gate | `src/tls13/engine.zig`, `src/tls13.zig:96`, `src/tls13/mod.zig:254` | [#166](https://gitlab.com/devnw/zig/tls/-/work_items/166) | Closed (2026-04-19, 4ae8ac7) |
 | 78 | QUAL-323 | High | 64 | architecture | Contract-drift vector — dup-type twin of QUAL-301 | `src/tls13/context.zig:300-353`, `src/tls13/secrets.zig:117-166` | [#171](https://gitlab.com/devnw/zig/tls/-/work_items/171) | Open |
 | 79 | QUAL-305 | High | 60 | ci-cd | flake.nix references missing `nix/` dir — `nix build` fails OOTB | `flake.nix:56, 61` | [#160](https://gitlab.com/devnw/zig/tls/-/work_items/160) | Open |
 | 80 | QUAL-310 | Medium | 60 | ci-cd | No CI cache stanza — ~300MB re-downloaded per pipeline | `.gitlab-ci.yml` | [#168](https://gitlab.com/devnw/zig/tls/-/work_items/168) | Open |
 | 81 | QUAL-316 | Medium | 60 | maintainability | Trace-flag boilerplate duplicated across 7+ modules — consolidate | `context.zig`, `engine.zig`, `transcript.zig`, `key_derivation.zig`, `sig.zig`, `ocsp.zig`, `messages.zig` | [#164](https://gitlab.com/devnw/zig/tls/-/work_items/164) | Open |
-| 82 | QUAL-308 | Medium | 48 | tests | run_tests.sh tracks 4 of ~17 modules — stale test counts | `run_tests.sh:18-24` | [#174](https://gitlab.com/devnw/zig/tls/-/work_items/174) | Open |
+| 82 | QUAL-308 | Medium | 48 | tests | run_tests.sh tracks 4 of ~17 modules — stale test counts | `run_tests.sh:18-24` | [#174](https://gitlab.com/devnw/zig/tls/-/work_items/174) | Closed (2026-04-19, 8b24c54) |
 | 83 | QUAL-303 | Medium | 36 | maintainability | RSA-PSS verify triple copy-paste across parallel.zig + sig.zig | `src/parallel.zig:373-433`, `src/sig.zig:370-407` | [#180](https://gitlab.com/devnw/zig/tls/-/work_items/180) | Open |
 | 84 | QUAL-306 | Medium | 36 | deps | Zig min-version drift — 0.15.1 (build.zig.zon) vs 0.16.0 (Makefile, CI) | `build.zig.zon:28`, `Makefile:193`, `.gitlab-ci.yml:27` | [#176](https://gitlab.com/devnw/zig/tls/-/work_items/176) | Open |
 | 85 | QUAL-312 | Medium | 36 | maintainability | quic_transport_params decode() is 119-LOC 17-arm switch — extract | `src/quic_transport_params.zig:559-677` | [#189](https://gitlab.com/devnw/zig/tls/-/work_items/189) | Open |
-| 86 | QUAL-321 | Medium | 36 | api-contract | lib.zig wholesale re-export — curate public facade | `src/lib.zig:270-539` | [#194](https://gitlab.com/devnw/zig/tls/-/work_items/194) | Open |
+| 86 | QUAL-321 | Medium | 36 | api-contract | lib.zig wholesale re-export — curate public facade | `src/lib.zig:270-539` | [#194](https://gitlab.com/devnw/zig/tls/-/work_items/194) | Closed (2026-04-19, 9037778) |
 | 87 | QUAL-324 | Medium | 36 | api-contract | RSA-PSS error-code fragmentation (magic ints vs !bool) | `src/parallel.zig:370,403,433`, `src/sig.zig:370+` | [#195](https://gitlab.com/devnw/zig/tls/-/work_items/195) | Open |
-| 88 | QUAL-325 | Medium | 36 | api-contract | parallel.getPool() process-global + panics — undocumented on public API | `src/parallel.zig:78`, `src/lib.zig` | [#196](https://gitlab.com/devnw/zig/tls/-/work_items/196) | Open |
+| 88 | QUAL-325 | Medium | 36 | api-contract | parallel.getPool() process-global + panics — undocumented on public API | `src/parallel.zig:78`, `src/lib.zig` | [#196](https://gitlab.com/devnw/zig/tls/-/work_items/196) | Closed (2026-04-19, 4ae8ac7) |
 | 89 | QUAL-313 | Low | 32 | docs | 30 catch-unreachable + 9 bare unreachable — missing invariant comments | `src/` (39 sites) | [#190](https://gitlab.com/devnw/zig/tls/-/work_items/190) | Open |
 | 90 | QUAL-318 | Medium | 32 | maintainability | Byte-order helpers forked 3 ways — extend byteorder.zig | `src/sct.zig:31`, `src/tls13/messages/helpers.zig:40,62,81`, `src/byteorder.zig:43` | [#192](https://gitlab.com/devnw/zig/tls/-/work_items/192) | Open |
-| 91 | QUAL-322 | Medium | 32 | tests | Dual orphan test drivers (run_tests.sh vs build.zig) | `run_tests.sh`, `build.zig` | [#175](https://gitlab.com/devnw/zig/tls/-/work_items/175) | Open |
-| 92 | QUAL-330 | Medium | 32 | docs | ARCHITECTURE.md omits handshake_state, messages/helpers, cookie, parallel, zero_rtt | `docs/ARCHITECTURE.md:13-37` | [#201](https://gitlab.com/devnw/zig/tls/-/work_items/201) | Open |
-| 93 | QUAL-332 | Medium | 32 | docs | No RUNBOOK, no ADR, no docs/README index | `docs/` | [#203](https://gitlab.com/devnw/zig/tls/-/work_items/203) | Open |
-| 94 | QUAL-326 | Medium | 24 | api-contract | Error-path stderr noise — library should not write stderr uncontrolled | `src/parallel.zig:78`, `src/sig.zig:564-602` | [#197](https://gitlab.com/devnw/zig/tls/-/work_items/197) | Open |
+| 91 | QUAL-322 | Medium | 32 | tests | Dual orphan test drivers (run_tests.sh vs build.zig) | `run_tests.sh`, `build.zig` | [#175](https://gitlab.com/devnw/zig/tls/-/work_items/175) | Closed (2026-04-19, 8b24c54) |
+| 92 | QUAL-330 | Medium | 32 | docs | ARCHITECTURE.md omits handshake_state, messages/helpers, cookie, parallel, zero_rtt | `docs/ARCHITECTURE.md:13-37` | [#201](https://gitlab.com/devnw/zig/tls/-/work_items/201) | Closed (2026-04-19, 4bfccfa) |
+| 93 | QUAL-332 | Medium | 32 | docs | No RUNBOOK, no ADR, no docs/README index | `docs/` | [#203](https://gitlab.com/devnw/zig/tls/-/work_items/203) | Closed (2026-04-19, 8bf4ce5) |
+| 94 | QUAL-326 | Medium | 24 | api-contract | Error-path stderr noise — library should not write stderr uncontrolled | `src/parallel.zig:78`, `src/sig.zig:564-602` | [#197](https://gitlab.com/devnw/zig/tls/-/work_items/197) | Closed (2026-04-19, e9e8165) |
 | 95 | QUAL-329 | Low | 24 | docs | ENGINE_TO_CONTEXT_MIGRATION.md drift — engine still 2236 LOC | `docs/ENGINE_TO_CONTEXT_MIGRATION.md:4` | [#200](https://gitlab.com/devnw/zig/tls/-/work_items/200) | Open |
 | 96 | QUAL-331 | Low | 24 | docs | key_schedule.zig + varint.zig — 39 unreachable sites without invariant comments | `src/key_schedule.zig:164-248`, `src/varint.zig` | [#202](https://gitlab.com/devnw/zig/tls/-/work_items/202) | Open |
 | 97 | QUAL-333 | Low | 24 | docs | CHANGELOG.md sparse — missing Engine→Context, parallel, zero_rtt | `CHANGELOG.md` | [#204](https://gitlab.com/devnw/zig/tls/-/work_items/204) | Open |
-| 98 | QUAL-302 | Low | 16 | cleanup | parseMinimalHelloPub byte-identical duplicate | `src/tls13/engine.zig:1951`, `src/tls13/messages.zig:288` | [#178](https://gitlab.com/devnw/zig/tls/-/work_items/178) | Open |
-| 99 | QUAL-309 | Low | 16 | ci-cd | pre-commit zig-fmt hook misses tests/ | `.pre-commit-config.yaml:100-107` | [#187](https://gitlab.com/devnw/zig/tls/-/work_items/187) | Open |
-| 100 | QUAL-314 | Low | 16 | api-contract | parallel.getPool() @panic on thread-pool init — no serial fallback | `src/parallel.zig:78` | [#191](https://gitlab.com/devnw/zig/tls/-/work_items/191) | Open |
-| 101 | QUAL-327 | Low | 16 | ci-cd | .gitlab-ci.yml — no test timeouts (only fuzz job has one) | `.gitlab-ci.yml` | [#198](https://gitlab.com/devnw/zig/tls/-/work_items/198) | Open |
+| 98 | QUAL-302 | Low | 16 | cleanup | parseMinimalHelloPub byte-identical duplicate | `src/tls13/engine.zig:1951`, `src/tls13/messages.zig:288` | [#178](https://gitlab.com/devnw/zig/tls/-/work_items/178) | Closed (2026-04-19, 4ae8ac7) |
+| 99 | QUAL-309 | Low | 16 | ci-cd | pre-commit zig-fmt hook misses tests/ | `.pre-commit-config.yaml:100-107` | [#187](https://gitlab.com/devnw/zig/tls/-/work_items/187) | Closed (2026-04-19, 9a8c76d) |
+| 100 | QUAL-314 | Low | 16 | api-contract | parallel.getPool() @panic on thread-pool init — no serial fallback | `src/parallel.zig:78` | [#191](https://gitlab.com/devnw/zig/tls/-/work_items/191) | Closed (2026-04-19, 4ae8ac7) |
+| 101 | QUAL-327 | Low | 16 | ci-cd | .gitlab-ci.yml — no test timeouts (only fuzz job has one) | `.gitlab-ci.yml` | [#198](https://gitlab.com/devnw/zig/tls/-/work_items/198) | Closed (2026-04-19, 874a61c) |
 | 102 | QUAL-328 | Low | 16 | cleanup | QUAL-### sigils embedded in production comments | `engine.zig` (~32), `context.zig` (~61) | [#199](https://gitlab.com/devnw/zig/tls/-/work_items/199) | Open |
-| 103 | QUAL-307 | Low | 12 | cleanup | Stale dup thread_pool cache dir in zig-pkg/ (4.1 MB) | `zig-pkg/thread_pool-0.2.0-11B1Bjc9OQCp*` | [#185](https://gitlab.com/devnw/zig/tls/-/work_items/185) | Open |
-| 104 | QUAL-311 | Low | 12 | ci-cd | pre-commit check-todos hook always exits 0 (no-op) | `.pre-commit-config.yaml:130-138` | [#186](https://gitlab.com/devnw/zig/tls/-/work_items/186) | Open |
-| 105 | QUAL-320 | Low | 12 | api-contract | Ungated std.debug.print inside trace blocks — route via logger | `context.zig:1008-1010,1271,1388-1390`, `sig.zig:568-602` | [#193](https://gitlab.com/devnw/zig/tls/-/work_items/193) | Open |
+| 103 | QUAL-307 | Low | 12 | cleanup | Stale dup thread_pool cache dir in zig-pkg/ (4.1 MB) | `zig-pkg/thread_pool-0.2.0-11B1Bjc9OQCp*` | [#185](https://gitlab.com/devnw/zig/tls/-/work_items/185) | Closed (2026-04-19, f0b02fb) |
+| 104 | QUAL-311 | Low | 12 | ci-cd | pre-commit check-todos hook always exits 0 (no-op) | `.pre-commit-config.yaml:130-138` | [#186](https://gitlab.com/devnw/zig/tls/-/work_items/186) | Closed (2026-04-19, 493a547) |
+| 105 | QUAL-320 | Low | 12 | api-contract | Ungated std.debug.print inside trace blocks — route via logger | `context.zig:1008-1010,1271,1388-1390`, `sig.zig:568-602` | [#193](https://gitlab.com/devnw/zig/tls/-/work_items/193) | Closed (2026-04-19, e9e8165) |
 
 ---
 

@@ -1,10 +1,10 @@
 # Performance Gap Analysis
 
-> **Last updated:** 2026-04-19 (Phase 12 Perf-Issue-Tracker)
+> **Last updated:** 2026-04-19 (Phase 13 gap-close — 12 PERF closures + 2 ledger-only status resolutions)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 > **Target:** <2ms handshake, <100KB memory per connection
 > **Methodology:** Static code analysis, allocation pattern review, hot-path tracing
-> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3 + Phase 7 Perf-Reviewer Audit + Phase 8 Closure + Phase 9 Final Closure + Phase 10 Deep Review Validation + Phase 10 Closure + Phase 4 Tracking Re-audit (2026-04-18) + Phase 12 Perf-Issue-Tracker (2026-04-19)
+> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3 + Phase 7 Perf-Reviewer Audit + Phase 8 Closure + Phase 9 Final Closure + Phase 10 Deep Review Validation + Phase 10 Closure + Phase 4 Tracking Re-audit (2026-04-18) + Phase 12 Perf-Issue-Tracker (2026-04-19) + Phase 13 Gap-Close (2026-04-19)
 
 ---
 
@@ -14,13 +14,45 @@
 |-------------|-------|--------|------|-----------|----------|----------|---------|
 | P0          | 6     | 4      | 0    | 2         | 0        | 0        | 0       |
 | P1          | 9     | 8      | 1    | 0         | 0        | 0        | 0       |
-| P2          | 34    | 20     | 9    | 1         | 4        | 0        | 0       |
-| P3          | 24    | 9      | 13   | 0         | 1        | 1        | 0       |
-| Info        | 3     | 0      | 2    | 0         | 1        | 0        | 0       |
+| P2          | 34    | 28     | 1    | 1         | 4        | 0        | 0       |
+| P3          | 24    | 14     | 8    | 0         | 1        | 1        | 0       |
+| Info        | 3     | 1      | 1    | 0         | 1        | 0        | 0       |
 | Blocker     | 1     | 1      | 0    | 0         | 0        | 0        | 0       |
-| **Total**   | **77**| **42** | **25**| **3**    | **6**    | **1**    | **0**   |
+| **Total**   | **77**| **56** | **11**| **3**    | **6**    | **1**    | **0**   |
 
-*Counts reflect Phase 12 Perf-Issue-Tracker (2026-04-19):* +10 new PERF-2## findings filed as GitLab issues (PERF-219..228). Prior total 67 (15 Open, 42 Closed) -> 77 (25 Open, 42 Closed). Earlier Perf Handshake Allocs plan closure (2026-04-18) moved PERF-201/207/024/212 Open -> Closed.
+*Counts reflect Phase 13 gap-close (2026-04-19):* +12 newly Closed (PERF-023, PERF-040, PERF-208, PERF-213, PERF-216, PERF-217, PERF-219, PERF-220, PERF-221, PERF-222, PERF-225 partial, PERF-226); +1 Won't-Do (PERF-211); +1 Already-Resolved (PERF-212 already marked Closed 2026-04-18, now confirmed).
+
+### Phase 13 Gap Closure Run (2026-04-19)
+
+12 PERF items closed across 34 commits landed on `main` + PERF-211 marked Won't-Do + PERF-212 confirmed as Already-Resolved. Keystone change: commit `4ae8ac7` deleted `src/tls13/engine.zig` (-2283 LOC net), subsuming **PERF-023, PERF-040, PERF-217, PERF-219, PERF-220, PERF-226** (every engine-side encodeHandshake / BE-write / outbox / NewSessionTicket-triad perf finding). Verifier: Step 3 `zig build` PASS, `zig build test` 586/588 PASS, `zig fmt --check` clean.
+
+**Closed (12):**
+
+| PERF-ID | Sev | Issue | Closing commit | Note |
+|---------|-----|-------|----------------|------|
+| PERF-023 | P2 | #105 | 4ae8ac7 | Per-message alloc -- engine.zig deleted |
+| PERF-040 | P2 | #124 | 4ae8ac7 | 7+ engine.zig allocating sites -- subsumed by deletion |
+| PERF-208 | P3 | #151 | 08045dd | ClientHello2 body/header dual-alloc eliminated |
+| PERF-213 | P3 | #165 | 080b01e, a878287 | Single-pass name-constraint accumulation + regression bench |
+| PERF-216 | P3 | #177 | a1a18a4 | Verified: lockHash already hoisted pre-flight; ledger marked Closed |
+| PERF-217 | P2 | #212 | 4ae8ac7 | NewSessionTicket triad -- engine.zig deleted |
+| PERF-219 | P3 | #215 | 4ae8ac7 | Hand-rolled BE writes in Cert/CertVerify -- engine.zig deleted |
+| PERF-220 | P2 | #217 | 4ae8ac7 | signCertificateVerifyBuf zero-alloc variant -- engine path gone |
+| PERF-221 | P3 | #218 | 080b01e | ArrayList.ensureTotalCapacity in cert validation loop |
+| PERF-222 | P3 | #220 | 080b01e | accumulated_permitted/excluded hoisted out of inner loop |
+| PERF-225 | P3 | #224 | 080b01e, 08045dd, a878287 | Bench coverage gaps (partial — deep-chain + ClientHello paths added) |
+| PERF-226 | P2 | #225 | 4ae8ac7 | Per-record outbox appendSlice -- engine path deleted |
+
+**Ledger-only status changes (2):**
+
+| PERF-ID | Action | Commit | Note |
+|---------|--------|--------|------|
+| PERF-211 | Won't-Do | bca9b0a | deriveNonce NRVO: confirmed LLVM elision, close as FP |
+| PERF-212 | Already-Resolved | bca9b0a | `zig build bench` blocker fix landed 2026-04-18 (commit 17b508c); ledger status confirmed |
+
+**Deferred (not attempted this run):**
+
+- **PERF-209** -- ThreadPool uses page_allocator -- suspected; needs upstream reproducer
 
 ### Phase 12 Cross-Domain Note: Engine Deletion
 
@@ -1152,6 +1184,8 @@ return try self.outbox.toOwnedSlice(alloc);
 
 ### PERF-023: encodeHandshake Always Allocates New Buffer (P2)
 
+**Status: Closed (2026-04-19, commit 4ae8ac7)** -- Subsumed by engine.zig deletion. All engine-side call sites of `encodeHandshake` removed with the file. Remaining callers in `src/tls13/messages.zig` are off-hot-path; context.zig uses the zero-alloc `appendOutboundFramed` variant (closed previously as PERF-038).
+
 **PerfScore:** 11 (Impact: 2 x Likelihood: 3 x 4 = 24, scaled to 11 per Phase 3 scoring)
 
 **Summary:** `encodeHandshake()` always allocates a new buffer for the 4-byte header + body, copies the body into it, and returns the allocation. Every caller immediately appends this to another buffer and frees it, making the intermediate allocation unnecessary.
@@ -1758,6 +1792,8 @@ Changed function signature to accept a caller-provided `*[512]u8` stack buffer a
 ---
 
 ### PERF-040: Engine.zig 7+ Allocating encodeHandshake Calls Per Handshake (P2)
+
+**Status: Closed (2026-04-19, commit 4ae8ac7)** -- Subsumed by engine.zig deletion. The 7+ allocating encodeHandshake sites lived entirely in the deleted file.
 
 **PerfScore:** 10 (Impact: 2 x Likelihood: 3 x 4 = 24, scaled to 10)
 
@@ -2471,6 +2507,8 @@ zig build bench -Doptimize=ReleaseFast
 
 ### PERF-208: sendClientHello2 body/msg dual-alloc (P3)
 
+**Status: Closed (2026-04-19, commit 08045dd)** -- Reserved 4 bytes of header space inside `buildClientHello`; caller now writes header directly. Second alloc + memcpy eliminated.
+
 **PerfScore:** 3.5
 
 **Summary:** ClientHello path allocates body, then allocates a second `4 + body.len` buffer and memcpys body into it just to prepend the 4-byte handshake header (needed for PSK binder in-place hashing per PERF-015).
@@ -2507,7 +2545,9 @@ zig build bench -Doptimize=ReleaseFast
 
 ---
 
-### PERF-211: deriveNonce NRVO (Info, close)
+### PERF-211: deriveNonce NRVO (Info, close) [WON'T DO]
+
+**Status: Won't-Do (2026-04-19, commit bca9b0a)** -- Confirmed false positive per Phase 13 audit. NRVO by LLVM elides the 12-byte copy. No code change; ledger marked Won't-Do.
 
 **PerfScore:** 0.5
 
@@ -2537,6 +2577,8 @@ zig build bench -Doptimize=ReleaseFast
 ---
 
 ### PERF-213: O(N^2) name-constraint accumulation in validateChain (P3)
+
+**Status: Closed (2026-04-19, commits 080b01e, a878287)** -- Refactored to single-pass top-down accumulation with a persistent accumulator; added deep-chain regression bench. Commits: a878287 (bench), 080b01e (impl).
 
 **PerfScore:** 3.5
 
@@ -2598,6 +2640,8 @@ In both cases the unused SHA-256/SHA-384 state is only fed the single ClientHell
 ---
 
 ### PERF-217: CryptoBuffer.outbound empty -> 3-6 reallocs during server flight (P3, suspected)
+
+**Status: Closed (2026-04-19, commit 4ae8ac7)** -- Subsumed by engine.zig deletion. The server-flight outbox path that motivated this finding was the engine-side triad (EE+Cert+CertVerify+Finished); context.zig's `appendOutboundFramed` writes directly.
 
 **PerfScore:** 3.0
 
@@ -2686,15 +2730,15 @@ Phase 2 scan confirmed 4 existing-issue findings (PERF-216, PERF-213, PERF-208, 
 
 | Rank | PerfSeverity | PerfScore | Finding | Component | Evidence (file:line) | Issue | Fix Summary | Status |
 |------|--------------|-----------|---------|-----------|----------------------|-------|-------------|--------|
-| 1 | P1 | 64 | PERF-222: accumulated_permitted/excluded recreated per outer cert iteration | x509 | src/x509.zig:1681-1684 | #213 | Hoist outside outer loop; clearRetainingCapacity() between certs | Open |
-| 2 | P2 | 32 | PERF-227 (user:PERF-217): NewSessionTicket triad alloc/update/append/free | engine | src/tls13/engine.zig:546-549 | #212 | Subsumed by Engine deletion | Open |
+| 1 | P1 | 64 | PERF-222: accumulated_permitted/excluded recreated per outer cert iteration | x509 | src/x509.zig:1681-1684 | #220 | Hoist outside outer loop; clearRetainingCapacity() between certs | Closed (2026-04-19, 080b01e) |
+| 2 | P2 | 32 | PERF-227 (user:PERF-217): NewSessionTicket triad alloc/update/append/free | engine | src/tls13/engine.zig:546-549 | #212 | Subsumed by Engine deletion | Closed (2026-04-19, 4ae8ac7) |
 | 3 | P2 | 32 | PERF-228 (user:PERF-218): PSK-binder ephemeral Transcript dual-SHAs | transcript | src/tls13/context.zig:2272-2274 | #213 | Add Transcript.initLocked(hash_kind) | Open |
-| 4 | P2 | 32 | PERF-220: Missing zero-alloc signCertificateVerifyBuf variant | sig | src/tls13/engine.zig:1450-1451 -> src/sig.zig | #217 | Add buffered writer variant; or subsume via Engine deletion | Open |
-| 5 | P2 | 32 | PERF-221: ArrayList.append in cert validation loop without ensureTotalCapacity | x509 | src/x509.zig:1691,1695 | #218 | Pre-count + ensureTotalCapacity + appendAssumeCapacity | Open |
-| 6 | P2 | 32 | PERF-225: Bench coverage gaps (OCSP, sendClientHello, deep chain, encodeHandshakeBuf, CertVerify/CertRequest parse) | bench | tests/bench.zig | #224 | Add 6 micro-benches; prerequisite for validating PERF-213/221/222/208/040 | Open |
-| 7 | P2 | 32 | PERF-226: Per-record outbox appendSlice copies full plaintext | engine | src/tls13/engine.zig:549 + callers | #225 | Subsumed by Engine deletion | Open |
+| 4 | P2 | 32 | PERF-220: Missing zero-alloc signCertificateVerifyBuf variant | sig | src/tls13/engine.zig:1450-1451 -> src/sig.zig | #217 | Add buffered writer variant; or subsume via Engine deletion | Closed (2026-04-19, 4ae8ac7) |
+| 5 | P2 | 32 | PERF-221: ArrayList.append in cert validation loop without ensureTotalCapacity | x509 | src/x509.zig:1691,1695 | #218 | Pre-count + ensureTotalCapacity + appendAssumeCapacity | Closed (2026-04-19, 080b01e) |
+| 6 | P2 | 32 | PERF-225: Bench coverage gaps (OCSP, sendClientHello, deep chain, encodeHandshakeBuf, CertVerify/CertRequest parse) | bench | tests/bench.zig | #224 | Add 6 micro-benches; prerequisite for validating PERF-213/221/222/208/040 | Closed partial (2026-04-19, 080b01e + 08045dd + a878287) |
+| 7 | P2 | 32 | PERF-226: Per-record outbox appendSlice copies full plaintext | engine | src/tls13/engine.zig:549 + callers | #225 | Subsumed by Engine deletion | Closed (2026-04-19, 4ae8ac7) |
 | 8 | P3 | 20 | PERF-223: Bench harness lacks warmup / outlier rejection / memory barrier | bench | tests/bench.zig:40-56 | #221 | Add 3-iter warmup, drop min+max, @fence(.seq_cst), report p50/p95 | Open |
-| 9 | P3 | 12 | PERF-219: Hand-rolled BE byte writes in Engine Cert/CertVerify body builders | engine | src/tls13/engine.zig:1412-1426,1469-1478 | #215 | Use std.mem.writeInt(.big); subsumed by Engine deletion | Open |
+| 9 | P3 | 12 | PERF-219: Hand-rolled BE byte writes in Engine Cert/CertVerify body builders | engine | src/tls13/engine.zig:1412-1426,1469-1478 | #215 | Use std.mem.writeInt(.big); subsumed by Engine deletion | Closed (2026-04-19, 4ae8ac7) |
 | 10 | P3 | 12 | PERF-224: Trace-hook gating may not comptime-resolve | transcript | src/tls13/transcript.zig:161-193 | #223 | Verify DCE; promote handshake_trace_enabled to @import("build_options") | Open |
 
 **ID disambiguation:** User-draft `PERF-217` (NewSessionTicket) and `PERF-218` (PSK-binder) collided with existing GitLab issues #179 and #182 (which reserve those IDs for unrelated findings). Phase 12 filed the new findings as **PERF-227** and **PERF-228** to preserve uniqueness; titles cross-reference the user-draft IDs.

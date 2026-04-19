@@ -640,6 +640,75 @@
 
 ---
 
+## Phase 13 Closures (2026-04-19) — Gap-Close Run
+
+**34 commits landed on `main` closing 51 items across GAP/QUAL/PERF/SEC ledgers.** Verifier (Step 3 gap-closer-verifier 2026-04-19): `zig build` PASS, `zig build test` 586/588, `zig fmt --check` clean. LOC delta: **−1403 net**; keystone change was commit `4ae8ac7` deleting `src/tls13/engine.zig` (-2283 LOC).
+
+Full detail retained in `docs/GAP_ANALYSIS.md` under each gap's Resolution field. This section archives the tracking-level closure record.
+
+### GAP closures (16) — Phase 13
+
+| Gap-ID | Closing commit | Summary |
+|--------|----------------|---------|
+| GAP-0107 | 674fbee | BidirSecrets/SecretSchedule canonicalized in `src/tls13/secrets.zig`; duplicates removed from `context.zig`. |
+| GAP-0108 | 4ae8ac7 | `parseMinimalHelloPub` dup removed via full `src/tls13/engine.zig` deletion. |
+| GAP-0110 | 4ae8ac7 | 10-level nesting in engine EE handler — file deleted (partial closure; any analogous nesting in context.zig tracked separately). |
+| GAP-0113 | f0b02fb | Stale thread_pool cache dir removed from working tree (`du -sh zig-pkg/`: 12.5M → 8.4M). |
+| GAP-0114 | 8b24c54 | Deleted stale `run_tests.sh` + `README_TESTS`; `build.zig` is sole driver. |
+| GAP-0115 | 9a8c76d | pre-commit zig-fmt widened to `tests/`. |
+| GAP-0116 | 93db923 | Two drifted conformance test files re-formatted; `zig fmt --check tests/` clean. |
+| GAP-0118 | e9e8165 | 9 `std.debug.print` sites in `src/tls13/sig.zig` collapsed to comptime-gated helper. |
+| GAP-0119 | 2a346ad, 394efe2 | Added `tests/rfc5280/section_4_2_*.zig`, `section_5_*.zig`, `section_6_*.zig`. |
+| GAP-0120 | 7d505cd, 0f06326, 34cea5b, a3bb37b | Added `tests/rfc8446/section_{4_3,4_6,6,8}_*.zig`. |
+| GAP-0121 | de226a2, 743de6f | Added `tests/rfc9001/section_{5_4,5_5,6,9}_*.zig`. |
+| GAP-0122 | 9037778 | Dead public exports removed from `src/lib.zig`. |
+| GAP-0123 | f8b5ecd | `zig build test --listen=-` wiring fixed; clean exit on green tree. |
+| GAP-0124 | ed345b1 | `docs/API.md` now documents `request_client_cert` and `client_auth_ca_certs` with mTLS example. |
+| GAP-0125 | 4bfccfa | `docs/ARCHITECTURE.md` module map refreshed; 0-RTT moved from Future to Shipped. |
+| GAP-0126 | 8bf4ce5 | Scaffolded `docs/adr/` with template + 3 ADRs; added `docs/RUNBOOK.md`, `docs/RFC_COVERAGE.md`. |
+
+### QUAL closures (21) — Phase 13
+
+See `docs/QUALITY_GAP_ANALYSIS.md` → "Phase 13 Gap Closure Run" for the full closure table. Closed IDs: QUAL-302, 304, 307, 308, 309, 311, 314, 319, 320, 321, 322, 325, 326, 327, 330, 332, 334, 335, 336, 337, 343. Keystone: engine.zig deletion (commit 4ae8ac7) subsumed QUAL-302/304/319 directly and provided partial closure for QUAL-314/325/343.
+
+### PERF closures (12) + ledger-only (2) — Phase 13
+
+See `docs/PERF_GAP_ANALYSIS.md` → "Phase 13 Gap Closure Run" for the full closure table. Closed IDs: PERF-023, 040, 208, 213, 216, 217, 219, 220, 221, 222, 225 (partial), 226. Plus PERF-211 marked Won't-Do (NRVO false positive) and PERF-212 confirmed Already-Resolved (bench blocker fix landed 2026-04-18). Keystone: engine.zig deletion subsumed 6 PERF items (023/040/217/219/220/226).
+
+### SEC closures (4) — Phase 13
+
+See `docs/SECURITY_GAP_ANALYSIS.md` → "Phase 13 Gap Closure Run" for full detail.
+
+| SEC-ID | Risk | Issue | Closing commit | Summary |
+|--------|------|-------|----------------|---------|
+| SEC-061 | Low (6) | #184 | b864812 | 8 CI catalog imports pinned to immutable commit SHAs. |
+| SEC-062 | Low (8) | #219 | 8e894fe | QUIC TP fuzz corpus expanded from 1 seed to ~30 (RFC 9000 §18.2 / 9001 §8.2 coverage). |
+| SEC-063 | Low (4) | #222 | 106a287 | `.semgrepignore` entry for `specs/**/*.txt` to silence RFC canonical PEM FPs. |
+| SEC-064 | Low (12) | #226 | 4ae8ac7 | `src/tls13/engine.zig` deleted (-2283 LOC net); divergence vector eliminated. |
+
+**Security posture post-Phase 13: 0 Critical / 0 High / 0 Medium / 0 Low open.**
+
+### Phase 13 Deferred (tracked for next cycle)
+
+- **QUAL-317** — context.zig decomposition (Phase 13 epic; too large for this run)
+- **QUAL-315** — coverage instrumentation (tooling choice kcov vs llvm-cov pending)
+- **QUAL-338, QUAL-339, QUAL-340, QUAL-341, QUAL-342** — long-function splits / dispatch tables (opportunistic Cluster O, scheduled next cycle)
+- **PERF-209** — ThreadPool uses page_allocator (suspected; needs upstream reproducer)
+
+### Phase 13 Housekeeping Follow-ups
+
+Stale doc references to the deleted `src/tls13/engine.zig` remain at:
+
+- `src/tls13.zig:26`
+- `src/tls13/types.zig:18`
+- `src/tls13/messages/client_hello.zig:556`
+
+These are comment / doc-string references, not active imports. Flagged for next-cycle cleanup.
+
+Pre-existing pre-commit hook failures on files not touched by this run are flagged as a next-cycle GAP.
+
+---
+
 ## Phase 4 Closures (2026-04-18)
 
 ### GAP-0097: parallel module built but never imported at runtime [RESOLVED]

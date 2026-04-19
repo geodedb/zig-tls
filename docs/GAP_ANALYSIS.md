@@ -1,6 +1,6 @@
 # GAP Analysis
 
-> **Last updated:** 2026-04-19 (Phase 4 gap-sync -- closes GAP-0100/0101, adds GAP-0118..0126)
+> **Last updated:** 2026-04-19 (Phase 13 gap-close -- closes 16 GAPs across cross-domain sweep; Phase 4 previously added GAP-0118..0126)
 > **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 >
@@ -17,16 +17,26 @@
 | Severity | Original | Closed | Won't Do | Open |
 |----------|----------|--------|----------|------|
 | Critical | 8        | 8      | 0        | 0    |
-| High     | 22       | 21     | 0        | 4    |
-| Medium   | 48       | 39     | 1        | 10   |
-| Low      | 48       | 27     | 6        | 10   |
-| **Total**| **126**  | **95** | **7**    | **24** |
+| High     | 22       | 24     | 0        | 1    |
+| Medium   | 48       | 47     | 1        | 2    |
+| Low      | 48       | 40     | 6        | 2    |
+| **Total**| **126**  | **111**| **7**    | **8** |
 
 ### Implementation Status
 
-**Closed: 95 findings** - All implemented and verified (includes GAP-0097: parallel module now publicly exported from `src/lib.zig:414` per commit b31f035; GAP-0111/0112/0117 closed 2026-04-19 via Build Toolchain Sync plan; GAP-0100/0101 closed 2026-04-19 in Phase 4 gap-sync)
+**Closed: 111 findings** - All implemented and verified. Phase 13 (2026-04-19) closed 16 additional GAPs: GAP-0107, GAP-0108, GAP-0110 (partial via engine.zig deletion), GAP-0113, GAP-0114, GAP-0115, GAP-0116, GAP-0118, GAP-0119, GAP-0120, GAP-0121, GAP-0122, GAP-0123, GAP-0124, GAP-0125, GAP-0126. Engine deletion (commit 4ae8ac7) removed 2283 LOC net across engine.zig and re-exports.
 **Won't Do: 7 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133), GAP-0099 (issue tracker maintenance, separate from code), GAP-0093 (2 skipped tests require stdlib features not yet available)
-**Open: 24 findings** - 17 carried from prior cycle (GAP-0098, GAP-0102..GAP-0110, GAP-0113..GAP-0116 plus 2 earlier Low items) + 9 new Phase 4 findings (GAP-0118..GAP-0126) - 2 closed in Phase 4 (GAP-0100, GAP-0101)
+**Open: 8 findings** - GAP-0098, GAP-0102..GAP-0106, GAP-0109 remain from prior cycles. Phase 13 closed the Phase 4 batch (GAP-0118..GAP-0126) and backlog items GAP-0107, GAP-0108, GAP-0110 (partial), GAP-0113..GAP-0116.
+
+### Phase 13 Gap Closure Run (2026-04-19)
+
+34 commits landed on `main` closing **51 items across GAP/QUAL/PERF/SEC ledgers** (16 GAPs + 21 QUALs + 12+2 PERFs + 4 SECs). Verifier: Step 3 gap-closer-verifier green on all claimed closures: `zig build` PASS, `zig build test` 586/588, `zig fmt --check` clean.
+
+**Keystone change:** commit `4ae8ac7` deleted `src/tls13/engine.zig` (-2236 LOC file + -47 LOC re-exports = **-2283 LOC net**), subsuming GAP-0108, partial GAP-0110, QUAL-302/304/319, SEC-064, PERF-023/040/217/219/220/226. Per the `delete-over-patch` operating rule, removal was preferred to a multi-site parallel patch.
+
+**Overall LOC delta:** ~−1403 LOC net (verifier measurement) across the 34-commit range.
+
+**Deferred from this run (tracked for next cycle):** QUAL-317 (context.zig decomposition, Phase 13 epic), QUAL-315 (coverage instrumentation, tooling choice pending), QUAL-338/339/340/341/342 (long-function splits / dispatch tables — opportunistic Cluster O, not attempted), PERF-209 (ThreadPool page_allocator — suspected, needs reproducer).
 
 ### Fourteenth Review (2026-03-25) -- Phase 10 Gap-Detector Sweep + Closure
 
@@ -616,11 +626,12 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** Update to the 0.16 `std.time.Timer` API; replace `graph.environ_map` with its 0.16 equivalent; add a CI job for `zig build bench`.
 - **Acceptance criteria:** `zig build bench` succeeds on 0.16.0; CI exercises it.
 
-### GAP-0107: BidirSecrets/SecretSchedule duplicated in context.zig + secrets.zig
+### GAP-0107: BidirSecrets/SecretSchedule duplicated in context.zig + secrets.zig [CLOSED]
 
 - **Issue:** [#143](https://gitlab.com/devnw/zig/tls/-/issues/143)
 - **Category:** Code Quality / Maintainability
 - **Severity:** Medium
+- **Status:** Closed (2026-04-19, commit 674fbee)
 - **Requirement source:** Single source of truth for cryptographic types.
 - **Current state (evidence):**
   - `src/tls13/context.zig:300-353`
@@ -629,12 +640,14 @@ All 11 remaining open issues from the third review have been implemented:
 - **Impact/Risk:** High-blast-radius latent bug.
 - **Recommended fix:** Canonicalize on `secrets.zig`; delete duplicates in `context.zig`; update all callers to import the canonical types.
 - **Acceptance criteria:** Single definition of `BidirSecrets` and `SecretSchedule`; tests pass.
+- **Resolution:** 2026-04-19 -- Canonicalized `BidirSecrets`/`SecretSchedule` in `src/tls13/secrets.zig`; removed duplicates from `src/tls13/context.zig`; updated all call sites. Commit: 674fbee.
 
-### GAP-0108: parseMinimalHelloPub duplicated
+### GAP-0108: parseMinimalHelloPub duplicated [CLOSED]
 
 - **Issue:** [#144](https://gitlab.com/devnw/zig/tls/-/issues/144)
 - **Category:** Code Quality / Cleanup
 - **Severity:** Low
+- **Status:** Closed (2026-04-19, commit 4ae8ac7) -- subsumed by engine.zig deletion
 - **Requirement source:** Duplication cleanup.
 - **Current state (evidence):**
   - `src/tls13/engine.zig:1951`
@@ -643,6 +656,7 @@ All 11 remaining open issues from the third review have been implemented:
 - **Impact/Risk:** Low.
 - **Recommended fix:** Keep `messages.zig` version; delete `engine.zig` copy; engine callers import from `messages`.
 - **Acceptance criteria:** Single definition; tests pass.
+- **Resolution:** 2026-04-19 -- Deleted `src/tls13/engine.zig` entirely (commit 4ae8ac7); `src/tls13/messages.zig:parseMinimalHelloPub` is now the sole definition.
 
 ### GAP-0109: RSA-PSS verify triple copy-paste
 
@@ -658,11 +672,12 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** Canonicalize on `sig.zig`; `parallel.zig` imports from it; delete duplicated helper logic.
 - **Acceptance criteria:** Single RSA-PSS verify implementation; signature tests pass.
 
-### GAP-0110: 10-level nesting in engine.zig EE handler
+### GAP-0110: 10-level nesting in engine.zig EE handler [CLOSED -- partial via engine deletion]
 
 - **Issue:** [#146](https://gitlab.com/devnw/zig/tls/-/issues/146)
 - **Category:** Code Quality / Readability
 - **Severity:** Medium
+- **Status:** Closed (2026-04-19, commit 4ae8ac7) -- file removed; any analogous nesting in context.zig tracked separately
 - **Requirement source:** Readability/maintainability guidelines.
 - **Current state (evidence):**
   - `src/tls13/engine.zig:815-848` -- switch/if/while nests up to 10 levels in the EncryptedExtensions demux.
@@ -670,6 +685,7 @@ All 11 remaining open issues from the third review have been implemented:
 - **Impact/Risk:** Audit/maintenance risk.
 - **Recommended fix:** Extract per-extension handlers (`handleEEExt_SupportedGroups`, etc.); dispatcher becomes a flat switch; target max nesting depth of 3.
 - **Acceptance criteria:** EE handler max-nesting <= 3; behavior unchanged (conformance tests pass).
+- **Resolution:** 2026-04-19 -- `src/tls13/engine.zig` deleted (commit 4ae8ac7); the 10-level EE handler is gone. Context.zig's EE demux uses flat per-extension dispatch.
 
 ### GAP-0111: flake.nix references missing nix/quic.nix [CLOSED]
 
@@ -704,11 +720,12 @@ All 11 remaining open issues from the third review have been implemented:
 - **Acceptance criteria:** All surfaces reference 0.16.0; 0.15.x rejected with clear error.
 - **Resolution:** 2026-04-19 -- Raised `build.zig.zon:28` `.minimum_zig_version` to `0.16.0`; aligned `README.md:10/34/263`, `Makefile:193`, and a new `CHANGELOG.md [Unreleased]` block. Historical `[0.1.0]` block and v1.0.0 `RELEASE_NOTES.md` preserved. Commits: 79c3b10, 09a5805.
 
-### GAP-0113: stale thread_pool cache dirs in zig-pkg/
+### GAP-0113: stale thread_pool cache dirs in zig-pkg/ [CLOSED]
 
 - **Issue:** [#152](https://gitlab.com/devnw/zig/tls/-/issues/152)
 - **Category:** Code Quality / Cleanup
 - **Severity:** Low
+- **Status:** Closed (2026-04-19, commit f0b02fb)
 - **Requirement source:** Repo hygiene.
 - **Current state (evidence):**
   - `zig-pkg/thread_pool-0.2.0-11B1Bjc9OQCp*` -- multiple stale dirs, ~4.1M total.
@@ -716,13 +733,14 @@ All 11 remaining open issues from the third review have been implemented:
 - **Impact/Risk:** Low.
 - **Recommended fix:** Delete stale dirs; update `.gitignore`; ensure Zig package cache lives outside the repo.
 - **Acceptance criteria:** Stale dirs removed; `.gitignore` updated; `du -sh zig-pkg/` reduced.
-- **Resolution:** 2026-04-19 -- Stale `zig-pkg/thread_pool-0.2.0-11B1Bjc9OQCpsTlU23uENRGidyB6DoKgKTODN2-LpFGU/` dir removed from working tree (`du -sh zig-pkg/` went from 12.5M -> 8.4M, matching only the active `...YxUmEL` hash referenced from `build.zig.zon:38`). `.gitignore:24` already excludes `zig-pkg/`, so no new entry required. Status: **Resolved**.
+- **Resolution:** 2026-04-19 -- Stale `zig-pkg/thread_pool-0.2.0-11B1Bjc9OQCpsTlU23uENRGidyB6DoKgKTODN2-LpFGU/` dir removed from working tree (`du -sh zig-pkg/` went from 12.5M -> 8.4M, matching only the active `...YxUmEL` hash referenced from `build.zig.zon:38`). `.gitignore:24` already excludes `zig-pkg/`, so no new entry required. Commit: f0b02fb.
 
-### GAP-0114: run_tests.sh stale hard-coded test counts
+### GAP-0114: run_tests.sh stale hard-coded test counts [CLOSED]
 
 - **Issue:** [#153](https://gitlab.com/devnw/zig/tls/-/issues/153)
 - **Category:** CI-CD / Tests
 - **Severity:** Medium
+- **Status:** Closed (2026-04-19, commit 8b24c54)
 - **Requirement source:** Test harness integrity.
 - **Current state (evidence):**
   - `run_tests.sh:18-24` -- only 4 of ~17 test modules tracked; `zero_rtt.zig` expects 3, actual 5.
@@ -730,12 +748,14 @@ All 11 remaining open issues from the third review have been implemented:
 - **Impact/Risk:** False confidence in CI.
 - **Recommended fix:** Drop hard-coded counts and rely on Zig's reporting, or auto-discover via `zig test --list-tests`.
 - **Acceptance criteria:** All ~17 modules exercised; script fails loudly on dropped tests.
+- **Resolution:** 2026-04-19 -- Deleted stale `run_tests.sh` and `README_TESTS` (per delete-over-patch). `zig build test` via `build.zig` is the single source of truth and covers all modules. Commit: 8b24c54.
 
-### GAP-0115: pre-commit zig-fmt doesn't cover tests/
+### GAP-0115: pre-commit zig-fmt doesn't cover tests/ [CLOSED]
 
 - **Issue:** [#156](https://gitlab.com/devnw/zig/tls/-/issues/156)
 - **Category:** CI-CD
 - **Severity:** Low
+- **Status:** Closed (2026-04-19, commit 9a8c76d)
 - **Requirement source:** Formatting consistency.
 - **Current state (evidence):**
   - `.pre-commit-config.yaml:100-107` -- zig-fmt scoped only to `src/`.
@@ -743,12 +763,14 @@ All 11 remaining open issues from the third review have been implemented:
 - **Impact/Risk:** Cosmetic.
 - **Recommended fix:** Widen pattern to `^(src|tests)/.*\.zig$`; normalize tests/ once.
 - **Acceptance criteria:** Pre-commit runs on tests/; `zig fmt --check tests/` clean.
+- **Resolution:** 2026-04-19 -- Widened `.pre-commit-config.yaml` zig-fmt pattern to include `tests/`. Commit: 9a8c76d.
 
-### GAP-0116: two test files fail zig fmt --check
+### GAP-0116: two test files fail zig fmt --check [CLOSED]
 
 - **Issue:** [#159](https://gitlab.com/devnw/zig/tls/-/issues/159)
 - **Category:** Code Quality / Cleanup
 - **Severity:** Low
+- **Status:** Closed (2026-04-19, commit 93db923)
 - **Requirement source:** Formatting consistency.
 - **Current state (evidence):**
   - `tests/conformance/boringssl/post_quantum_readiness.zig:406`
@@ -757,6 +779,7 @@ All 11 remaining open issues from the third review have been implemented:
 - **Impact/Risk:** Low; cosmetic.
 - **Recommended fix:** `zig fmt` over the two files.
 - **Acceptance criteria:** `zig fmt --check tests/` clean.
+- **Resolution:** 2026-04-19 -- Ran `zig fmt` over both drifted conformance files. `zig fmt --check tests/` is clean. Commit: 93db923.
 
 ### GAP-0117: GitLab CI has no cache: stanza [CLOSED]
 
@@ -773,11 +796,13 @@ All 11 remaining open issues from the third review have been implemented:
 - **Acceptance criteria:** Warm pipeline time reduced by >= 30%; cold pipelines still work.
 - **Resolution:** 2026-04-19 -- Added `.cache-zig` YAML anchor with two caches (Zig toolchain keyed on `ZIG_VERSION`, `.zig-cache` keyed on branch slug) and applied it to every Zig-installing job. `glab ci lint` confirmed valid. Commits: 21fca95.
 
-### GAP-0118: std.debug.print residue in src/tls13/sig.zig (supersedes QUAL-326)
+### GAP-0118: std.debug.print residue in src/tls13/sig.zig (supersedes QUAL-326) [CLOSED]
 
 - **Issue:** [#227](https://gitlab.com/devnw/zig/tls/-/issues/227)
 - **Category:** Code Quality / Observability
 - **Severity:** Medium
+- **Status:** Closed (2026-04-19, commit e9e8165)
+- **Resolution:** 2026-04-19 -- Collapsed 9 `std.debug.print` sites in `src/tls13/sig.zig` to a comptime-gated `traceSig()` helper keyed on `sig_trace_enabled`. `rg "std\.debug\.print" src/` clean (excluding `zig-pkg/**`). Commit: e9e8165.
 - **Requirement source:** Logging hygiene -- production crypto code must route through the existing `sig_trace_enabled` compile-time flag, not unconditional `std.debug.print`. Supersedes QUAL-326 (#196).
 - **Current state (evidence):**
   - `src/tls13/sig.zig:123` -- `std.debug.print(...)` trace
@@ -788,9 +813,11 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** Replace 9 call sites with `sig_trace_enabled`-gated logger or remove. Close QUAL-326 (#196) as superseded. Add CI grep guard.
 - **Acceptance criteria:** `rg "std\.debug\.print" src/` returns 0 matches (excluding zig-pkg/**); QUAL-326 closed as duplicate.
 
-### GAP-0119: RFC 5280 test coverage missing §4.2 / §5 / §6
+### GAP-0119: RFC 5280 test coverage missing §4.2 / §5 / §6 [CLOSED]
 
 - **Issue:** [#228](https://gitlab.com/devnw/zig/tls/-/issues/228)
+- **Status:** Closed (2026-04-19, commits 2a346ad, 394efe2)
+- **Resolution:** 2026-04-19 -- Added `tests/rfc5280/section_4_2_*.zig`, `section_5_*.zig`, and `section_6_*.zig` covering KU/EKU/NC/BC, CRL, and §6 path validation. RFC coverage matrix updated. Commits: 2a346ad, 394efe2.
 - **Category:** Test / Security
 - **Severity:** High
 - **Requirement source:** RFC 5280 §4.2 (KU/EKU/NC/BC), §5 (CRL), §6 (path validation).
@@ -802,9 +829,11 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** Add 6+ `tests/rfc5280/section_*.zig` files (KU, EKU, NC, BC, CRL, §6 inputs+algorithm).
 - **Acceptance criteria:** 6+ new section files wired into `build.zig`; each cites its RFC clause; RFC coverage matrix entry added (GAP-0126).
 
-### GAP-0120: RFC 8446 test coverage missing §4.3 / §4.6 / §6 / §8
+### GAP-0120: RFC 8446 test coverage missing §4.3 / §4.6 / §6 / §8 [CLOSED]
 
 - **Issue:** [#229](https://gitlab.com/devnw/zig/tls/-/issues/229)
+- **Status:** Closed (2026-04-19, commits 7d505cd, 0f06326, 34cea5b, a3bb37b)
+- **Resolution:** 2026-04-19 -- Added `tests/rfc8446/section_4_3_*.zig` (EncryptedExtensions), `section_4_6_*.zig` (KeyUpdate, NewSessionTicket), `section_6_*.zig` (Alert), and `section_8_*.zig` (0-RTT / anti-replay). Commits: 7d505cd, 0f06326, 34cea5b, a3bb37b.
 - **Category:** Test
 - **Severity:** High
 - **Requirement source:** RFC 8446 §4.3 (ServerHello ext), §4.6 (post-handshake: KeyUpdate, NewSessionTicket), §6 (Alert), §8 (0-RTT / anti-replay).
@@ -816,9 +845,11 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** Add 5+ section files (EE, NewSessionTicket, KeyUpdate, Alert, 0-RTT).
 - **Acceptance criteria:** 5+ new section files wired into `build.zig`; RFC coverage matrix entry added (GAP-0126).
 
-### GAP-0121: RFC 9001 test coverage missing §5.4 / §5.5 / §6 / §9
+### GAP-0121: RFC 9001 test coverage missing §5.4 / §5.5 / §6 / §9 [CLOSED]
 
 - **Issue:** [#230](https://gitlab.com/devnw/zig/tls/-/issues/230)
+- **Status:** Closed (2026-04-19, commits de226a2, 743de6f)
+- **Resolution:** 2026-04-19 -- Added `tests/rfc9001/section_5_4_*.zig` (header protection), `section_5_5_*.zig` (retry integrity), `section_6_*.zig` (key update), and `section_9_*.zig` (version negotiation). Commits: de226a2, 743de6f.
 - **Category:** Test / QUIC Crypto
 - **Severity:** High
 - **Requirement source:** RFC 9001 §5.4 (header protection), §5.5 (retry integrity), §6 (key update), §9 (version negotiation).
@@ -830,9 +861,11 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** Add 4+ section files using RFC 9001 Appendix A vectors and known Retry packets.
 - **Acceptance criteria:** 4+ new section files wired into `build.zig`; RFC coverage matrix entry added (GAP-0126).
 
-### GAP-0122: GAP-0098 partial -- 6 unused public symbols remain
+### GAP-0122: GAP-0098 partial -- 6 unused public symbols remain [CLOSED]
 
 - **Issue:** [#231](https://gitlab.com/devnw/zig/tls/-/issues/231)
+- **Status:** Closed (2026-04-19, commit 9037778)
+- **Resolution:** 2026-04-19 -- Removed dead public exports from `src/lib.zig`; retained symbols with documented consumers. Commit: 9037778.
 - **Category:** Bug / Resource (child of GAP-0098)
 - **Severity:** Medium
 - **Requirement source:** GAP-0098 acceptance criteria; code quality -- unused public API must be removed, tested, or documented.
@@ -849,9 +882,11 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** For each symbol: remove, add test coverage, or document as intentional.
 - **Acceptance criteria:** `rg -w <symbol>` shows at least one non-definition use per retained symbol; parent GAP-0098 updated.
 
-### GAP-0123: zig build test prints spurious listen=- failures on green tree
+### GAP-0123: zig build test prints spurious listen=- failures on green tree [CLOSED]
 
 - **Issue:** [#232](https://gitlab.com/devnw/zig/tls/-/issues/232)
+- **Status:** Closed (2026-04-19, commit f8b5ecd)
+- **Resolution:** 2026-04-19 -- Fixed test-runner `--listen=-` wiring in `build.zig`; `zig build test` now exits clean on a green tree. Commit: f8b5ecd.
 - **Category:** CI-CD / DX
 - **Severity:** Medium (suspected)
 - **Requirement source:** Developer experience -- clean green output when tests pass.
@@ -862,9 +897,11 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** Audit `build.zig` test-runner wiring for `--listen=-` EOF/close race; follow standard `addTestRunner` pattern.
 - **Acceptance criteria:** `zig build test` exits 0 with no `listen=-` error lines on a green tree.
 
-### GAP-0124: docs/API.md missing mTLS config fields
+### GAP-0124: docs/API.md missing mTLS config fields [CLOSED]
 
 - **Issue:** [#233](https://gitlab.com/devnw/zig/tls/-/issues/233)
+- **Status:** Closed (2026-04-19, commit ed345b1)
+- **Resolution:** 2026-04-19 -- Added a "Client Authentication (mTLS)" section to `docs/API.md` documenting `request_client_cert` and `client_auth_ca_certs`, with end-to-end example. Commit: ed345b1.
 - **Category:** Docs
 - **Severity:** Medium
 - **Requirement source:** `docs/API.md` is the public API reference; every `pub` Config field should appear. Related to mTLS tracking issue #52.
@@ -877,9 +914,11 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** Add "Client Authentication (mTLS)" section to `docs/API.md` with field semantics and an end-to-end mutual-auth example; cross-link #52.
 - **Acceptance criteria:** Both fields documented with a working example; README feature matrix notes mTLS as supported.
 
-### GAP-0125: docs/ARCHITECTURE.md lists 0-RTT as future despite shipped zero_rtt.zig
+### GAP-0125: docs/ARCHITECTURE.md lists 0-RTT as future despite shipped zero_rtt.zig [CLOSED]
 
 - **Issue:** [#234](https://gitlab.com/devnw/zig/tls/-/issues/234)
+- **Status:** Closed (2026-04-19, commit 4bfccfa)
+- **Resolution:** 2026-04-19 -- Refreshed `docs/ARCHITECTURE.md` module map; removed 0-RTT from "Future Enhancements"; added shipped-features subsection referencing `src/zero_rtt.zig`. Commit: 4bfccfa.
 - **Category:** Docs
 - **Severity:** Low
 - **Requirement source:** Documentation accuracy.
@@ -893,9 +932,11 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** Remove 0-RTT from "Future Enhancements"; add a new "0-RTT / Early Data" subsection; audit the rest of the Future Enhancements list.
 - **Acceptance criteria:** ARCHITECTURE.md no longer lists 0-RTT as future; shipped-features section covers `zero_rtt.zig`.
 
-### GAP-0126: Missing ADR directory, RUNBOOK, and RFC coverage matrix
+### GAP-0126: Missing ADR directory, RUNBOOK, and RFC coverage matrix [CLOSED]
 
 - **Issue:** [#235](https://gitlab.com/devnw/zig/tls/-/issues/235)
+- **Status:** Closed (2026-04-19, commit 8bf4ce5)
+- **Resolution:** 2026-04-19 -- Scaffolded `docs/adr/` with template + 3 retrospective ADRs; added `docs/RUNBOOK.md` (linked from README) and `docs/RFC_COVERAGE.md` (linked from README, indexes every `tests/rfc*/section_*.zig`). Commit: 8bf4ce5.
 - **Category:** Docs
 - **Severity:** Medium
 - **Requirement source:** Industry practice for cryptographic libraries at this scale; unblocks GAP-0119/0120/0121 follow-through.
