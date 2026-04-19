@@ -95,6 +95,7 @@ stages:
 # The v1.2.1 component defaults to 0.14.0 and does not accept a version input.
 zig-format:
   <<: *cache-zig
+  timeout: 15m
   before_script:
     - *install-zig
 
@@ -102,6 +103,7 @@ zig-format:
 build:
   stage: build
   image: debian:bookworm-slim
+  timeout: 30m
   <<: *cache-zig
   before_script:
     - *install-zig
@@ -112,6 +114,7 @@ build:
 test:
   stage: test
   image: debian:bookworm-slim
+  timeout: 30m
   <<: *cache-zig
   before_script:
     - *install-zig
@@ -124,6 +127,7 @@ test:
 test-release-safe:
   stage: test
   image: debian:bookworm-slim
+  timeout: 45m
   <<: *cache-zig
   before_script:
     - *install-zig
@@ -136,6 +140,7 @@ test-release-safe:
 test-release-fast:
   stage: test
   image: debian:bookworm-slim
+  timeout: 45m
   <<: *cache-zig
   before_script:
     - *install-zig
@@ -148,6 +153,7 @@ test-release-fast:
 test-release-small:
   stage: test
   image: debian:bookworm-slim
+  timeout: 45m
   <<: *cache-zig
   before_script:
     - *install-zig
@@ -171,6 +177,7 @@ test-release-small:
 fuzz:
   stage: fuzz
   image: debian:bookworm-slim
+  timeout: 20m
   before_script:
     - *install-zig
     - mkdir -p zig-out/fuzz
