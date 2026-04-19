@@ -435,6 +435,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "tls13", .module = tls13_mod },
                 // GAP-0120: RFC 8446 §6 Alert Protocol tests.
                 .{ .name = "alert", .module = alert_mod },
+                // GAP-0120: RFC 8446 §8 0-RTT / anti-replay tests.
+                .{ .name = "zero_rtt", .module = zero_rtt_mod },
             },
         }),
     });
