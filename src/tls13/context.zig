@@ -283,12 +283,9 @@ pub const HandshakeError = types.HandshakeError;
 /// Direction is role-dependent:
 /// - Client send = Server recv (client_traffic_secret)
 /// - Server send = Client recv (server_traffic_secret)
-pub const TrafficDirection = enum {
-    /// Outbound traffic protection (encryption, sending packets).
-    send,
-    /// Inbound traffic processing (decryption, receiving packets).
-    recv,
-};
+// GAP-0107: TrafficDirection canonicalised in `src/tls13/secrets.zig`.
+// Re-alias to keep external callers of `context.TrafficDirection` working.
+pub const TrafficDirection = secrets_mod.TrafficDirection;
 
 /// QUAL-118: SecretSlot imported from secrets.zig (canonical source, no duplication).
 pub const SecretSlot = secrets_mod.SecretSlot;
@@ -296,109 +293,12 @@ pub const SecretSlot = secrets_mod.SecretSlot;
 // QUAL-070: supportsTls13Version and freeParsedClientHello are now in
 // handshake_state.zig, used by the shared ClientHelloInfo.parse().
 
-/// Bidirectional secret pair (send/recv) for a single packet number space (RFC 9001 §4.1.4).
-pub const BidirSecrets = struct {
-    send: SecretSlot = .{},
-    recv: SecretSlot = .{},
-
-    /// Resets both send and receive secret slots to their initial state.
-    pub fn reset(self: *BidirSecrets) void {
-        self.send.clear();
-        self.recv.clear();
-    }
-
-    /// Returns the secret slot for the specified traffic direction.
-    pub fn slot(self: *BidirSecrets, dir: TrafficDirection) *SecretSlot {
-        return switch (dir) {
-            .send => &self.send,
-            .recv => &self.recv,
-        };
-    }
-};
-
-/// Unified traffic secret store for Initial/Handshake/Application keys (RFC 8446 §7.1, RFC 9001 §5).
-pub const SecretSchedule = struct {
-    initial: BidirSecrets = .{},
-    handshake: BidirSecrets = .{},
-    application: BidirSecrets = .{},
-    exporter_master: SecretSlot = .{},
-    resumption_master: SecretSlot = .{},
-
-    /// Creates a new secret schedule with all secrets in initial state.
-    pub fn init() SecretSchedule {
-        return .{};
-    }
-
-    /// Resets all encryption level secrets to their initial state.
-    pub fn reset(self: *SecretSchedule) void {
-        self.initial.reset();
-        self.handshake.reset();
-        self.application.reset();
-        self.exporter_master.clear();
-        self.resumption_master.clear();
-    }
-
-    /// Returns the bidirectional secrets for the specified encryption level.
-    pub fn pairForLevel(self: *SecretSchedule, level: EncryptionLevel) *BidirSecrets {
-        return switch (level) {
-            .Initial => &self.initial,
-            .Handshake => &self.handshake,
-            .Application => &self.application,
-        };
-    }
-
-    /// Returns the secret slot for the specified encryption level and traffic direction.
-    pub fn slot(self: *SecretSchedule, level: EncryptionLevel, dir: TrafficDirection) *SecretSlot {
-        return self.pairForLevel(level).slot(dir);
-    }
-
-    /// Get current generation number for a specific encryption level and direction.
-    ///
-    /// RFC 8446 §4.6.3: Each KeyUpdate increments the generation counter,
-    /// allowing tracking of how many key updates have occurred.
-    ///
-    /// # Returns
-    /// - Generation number (0 = initial, 1+ = after updates)
-    /// - 0 if secret not yet installed
-    ///
-    /// # Example
-    /// ```zig
-    /// const gen = ctx.secrets.getGeneration(.Application, .send);
-    /// // gen == 0: Initial application secret
-    /// // gen == 1: After first key update
-    /// // gen == 2: After second key update
-    /// ```
-    pub fn getGeneration(self: *const SecretSchedule, level: EncryptionLevel, dir: TrafficDirection) u32 {
-        const s = switch (level) {
-            .Initial => switch (dir) {
-                .send => &self.initial.send,
-                .recv => &self.initial.recv,
-            },
-            .Handshake => switch (dir) {
-                .send => &self.handshake.send,
-                .recv => &self.handshake.recv,
-            },
-            .Application => switch (dir) {
-                .send => &self.application.send,
-                .recv => &self.application.recv,
-            },
-        };
-        return if (s.valid) s.generation else 0;
-    }
-
-    /// Get generation numbers for both send and receive directions.
-    ///
-    /// Useful for logging, debugging, and verifying bidirectional key updates.
-    ///
-    /// # Returns
-    /// BidirKeyGenerations struct with send and recv generation numbers
-    pub fn getBidirGenerations(self: *const SecretSchedule, level: EncryptionLevel) secrets_mod.BidirKeyGenerations {
-        return .{
-            .send = self.getGeneration(level, .send),
-            .recv = self.getGeneration(level, .recv),
-        };
-    }
-};
+// GAP-0107: BidirSecrets and SecretSchedule are canonicalised in
+// `src/tls13/secrets.zig`. This file previously carried byte-identical
+// shadow definitions. Re-alias the canonical so public callers of
+// `context.BidirSecrets` / `context.SecretSchedule` keep working.
+pub const BidirSecrets = secrets_mod.BidirSecrets;
+pub const SecretSchedule = secrets_mod.SecretSchedule;
 
 // QUAL-125: HashDigestCache is imported from transcript.zig (canonical source).
 // The local duplicate has been removed; TranscriptSet already uses transcript_mod.HashDigestCache.

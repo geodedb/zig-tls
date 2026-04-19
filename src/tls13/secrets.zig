@@ -184,4 +184,40 @@ pub const SecretSchedule = struct {
     pub fn slot(self: *SecretSchedule, level: EncryptionLevel, dir: TrafficDirection) *SecretSlot {
         return self.pairForLevel(level).slot(dir);
     }
+
+    /// Get current generation number for a specific encryption level and direction.
+    ///
+    /// RFC 8446 §4.6.3: Each KeyUpdate increments the generation counter,
+    /// allowing tracking of how many key updates have occurred.
+    ///
+    /// # Returns
+    /// - Generation number (0 = initial, 1+ = after updates)
+    /// - 0 if secret not yet installed
+    pub fn getGeneration(self: *const SecretSchedule, level: EncryptionLevel, dir: TrafficDirection) u32 {
+        const s = switch (level) {
+            .Initial => switch (dir) {
+                .send => &self.initial.send,
+                .recv => &self.initial.recv,
+            },
+            .Handshake => switch (dir) {
+                .send => &self.handshake.send,
+                .recv => &self.handshake.recv,
+            },
+            .Application => switch (dir) {
+                .send => &self.application.send,
+                .recv => &self.application.recv,
+            },
+        };
+        return if (s.valid) s.generation else 0;
+    }
+
+    /// Get generation numbers for both send and receive directions.
+    ///
+    /// Useful for logging, debugging, and verifying bidirectional key updates.
+    pub fn getBidirGenerations(self: *const SecretSchedule, level: EncryptionLevel) BidirKeyGenerations {
+        return .{
+            .send = self.getGeneration(level, .send),
+            .recv = self.getGeneration(level, .recv),
+        };
+    }
 };
