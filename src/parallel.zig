@@ -75,7 +75,7 @@ pub fn getPool() *tp.ThreadPool {
     defer pool_mutex.unlock();
 
     if (global_pool == null) {
-        global_pool = tp.ThreadPool.init(std.heap.page_allocator, .{}) catch @panic("thread-pool: init failed");
+        global_pool = tp.ThreadPool.init(std.heap.smp_allocator, .{}) catch @panic("thread-pool: init failed");
         pool_initialized.store(true, .release);
     }
     return &global_pool.?;
