@@ -1,6 +1,6 @@
 # Performance Gap Analysis
 
-> **Last updated:** 2026-04-20 (Cycle 3 / Phase 15 gap-close — PERF-209 measured + closed; PERF-218 audit-only ledger strengthening)
+> **Last updated:** 2026-04-20 (Cycle 3 / Phase 15 gap-close — PERF-209 measured + closed; PERF-218 audit-only ledger strengthening; PERF-218 closed via tagged-ownership refactor, commit 514480a)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 > **Target:** <2ms handshake, <100KB memory per connection
 > **Methodology:** Static code analysis, allocation pattern review, hot-path tracing
@@ -15,10 +15,10 @@
 | P0          | 6     | 4      | 0    | 2         | 0        | 0        | 0       |
 | P1          | 9     | 8      | 1    | 0         | 0        | 0        | 0       |
 | P2          | 34    | 30     | 0    | 1         | 4        | 0        | 0       |
-| P3          | 24    | 18     | 3    | 0         | 1        | 2        | 0       |
+| P3          | 24    | 19     | 3    | 0         | 1        | 1        | 0       |
 | Info        | 3     | 1      | 1    | 0         | 1        | 0        | 0       |
 | Blocker     | 1     | 1      | 0    | 0         | 0        | 0        | 0       |
-| **Total**   | **77**| **63** | **5** | **3**    | **6**    | **2**    | **0**   |
+| **Total**   | **77**| **64** | **5** | **3**    | **6**    | **1**    | **0**   |
 
 *Counts reflect Cycle 2 / Phase 14 gap-close (2026-04-20):* +7 newly Closed (PERF-036, PERF-201, PERF-209, PERF-223, PERF-224, PERF-228; PERF-023 header marker alignment already counted in Phase 13), +1 Deferred (PERF-218: ALPN borrow — concrete unblock plan documented). Phase 13 (2026-04-19) previously added +12 Closed and +1 Won't-Do.
 
@@ -63,6 +63,16 @@ Cycle 3 delivered 1 PERF closure (PERF-209, promoted from Cycle 2's measurement-
 | PERF-218 | P3 | #182 | 29a3ef1 | Cycle 3 audit of `negotiated_alpn` caller sites across the repo. Findings: single-file concentration (`src/tls13/context.zig`, 10 references; 0 external consumers of the `Context.negotiatedAlpn()` accessor); **asymmetric lifetime contract** — server-path dupe at L1314 is unnecessary (borrow-safe), client-path dupe at L2933 is *required* because the source slice points into the transient EE parse buffer. This strengthens the Cycle 2 deferral: a blanket "flip to borrow" is unsafe; the clean fix remains the tagged-ownership refactor. Kept OPEN on GitLab #182 with audit findings posted. |
 
 **Cross-ledger note:** Four QUAL closures (QUAL-338, QUAL-340, QUAL-341, QUAL-342) and one QUAL Blocked (QUAL-339) landed in the same cycle. See `docs/QUALITY_GAP_ANALYSIS.md` for details.
+
+### Cycle 4 / Phase 16 Gap Closure Run (2026-04-20)
+
+Cycle 4 delivered the PERF-218 tagged-ownership refactor (promoted from Cycle 2 Deferred / Cycle 3 audit-only). Four commits land the change incrementally with one commit per closure (Task 1 test scaffold, Task 2 sentinel field, Task 3 free-site flag audit, Task 4 borrow flip + test unguard). Verifier: `zig build` PASS, `zig build test` 587 pass / 2 skip, `zig fmt --check` clean, bench harness green, pre-commit clean.
+
+**Closed (1):**
+
+| PERF-ID | Sev | Issue | Closing commit | Note |
+|---------|-----|-------|----------------|------|
+| PERF-218 | P3 | #182 | 514480a | `negotiated_alpn_owned: bool` sentinel added; `selectServerAlpn` flipped to borrow from `config.alpn_protocols`; client EE-path keeps owned dupe (transient source lifetime). All three free sites guard on the ownership flag. Regression test `tests/perf/test_alpn_server_borrow.zig` asserts zero-alloc delta + pointer identity. |
 
 ### Phase 13 Gap Closure Run (2026-04-19)
 
@@ -224,7 +234,7 @@ Context driver (production) is well-optimized with zero-alloc appendOutboundFram
 | PERF-215 | P3 | 2.5 | [!172](https://gitlab.com/devnw/zig/tls/-/issues/172) | HRR second-CH path re-runs full 14-alloc parse. Folds into PERF-201 fix. |
 | PERF-216 | P3 | 4.0 | [!177](https://gitlab.com/devnw/zig/tls/-/issues/177) | SHA-384 transcript updates wasted on pre-lockHash ClientHellos. Fix: speculative SHA-256 lock. `confidence::suspected`. |
 | PERF-217 | P3 | 3.0 | [!179](https://gitlab.com/devnw/zig/tls/-/issues/179) | CryptoBuffer.outbound starts empty -> 3-6 reallocs during server flight. Fix: ensureTotalCapacity(4096) for .Handshake. `confidence::suspected`. |
-| PERF-218 | P3 | 1.5 | [!182](https://gitlab.com/devnw/zig/tls/-/issues/182) | DEFERRED (2026-04-19): received ALPN points into transient EE body; borrow would require adding a "borrowed" sentinel to `negotiated_alpn` field and auditing 6+ free/replace sites. Scope too large for 20-40 ns saving; revisit on next `negotiated_alpn` refactor. |
+| PERF-218 | P3 | 1.5 | [!182](https://gitlab.com/devnw/zig/tls/-/issues/182) | CLOSED (2026-04-20, commit 514480a): tagged-ownership refactor landed -- `negotiated_alpn_owned: bool` sentinel added; `selectServerAlpn` now borrows from `config.alpn_protocols`; client EE-path still dupes (source lifetime is transient) but flags owned=true; all three free sites consult the flag. Regression test at `tests/perf/test_alpn_server_borrow.zig` asserts zero allocs + pointer identity on the borrow. |
 
 **SLO context:** Top fixes (PERF-201 + PERF-207 + PERF-216) could save ~20-80 us + 3-7 KB transient allocation per handshake against the <2 ms / <100 KB targets.
 
@@ -2718,9 +2728,18 @@ In both cases the unused SHA-256/SHA-384 state is only fed the single ClientHell
 
 ---
 
-### PERF-218: EE ALPN duped on every receive (P3) [DEFERRED]
+### PERF-218: EE ALPN duped on every receive (P3) [CLOSED]
 
-**Status:** Deferred (2026-04-19, Cycle 2) -- commit 8956883. Concrete unblock plan documented. ALPN borrow requires a `negotiated_alpn_owned: bool` sentinel (or a tagged owned/borrowed variant) plus auditing 6+ free/replace sites: `config.deinit`, `config.replace`, `Context.deinit`, new-ticket install, 0-RTT reject reset, rekey path. Scope exceeds the 20-40 ns / per-handshake saving this delivers; revisit next `negotiated_alpn` refactor cycle. Tracked in GitLab #182.
+**Status:** CLOSED (2026-04-20, commit 514480a). Tagged-ownership refactor landed in four commits on `main`:
+
+- `c4d74cd` -- scaffolded regression test (`tests/perf/test_alpn_server_borrow.zig`) under the existing CountingAllocator pattern; skip-guarded pending the flip. Elevated `selectServerAlpn` to `pub` so the test can invoke it directly.
+- `6f25d8a` -- added `negotiated_alpn_owned: bool` sentinel field alongside `negotiated_alpn` on `Context`.
+- `be4bab4` -- updated three free sites (`deinit`, `selectServerAlpn` prev-clear, client EE-handler old-replace) to consult the ownership flag. Interim commit keeps owned=true in the existing dupes to preserve soundness across the transition.
+- `514480a` -- flipped `selectServerAlpn` to a zero-alloc borrow from `config.alpn_protocols` (owned=false); unguarded the regression test. Client EE-handler keeps its dupe (owned=true) because the source slice points into the transient parse buffer.
+
+**Verifier (2026-04-20):** `zig build test` = 587 pass / 2 skip (regression test now passes). `zig fmt --check`, `zig build`, `zig build bench` all green. Pre-commit clean.
+
+**Historical context (Cycle 2 / Cycle 3 audit):** ALPN borrow requires a `negotiated_alpn_owned: bool` sentinel (or a tagged owned/borrowed variant) plus auditing free/replace sites; scope previously flagged as ~day of work exceeding the 20-40 ns saving. Cycle 3 audit confirmed the asymmetric lifetime contract (server-path borrow-safe, client-path dupe required). Tracked in GitLab #182; now closed.
 
 **Cycle 3 audit (2026-04-19):** `rg '\bnegotiated_alpn\b' src/ tests/ examples/ docs/` shows the field appears in exactly **one source file** (`src/tls13/context.zig`, 10 references). Zero references in `tests/`, `examples/`, or any module outside `context.zig`. The public accessor `Context.negotiatedAlpn()` (context.zig:948) has **zero** callers in the repo (verified via `rg 'negotiatedAlpn\('` — the only non-declaration match is the field body inside the accessor itself).
 
