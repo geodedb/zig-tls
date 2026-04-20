@@ -382,12 +382,25 @@ const Sha384 = std.crypto.hash.sha2.Sha384;
 /// Stdlib RSA module with constant-time operations.
 const rsa = std.crypto.Certificate.rsa;
 
-/// RSA-PSS SHA-256 verification entry point. Exposed `pub` so the
-/// GAP-0109 differential fuzz harness (`tests/fuzz/rsa_pss_verify.zig`)
-/// can drive it alongside `parallel.verifyRsaPssWithHash`. Internal
-/// callers go through `verifyCertificateVerify`.
-pub fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []const u8, sig: []const u8, salt_len: usize, alloc: std.mem.Allocator) !bool {
-    _ = salt_len; // stdlib uses Hash.digest_length (32 for SHA-256) as salt length
+/// Generic RSA-PSS verification over any `std.crypto.hash` type.
+///
+/// Shared core used by:
+/// - `rsa_pss_verify_sha256` (this file) — TLS 1.3 CertificateVerify SHA-256 path
+/// - `parallel.verifyRsaPssWithHash` — parallel-verify path (SHA-256 + SHA-384)
+///
+/// Supports 1024-/2048-/3072-/4096-bit RSA moduli. Returns `true` on valid
+/// signature; `false` on any verification failure; propagates allocator
+/// errors from `parseRsaSpki`.
+///
+/// Per RFC 8446 §4.2.3, salt length equals the hash output length;
+/// `std.crypto.Certificate.rsa.PSSSignature.verify` enforces this internally.
+pub fn rsaPssVerifyGeneric(
+    comptime Hash: type,
+    pubkey_spki_der: []const u8,
+    msg_signed_content: []const u8,
+    sig: []const u8,
+    alloc: std.mem.Allocator,
+) !bool {
     // Parse SPKI to get modulus and exponent
     var spki = try parseRsaSpki(pubkey_spki_der, alloc);
     defer spki.deinit();
@@ -417,12 +430,25 @@ pub fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []
         inline 128, 256, 384, 512 => |modulus_len| {
             const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch
                 return false;
-            rsa.PSSSignature.verify(modulus_len, sig[0..modulus_len].*, msg_signed_content, public_key, Sha256) catch
+            rsa.PSSSignature.verify(modulus_len, sig[0..modulus_len].*, msg_signed_content, public_key, Hash) catch
                 return false;
             return true;
         },
         else => return false,
     }
+}
+
+/// RSA-PSS SHA-256 verification entry point. Exposed `pub` so the
+/// GAP-0109 differential fuzz harness (`tests/fuzz/rsa_pss_verify.zig`)
+/// can drive it alongside `parallel.verifyRsaPssWithHash`. Internal
+/// callers go through `verifyCertificateVerify`.
+///
+/// Thin wrapper over `rsaPssVerifyGeneric(Sha256, ...)`. Preserves the
+/// original 5-argument signature so the TLS 1.3 CertificateVerify call
+/// site at `verifyCertificateVerify` continues to compile unchanged.
+pub fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []const u8, sig: []const u8, salt_len: usize, alloc: std.mem.Allocator) !bool {
+    _ = salt_len; // stdlib uses Hash.digest_length (32 for SHA-256) as salt length
+    return rsaPssVerifyGeneric(Sha256, pubkey_spki_der, msg_signed_content, sig, alloc);
 }
 
 /// Verify a TLS 1.3 CertificateVerify signature.
