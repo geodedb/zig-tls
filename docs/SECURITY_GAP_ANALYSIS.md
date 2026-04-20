@@ -1,10 +1,48 @@
 # Security Gap Analysis
 
-> **Last updated:** 2026-04-19 (Phase 13 gap-close — all 4 Phase 12 LOW findings closed)
+> **Last updated:** 2026-04-20 (Phase 14 — 9 new findings filed SEC-065..SEC-073)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Phase 13 -- Gap-close run closed SEC-061 (CI SHA pinning), SEC-062 (fuzz corpus expansion), SEC-063 (Semgrep spec-text ignore), SEC-064 (engine.zig deletion). Phase 12 added these 3 + updated SEC-061. Phase 11 history retained below. **Posture: 0 Critical / 0 High / 0 Medium / 0 Low open.**
+> **Review phase:** Phase 14 -- `/codepros:audit` Phase 3 security-reviewer surfaced 9 findings in newly-audited areas (0-RTT anti-replay, ClientHello extension handlers, QUIC TPs, OCSP parse, cert OID compare, CertificateRequest, SecretSlot, x509 validation). **Posture: 0 Critical / 1 High / 3 Medium / 3 Low / 2 Info open.** Phase 13 history retained below.
 >
-> **Cross-domain banner:** Engine deletion (SEC-064) landed as a unanimous Phase 3 cross-domain recommendation (security + quality + perf reviewers). Commit 4ae8ac7 deleted `src/tls13/engine.zig` (-2283 LOC net) per the delete-over-patch operating rule.
+> **Phase 14 banner:** SEC-065 (0-RTT cross-connection replay bypass) is filed confidential under 30-day SLA. F2 is the single HIGH regression vs. Phase 13's clean baseline and needs cross-process replay-store wiring before 0-RTT can be enabled in production deployments. No Critical. No secrets leaked. No RCE.
+
+## Phase 14 Findings (2026-04-20)
+
+`/codepros:audit` Phase 3 security-reviewer findings. 9 issues filed, 1 confidential.
+
+**Open (9):**
+
+| SEC-ID | Risk | Severity | Issue | Confidence | File:Line | Description |
+|--------|------|----------|-------|------------|-----------|-------------|
+| SEC-065 | **64** | High | [#249](https://gitlab.com/devnw/zig/tls/-/issues/249) (confidential) | confirmed | `src/tls13/context.zig:550,1781` + `src/zero_rtt.zig:459` | 0-RTT anti-replay window per-`Context` only; `PersistentAntiReplayStore` vtable exists but is not wired into `Context`. Cross-connection replay accepted. CWE-294 / OWASP A07. |
+| SEC-066 | **48** | Medium | [#253](https://gitlab.com/devnw/zig/tls/-/issues/253) | confirmed | `src/tls13/messages/client_hello_handlers.zig:137,187,310` | ClientHello duplicate-extension heap leak on `supported_groups`, `signature_algorithms`, `alpn_list`; RFC 8446 §4.2 duplicate-extension rule not enforced. Pre-auth DoS. CWE-401/400. |
+| SEC-067 | **36** | Medium | [#256](https://gitlab.com/devnw/zig/tls/-/issues/256) | confirmed | `src/zero_rtt.zig:336-343` | `AntiReplayWindow.add` `contains()`->write TOCTOU; no mutex. Docstring at `:129` acknowledges the requirement. CWE-367. |
+| SEC-068 | **36** | Medium | [#258](https://gitlab.com/devnw/zig/tls/-/issues/258) | confirmed | `src/quic_transport_params.zig:651,656,660` | Duplicate QUIC CID TPs re-`dupe` without free; RFC 9000 §18 requires connection error on duplicate. CWE-401. |
+| SEC-069 | **16** | Low | [#259](https://gitlab.com/devnw/zig/tls/-/issues/259) | confirmed | `src/x509.zig:1471-1485` | Cert sig-algo OID matched by raw-byte suffix (`oidIsRsaPss` etc.); should be canonical full-length equality. CWE-436. |
+| SEC-070 | **8** | Low | [#261](https://gitlab.com/devnw/zig/tls/-/issues/261) | confirmed | `src/ocsp.zig:129-133` | `parseStatus` accepts arbitrary-length ENUMERATED ending in `0x00` as `successful`. CWE-20 / RFC 6960. |
+| SEC-071 | **16** | Low | [#262](https://gitlab.com/devnw/zig/tls/-/issues/262) | suspected | `src/tls13/messages/certificate_request.zig:205-218` | CertificateRequest duplicate `signature_algorithms` silently merged. CWE-20 / RFC 8446 §4.2. |
+| SEC-072 | **4** | Info | [#264](https://gitlab.com/devnw/zig/tls/-/issues/264) | confirmed | `src/tls13/secrets.zig:94-100` | `SecretSlot.store` does not `secureZero` prior secret before overwrite. Brittle against PQ-hybrid layout changes. CWE-226. |
+| SEC-073 | **4** | Info | [#266](https://gitlab.com/devnw/zig/tls/-/issues/266) | suspected | `src/x509.zig:1940-1987` | `validateChainReturnParsed` uses `parsed_count=0` sentinel to suppress `errdefer`. Latent double-free risk on future edits. CWE-415. |
+
+**Confirmed-clean (no finding filed):**
+
+- **Build supply chain**: `build.zig.zon` multihash pinning, `.gitlab-ci.yml` SHA-pinned component imports (from SEC-061 closure), Zig tarball SHA-256 verified. No new gap.
+
+### Phase 14 top risks (stack-ranked)
+
+1. **SEC-065 Risk 64 (High, confidential)** — 0-RTT anti-replay is effectively disabled between connections. Blocker for any production 0-RTT rollout.
+2. **SEC-066 Risk 48 (Medium)** — Pre-auth heap-leak DoS from duplicate ClientHello extensions + RFC violation.
+3. **SEC-067 Risk 36 (Medium)** — Thread-race on anti-replay window compounds SEC-065 even within one `Context`.
+4. **SEC-068 Risk 36 (Medium)** — QUIC-TLS duplicate CID TPs leak + silently accepted; RFC 9000 violation.
+5. **SEC-069 Risk 16 (Low)** — OID suffix-match fragility in cert sig-algo dispatch.
+
+### Phase 14 roadmap
+
+- **Quick wins (< 1 day)**: SEC-069 (4 helpers → canonical eql), SEC-070 (tighten `parseStatus` length check), SEC-072 (`secureZero` prior), SEC-071 (duplicate-extension bitset for CR).
+- **Medium (1-5 days)**: SEC-066 (dispatcher-level duplicate-extension bitset + tests), SEC-067 (mutex + threaded stress test), SEC-068 (TP-seen bitset + unit tests), SEC-073 (refactor to drop sentinel pattern).
+- **Strategic (> 5 days)**: SEC-065 — thread `PersistentAntiReplayStore` through `ContextConfig` + `Context`, wire into 0-RTT accept path with fail-closed semantics, add reference implementations (in-memory, Redis mock), and add cross-context replay test fixture.
+
+---
 
 ## Phase 13 Gap Closure Run (2026-04-19)
 
@@ -28,11 +66,11 @@
 | Risk Level | Open | Closed | Won't Do | Acceptable Risk | Total |
 |-----------|------|--------|----------|-----------------|-------|
 | Critical  | 0    | 0      | 0        | 0               | 0     |
-| High      | 0    | 11     | 0        | 0               | 11    |
-| Medium    | 0    | 18     | 0        | 0               | 18    |
-| Low       | 0    | 24     | 4        | 0               | 28    |
-| Info      | 0    | 3      | 1        | 3               | 7     |
-| **Total** | **0** | **56** | **5**   | **3**           | **64** |
+| High      | 1    | 11     | 0        | 0               | 12    |
+| Medium    | 3    | 18     | 0        | 0               | 21    |
+| Low       | 3    | 24     | 4        | 0               | 31    |
+| Info      | 2    | 3      | 1        | 3               | 9     |
+| **Total** | **9** | **56** | **5**   | **3**           | **73** |
 
 **Phase 13** (2026-04-19) closed all 4 remaining open SEC findings (SEC-061, SEC-062, SEC-063, SEC-064). **Posture is now STRONG: 0 open at every risk level.** **Phase 12** filed the 4 LOW findings and attached the Phase 3 SHA-pinning patch draft to SEC-061.
 

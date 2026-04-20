@@ -5,6 +5,28 @@
 
 ---
 
+## Cycle 6 / Phase 18 Gap Sync (2026-04-20)
+
+Doc-drift sweep — tracker/ledger alignment only (no GAP-*items moved here this
+cycle; GAP-0106 remains Open as the sole non-resolved GAP-* item). The QUAL-*
+closures listed below are mirrored in `docs/QUALITY_GAP_ANALYSIS.md` Cycle 6
+section.
+
+- **QUAL-069** ([#65](https://gitlab.com/devnw/zig/tls/-/work_items/65)) —
+  Closed/Subsumed by QUAL-317 (context.zig decomposition, commits 0841721 /
+  7f3b48e). Residual file-size concern tracked under QUAL-116.
+- **QUAL-073** ([#69](https://gitlab.com/devnw/zig/tls/-/work_items/69)) —
+  Closed/Subsumed by engine.zig deletion (commit 4ae8ac7).
+- **QUAL-091** ([#90](https://gitlab.com/devnw/zig/tls/-/work_items/90)) —
+  Closed/Subsumed by engine.zig deletion (commit 4ae8ac7).
+- **QUAL-104** ([#112](https://gitlab.com/devnw/zig/tls/-/work_items/112)) —
+  Reopened (not resolved). 2 residual `0x0033` (key_share) sites at
+  `src/tls13/context.zig:2035` and `src/tls13/context/hello_retry.zig:120`.
+- **QUAL-116** ([#242](https://gitlab.com/devnw/zig/tls/-/work_items/242)) —
+  Filed (previously ledger-only). Remains Open.
+- **QUAL-315** ([#170](https://gitlab.com/devnw/zig/tls/-/work_items/170)) —
+  Promoted Deferred → actionable-Open with kcov tooling recommendation.
+
 ## Pre-Phase Closures
 
 ### GAP-0082: QUAL-074 on_session_ticket callback not wired [RESOLVED]

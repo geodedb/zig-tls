@@ -1,10 +1,10 @@
 # Performance Gap Analysis
 
-> **Last updated:** 2026-04-20 (Cycle 3 / Phase 15 gap-close — PERF-209 measured + closed; PERF-218 audit-only ledger strengthening; PERF-218 closed via tagged-ownership refactor, commit 514480a)
+> **Last updated:** 2026-04-20 (Cycle 5 / Phase 17 perf-issue-tracker — 8 new findings PERF-229..PERF-236 filed, dominated by PERF-229 ECDSA-P256 stdlib bottleneck at PerfScore 100)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 > **Target:** <2ms handshake, <100KB memory per connection
 > **Methodology:** Static code analysis, allocation pattern review, hot-path tracing
-> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3 + Phase 7 Perf-Reviewer Audit + Phase 8 Closure + Phase 9 Final Closure + Phase 10 Deep Review Validation + Phase 10 Closure + Phase 4 Tracking Re-audit (2026-04-18) + Phase 12 Perf-Issue-Tracker (2026-04-19) + Phase 13 Gap-Close (2026-04-19) + Cycle 2 / Phase 14 Gap-Close (2026-04-20) + Cycle 3 / Phase 15 Gap-Close (2026-04-20)
+> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3 + Phase 7 Perf-Reviewer Audit + Phase 8 Closure + Phase 9 Final Closure + Phase 10 Deep Review Validation + Phase 10 Closure + Phase 4 Tracking Re-audit (2026-04-18) + Phase 12 Perf-Issue-Tracker (2026-04-19) + Phase 13 Gap-Close (2026-04-19) + Cycle 2 / Phase 14 Gap-Close (2026-04-20) + Cycle 3 / Phase 15 Gap-Close (2026-04-20) + Cycle 6 / Phase 18 Gap-Sync (2026-04-20) + Cycle 5 / Phase 17 Perf-Issue-Tracker (2026-04-20)
 
 ---
 
@@ -2897,3 +2897,72 @@ Phase 2 scan confirmed 4 existing-issue findings (PERF-216, PERF-213, PERF-208, 
 - PERF-212 (#163) remains the bench blocker — `zig build bench` broken locally. **All Phase 12 validation plans are gated on fixing this first.**
 - PERF-220 closure depends on determining whether any non-Engine caller of `signCertificateVerify` exists; Engine deletion may auto-close it.
 - PERF-224 closed (2026-04-19): `handshake_trace_enabled` and `secret_trace_enabled` are `const` file-scope `false`, which Zig treats as comptime-known; all `if (flag)` guards are eliminated by LLVM DCE under ReleaseFast/ReleaseSafe. Invariant documented in `src/tls13/transcript.zig:76-85` (extended comment block).
+
+---
+
+## Cycle 5 / Phase 17 Perf-Issue-Tracker Run (2026-04-20)
+
+Phase 3 perf-reviewer delivered 8 new findings. All filed on GitLab under PERF-229..PERF-236 with evidence, fix guidance, validation plans, and PerfScore. PERF-229 (ECDSA-P256 stdlib bottleneck) is the dominant finding and the only P0 — it is worth more than every other open PERF item combined, and it is the architectural gate on the <2ms handshake SLO.
+
+**ID allocation:** PERF-228 was the prior high-water; new IDs start at PERF-229.
+
+### Stack-ranked new findings (Phase 17)
+
+| Rank | PerfSeverity | PerfScore | Finding | Component | Evidence (file:line) | Issue | Fix Summary | Confidence | Owner | SLA | Status |
+|------|--------------|-----------|---------|-----------|----------------------|-------|-------------|-----------|-------|-----|--------|
+| 1 | P0 | 100 | PERF-229: ECDSA-P256 at 1.63ms via stdlib — ~10x slower than BoringSSL nistz256 asm; blocks <2ms handshake SLO | sig / parallel / x509 | `src/sig.zig:648,668,731`; `src/parallel.zig:350,364`; `src/x509.zig:1489,1498` | #243 | Scope ADR: (a) pure-Zig nistz256 port, (b) optional FFI to BoringSSL/OpenSSL, (c) guidance to prefer Ed25519 | confirmed | benji | Immediate | Open (2026-04-20) |
+| 2 | P1 | 48 | PERF-230: ThreadPool worker count uncapped at cpu_count; cgroup-hostile and not Config-exposed | infra | `src/parallel.zig:78` | #247 | Add `parallel.Config.worker_count`; auto-detect cgroup v2 quota on Linux; default cap `min(getCpuCount(), 8)` | confirmed | benji | Within sprint | Open (2026-04-20) |
+| 3 | P1 | 40 | PERF-231: Transcript.snapshot() ignores locked_hash; finalizes both SHA-256 + SHA-384 always | transcript | `src/tls13/transcript.zig:266-271` | #251 | Gate on `locked_hash`; finalize only the pinned hash variant — mirrors PERF-228 on the snapshot side | confirmed | benji | Within sprint | Open (2026-04-20) |
+| 4 | P1 | 36 | PERF-232: Missing end-to-end handshake benchmark (`bench_full_handshake.zig`) | ci / bench | `tests/perf/` — file absent | #255 | New bench: in-memory client/server pair across Ed25519/P-256/P-384/RSA-PSS × {no-resumption, PSK, 0-RTT} × {chain=1,3}. Depends on PERF-223 harness primitives. | confirmed | benji | Within sprint | Open (2026-04-20) |
+| 5 | P1 | 36 | PERF-233: ThreadPool cold-start lazy init spikes first-handshake latency after fork/boot | infra | `src/parallel.zig:67-82` | #257 | Add `parallel.warmPool()` invoked during bootstrap; document fork-safety contract | suspected | benji | Within sprint | Open (2026-04-20) |
+| 6 | P2 | 32 | PERF-234: Context.processCrypto appendSlice lacks `ensureTotalCapacity(max_crypto_buffer)` | app | `src/tls13/context.zig:761` | #260 | Role/level-gated `ensureTotalCapacity(64 KB)` or per-call `ensureUnusedCapacity(data.len)` | suspected | benji | Next quarter | Open (2026-04-20) |
+| 7 | P2 | 32 | PERF-235: parallel* thresholds (AeadSeal=4, CertValidate=2, SigVerify=2) unvalidated vs submitBatch overhead | app | `src/parallel.zig:152,290,476` | #263 | Bench crossover at n=1,2,3,4,8,16; adjust thresholds with measured break-even in commit message | suspected | benji | Next quarter | Open (2026-04-20) |
+| 8 | P2 | 24 | PERF-236: No CI perf-regression gate for handshake latency | ci | `.gitlab-ci.yml` — no bench stage | #265 | New GitLab CI `perf-gate` stage: bench → JSON → diff against `tests/perf/baseline.json` at 10% tolerance; label `perf-gate::skip` for intentional regressions | suspected | benji | Next quarter | Open (2026-04-20) |
+
+### Phase 17 findings by area
+
+- **app** (sig / parallel / context / transcript): PERF-229, PERF-231, PERF-234, PERF-235
+- **infra** (thread-pool config / cold-start): PERF-230, PERF-233
+- **ci / bench**: PERF-232, PERF-236
+- **Cross-cutting ADR** (multi-file): PERF-229 spans sig.zig + parallel.zig + x509.zig
+
+### Phase 17 roadmap
+
+- **Quick wins (< 1 day):**
+  - PERF-231 (snapshot locked_hash gating) — ~3 lines, mirrors PERF-228
+  - PERF-234 (processCrypto ensureTotalCapacity) — ~1 line, pattern well-understood
+- **Medium (1-5 days):**
+  - PERF-230 (ThreadPool Config + cgroup auto-detect)
+  - PERF-232 (bench_full_handshake.zig) — blocks PERF-236
+  - PERF-233 (warmPool + fork-safety docs)
+  - PERF-235 (parallel crossover bench + threshold tune)
+  - PERF-236 (CI perf-gate) — depends on PERF-232
+- **Strategic (> 5 days):**
+  - **PERF-229 ECDSA-P256 stdlib bottleneck** — ADR scope first; implementation (either nistz256 port or FFI shim) is weeks of work. This is **the** unblocker for the <2ms handshake SLO on the P-256 ecosystem. Dominates the remaining roadmap by an order of magnitude.
+
+### Phase 17 top 5 risks
+
+1. **PERF-229** (PerfScore 100, P0) — <2ms handshake SLO is architecturally unreachable on P-256 chains without this. Expected post-fix: ~1.63ms → ~150-200 us per op (~8-10x).
+2. **PERF-230** (PerfScore 48, P1) — containerized deployments over-subscribe thread pool. Expected post-fix: correct worker count under cgroup limits; ~5-32 MB memory reclaimed per process.
+3. **PERF-231** (PerfScore 40, P1) — small but always-hit on the synchronous handshake path. Expected post-fix: ~2 us/handshake.
+4. **PERF-233** (PerfScore 36, P1, suspected) — tail-latency spike on first handshake. Expected post-fix: p999 spike on cold process removed.
+5. **PERF-232** (PerfScore 36, P1) — unblocks PERF-229 validation and PERF-236 CI gate. No direct latency gain, but locks in every future gain.
+
+### Phase 17 unknowns / blockers
+
+- **PERF-229 magnitude is confirmed; path is ADR-gated.** Implementation choice (pure-Zig asm vs FFI vs Ed25519-only guidance) is the open question, not the problem statement. Next evidence needed: ADR with cost/benefit per option + timing data for Zig stdlib P-256 vs BoringSSL nistz256 under identical hardware.
+- **PERF-233 cold-start magnitude is suspected.** Confirm with: `time` of first `getPool()` call on a fresh process vs Nth call. Expect ~500 us - 5 ms delta.
+- **PERF-234 realloc count is suspected.** Confirm with: CountingAllocator (PERF-024, reopened) on a deep-chain handshake.
+- **PERF-235 crossover points are unmeasured.** Confirm with: new `tests/perf/bench_parallel_crossover.zig` — pure measurement, no regression risk.
+- **PERF-232 must land before PERF-236.** The CI gate is vacuous without an integration-level bench.
+
+### Phase 17 issue URLs
+
+- PERF-229: <https://gitlab.com/devnw/zig/tls/-/issues/243>
+- PERF-230: <https://gitlab.com/devnw/zig/tls/-/issues/247>
+- PERF-231: <https://gitlab.com/devnw/zig/tls/-/issues/251>
+- PERF-232: <https://gitlab.com/devnw/zig/tls/-/issues/255>
+- PERF-233: <https://gitlab.com/devnw/zig/tls/-/issues/257>
+- PERF-234: <https://gitlab.com/devnw/zig/tls/-/issues/260>
+- PERF-235: <https://gitlab.com/devnw/zig/tls/-/issues/263>
+- PERF-236: <https://gitlab.com/devnw/zig/tls/-/issues/265>

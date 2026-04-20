@@ -1,6 +1,6 @@
 # GAP Analysis
 
-> **Last updated:** 2026-04-20 (Cycle 3 / Phase 15 gap-close -- GAP-0104 closed via PERF-209 on top of Cycle 2's 9 + Phase 13's 16)
+> **Last updated:** 2026-04-20 (Cycle 6 / Phase 18 gap-sync -- QUAL-069/QUAL-073/QUAL-091 closed as subsumed by engine.zig deletion + QUAL-317 decomposition; QUAL-104 reopened residual; QUAL-116 filed as [#242](https://gitlab.com/devnw/zig/tls/-/work_items/242); QUAL-315 promoted Deferred → Open. No GAP-* items touched this cycle; see `docs/QUALITY_GAP_ANALYSIS.md` Cycle 6 / Phase 18 section for detail.)
 > **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 >
