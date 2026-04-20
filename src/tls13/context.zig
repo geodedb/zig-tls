@@ -1099,8 +1099,8 @@ pub const Context = struct {
                 if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
                 if (level != .Application) return HandshakeError.UnexpectedMessage;
 
-                // Parse and log the ticket for debugging. Full session resumption
-                // storage is handled by the QUIC layer via engine.zig.
+                // Parse and log the ticket for debugging; full session resumption
+                // storage is deferred to application-layer callbacks (not yet implemented).
                 // QUAL-074/QUAL-109: NewSessionTicket is accepted and not silently
                 // dropped. An on_session_ticket callback for application-layer
                 // session ticket management is deferred as a future enhancement.
@@ -1464,8 +1464,7 @@ pub const Context = struct {
         _ = std.os.linux.getrandom(&priv, priv.len, 0);
         // SEC-037: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
         // Zig's X25519 internally clamps during DH computation, but we clamp here
-        // too for consistency with engine.zig's ensureKeypair() and to ensure the
-        // stored private key bytes are canonical.
+        // too to ensure the stored private key bytes are canonical.
         priv[0] &= 248;
         priv[31] &= 127;
         priv[31] |= 64;
@@ -1822,8 +1821,8 @@ pub const Context = struct {
         _ = std.os.linux.getrandom(&server_priv, server_priv.len, 0);
         // SEC-048: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
         // Zig's X25519 internally clamps during DH computation, but we clamp here
-        // too for consistency with sendClientHello2() and engine.zig's ensureKeypair()
-        // and to ensure the stored private key bytes are canonical.
+        // too for consistency with sendClientHello2() and to ensure the stored
+        // private key bytes are canonical.
         server_priv[0] &= 248;
         server_priv[31] &= 127;
         server_priv[31] |= 64;
@@ -2050,8 +2049,8 @@ pub const Context = struct {
         _ = std.os.linux.getrandom(&priv, priv.len, 0);
         // SEC-040: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
         // Zig's X25519 internally clamps during DH computation, but we clamp here
-        // too for consistency with sendClientHello2() and engine.zig's ensureKeypair()
-        // and to ensure the stored private key bytes are canonical.
+        // too for consistency with sendClientHello2() and to ensure the stored
+        // private key bytes are canonical.
         priv[0] &= 248;
         priv[31] &= 127;
         priv[31] |= 64;

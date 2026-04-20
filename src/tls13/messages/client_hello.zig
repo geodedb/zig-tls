@@ -30,7 +30,6 @@
 //! for encoding TLS 1.3 ClientHello message bodies. It is used by:
 //! - `context.zig:startClientHandshake` (initial ClientHello with PSK support)
 //! - `context.zig:sendClientHello2` (ClientHello2 after HelloRetryRequest)
-//! - `engine.zig:queueRealClientHello` (legacy engine)
 //!
 //! The builder uses a single-buffer pattern (PERF-015) where extensions are
 //! written directly into the output buffer with length fields patched at the
@@ -552,9 +551,8 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
 
 /// Parameters for building a TLS 1.3 ClientHello message body.
 ///
-/// Encapsulates all varying inputs so that `startClientHandshake`,
-/// `sendClientHello2`, and the Engine's `queueRealClientHello` can share
-/// the same wire-encoding logic.
+/// Encapsulates all varying inputs so that `startClientHandshake` and
+/// `sendClientHello2` can share the same wire-encoding logic.
 ///
 /// ## RFC Coverage
 ///

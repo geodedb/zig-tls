@@ -23,7 +23,6 @@
 //! The implementation is organized into focused modules:
 //! - **tls13/config.zig**: Config struct (TLS configuration parameters)
 //! - **tls13/context.zig**: Callbacks + Context (main TLS driver)
-//! - **tls13/engine.zig**: Engine (legacy minimal driver)
 //! - **tls13/types.zig**: Core types (Role, errors, metadata)
 //! - **tls13/transcript.zig**: Transcript hash management
 //! - **tls13/handshake_state.zig**: State machine, CRYPTO buffering

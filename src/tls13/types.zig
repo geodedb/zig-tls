@@ -15,8 +15,8 @@ const ks = @import("quic_tls");
 
 /// Map a TLS 1.3 CipherSuite to its associated hash algorithm (RFC 8446 Appendix B.4).
 ///
-/// This is the canonical mapping used by both Context and Engine during key
-/// derivation. All SHA-256-based suites (AES-128-GCM, ChaCha20-Poly1305,
+/// This is the canonical mapping used by Context during key derivation.
+/// All SHA-256-based suites (AES-128-GCM, ChaCha20-Poly1305,
 /// AES-128-CCM variants) return `.sha256`; AES-256-GCM returns `.sha384`.
 pub fn cipherSuiteHash(suite: tls13_full.CipherSuite) ks.Hash {
     return switch (suite) {
