@@ -35,10 +35,14 @@
 const std = @import("std");
 const client_hello = @import("client_hello.zig");
 const core_types = @import("core_types.zig");
+const helpers = @import("helpers.zig");
 
 pub const ExtensionType = core_types.ExtensionType;
 pub const ClientHello = client_hello.ClientHello;
 pub const ClientHelloParams = client_hello.ClientHelloParams;
+pub const KeyShareEntry = client_hello.KeyShareEntry;
+pub const PreSharedKey = client_hello.PreSharedKey;
+pub const PskIdentity = client_hello.PskIdentity;
 
 /// State threaded through each per-extension parser.
 ///
@@ -73,6 +77,29 @@ pub const ExtHandler = struct {
     build: *const fn (ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void,
 };
 
-// The HANDLERS table and per-extension functions are filled in by Task 3.
-// Skeleton placeholder; nothing imports this module yet.
-pub const HANDLERS: []const ExtHandler = &.{};
+// ============================================================================
+// supported_versions (RFC 8446 §4.2.1) — REQUIRED for TLS 1.3
+// ============================================================================
+
+fn parseSupportedVersions(ctx: *ParseCtx, data: []const u8) anyerror!void {
+    // The current parser stores the raw payload slice; downstream code
+    // treats the presence of the field as "client advertised TLS 1.3".
+    ctx.ch.supported_versions = data;
+}
+
+fn buildSupportedVersions(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    _ = ctx;
+    // list_len=2 containing 0x0304 (TLS 1.3). Always emitted.
+    try out.appendSlice(alloc, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
+}
+
+// ============================================================================
+// HANDLERS table
+//
+// Order constraint: `pre_shared_key` MUST appear LAST (CWE-345 build-side
+// ordering per RFC 8446 §4.2.11). The outer build loop iterates this table
+// in sequence and emits each extension's bytes.
+// ============================================================================
+pub const HANDLERS: []const ExtHandler = &.{
+    .{ .tag = .supported_versions, .parse = parseSupportedVersions, .build = buildSupportedVersions },
+};
