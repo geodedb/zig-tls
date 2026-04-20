@@ -31,7 +31,7 @@ Comprehensive QUIC transport parameter encoding and decoding has been implemente
 
 Full implementation of QUIC variable-length integer encoding supporting 1, 2, 4, or 8 byte encodings based on value range:
 
-```
+```text
 2MSB | Length | Usable Bits | Range
 -----|--------|-------------|-------------------------
 00   | 1 byte | 6 bits      | 0 to 63
@@ -41,11 +41,13 @@ Full implementation of QUIC variable-length integer encoding supporting 1, 2, 4,
 ```
 
 **Functions**:
+
 - `varint.encode(value, buf) -> usize`: Encode a u64 to variable-length format
 - `varint.decode(data) -> { n: usize, value: u64 }`: Decode from buffer
 - `varint.encodeWithLen(value, buf, byte_len) -> usize`: Force specific encoding length
 
 **Test Vectors** (RFC 9000 Appendix A.1):
+
 - ✅ `0x25` (1 byte) → 37
 - ✅ `0x7bbd` (2 bytes) → 15,293
 - ✅ `0x9d7f3e7d` (4 bytes) → 494,878,333
@@ -56,6 +58,7 @@ Full implementation of QUIC variable-length integer encoding supporting 1, 2, 4,
 Complete transport parameter encoding/decoding with validation:
 
 **All RFC 9000 §18.2 Parameters Supported**:
+
 - ✅ `original_destination_connection_id` (0x00) - Server-only
 - ✅ `max_idle_timeout` (0x01)
 - ✅ `stateless_reset_token` (0x02) - Server-only, exactly 16 bytes
@@ -75,7 +78,8 @@ Complete transport parameter encoding/decoding with validation:
 - ✅ `retry_source_connection_id` (0x10) - Server-only
 
 **Wire Format**:
-```
+
+```text
 Transport Parameter {
   Parameter ID (variable-length integer),
   Parameter Length (variable-length integer),
@@ -86,6 +90,7 @@ Transport Parameter {
 ### 3. Integration with TLS 1.3
 
 RFC 9001 §8.2 integration:
+
 - Extension type 0x0039 (`quic_transport_parameters`)
 - Carried in ClientHello (client → server)
 - Carried in EncryptedExtensions (server → client)
@@ -158,6 +163,7 @@ All RFC 9000 §18.2 constraints are enforced:
 ### Server-Only Parameters
 
 The following parameters MUST NOT be sent by clients (RFC 9000 §18.2):
+
 - `original_destination_connection_id`
 - `stateless_reset_token`
 - `preferred_address`
@@ -197,13 +203,15 @@ make test
 ```
 
 **Expected output**:
-```
+
+```console
 All 11 tests passed.
 ```
 
 ### RFC Test Vectors
 
 Variable-length integer encoding validated against RFC 9000 Appendix A.1 test vectors:
+
 - ✅ All boundary values (1, 2, 4, 8 byte encodings)
 - ✅ Official RFC examples
 - ✅ Minimum/maximum values for each encoding length
@@ -240,6 +248,7 @@ const transport_params_mod = b.addModule("quic_transport_params", .{
 Every implementation includes comprehensive RFC citations:
 
 **File-Level Documentation**:
+
 - Purpose and functionality overview
 - Primary RFC references with section numbers
 - Wire format diagrams
@@ -248,6 +257,7 @@ Every implementation includes comprehensive RFC citations:
 - Integration notes
 
 **Function Documentation**:
+
 - Brief description
 - Parameter explanations
 - Return value semantics
@@ -256,6 +266,7 @@ Every implementation includes comprehensive RFC citations:
 - Usage examples
 
 **Inline RFC Comments**:
+
 ```zig
 // RFC 9000 §16: The 2 most significant bits encode the length
 const prefix = first_byte >> 6;
@@ -278,6 +289,7 @@ _ => continue,
 ### Validation
 
 All parameter constraints from RFC 9000 §18.2 are enforced:
+
 - Minimum/maximum value checks
 - Length validations
 - Type constraints
@@ -302,7 +314,8 @@ All parameter constraints from RFC 9000 §18.2 are enforced:
 ### Error Handling
 
 Missing `quic_transport_parameters` extension:
-```
+
+```text
 MUST close connection with error 0x016d
 (equivalent to fatal TLS missing_extension alert per RFC 9001 §4.8)
 ```
@@ -342,12 +355,14 @@ While the implementation is feature-complete for RFC 9000/9001, potential enhanc
 ## Files Created/Modified
 
 ### New Files
+
 1. **src/varint.zig** (260 lines) - Variable-length integer encoding/decoding
 2. **src/byteorder.zig** (49 lines) - Endian conversion helpers
 3. **src/byteorder/byteorder.zig** (49 lines) - Original byteorder implementation
 4. **QUIC_EXTENSIONS.md** (this file) - Comprehensive documentation
 
 ### Modified Files
+
 1. **src/quic_transport_params.zig** - Replaced placeholder with full implementation (800 lines)
 2. **build.zig** - Added varint and byteorder modules with dependencies
 
@@ -445,6 +460,7 @@ The QUIC extensions implementation has been validated against both **BoringSSL**
 ### Test Coverage
 
 #### BoringSSL Conformance (10 tests)
+
 Location: `tests/boringssl_conformance.zig`
 
 1. **RFC 9000 Appendix A.1 varint encoding** - Validates canonical test vectors
@@ -459,6 +475,7 @@ Location: `tests/boringssl_conformance.zig`
 10. **Additional crypto primitives** - HKDF, AEAD validation
 
 #### OpenSSL 3.x Conformance (10 tests)
+
 Location: `tests/openssl_conformance.zig`
 
 1. **RFC 9000 Appendix A.1 varint encoding** - Validates canonical test vectors
@@ -528,6 +545,7 @@ zig test tests/openssl_conformance.zig --deps quic_tls,varint,quic_transport_par
 ```
 
 **Note**: Conformance tests require OpenSSL/BoringSSL development libraries:
+
 - Ubuntu/Debian: `sudo apt-get install libssl-dev`
 - Fedora/RHEL: `sudo dnf install openssl-devel`
 - macOS: `brew install openssl@3`
@@ -535,6 +553,7 @@ zig test tests/openssl_conformance.zig --deps quic_tls,varint,quic_transport_par
 ## Conclusion
 
 The QUIC transport parameters implementation is **production-ready** with:
+
 - ✅ **Full RFC 9000/9001 compliance**
 - ✅ **100% test pass rate** (11/11 unit tests + 37/37 conformance tests)
 - ✅ **BoringSSL interoperability** (18 tests validated)

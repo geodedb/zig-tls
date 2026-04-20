@@ -17,18 +17,21 @@ ztls 1.0.0 is the first production-ready release of a TLS 1.3 implementation spe
 ### Complete TLS 1.3 Implementation (RFC 8446)
 
 ✅ **Full 1-RTT Handshake**
+
 - ECDHE key exchange (X25519, P-256, P-384)
 - FFDHE groups (2048, 3072, 4096 bit)
 - Certificate-based authentication
 - Signature algorithms: ECDSA, RSA-PSS, Ed25519
 
 ✅ **Session Resumption & 0-RTT**
+
 - PSK handshake modes (psk_ke, psk_dhe_ke)
 - NewSessionTicket emission
 - 0-RTT data support
 - Anti-replay protection (constant-time)
 
 ✅ **Advanced Features**
+
 - HelloRetryRequest flow
 - Key update support
 - Client authentication (mutual TLS)
@@ -37,6 +40,7 @@ ztls 1.0.0 is the first production-ready release of a TLS 1.3 implementation spe
 ### QUIC-TLS Integration (RFC 9001)
 
 ✅ **Native QUIC Support**
+
 - CRYPTO frame processing
 - Encryption level management
 - Initial secrets (QUIC v1 & v2)
@@ -44,6 +48,7 @@ ztls 1.0.0 is the first production-ready release of a TLS 1.3 implementation spe
 - Transport parameter encoding/decoding
 
 ✅ **Security Features**
+
 - 0-RTT anti-replay window
 - Constant-time secret comparison
 - Proper secret zeroization
@@ -52,6 +57,7 @@ ztls 1.0.0 is the first production-ready release of a TLS 1.3 implementation spe
 ### Enterprise PKI Support
 
 ✅ **X.509 Certificate Validation** (RFC 5280)
+
 - Full chain validation
 - Validity period checking
 - Extended Key Usage (EKU)
@@ -59,6 +65,7 @@ ztls 1.0.0 is the first production-ready release of a TLS 1.3 implementation spe
 - Name Constraints enforcement
 
 🔶 **Revocation Checking**
+
 - OCSP stapling support
 - ⚠️ CRL support not yet implemented (see lib.zig)
 - ⚠️ Authority Information Access (AIA) not yet implemented
@@ -67,16 +74,19 @@ ztls 1.0.0 is the first production-ready release of a TLS 1.3 implementation spe
 ### Cryptographic Algorithms
 
 ✅ **Cipher Suites**
+
 - TLS_AES_128_GCM_SHA256 (REQUIRED)
 - TLS_AES_256_GCM_SHA384
 - TLS_CHACHA20_POLY1305_SHA256
 
 ✅ **Key Exchange**
+
 - X25519 (Curve25519 ECDHE)
 - ⚠️ secp256r1/secp384r1 supported for signatures only (not key exchange)
 - ⚠️ ffdhe2048/ffdhe3072/ffdhe4096: wire format parsing only (no key agreement implementation)
 
 ✅ **Signature Schemes**
+
 - ECDSA with P-256 SHA-256
 - ECDSA with P-384 SHA-384
 - RSA-PSS with SHA-256
@@ -89,6 +99,7 @@ ztls 1.0.0 is the first production-ready release of a TLS 1.3 implementation spe
 ### Zero External Dependencies
 
 All cryptographic operations use Zig standard library primitives:
+
 - `std.crypto.aead` - AEAD ciphers
 - `std.crypto.kdf.hkdf` - Key derivation
 - `std.crypto.sign` - Signature verification
@@ -99,6 +110,7 @@ No OpenSSL, no BoringSSL, no third-party crypto libraries required at runtime.
 ### Comprehensive Test Coverage
 
 **853 Total Tests (100% Pass Rate):**
+
 - 262 unit tests (per-module, RFC-cited)
 - 148 RFC compliance tests (8446, 9001, 5280)
 - 13 RFC test vectors (official appendix data)
@@ -107,12 +119,14 @@ No OpenSSL, no BoringSSL, no third-party crypto libraries required at runtime.
 ### Production-Grade Security
 
 ✅ **Security Audit Passed**
+
 - All secret comparisons use constant-time operations
 - Proper secret zeroization (`std.crypto.secureZero`)
 - Zero timing attack vulnerabilities
 - OWASP TLS best practices followed
 
 ✅ **RFC Compliance**
+
 - RFC 8446 (TLS 1.3): 100% required features
 - RFC 9001 (QUIC-TLS): Complete specification
 - RFC 5280 (X.509): Full validation support
@@ -219,17 +233,20 @@ See `PRODUCTION_READINESS.md` for complete integration guide.
 ## Supported Platforms
 
 ### Operating Systems
+
 - ✅ Linux (x86_64, ARM64, ARM)
 - ✅ macOS (x86_64, ARM64)
 - ✅ Windows (x86_64)
 
 ### Architectures
+
 - ✅ x86_64
 - ✅ ARM64 (aarch64)
 - ✅ ARM (32-bit)
 - ✅ RISC-V (cross-compile)
 
 ### Requirements
+
 - **Zig 0.15.1** (exact version required)
 - **Build:** 4GB RAM, 100MB disk
 - **Runtime:** Zero dependencies
@@ -240,29 +257,34 @@ See `PRODUCTION_READINESS.md` for complete integration guide.
 
 ### Intentional Exclusions
 
-**❌ TCP-Based TLS**
+#### ❌ TCP-Based TLS
+
 - This is a QUIC-only implementation
 - No traditional TLS record layer
 - Use a general-purpose TLS library for TCP
 
-**❌ Post-Handshake Authentication**
+#### ❌ Post-Handshake Authentication
+
 - Forbidden by RFC 9001 §4.4 for QUIC
 - Not applicable to QUIC use cases
 
-**❌ DTLS**
+#### ❌ DTLS
+
 - QUIC provides its own transport
 - DTLS not needed for QUIC
 
 ### Blocked by Stdlib
 
-**❌ AES-CCM Cipher Suites**
+#### ❌ AES-CCM Cipher Suites
+
 - Zig 0.15.1 lacks `std.crypto.aead.aes_ccm`
 - TLS_AES_128_CCM not supported
 - Use AES-GCM or ChaCha20-Poly1305 instead
 
 ### Future Enhancements
 
-**⏳ PSK Mode Activation**
+#### ⏳ PSK Mode Activation
+
 - Infrastructure complete, not fully enabled
 - Requires additional testing before production use
 - Planned for v1.1.0
@@ -287,6 +309,7 @@ This is the first stable release. If you were using development versions:
 ### Skipped Tests (Intentional)
 
 **2 tests intentionally skipped:**
+
 1. Legacy compatibility test (QUIC-only, TLS 1.2 not needed)
 2. Optional extension test (not required for QUIC)
 
@@ -295,6 +318,7 @@ Both are documented and do not affect production functionality.
 ### Platform-Specific
 
 **ARM Hardware Acceleration:**
+
 - AES-NI not utilized on ARM platforms
 - Software AES implementation used
 - Performance: ~600 MB/s vs ~800 MB/s on x86_64
@@ -316,6 +340,7 @@ Both are documented and do not affect production functionality.
 ### API Documentation
 
 All public APIs include inline documentation with:
+
 - RFC section references
 - Usage examples
 - Security considerations
@@ -345,7 +370,7 @@ Generate docs: `zig build-lib src/lib.zig -femit-docs`
 | X25519 key exchange | <100µs |
 | P-256 ECDSA verify | <200µs |
 
-*Note: Benchmarks from Intel i7-10700K @ 3.8GHz with AES-NI*
+#### Note: Benchmarks from Intel i7-10700K @ 3.8GHz with AES-NI
 
 ---
 
@@ -354,6 +379,7 @@ Generate docs: `zig build-lib src/lib.zig -femit-docs`
 ### Constant-Time Operations
 
 **All secret comparisons use timing-safe operations:**
+
 - Finished message verification: `std.crypto.timing_safe.eql()`
 - Cookie HMAC verification: `std.crypto.timing_safe.eql()`
 - Anti-replay search: constant-time (no early exit)
@@ -361,6 +387,7 @@ Generate docs: `zig build-lib src/lib.zig -femit-docs`
 ### Secret Zeroization
 
 **All key material properly zeroized:**
+
 - AEAD keys: `std.crypto.secureZero()` on wipe
 - Traffic secrets: automatic cleanup
 - Transcript hashes: cleared after use
@@ -368,6 +395,7 @@ Generate docs: `zig build-lib src/lib.zig -femit-docs`
 ### Cryptographic Assurance
 
 **Zero custom cryptography:**
+
 - All primitives from Zig stdlib
 - 430 conformance tests against BoringSSL/OpenSSL
 - Cryptographic parity verified
@@ -379,18 +407,21 @@ Generate docs: `zig build-lib src/lib.zig -femit-docs`
 ### From Development Builds
 
 1. **Update Zig to 0.15.1:**
+
    ```bash
    zig version
    # Should output: 0.15.1
    ```
 
 2. **Clean rebuild:**
+
    ```bash
    make clean
    zig build -Doptimize=ReleaseFast
    ```
 
 3. **Run tests:**
+
    ```bash
    make test
    make test-conformance
@@ -406,6 +437,7 @@ Generate docs: `zig build-lib src/lib.zig -femit-docs`
 We welcome contributions! Please see contributing guidelines:
 
 **All contributions must include:**
+
 - RFC section citations
 - Unit tests
 - RFC compliance tests
@@ -413,6 +445,7 @@ We welcome contributions! Please see contributing guidelines:
 - Documentation updates
 
 **Before submitting:**
+
 ```bash
 zig fmt src/ tests/ build.zig
 make test
@@ -466,6 +499,7 @@ See LICENSE file in repository root.
 ### v1.0.0 (2025-11-08) - Initial Release
 
 **Added:**
+
 - Complete TLS 1.3 implementation (RFC 8446)
 - Full QUIC-TLS integration (RFC 9001)
 - X.509 certificate validation (RFC 5280)
@@ -474,12 +508,14 @@ See LICENSE file in repository root.
 - Zero external dependencies
 
 **Security:**
+
 - All secret comparisons constant-time
 - Proper secret zeroization
 - Zero timing attack vulnerabilities
 - OWASP TLS compliance
 
 **Performance:**
+
 - Handshake latency <2ms
 - Memory footprint <100KB
 - Cryptographic parity with BoringSSL/OpenSSL
@@ -491,6 +527,7 @@ See LICENSE file in repository root.
 ### v1.1.0 (Planned)
 
 **Features:**
+
 - PSK mode activation (full production support)
 - Additional signature schemes
 - Performance optimizations
@@ -499,6 +536,7 @@ See LICENSE file in repository root.
 ### v1.2.0 (Planned)
 
 **Features:**
+
 - AES-CCM cipher suites (when stdlib supports)
 - Additional QUIC extensions
 - Hardware acceleration improvements
@@ -506,6 +544,7 @@ See LICENSE file in repository root.
 ### v2.0.0 (Future)
 
 **Features:**
+
 - Post-quantum cryptography (when stdlib supports)
 - Additional key exchange groups
 - Extended certificate validation
@@ -515,6 +554,7 @@ See LICENSE file in repository root.
 ## Acknowledgments
 
 Special thanks to:
+
 - Zig core team for excellent stdlib crypto
 - IETF TLS Working Group for RFCs
 - BoringSSL and OpenSSL projects for test vectors
@@ -522,6 +562,6 @@ Special thanks to:
 
 ---
 
-**ztls v1.0.0 - Production Ready TLS 1.3 for QUIC**
+### ztls v1.0.0 - Production Ready TLS 1.3 for QUIC
 
 Built with ❤️ using Zig 0.15.1

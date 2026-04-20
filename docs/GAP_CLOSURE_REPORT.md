@@ -77,7 +77,7 @@
 | SEC-034 | SECURITY | Dependency pinned to commit SHA | `build.zig.zon:38` -- bbf106dc8131a514a4d1687cc2173f124f5c8181 |
 | SEC-035 | SECURITY | HRR session_id bounds-checked | `src/tls13/context.zig:1456` -- if (pos + 1 + sid_len > body.len) |
 | SEC-036 | SECURITY | Old client_priv zeroized before HRR rekey | `src/tls13/context.zig:1534-1538` -- secureZero before new key gen |
-| SEC-037 | SECURITY | Explicit X25519 clamping in sendClientHello2 | `src/tls13/context.zig:1543-1549` -- priv[0]&=248; priv[31]&=127|=64 |
+| SEC-037 | SECURITY | Explicit X25519 clamping in sendClientHello2 | `src/tls13/context.zig:1543-1549` -- priv[0]&=248; priv[31]&=127 \|=64 |
 | QUAL-097 | QUALITY | parseHandshakeOne uses try instead of catch null | `src/tls13/engine.zig` -- parse errors propagated from onCryptoRecv |
 | QUAL-098 | QUALITY | queueServerHandshakeFlight returns !void | `src/tls13/engine.zig:1768` -- errors propagated to callers |
 | QUAL-102 | QUALITY | 5 catch null OOM patterns replaced with try | `src/tls13/engine.zig` -- allocator.dupe errors now propagated |
@@ -100,8 +100,8 @@
 | PERF-025 | PERF | TicketStore linear scan documented | `src/tls13/engine.zig` -- intentional at max_tickets=16 |
 | PERF-027 | PERF | Chain validation depth limit documented | `src/x509.zig` -- max_chain_depth=10 is sufficient DoS defense |
 | SEC-047 | SECURITY | Engine computeApplicationSecrets RFC 8446 S7.1 key schedule fix | `src/tls13/engine.zig:1510-1516` -- emptyHash() + zeroSecret() |
-| SEC-040 | SECURITY | X25519 clamping in startClientHandshake | `src/tls13/context.zig:2181-2187` -- priv[0]&=248, priv[31]&=127|=64 |
-| SEC-048 | SECURITY | X25519 clamping in negotiateCipherAndKeys | `src/tls13/context.zig:1959-1965` -- priv[0]&=248, priv[31]&=127|=64 |
+| SEC-040 | SECURITY | X25519 clamping in startClientHandshake | `src/tls13/context.zig:2181-2187` -- priv[0]&=248, priv[31]&=127 \|=64 |
+| SEC-048 | SECURITY | X25519 clamping in negotiateCipherAndKeys | `src/tls13/context.zig:1959-1965` -- priv[0]&=248, priv[31]&=127 \|=64 |
 | SEC-046 | SECURITY | PSK identity constant-time comparison | `src/tls13/context.zig:1825` -- timing_safe.compare |
 | SEC-041 | SECURITY | expandLabelHash PRK copy zeroized | `src/key_schedule.zig` -- defer secureZero on arr |
 | SEC-042 | SECURITY | deriveHandshakeTraffic derived intermediate zeroized | `src/tls13/key_derivation.zig` -- defer secureZero on derived.bytes |
@@ -221,6 +221,7 @@
 ## Security Notes
 
 ### Phases 1-5
+
 - All 3 High-severity zeroization gaps (SEC-004-R, SEC-015, SEC-016) have been closed with `defer secureZero` patterns
 - ECDHE private keys and shared secrets are now zeroized on all code paths (success, error, defer)
 - TicketStore is now bounded (max_tickets=16) with FIFO eviction and secret zeroization on eviction
@@ -233,6 +234,7 @@
 - x25519 private key zeroization covers all paths (success and error) in the single canonical implementation
 
 ### Phase 6 (Round 3)
+
 - **All High-severity security findings now closed** (SEC-028 cipher suite validation, SEC-029 hostname validation)
 - Client now validates server-selected cipher suite against offered list per RFC 8446 S4.1.3 (SEC-028)
 - Hostname validation is fail-closed: MissingServerName error when server_name is null (SEC-029)
@@ -246,6 +248,7 @@
 - Explicit X25519 clamping in sendClientHello2 for defense-in-depth (SEC-037)
 
 ### Phases 7-8
+
 - **SEC-047 (HIGH) closed:** Engine `computeApplicationSecrets` was using empty slices instead of RFC 8446 S7.1-mandated `Hash("")` and `HashLen` zeros for master secret derivation. Fixed with `emptyHash()` and `zeroSecret()`.
 - X25519 clamping defense-in-depth extended to `startClientHandshake` (SEC-040) and `negotiateCipherAndKeys` (SEC-048), now consistent with all other key generation paths
 - PSK identity comparison hardened from `std.mem.eql` to `timing_safe.compare` (SEC-046)
@@ -253,6 +256,7 @@
 - OOM error handling improved: `setTransportParameters` and engine cert handling no longer silently swallow allocation failures
 
 ### Phase 9
+
 - **All 48 security findings now fully resolved** (43 closed, 5 won't-do). Zero open security items.
 - SEC-009: `x25519KeypairAndShared` now returns error union, enforcing compile-time error handling
 - SEC-045: `@ptrCast` replaced with type-safe field-by-field conversion for PSK types
@@ -262,6 +266,7 @@
 - SecretSlot deduplication complete (QUAL-118); dead HashDigestCache removed (QUAL-125)
 
 ### Phase 10
+
 - **All 56 security findings now fully resolved** (48 closed, 5 won't-do, 3 acceptable risk). Zero open security items.
 - SEC-050 (Medium): X25519 private key in `startClientHandshake` and `sendClientHello2` now zeroed via `defer secureZero` on all exit paths
 - SEC-055 (Low): `client_priv` zeroed immediately after DH computation in `handleServerHello`, no longer retained until `deinit()`
@@ -329,7 +334,7 @@
 | QUAL-069 | #65 | commented (deferred) |
 | QUAL-073 | #69 | commented (deferred) |
 
-**Total: 40 issues closed, 4 issues commented (remain open)**
+### Total: 40 issues closed, 4 issues commented (remain open)
 
 *Note: Phase 10 operated in --skip-issues mode. No additional GitLab issues were created or closed.*
 
@@ -355,6 +360,7 @@ Across 10 implementation phases:
 28 items closed, 6 won't-do this round across all 4 tracking files:
 
 **General (2 closed, 2 won't-do):**
+
 1. **GAP-0095** -- Removed duplicate `const Secret` in PSK test; 14 PSK tests unblocked (449 conformance tests passing)
 2. **GAP-0096** -- Updated README test counts (853->1000) and Zig version (0.14.0+->0.15.1)
 3. **GAP-0093** -- Won't Do: 2 skipped tests require stdlib features not yet available
@@ -395,6 +401,7 @@ Across 10 implementation phases:
 14 items closed, 12 Won't Do, 2 Deferred this round:
 
 **Security (3 closed, 5 won't-do):**
+
 1. **SEC-009** -- x25519KeypairAndShared returns `X25519Error!X25519Result` error union
 2. **SEC-045** -- @ptrCast replaced with field-by-field conversion for PSK types
 3. **SEC-039** -- @compileError guard for handshake trace in release builds
@@ -435,6 +442,7 @@ Across 10 implementation phases:
 31 items closed this round:
 
 **Security (10 items):**
+
 1. **SEC-028** -- Client validates server-selected cipher suite against offered list
 2. **SEC-029** -- MissingServerName error when server_name is null
 3. **SEC-030** -- Self-signed cert now gets hostname/EKU validation
@@ -492,6 +500,7 @@ Across 10 implementation phases:
 Phase 7 added 9 new security findings and Phase 8 closed the implementation round. 12 items closed, 1 partial:
 
 **Security (7 items closed):**
+
 1. **SEC-047** (HIGH) -- Engine `computeApplicationSecrets` now uses `emptyHash()` and `zeroSecret()` per RFC 8446 S7.1. File: `src/tls13/engine.zig:1510-1516`
 2. **SEC-040** -- X25519 clamping in `startClientHandshake`. File: `src/tls13/context.zig:2181-2187`
 3. **SEC-048** -- X25519 clamping in `negotiateCipherAndKeys`. File: `src/tls13/context.zig:1959-1965`
