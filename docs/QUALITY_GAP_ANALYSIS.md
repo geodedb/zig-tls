@@ -44,7 +44,7 @@
 | QUAL-335 | #205 | 599a1da | parallel `KeyMaterial` renamed to `DerivedKeyMaterial`; key_schedule is canonical |
 | QUAL-336 | #206 | 500876b | Canonicalized `HandshakeState` in handshake_state.zig |
 | QUAL-337 | #207 | 148b6ba | Pinned `CipherSuite` enum parity across aead.zig / core_types.zig |
-| QUAL-343 | #216 | 4ae8ac7 | tls13_full.zig shim consolidated with engine.zig removal |
+| QUAL-343 | #216 | 4ae8ac7 (partial) / 2026-04-19 (Won't Do) | engine.zig deletion removed the largest consumer cluster; full shim deletion blocked by Zig 0.16 module constraint -- see note below |
 
 **Deferred (not attempted this run, tracked for next cycle):**
 
@@ -3206,7 +3206,7 @@ Ten new findings filed to GitLab in Phase 12. Scoring rubric: `PriorityScore = I
 - **QUAL-340**: Split into `validateResponderId`, `validateSignature`, `validateValidity`, `validateCerts`.
 - **QUAL-341**: `std.EnumArray(SignatureScheme, SchemeOps)` dispatch for sign/verify ops.
 - **QUAL-342**: Add `///` doc comments to 10 undocumented public fns; cite RFC 8446 §7.1 per derivation (early/handshake/master secret, HKDF-Expand-Label).
-- **QUAL-343**: Prefer Option B (delete) per codebase-instinct "prefer deletion over patching"; migrate 7 test files to `src/tls13/messages.zig` imports and `git rm src/tls13_full.zig`.
+- **QUAL-343**: ~~Prefer Option B (delete)~~ **Investigated 2026-04-19 — Won't Do (full delete).** Attempted to (a) absorb the shim's 20 re-export `pub const` lines into `src/tls13/messages.zig` and (b) retarget the `tls13_full` build-graph module at `messages.zig` so the 27 consumer `@import("tls13_full")` sites would resolve to messages.zig directly. Compile fails with `error: file exists in modules 'tls13' and 'tls13_full' -- files must belong to only one module`. Zig 0.16 forbids a source file from being the root of one module while also being reached via relative `@import` from inside another module, and `messages.zig` is relative-imported by `src/tls13/mod.zig` and `src/tls13/context.zig`. The only other delete path is migrating all 27 consumers to direct submodule imports (`messages/core_types.zig`, `messages/client_hello.zig`, ...). That is 27-file high-churn work in security-adjacent code for zero runtime benefit; shim is 171 LOC of `pub const X = Y.X` -- stable, inert, costless. Keep as-is. If ever the churn is justified, revisit with a single cross-file codemod rather than hand edits.
 
 ### Phase 12 Cross-References
 
