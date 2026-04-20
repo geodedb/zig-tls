@@ -86,6 +86,8 @@ const cert_handlers = @import("context/cert_handlers.zig");
 const hello_retry_mod = @import("context/hello_retry.zig");
 // QUAL-317: pure server-flight handshake-message builders.
 const server_flight_builders = @import("context/server_flight_builders.zig");
+// QUAL-317: pure post-handshake KeyUpdate flow (RFC 8446 §4.6.3 + §7.2).
+const key_update_mod = @import("context/key_update.zig");
 
 // Note: ApiError and HandshakeError are now imported from types.zig (canonical source).
 // TrafficDirection, BidirSecrets, etc. remain defined here pending further extraction.
@@ -104,7 +106,6 @@ const encodeHandshake = messages_mod.encodeHandshake;
 const encodeHandshakeBuf = messages_mod.encodeHandshakeBuf;
 const HsType = messages_mod.HsType;
 const deriveHandshakeTraffic = key_derivation_mod.deriveHandshakeTraffic;
-const buildKeyUpdate = messages_mod.buildKeyUpdate;
 const parseKeyUpdate = messages_mod.parseKeyUpdate;
 const KeyUpdateRequest = messages_mod.KeyUpdateRequest;
 // Note: TrafficDirection, BidirSecrets, CryptoBuffer are defined below; SecretSlot is imported from secrets.zig (QUAL-118)
@@ -2233,27 +2234,36 @@ pub const Context = struct {
         const send_slot = self.secrets.slot(.Application, .send);
         if (!send_slot.valid) return HandshakeError.UnexpectedMessage;
 
-        // RFC 8446 §7.2: Derive next generation traffic secret
-        // application_traffic_secret_N+1 = HKDF-Expand-Label(
-        //     application_traffic_secret_N, "traffic upd", "", Hash.length)
-        const next_secret = ks.updateTrafficSecretHash(send_slot.hash, &send_slot.value);
+        // QUAL-317: delegate HKDF-Expand-Label derivation + wire-message
+        // framing to the pure key_update module. The shell retains:
+        //  - secureZero on the OLD secret before installing the new one
+        //  - installTrafficSecret (QUIC callback) integration
+        //  - Application-level CRYPTO-stream queueing (transcript NOT updated,
+        //    per RFC 8446 §4.4.1)
+        const snapshot_hash = send_slot.hash;
+        const result = try key_update_mod.buildLocalKeyUpdate(
+            self.allocator,
+            snapshot_hash,
+            &send_slot.value,
+            request_peer_update,
+        );
+        defer self.allocator.free(result.wire_message);
+
+        // SECURITY: zero the OLD send secret before installing the new one.
+        // installTrafficSecret overwrites in place via slot.store; doing the
+        // secureZero up-front guarantees CWE-226 compliance even if the next
+        // call errors out partway through.
+        std.crypto.secureZero(u8, &send_slot.value.bytes);
 
         // Install new sending secret via callback (QUIC layer updates packet protection)
-        try self.installTrafficSecret(.Application, .send, next_secret);
+        try self.installTrafficSecret(.Application, .send, result.new_secret);
 
-        // PERF-202: Build KeyUpdate inline with stack buffer (zero-alloc).
-        // RFC 8446 §4.6.3: KeyUpdate body is 1 byte (request type).
-        const request: KeyUpdateRequest = if (request_peer_update) .update_requested else .update_not_requested;
-        var ku_buf: [5]u8 = undefined;
-        ku_buf[0] = @intFromEnum(HsType.key_update);
-        ku_buf[1] = 0;
-        ku_buf[2] = 0;
-        ku_buf[3] = 1; // length = 1
-        ku_buf[4] = @intFromEnum(request);
-
-        // Queue KeyUpdate message in Application-level CRYPTO stream
+        // Queue KeyUpdate message in Application-level CRYPTO stream.
+        // RFC 8446 §4.4.1: KeyUpdate is excluded from the handshake
+        // transcript, so we append directly to outbound without touching
+        // self.transcripts.
         var stream = self.streams.buffer(.Application);
-        try stream.outbound.appendSlice(self.allocator, &ku_buf);
+        try stream.outbound.appendSlice(self.allocator, result.wire_message);
 
         traceHandshake("TLS: Sent KeyUpdate (request_update={})\n", .{request_peer_update});
     }
@@ -2320,22 +2330,14 @@ pub const Context = struct {
         confidentiality_limit: u64,
         threshold_percent: u8,
     ) !bool {
-        // Validate threshold percentage
-        if (threshold_percent == 0 or threshold_percent > 100) return false;
-
-        // Check if limit is configured
-        if (confidentiality_limit == 0) return false; // No limit = no update needed
-
-        // Calculate threshold: (limit * threshold_percent) / 100
-        // Use u128 to prevent overflow during multiplication
-        const limit_u128: u128 = confidentiality_limit;
-        const threshold_u128: u128 = @as(u128, threshold_percent);
-        const threshold_count: u64 = @intCast((limit_u128 * threshold_u128) / 100);
-
-        // Check if we've reached the threshold
-        if (encrypted_count < threshold_count) {
-            return false; // Not at threshold yet
-        }
+        // QUAL-317: delegate threshold math to the pure key_update module.
+        // Fails closed (returns false) on invalid inputs — matches the
+        // previous inline behavior.
+        if (!key_update_mod.shouldTriggerKeyUpdate(
+            encrypted_count,
+            confidentiality_limit,
+            threshold_percent,
+        )) return false;
 
         // RFC 8446 §4.6.3 + §5.5: Trigger key update to refresh keys
         // Send KeyUpdate with update_not_requested (one-way update)
@@ -2707,7 +2709,16 @@ pub const Context = struct {
         const recv_slot = self.secrets.slot(.Application, .recv);
         if (!recv_slot.valid) return HandshakeError.UnexpectedMessage;
 
-        const next_secret = ks.updateTrafficSecretHash(recv_slot.hash, &recv_slot.value);
+        // QUAL-317: delegate HKDF-Expand-Label derivation to the pure
+        // key_update module. The shell retains:
+        //  - secureZero on the OLD recv secret before installing the new one
+        //  - installTrafficSecret (QUIC callback) integration
+        //  - policy: send reciprocal KeyUpdate with update_not_requested to
+        //    avoid infinite ping-pong (RFC 8446 §4.6.3)
+        const next_secret = key_update_mod.rotatePeerSecret(request, recv_slot.hash, &recv_slot.value);
+
+        // SECURITY: zero the OLD recv secret before installing the new one.
+        std.crypto.secureZero(u8, &recv_slot.value.bytes);
 
         // Install new receiving secret
         try self.installTrafficSecret(.Application, .recv, next_secret);
@@ -2722,19 +2733,33 @@ pub const Context = struct {
     }
 
     /// Rotate the local application traffic secret and install fresh send keys (RFC 8446 §7.2).
+    ///
+    /// QUAL-317: HKDF-Expand-Label derivation delegated to the pure
+    /// key_update module; this adapter retains secureZero on the OLD secret
+    /// before `slot.store` overwrites in place.
     pub fn performKeyUpdateSend(self: *Context) !void {
         const send_slot = self.secrets.slot(.Application, .send);
         if (!send_slot.valid) return HandshakeError.UnexpectedMessage;
-        const next = ks.updateTrafficSecretHash(send_slot.hash, &send_slot.value);
-        send_slot.store(.Application, send_slot.hash, next);
+        const hash = send_slot.hash;
+        const next = key_update_mod.rotatePeerSecret(.update_not_requested, hash, &send_slot.value);
+        // SECURITY: zero OLD secret before overwriting via slot.store.
+        std.crypto.secureZero(u8, &send_slot.value.bytes);
+        send_slot.store(.Application, hash, next);
     }
 
     /// Accept a peer initiated key update by rotating the receive traffic secret.
+    ///
+    /// QUAL-317: HKDF-Expand-Label derivation delegated to the pure
+    /// key_update module; this adapter retains secureZero on the OLD secret
+    /// before `slot.store` overwrites in place.
     pub fn performKeyUpdateRecv(self: *Context) !void {
         const recv_slot = self.secrets.slot(.Application, .recv);
         if (!recv_slot.valid) return HandshakeError.UnexpectedMessage;
-        const next = ks.updateTrafficSecretHash(recv_slot.hash, &recv_slot.value);
-        recv_slot.store(.Application, recv_slot.hash, next);
+        const hash = recv_slot.hash;
+        const next = key_update_mod.rotatePeerSecret(.update_not_requested, hash, &recv_slot.value);
+        // SECURITY: zero OLD secret before overwriting via slot.store.
+        std.crypto.secureZero(u8, &recv_slot.value.bytes);
+        recv_slot.store(.Application, hash, next);
     }
 };
 
