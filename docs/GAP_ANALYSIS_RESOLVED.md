@@ -867,17 +867,18 @@ Pre-existing pre-commit hook failures on files not touched by this run are flagg
 - **Evidence:** `rg '\bnegotiated_alpn\b' src/ tests/ examples/ docs/` output captured in `docs/PERF_GAP_ANALYSIS.md` § PERF-218; 10 `context.zig` references, 0 cross-file references.
 - **Audit date:** 2026-04-20
 
-### QUAL-339: parseClientHello ExtHandler table dispatch [BLOCKED]
+### QUAL-339: parseClientHello ExtHandler table dispatch [CLOSED Cycle 4]
 
-- **Issue:** [#209](https://gitlab.com/devnw/zig/tls/-/work_items/209) (kept **OPEN** on GitLab; ledger status: Blocked for Cycle 3, deferred to Cycle 4)
+- **Issue:** [#209](https://gitlab.com/devnw/zig/tls/-/work_items/209) — closed on GitLab with Cycle 4 closure note.
 - **Category:** Readability / Maintainability
-- **Blocker:** Safe mechanical conversion from the `parseClientHello` extension-dispatch switch into a table-driven `ExtHandler` array is blocked by three interleaved security-critical state machines:
-  1. **SEC-054 errdefer block** (`client_hello.zig:262-271`) -- frees partial allocations through the `ch` pointer; must either remain at the orchestrator scope or be restructured so every handler's error path runs equivalent cleanup.
-  2. **SEC-057 `std.enums.fromInt` guard** -- prevents `@enumFromInt` panics on ~2034 non-enumerated `ExtensionType` values sent by a hostile peer.
-  3. **CWE-345 `psk_seen` ordering sentinel** -- RFC 8446 §4.2.11 mandates `pre_shared_key` MUST be the final extension in ClientHello; a straight table-driven dispatch drops the per-arm ordering invariant unless `psk_seen` is threaded explicitly.
-- **Unblock plan:** (a) Define `ParseCtx { ch: *ClientHello, alloc: Allocator, psk_seen: *bool }` + `BuildCtx { buf: []u8, pos: *usize, ... }` to thread state into each handler. (b) Extract each switch arm into `fn parseXxx(ctx: *ParseCtx, ext_data: []const u8) !void`. (c) Re-run the client_hello fuzz corpus (`tests/fuzz/client_hello/**`) against both the pre- and post-refactor branches and diff error traces; zero deltas required before merge.
-- **Ledger commit:** e0ca05d.
-- **Deferred to:** Cycle 4 / Phase 16.
+- **Resolution (Cycle 4 / Phase 16, 2026-04-20):** Collapsed the 10-arm parse/build switch statements into a shared `HANDLERS: []const ExtHandler` table in `src/tls13/messages/client_hello_handlers.zig`. Adding an extension now touches one file. All three security-critical invariants were preserved at the OUTER (non-handler) scope:
+  1. **SEC-054 errdefer block** — unchanged at `client_hello.zig:262-271`; owns cleanup of partially-populated `ch` allocations. Handlers never errdefer themselves; they only `try` into `ctx.ch`.
+  2. **SEC-057 `std.enums.fromInt` guard** — preserved literally on the extension-tag decode (outer loop) and on the `SignatureScheme` decode inside `parseSignatureAlgorithms`.
+  3. **CWE-345 `psk_seen` ordering sentinel** — `var psk_seen = false;` declared at outer parseClientHello scope, checked before each non-PSK handler dispatch, and assigned `true` by the outer loop immediately after a `pre_shared_key` handler returns successfully. The HANDLERS table places `.pre_shared_key` LAST so `buildClientHello`'s ordered iteration emits it last on the wire.
+- **Equivalence proof:** `tests/fuzz/client_hello_trace_capture.zig` captures an error-trace oracle across 387 inputs (3 seeds × 1 original + 128 deterministic single-bit-flip mutations each, `tests/fuzz/corpus/client_hello_golden.bin`). Post-refactor `cmp` vs pre-refactor golden = byte-identical (exit 0). CI regression gate `client_hello_oracle` in `.gitlab-ci.yml` runs `cmp` every pipeline and fails on divergence.
+- **LOC delta:** `src/tls13/messages/client_hello.zig` 905 → 594 LOC (−311); new `src/tls13/messages/client_hello_handlers.zig` 539 LOC housing the extracted handlers + table.
+- **Upstream Zig 0.16 fuzz bug:** `std.testing.fuzz` still errors at `lib/compiler/test_runner.zig:566`; the oracle uses a plain `b.addExecutable` to dodge the bug. Mutation is deterministic bit-flip enumeration, not coverage-guided.
+- **Closing commit:** 45cc212 (Task 5 dispatch flip); CI gate in 7f8c735; ledger close in <this commit>.
 
 ### GAP-0104: thread_pool uses page_allocator [RESOLVED]
 

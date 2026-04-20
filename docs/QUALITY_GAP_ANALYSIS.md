@@ -1,8 +1,8 @@
 # Quality Gap Analysis
 
-> **Last updated:** 2026-04-20 (Cycle 3 / Phase 15 gap-close -- 4 additional QUAL closures + 1 Deferred/Blocked on top of Cycle 2's 5 closures + 1 Won't-Do)
+> **Last updated:** 2026-04-20 (Cycle 4 / Phase 16 -- QUAL-339 closed via table-driven ExtHandler refactor + error-trace oracle)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Cycle 3 / Phase 15 -- Closed QUAL-338 (parseCert/runChainChecks split), QUAL-340 (validateStapledResponse split), QUAL-341 (sig scheme-dispatch table), QUAL-342 (key_schedule docstrings). QUAL-339 marked Blocked/Deferred (ClientHello ExtHandler refactor requires fuzz-regression cycle -- concrete unblock plan recorded). Cycle 2 / Phase 14 previously closed QUAL-107, QUAL-205, QUAL-208, QUAL-209, QUAL-321, QUAL-337 + QUAL-343 Won't-Do. Phase 13 closed 21 items. Phase 12 filed QUAL-334..343; Phase 11 added QUAL-301..333.
+> **Review phase:** Cycle 4 / Phase 16 -- Closed QUAL-339 (`parseClientHello` / `buildClientHello` dispatch via shared HANDLERS table; SEC-054/SEC-057/CWE-345 invariants preserved and proven via 387-record error-trace oracle; CI regression gate added). Cycle 3 / Phase 15 closed QUAL-338, QUAL-340, QUAL-341, QUAL-342. Cycle 2 / Phase 14 previously closed QUAL-107, QUAL-205, QUAL-208, QUAL-209, QUAL-321, QUAL-337 + QUAL-343 Won't-Do. Phase 13 closed 21 items. Phase 12 filed QUAL-334..343; Phase 11 added QUAL-301..333.
 
 ---
 
@@ -12,9 +12,9 @@
 |----------|------|---------|--------|-----------|----------|----------|-------|
 | Critical | 0    | 0       | 2      | 0         | 0        | 0        | 2     |
 | High     | 4    | 0       | 15     | 0         | 2        | 0        | 21    |
-| Medium   | 8    | 0       | 38     | 1         | 2        | 1        | 50    |
+| Medium   | 8    | 0       | 39     | 1         | 1        | 1        | 50    |
 | Low      | 6    | 0       | 31     | 2         | 0        | 3        | 42    |
-| **Total**| **18** | **0** | **86** | **3**   | **4**    | **4**    | **115**|
+| **Total**| **18** | **0** | **87** | **3**   | **3**    | **4**    | **115**|
 
 ### Cycle 2 / Phase 14 Gap Closure Run (2026-04-20)
 
@@ -104,7 +104,7 @@
 
 - **QUAL-317** (context.zig decomposition epic) -- pending user brainstorm on subsystem boundaries.
 - **QUAL-315** (coverage instrumentation) -- kcov recommended per planner; tooling choice still open.
-- **QUAL-339** (client_hello ExtHandler dispatch) -- blocked on fuzz-regression cycle (plan above).
+- ~~**QUAL-339** (client_hello ExtHandler dispatch)~~ — **CLOSED Cycle 4 / Phase 16 (commit 45cc212)** via table-driven HANDLERS refactor + 387-record error-trace oracle; CI regression gate added in `.gitlab-ci.yml:client_hello_oracle`.
 
 ### Top 5 Risks (by PriorityScore, open items first) — refreshed Cycle 2 (2026-04-19)
 
@@ -3241,7 +3241,7 @@ Ten new findings filed to GitLab in Phase 12. Scoring rubric: `PriorityScore = I
 | QUAL-336 | Medium | 24 | maintainability | Duplicate `HandshakeState` -- public canonical shadowed by private struct in context.zig | `src/tls13/handshake_state.zig:419` (pub), `src/tls13/context.zig:437` (private) | [#206](https://gitlab.com/devnw/zig/tls/-/work_items/206) | Closed (Phase 13, 500876b) |
 | QUAL-337 | Medium | 36 | maintainability | Duplicate `CipherSuite` enum -- two independent definitions (not re-exports) | `src/record/aead.zig:86`, `src/tls13/messages/core_types.zig:258` | [#207](https://gitlab.com/devnw/zig/tls/-/work_items/207) | Closed (Phase 13/14, 148b6ba / 59f5e50) |
 | QUAL-338 | Medium | 36 | maintainability | x509.zig 1857 LOC (3rd-largest); parseCert 193 LOC, runChainChecks 152 LOC | `src/x509.zig:928`, `src/x509.zig:1611` | [#208](https://gitlab.com/devnw/zig/tls/-/work_items/208) | **[CLOSED]** (2026-04-20, commit 264b83e) |
-| QUAL-339 | Medium | 36 | readability | parseClientHello 296 LOC + buildClientHello 210 LOC -- split per-extension | `src/tls13/messages/client_hello.zig:1170`, `:1211` | [#209](https://gitlab.com/devnw/zig/tls/-/work_items/209) | **[BLOCKED]** (2026-04-20, ledger e0ca05d; needs fuzz-regression cycle) |
+| QUAL-339 | Medium | 36 | readability | parseClientHello 296 LOC + buildClientHello 210 LOC -- split per-extension | `src/tls13/messages/client_hello.zig:1170`, `:1211` | [#209](https://gitlab.com/devnw/zig/tls/-/work_items/209) | **[CLOSED]** (2026-04-20, commit 45cc212) |
 | QUAL-340 | Medium | 36 | readability | validateStapledResponse 199 LOC combines 4 validators | `src/ocsp.zig:330` | [#210](https://gitlab.com/devnw/zig/tls/-/work_items/210) | **[CLOSED]** (2026-04-20, commit a94fcb1) |
 | QUAL-341 | Low | 16 | readability | verifySignature 114 LOC + signCertificateVerify 111 LOC -- scheme-dispatch tables | `src/parallel.zig:760`, `src/sig.zig:2398` | [#211](https://gitlab.com/devnw/zig/tls/-/work_items/211) | **[CLOSED]** (2026-04-20, commit 2a8baf5) |
 | QUAL-342 | Low | 12 | docs | key_schedule.zig 57% public-fn doc coverage; crypto-critical derivations missing RFC 8446 §7.1 cites | `src/key_schedule.zig` | [#214](https://gitlab.com/devnw/zig/tls/-/work_items/214) | **[CLOSED]** (2026-04-20, commit 2afe89e) |
