@@ -598,8 +598,12 @@ pub const Context = struct {
             self.peer_quic_transport_parameters = null;
         }
         if (self.negotiated_alpn) |proto| {
-            self.allocator.free(proto);
+            // PERF-218: only free when we own the buffer; borrowed slices
+            // (server path) point into `config.alpn_protocols` and must
+            // not be freed.
+            if (self.negotiated_alpn_owned) self.allocator.free(proto);
             self.negotiated_alpn = null;
+            self.negotiated_alpn_owned = false;
         }
         // Clean up peer certificate data (client role)
         self.freePeerCertChain();
@@ -1307,8 +1311,10 @@ pub const Context = struct {
     // both the allocation-count delta and the borrow-vs-own pointer identity.
     pub fn selectServerAlpn(self: *Context, client: ClientHelloView) !?[]const u8 {
         if (self.negotiated_alpn) |prev| {
-            if (prev.len != 0) self.allocator.free(prev);
+            // PERF-218: only free when owned; borrowed slices must not be freed.
+            if (self.negotiated_alpn_owned and prev.len != 0) self.allocator.free(prev);
             self.negotiated_alpn = null;
+            self.negotiated_alpn_owned = false;
         }
         const server_list = self.config.alpn_protocols orelse return null;
         if (server_list.len == 0) return null;
@@ -1321,6 +1327,7 @@ pub const Context = struct {
                 if (std.mem.eql(u8, candidate, offered)) {
                     const copy = try self.allocator.dupe(u8, candidate);
                     self.negotiated_alpn = copy;
+                    self.negotiated_alpn_owned = true;
                     return copy;
                 }
             }
@@ -2938,12 +2945,16 @@ pub const Context = struct {
 
         // RFC 7301: Store negotiated ALPN
         if (parsed.alpn) |alpn| {
+            // PERF-218: client path — source slice points into the transient
+            // EncryptedExtensions parse buffer that the caller will free on
+            // return, so a dupe is required here (owned=true).
             const alpn_copy = try self.allocator.dupe(u8, alpn);
             errdefer self.allocator.free(alpn_copy);
             if (self.negotiated_alpn) |old| {
-                self.allocator.free(old);
+                if (self.negotiated_alpn_owned) self.allocator.free(old);
             }
             self.negotiated_alpn = alpn_copy;
+            self.negotiated_alpn_owned = true;
         }
 
         // Notify QUIC layer of handshake metadata
