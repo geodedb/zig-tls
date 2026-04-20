@@ -203,6 +203,58 @@ fn buildSignatureAlgorithms(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.
 }
 
 // ============================================================================
+// key_share (RFC 8446 §4.2.8) — ECDHE public key
+// ============================================================================
+
+fn parseKeyShare(ctx: *ParseCtx, data: []const u8) anyerror!void {
+    if (data.len >= 2) {
+        const shares_len = helpers.readU16(data[0..2]);
+        if (2 + shares_len <= data.len) {
+            var ks_pos: usize = 2;
+            while (ks_pos + 4 <= 2 + shares_len) {
+                const group = helpers.readU16(data[ks_pos .. ks_pos + 2]);
+                const key_len = helpers.readU16(data[ks_pos + 2 .. ks_pos + 4]);
+                ks_pos += 4;
+
+                if (ks_pos + key_len <= 2 + shares_len) {
+                    // We only support X25519
+                    if (group == 0x001d and key_len == 32) {
+                        ctx.ch.key_share = KeyShareEntry{
+                            .group = .x25519,
+                            .key_exchange = data[ks_pos .. ks_pos + key_len],
+                        };
+                        break;
+                    }
+                    ks_pos += key_len;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn buildKeyShare(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const params = ctx.params;
+    const group_val: u16 = @intFromEnum(params.key_share_group);
+    const key_share_entry_len: u16 = 2 + 2 + 32; // group(2) + key_len(2) + key(32)
+    const key_share_ext_len: u16 = key_share_entry_len + 2; // entries_list_len(2) + entry
+    try out.appendSlice(alloc, &.{
+        0x00,
+        0x33,
+        @intCast(key_share_ext_len >> 8),
+        @intCast(key_share_ext_len & 0xff),
+        @intCast(key_share_entry_len >> 8),
+        @intCast(key_share_entry_len & 0xff),
+        @intCast(group_val >> 8),
+        @intCast(group_val & 0xff),
+        0x00,
+        32,
+    });
+    try out.appendSlice(alloc, &params.client_pub);
+}
+
+// ============================================================================
 // supported_versions (RFC 8446 §4.2.1) — REQUIRED for TLS 1.3
 // ============================================================================
 
@@ -230,6 +282,7 @@ pub const HANDLERS: []const ExtHandler = &.{
     .{ .tag = .supported_versions, .parse = parseSupportedVersions, .build = buildSupportedVersions },
     .{ .tag = .supported_groups, .parse = parseSupportedGroups, .build = buildSupportedGroups },
     .{ .tag = .signature_algorithms, .parse = parseSignatureAlgorithms, .build = buildSignatureAlgorithms },
+    .{ .tag = .key_share, .parse = parseKeyShare, .build = buildKeyShare },
     // Parse-only extensions that have no build emission live at the tail
     // (before pre_shared_key). Their relative order among themselves is
     // inconsequential because their build handlers are no-ops.
