@@ -40,6 +40,7 @@
 const std = @import("std");
 const core_types = @import("core_types.zig");
 const helpers = @import("helpers.zig");
+const handlers_mod = @import("client_hello_handlers.zig");
 
 /// Parsed ClientHello message (RFC 8446 §4.1.2).
 ///
@@ -324,219 +325,49 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     const ext_end = pos + ext_len;
     var psk_seen = false; // RFC 8446 §4.2.11: Track if pre_shared_key was seen
 
+    // QUAL-339: ParseCtx threads ch + allocator into per-extension handlers.
+    // Handlers only populate fields on `ch`; they never own cleanup or touch
+    // psk_seen — both concerns stay at this outer-loop scope.
+    var parse_ctx = handlers_mod.ParseCtx{ .ch = &ch, .alloc = allocator };
+
     while (pos + 4 <= ext_end) {
-        const ext_type = helpers.readU16(data[pos .. pos + 2]);
+        const ext_type_raw = helpers.readU16(data[pos .. pos + 2]);
         const ext_data_len = helpers.readU16(data[pos + 2 .. pos + 4]);
         pos += 4;
 
         if (pos + ext_data_len > ext_end) return error.TooShort;
         const ext_data = data[pos .. pos + ext_data_len];
 
-        // Use enums.fromInt to safely handle unknown extension types without panicking
-        const ext = std.enums.fromInt(core_types.ExtensionType, ext_type) orelse {
-            // Unknown extension type - ignore per TLS 1.3 spec
-            // But still check if PSK was already seen (it must be last)
+        // SEC-057: Use enums.fromInt to reject unknown extension-type
+        // discriminants without panicking on peer-chosen bytes.
+        const ext = std.enums.fromInt(core_types.ExtensionType, ext_type_raw) orelse {
+            // Unknown extension type - ignore per TLS 1.3 §4.2.
+            // CWE-345: but still reject if we've seen PSK (must be last).
             if (psk_seen) {
-                return error.PskNotLastExtension; // CWE-345: pre_shared_key must be last
+                return error.PskNotLastExtension;
             }
             pos += ext_data_len;
             continue;
         };
 
-        // RFC 8446 §4.2.11: pre_shared_key MUST be the last extension
-        // If we've already seen PSK and we're processing another extension, fail
+        // CWE-345: pre_shared_key MUST be the last extension. Any non-PSK
+        // extension after a PSK is a protocol violation.
         if (psk_seen and ext != .pre_shared_key) {
             return error.PskNotLastExtension;
         }
 
-        switch (ext) {
-            .server_name => {
-                // Parse SNI
-                if (ext_data.len >= 5) {
-                    const list_len = helpers.readU16(ext_data[0..2]);
-                    if (list_len > 0 and ext_data.len >= 5) {
-                        const name_type = ext_data[2];
-                        if (name_type == 0) { // host_name
-                            const name_len = helpers.readU16(ext_data[3..5]);
-                            if (5 + name_len <= ext_data.len) {
-                                ch.server_name = ext_data[5 .. 5 + name_len];
-                            }
-                        }
-                    }
-                }
-            },
-            .supported_groups => {
-                // Parse supported groups
-                if (ext_data.len >= 2) {
-                    const groups_len = helpers.readU16(ext_data[0..2]);
-                    if (2 + groups_len <= ext_data.len) {
-                        var groups = try std.ArrayList(core_types.NamedGroup).initCapacity(allocator, 4);
-                        defer groups.deinit(allocator);
-
-                        var g_pos: usize = 2;
-                        while (g_pos + 2 <= 2 + groups_len) : (g_pos += 2) {
-                            const group = helpers.readU16(ext_data[g_pos .. g_pos + 2]);
-                            if (group == 0x001d) { // x25519
-                                try groups.append(allocator, .x25519);
-                            }
-                        }
-
-                        if (groups.items.len > 0) {
-                            ch.supported_groups = try groups.toOwnedSlice(allocator);
-                        }
-                    }
-                }
-            },
-            .signature_algorithms => {
-                // Parse signature algorithms
-                if (ext_data.len >= 2) {
-                    const algs_len = helpers.readU16(ext_data[0..2]);
-                    if (2 + algs_len <= ext_data.len) {
-                        var algs = try std.ArrayList(core_types.SignatureScheme).initCapacity(allocator, 8);
-                        defer algs.deinit(allocator);
-
-                        var a_pos: usize = 2;
-                        while (a_pos + 2 <= 2 + algs_len) : (a_pos += 2) {
-                            const alg = helpers.readU16(ext_data[a_pos .. a_pos + 2]);
-                            // SEC-057: Only accept values that are actual enum tags.
-                            // The prior 0x0401..0x080b range check admitted ~2034
-                            // values not in the exhaustive SignatureScheme enum,
-                            // causing @enumFromInt to panic on malicious input.
-                            if (std.enums.fromInt(core_types.SignatureScheme, alg)) |scheme| {
-                                try algs.append(allocator, scheme);
-                            }
-                        }
-
-                        if (algs.items.len > 0) {
-                            ch.signature_algorithms = try algs.toOwnedSlice(allocator);
-                        }
-                    }
-                }
-            },
-            .supported_versions => {
-                // Parse supported versions
-                ch.supported_versions = ext_data;
-            },
-            .key_share => {
-                // Parse key share
-                if (ext_data.len >= 2) {
-                    const shares_len = helpers.readU16(ext_data[0..2]);
-                    if (2 + shares_len <= ext_data.len) {
-                        var ks_pos: usize = 2;
-                        while (ks_pos + 4 <= 2 + shares_len) {
-                            const group = helpers.readU16(ext_data[ks_pos .. ks_pos + 2]);
-                            const key_len = helpers.readU16(ext_data[ks_pos + 2 .. ks_pos + 4]);
-                            ks_pos += 4;
-
-                            if (ks_pos + key_len <= 2 + shares_len) {
-                                // We only support X25519
-                                if (group == 0x001d and key_len == 32) {
-                                    ch.key_share = KeyShareEntry{
-                                        .group = .x25519,
-                                        .key_exchange = ext_data[ks_pos .. ks_pos + key_len],
-                                    };
-                                    break;
-                                }
-                                ks_pos += key_len;
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                }
-            },
-            .alpn => {
-                // Parse ALPN
-                if (ext_data.len >= 2) {
-                    const list_len = helpers.readU16(ext_data[0..2]);
-                    if (2 + list_len <= ext_data.len) {
-                        var alpn_list = try std.ArrayList([]const u8).initCapacity(allocator, 4);
-                        defer alpn_list.deinit(allocator);
-
-                        var a_pos: usize = 2;
-                        while (a_pos < 2 + list_len) {
-                            if (a_pos >= ext_data.len) break;
-                            const proto_len = ext_data[a_pos];
-                            a_pos += 1;
-                            if (a_pos + proto_len <= ext_data.len) {
-                                try alpn_list.append(allocator, ext_data[a_pos .. a_pos + proto_len]);
-                                a_pos += proto_len;
-                            } else {
-                                break;
-                            }
-                        }
-
-                        if (alpn_list.items.len > 0) {
-                            ch.alpn_list = try alpn_list.toOwnedSlice(allocator);
-                        }
-                    }
-                }
-            },
-            .quic_transport_parameters => {
-                ch.quic_transport_parameters = ext_data;
-            },
-            .psk_key_exchange_modes => {
-                ch.psk_key_exchange_modes = ext_data;
-            },
-            .pre_shared_key => {
-                if (ext_data.len < 2) return error.TooShort;
-                const identities_len = helpers.readU16(ext_data[0..2]);
-                if (identities_len + 2 > ext_data.len) return error.TooShort;
-
-                var identities = try std.ArrayList(PskIdentity).initCapacity(allocator, 2);
-                defer identities.deinit(allocator);
-
-                var id_pos: usize = 2;
-                const identities_end = 2 + identities_len;
-                while (id_pos < identities_end) {
-                    if (id_pos + 2 > identities_end) return error.TooShort;
-                    const identity_len = helpers.readU16(ext_data[id_pos .. id_pos + 2]);
-                    id_pos += 2;
-                    if (id_pos + identity_len > identities_end) return error.TooShort;
-                    const identity_bytes = ext_data[id_pos .. id_pos + identity_len];
-                    id_pos += identity_len;
-                    if (id_pos + 4 > identities_end) return error.TooShort;
-                    const ticket_age = helpers.readU32(ext_data[id_pos .. id_pos + 4]);
-                    id_pos += 4;
-                    try identities.append(allocator, .{
-                        .identity = identity_bytes,
-                        .obfuscated_ticket_age = ticket_age,
-                    });
-                }
-                if (id_pos != identities_end) return error.TooShort;
-
-                if (id_pos + 2 > ext_data.len) return error.TooShort;
-                const binders_len = helpers.readU16(ext_data[id_pos .. id_pos + 2]);
-                id_pos += 2;
-                if (id_pos + binders_len > ext_data.len) return error.TooShort;
-
-                var binders = try std.ArrayList([]const u8).initCapacity(allocator, 2);
-                defer binders.deinit(allocator);
-
-                var binder_pos: usize = 0;
-                while (binder_pos < binders_len) {
-                    if (binder_pos >= binders_len) return error.TooShort;
-                    const binder_len = ext_data[id_pos + binder_pos];
-                    binder_pos += 1;
-                    if (binder_pos + binder_len > binders_len) return error.TooShort;
-                    const binder_slice = ext_data[id_pos + binder_pos .. id_pos + binder_pos + binder_len];
-                    binder_pos += binder_len;
-                    try binders.append(allocator, binder_slice);
-                }
-                if (binder_pos != binders_len) return error.TooShort;
-
-                ch.pre_shared_key = PreSharedKey{
-                    .identities = try identities.toOwnedSlice(allocator),
-                    .binders = try binders.toOwnedSlice(allocator),
-                };
-                psk_seen = true; // Mark that we've seen PSK extension
-            },
-            .early_data => {
-                ch.early_data = true;
-            },
-            else => {
-                // Known extension but not handled
-            },
+        // QUAL-339: dispatch to the shared HANDLERS table. Unknown but
+        // structurally-valid extensions (e.g. certificate_authorities) that
+        // have no registered handler are silently ignored — matching the
+        // prior `else` fall-through in the switch. SEC-054 errdefer (above)
+        // owns cleanup of any partially-populated allocations on handler
+        // failure; handlers never errdefer themselves.
+        for (handlers_mod.HANDLERS) |h| {
+            if (h.tag == ext) {
+                try h.parse(&parse_ctx, ext_data);
+                if (ext == .pre_shared_key) psk_seen = true;
+                break;
+            }
         }
 
         pos += ext_data_len;
