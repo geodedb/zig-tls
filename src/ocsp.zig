@@ -175,8 +175,46 @@ pub fn validateStapledResponse(
     issuer_opt: ?IssuerInfo,
     now_unix: i64,
 ) OcspError!void {
+    // QUAL-340: Thin orchestrator. The four validators preserve RFC 6960
+    // processing order and, critically, the CWE-328 SHA-1 skip inside
+    // `matchSingleResponse`. Leaf DER kept in signature for future
+    // enhancements (e.g. CertID-leaf cross-check).
+    _ = leaf_der;
     const issuer = issuer_opt orelse return OcspError.MissingIssuer;
 
+    const decoded = try decodeResponseBytes(response);
+    const parsed = try parseResponseData(decoded.response_data_der, now_unix);
+    try matchSingleResponse(parsed.responses_seq, leaf, issuer, now_unix);
+    try verifySignerChain(allocator, decoded, issuer, now_unix);
+}
+
+/// QUAL-340 helper: bundle of BasicOCSPResponse fields produced by
+/// `decodeResponseBytes` and consumed by later validators.
+const DecodedResponse = struct {
+    /// Complete DER encoding of `tbsResponseData` (SEQUENCE TLV), used as
+    /// the signature input by `verifySignerChain`.
+    response_data_der: []const u8,
+    /// OID of the signature algorithm over `response_data_der`.
+    sig_algo_oid: []const u8,
+    /// Raw signature bit string value.
+    signature_bits: []const u8,
+    /// Optional delegated responder certificate DER (first cert in [0] `certs`).
+    responder_cert_der: ?[]const u8,
+};
+
+/// QUAL-340 helper: fields extracted from `tbsResponseData` needed downstream.
+const ParsedResponseData = struct {
+    /// Content of the `responses` SEQUENCE OF SingleResponse (value bytes of
+    /// the SEQUENCE, ready for `asn1.Decoder.init`).
+    responses_seq: []const u8,
+};
+
+/// QUAL-340 validator 1: decode the outer OCSPResponse/responseBytes wrapper
+/// and inner BasicOCSPResponse. Returns the `tbsResponseData` bytes, the
+/// signature algorithm OID, the signature bit string, and the optional
+/// embedded responder certificate DER. Preserves RFC 6960 §4.2.1 parsing
+/// order and the universal/context tag assertions from the pre-refactor body.
+fn decodeResponseBytes(response: []const u8) OcspError!DecodedResponse {
     var ocsp_dec = asn1.Decoder.init(response);
     const ocsp_seq = ocsp_dec.readSequence() catch |err| {
         if (ocsp_trace_enabled) std.debug.print("OCSP: OCSPResponse outer SEQUENCE decode failed: {}\n", .{err});
@@ -240,8 +278,27 @@ pub fn validateStapledResponse(
         responder_cert_der_opt = try extractCertFromSequence(certs_seq);
     }
 
-    // Parse ResponseData
-    var rd_dec = asn1.Decoder.init(response_data_tlv.val);
+    return .{
+        .response_data_der = response_data_der,
+        .sig_algo_oid = sig_algo_oid,
+        .signature_bits = signature_bits,
+        .responder_cert_der = responder_cert_der_opt,
+    };
+}
+
+/// QUAL-340 validator 2: parse `tbsResponseData` up through `producedAt`,
+/// skip the optional [0] version tag and the responderID byName/byKey, and
+/// return the value bytes of the `responses` SEQUENCE. The `producedAt`
+/// freshness check (within `max_clock_skew` of `now_unix`) is kept here
+/// because it belongs to the ResponseData scope (RFC 6960 §4.2.2.1).
+///
+/// Takes the full `tbsResponseData` TLV and re-enters it so the caller can
+/// pass `decoded.response_data_der` directly without knowing the header
+/// offset computed in `decodeResponseBytes`.
+fn parseResponseData(response_data_der: []const u8, now_unix: i64) OcspError!ParsedResponseData {
+    var tbs_decoder = asn1.Decoder.init(response_data_der);
+    const tbs_content = tbs_decoder.readSequence() catch return OcspError.MalformedResponse;
+    var rd_dec = asn1.Decoder.init(tbs_content);
 
     var responder_id_tlv = rd_dec.readTLV() catch |err| {
         if (ocsp_trace_enabled) std.debug.print("OCSP: responderID TLV decode failed: {}\n", .{err});
@@ -264,13 +321,33 @@ pub fn validateStapledResponse(
         if (ocsp_trace_enabled) std.debug.print("OCSP: tbsResponseData responses SEQUENCE decode failed: {}\n", .{err});
         return OcspError.MalformedResponse;
     };
+
+    return .{ .responses_seq = responses_seq };
+}
+
+/// QUAL-340 validator 3: iterate the `responses` SEQUENCE OF SingleResponse,
+/// match one to the leaf certificate via CertID (issuerNameHash,
+/// issuerKeyHash, serialNumber), and enforce status / thisUpdate / nextUpdate.
+///
+/// CRITICAL (CWE-328): `computeDigest` returns
+/// `error.UnsupportedHashAlgorithm` when the CertID hashAlgorithm is SHA-1
+/// (or any other rejected hash). We intentionally *skip* that SingleResponse
+/// with `continue` rather than aborting; other CertIDs in the responses
+/// SEQUENCE may still match with an approved hash (SHA-256/384/512). This
+/// behaviour is preserved verbatim from the pre-refactor body (formerly at
+/// L301-303 / L307-309 of the inlined function).
+fn matchSingleResponse(
+    responses_seq: []const u8,
+    leaf: *const x509.Certificate,
+    issuer: IssuerInfo,
+    now_unix: i64,
+) OcspError!void {
     var responses_iter = asn1.Decoder.init(responses_seq);
 
     const issuer_spk = x509.subjectPublicKeyBytes(issuer.cert.spki) catch return OcspError.ResponderCertInvalid;
 
     var found = false;
     var status_is_good = false;
-    var single_this_update: i64 = 0;
     var single_next_update: ?i64 = null;
 
     while (true) {
@@ -312,31 +389,9 @@ pub fn validateStapledResponse(
 
         if (!compareSlices(normalizeInteger(leaf.serial_number), normalizeInteger(serial_tlv.val))) return OcspError.SerialMismatch;
 
-        const single_status_tlv = single_dec.readTLV() catch return OcspError.MalformedResponse;
-        if (asn1.tagClass(single_status_tlv.tag) != .context) return OcspError.MalformedResponse;
-        switch (asn1.tagNumber(single_status_tlv.tag)) {
-            0 => status_is_good = true,
-            1 => return OcspError.CertStatusRevoked,
-            2 => return OcspError.CertStatusUnknown,
-            else => return OcspError.MalformedResponse,
-        }
-
-        const this_update_tlv = single_dec.readTLV() catch return OcspError.MalformedResponse;
-        if (asn1.tagClass(this_update_tlv.tag) != .universal or (asn1.tagNumber(this_update_tlv.tag) != 24 and asn1.tagNumber(this_update_tlv.tag) != 23)) {
-            return OcspError.MalformedResponse;
-        }
-        single_this_update = x509.parseDerTime(this_update_tlv.val) catch return OcspError.MalformedResponse;
-        if (single_this_update > now_unix + max_clock_skew) return OcspError.FutureThisUpdate;
-
-        if (single_dec.readTLV() catch null) |next_update_tlv| {
-            if (asn1.tagClass(next_update_tlv.tag) == .context and asn1.tagNumber(next_update_tlv.tag) == 0) {
-                var inner_next = asn1.Decoder.init(next_update_tlv.val);
-                const inner_time = inner_next.readTLV() catch return OcspError.MalformedResponse;
-                if (asn1.tagClass(inner_time.tag) != .universal or (asn1.tagNumber(inner_time.tag) != 24 and asn1.tagNumber(inner_time.tag) != 23)) return OcspError.MalformedResponse;
-                single_next_update = x509.parseDerTime(inner_time.val) catch return OcspError.MalformedResponse;
-            }
-        }
-
+        const times = try parseSingleResponseTimes(&single_dec, now_unix);
+        status_is_good = true;
+        single_next_update = times.next_update;
         found = true;
         break;
     }
@@ -346,10 +401,61 @@ pub fn validateStapledResponse(
     if (single_next_update) |nu| {
         if (now_unix > nu + max_stale) return OcspError.StaleResponse;
     }
+}
 
-    // Validate responder certificate if supplied
+/// QUAL-340 helper: parse the status / thisUpdate / optional nextUpdate tail
+/// of a SingleResponse after the CertID has been matched and verified.
+/// `single_dec` is positioned immediately after the CertID SEQUENCE.
+///
+/// Returns the nextUpdate value (if present); returns `OcspError` for
+/// malformed encoding, bad status (revoked/unknown), or a future thisUpdate.
+/// Caller owns the "good status" bookkeeping; reaching this helper without
+/// an error implies `status == good`.
+fn parseSingleResponseTimes(
+    single_dec: *asn1.Decoder,
+    now_unix: i64,
+) OcspError!struct { next_update: ?i64 } {
+    const single_status_tlv = single_dec.readTLV() catch return OcspError.MalformedResponse;
+    if (asn1.tagClass(single_status_tlv.tag) != .context) return OcspError.MalformedResponse;
+    switch (asn1.tagNumber(single_status_tlv.tag)) {
+        0 => {}, // good
+        1 => return OcspError.CertStatusRevoked,
+        2 => return OcspError.CertStatusUnknown,
+        else => return OcspError.MalformedResponse,
+    }
+
+    const this_update_tlv = single_dec.readTLV() catch return OcspError.MalformedResponse;
+    if (asn1.tagClass(this_update_tlv.tag) != .universal or (asn1.tagNumber(this_update_tlv.tag) != 24 and asn1.tagNumber(this_update_tlv.tag) != 23)) {
+        return OcspError.MalformedResponse;
+    }
+    const single_this_update = x509.parseDerTime(this_update_tlv.val) catch return OcspError.MalformedResponse;
+    if (single_this_update > now_unix + max_clock_skew) return OcspError.FutureThisUpdate;
+
+    var next_update: ?i64 = null;
+    if (single_dec.readTLV() catch null) |next_update_tlv| {
+        if (asn1.tagClass(next_update_tlv.tag) == .context and asn1.tagNumber(next_update_tlv.tag) == 0) {
+            var inner_next = asn1.Decoder.init(next_update_tlv.val);
+            const inner_time = inner_next.readTLV() catch return OcspError.MalformedResponse;
+            if (asn1.tagClass(inner_time.tag) != .universal or (asn1.tagNumber(inner_time.tag) != 24 and asn1.tagNumber(inner_time.tag) != 23)) return OcspError.MalformedResponse;
+            next_update = x509.parseDerTime(inner_time.val) catch return OcspError.MalformedResponse;
+        }
+    }
+
+    return .{ .next_update = next_update };
+}
+
+/// QUAL-340 validator 4: resolve the signing SPKI (issuer's or a delegated
+/// responder cert's) and verify the BasicOCSPResponse signature over
+/// `tbsResponseData`. For delegated responders, enforce validity window and
+/// EKU id-kp-OCSPSigning per RFC 6960 §4.2.2.2.
+fn verifySignerChain(
+    allocator: std.mem.Allocator,
+    decoded: DecodedResponse,
+    issuer: IssuerInfo,
+    now_unix: i64,
+) OcspError!void {
     var signer_spki = issuer.cert.spki;
-    if (responder_cert_der_opt) |resp_der| {
+    if (decoded.responder_cert_der) |resp_der| {
         const responder_cert = x509.parseCert(allocator, resp_der) catch return OcspError.ResponderCertParse;
         defer responder_cert.deinit(allocator);
         x509.checkValidity(now_unix, &responder_cert) catch return OcspError.ResponderCertInvalid;
@@ -360,10 +466,7 @@ pub fn validateStapledResponse(
         signer_spki = responder_cert.spki;
     }
 
-    if (!x509.verifySignatureWithSpki(signer_spki, response_data_der, sig_algo_oid, signature_bits, allocator)) {
+    if (!x509.verifySignatureWithSpki(signer_spki, decoded.response_data_der, decoded.sig_algo_oid, decoded.signature_bits, allocator)) {
         return OcspError.SignatureInvalid;
     }
-
-    // Freshness already enforced via timestamps; ensure producedAt not too old relative to thisUpdate.
-    _ = leaf_der; // Leaf DER unused currently but kept for future enhancements
 }
