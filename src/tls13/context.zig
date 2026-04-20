@@ -84,6 +84,8 @@ const psk_selection_mod = @import("context/psk_selection.zig");
 const cert_handlers = @import("context/cert_handlers.zig");
 // QUAL-317: HelloRetryRequest parser + emit + CH2 rebuild helpers.
 const hello_retry_mod = @import("context/hello_retry.zig");
+// QUAL-317: pure server-flight handshake-message builders.
+const server_flight_builders = @import("context/server_flight_builders.zig");
 
 // Note: ApiError and HandshakeError are now imported from types.zig (canonical source).
 // TrafficDirection, BidirSecrets, etc. remain defined here pending further extraction.
@@ -1652,86 +1654,88 @@ pub const Context = struct {
         };
     }
 
-    /// QUAL-095 step 2: Build ServerHello body (allocates; caller frees).
+    /// QUAL-095 step 2 / QUAL-317: thin adapter around
+    /// `server_flight_builders.buildServerHelloMsg`.
     fn buildServerHelloMsg(self: *Context, neg: *const ServerNegotiationResult) ![]u8 {
         // SAFETY: negotiated_cipher_suite is set by negotiateCipherAndKeys() which
         // runs before emitServerFlight(), the sole caller of this function.
         const cipher = self.negotiated_cipher_suite orelse return HandshakeError.InternalError;
-        return tls13_full.buildServerHello(
-            self.allocator,
-            neg.server_random,
-            cipher,
-            neg.ch_view.key_share.group,
-            neg.server_pub[0..],
-            neg.session_id_opt,
-            null,
-            neg.selected_psk_index,
-        );
+        return server_flight_builders.buildServerHelloMsg(self.allocator, .{
+            .cipher = cipher,
+            .key_share_group = neg.ch_view.key_share.group,
+            .server_random = neg.server_random,
+            .server_public_key = neg.server_pub[0..],
+            .session_id = neg.session_id_opt,
+            .selected_psk_index = neg.selected_psk_index,
+        });
     }
 
-    /// QUAL-095 step 3: Build EncryptedExtensions body (allocates; caller frees).
+    /// QUAL-095 step 3 / QUAL-317: thin adapter around
+    /// `server_flight_builders.buildEncryptedExtensionsMsg`. Context performs the
+    /// stateful pre-work (ensureLocalTransportParameters, selectServerAlpn,
+    /// notifyMetadata), then delegates the byte encoding.
     fn buildEncryptedExtensionsMsg(self: *Context, ch_view: ClientHelloView) ![]u8 {
         const server_tp = try self.ensureLocalTransportParameters();
         const selected_alpn = try self.selectServerAlpn(ch_view);
         self.notifyMetadata();
-        return tls13_full.buildEncryptedExtensions(self.allocator, selected_alpn, server_tp);
+        return server_flight_builders.buildEncryptedExtensionsMsg(self.allocator, .{
+            .alpn = selected_alpn,
+            .quic_transport_parameters = server_tp,
+        });
     }
 
-    /// QUAL-095 step 4: Build Certificate body.  Returns null for PSK-only auth.
+    /// QUAL-095 step 4 / QUAL-317: thin adapter around
+    /// `server_flight_builders.buildCertificateMsg`. Context retains trace
+    /// logging (so the PSK vs non-PSK branch remains observable) and delegates
+    /// the null/MissingCertificate policy + encoding.
     fn buildCertificateMsg(self: *Context, psk_selected: bool) !?[]u8 {
-        const cert_der = self.config.server_cert_der orelse {
-            if (!psk_selected) {
-                traceHandshake("Server: ERROR - Certificate required when not using PSK authentication\n", .{});
-                return HandshakeError.MissingCertificate;
-            }
+        if (self.config.server_cert_der) |cert_der| {
+            traceHandshake("Server: Sending Certificate message ({} bytes DER)\n", .{cert_der.len});
+        } else if (psk_selected) {
             traceHandshake("Server: Using PSK-only authentication, skipping Certificate/CertificateVerify\n", .{});
-            return null;
-        };
-        traceHandshake("Server: Sending Certificate message ({} bytes DER)\n", .{cert_der.len});
-        const cert_entries = [_]tls13_full.CertificateEntryData{.{ .cert = cert_der }};
-        const body = try tls13_full.buildCertificate(self.allocator, &[_]u8{}, &cert_entries);
-        return body;
+        } else {
+            traceHandshake("Server: ERROR - Certificate required when not using PSK authentication\n", .{});
+        }
+        return server_flight_builders.buildCertificateMsg(
+            self.allocator,
+            self.config.server_cert_der,
+            psk_selected,
+        );
     }
 
-    /// QUAL-095 step 5: Build CertificateVerify body (allocates; caller frees).
+    /// QUAL-095 step 5 / QUAL-317: thin adapter around
+    /// `server_flight_builders.buildCertificateVerifyMsg`. Context finalizes the
+    /// transcript hash (mutable state) and resolves the negotiated signature
+    /// scheme + private key, then delegates the signing + encoding.
     fn buildCertificateVerifyMsg(self: *Context) ![]u8 {
         const hash_for_sig = self.transcripts.handshake.finalize(self.hash_kind);
 
         const sig_scheme = self.negotiated_signature orelse
             return HandshakeError.NoSignatureScheme;
 
-        const sig_alg: sig.SigAlg = switch (sig_scheme) {
-            .ecdsa_secp256r1_sha256 => .ecdsa_secp256r1_sha256,
-            .ecdsa_secp384r1_sha384 => .ecdsa_secp384r1_sha384,
-            .rsa_pss_rsae_sha256 => .rsa_pss_sha256,
-            .ed25519 => .ed25519,
-            else => return HandshakeError.UnsupportedSignatureAlgorithm,
-        };
-
-        traceHandshake("Server: Signing CertificateVerify with algorithm: {s}\n", .{@tagName(sig_alg)});
+        traceHandshake("Server: Signing CertificateVerify with scheme: {s}\n", .{@tagName(sig_scheme)});
 
         const priv_key = self.config.server_key_der orelse {
             traceHandshake("Server: ERROR - No private key configured!\n", .{});
             return HandshakeError.UnexpectedMessage;
         };
 
-        const signature = try sig.signCertificateVerify(
-            sig_alg,
-            priv_key,
-            "TLS 1.3, server CertificateVerify",
-            hash_for_sig.slice(),
-            self.allocator,
-        );
-        defer self.allocator.free(signature);
-
-        return tls13_full.buildCertificateVerify(self.allocator, sig_scheme, signature);
+        return server_flight_builders.buildCertificateVerifyMsg(self.allocator, .{
+            .signature_scheme = sig_scheme,
+            .private_key_der = priv_key,
+            .transcript_hash = hash_for_sig,
+        });
     }
 
-    /// QUAL-095 step 6: Build Finished verify_data (stack-only, no allocation).
+    /// QUAL-095 step 6 / QUAL-317: thin adapter around
+    /// `server_flight_builders.buildFinishedMsg`. Context finalizes the
+    /// transcript-hash-through-CertificateVerify, caches it in
+    /// `transcripts.finished_hash`, then delegates the stack-only
+    /// verify_data derivation.
     fn buildFinishedMsg(self: *Context, server_hs_secret: *const Secret) Secret {
         const hash_before_finished = self.transcripts.handshake.finalize(self.hash_kind);
         self.transcripts.finished_hash.set(self.hash_kind, hash_before_finished);
-        return deriveFinishedVerifyData(self.hash_kind, server_hs_secret, hash_before_finished);
+        return server_flight_builders.buildFinishedMsg(self.hash_kind, server_hs_secret, hash_before_finished);
     }
 
     /// QUAL-095 + PERF-013: Emit the complete server flight using zero-alloc
