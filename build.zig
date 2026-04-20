@@ -341,6 +341,13 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            .name = "sec068_tp_dup_cid",
+            .source = "tests/security/sec068_tp_dup_cid.zig",
+            .imports = &.{
+                .{ .name = "quic_transport_params", .module = transport_params_mod },
+            },
+        },
+        .{
             .name = "counting_allocator",
             .source = "src/testing/counting_allocator.zig",
             .imports = &.{},

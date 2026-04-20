@@ -649,15 +649,21 @@ pub const TransportParameters = struct {
                     params.active_connection_id_limit = v;
                 },
                 .initial_source_connection_id => {
+                    // SEC-068: Reject duplicate connection-ID parameters.
+                    // Without this guard, a second copy would overwrite the
+                    // first allocation's pointer and leak it.
+                    if (params.initial_source_connection_id != null) return error.InvalidParameter;
                     // RFC 9000 §18.2: Variable-length connection ID
                     const cid = try allocator.dupe(u8, value);
                     params.initial_source_connection_id = cid;
                 },
                 .original_destination_connection_id => {
+                    if (params.original_destination_connection_id != null) return error.InvalidParameter;
                     const cid = try allocator.dupe(u8, value);
                     params.original_destination_connection_id = cid;
                 },
                 .retry_source_connection_id => {
+                    if (params.retry_source_connection_id != null) return error.InvalidParameter;
                     const cid = try allocator.dupe(u8, value);
                     params.retry_source_connection_id = cid;
                 },
