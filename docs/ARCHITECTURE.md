@@ -12,7 +12,6 @@ src/
 │   ├── mod.zig             # Module aggregation
 │   ├── config.zig          # Config struct
 │   ├── context.zig         # Context + Callbacks (main driver)
-│   ├── engine.zig          # Legacy minimal driver
 │   ├── types.zig           # Core types (Role, errors, metadata)
 │   ├── transcript.zig      # Transcript hash management
 │   ├── handshake_state.zig # State machine, CRYPTO buffering
