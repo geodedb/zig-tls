@@ -261,9 +261,22 @@ pub const Transcript = struct {
         return digest;
     }
 
-    /// Finalize both SHA-256 and SHA-384 digests simultaneously.
+    /// Finalize the transcript hashes and return a cache of digests.
     /// Used to cache transcript hash at key points (e.g., after ClientHello).
+    ///
+    /// PERF-231: Once `locked_hash` is set (post-negotiation) the other hash
+    /// is no longer being updated and its digest would be stale and
+    /// meaningless. Populate only the locked hash to avoid work nobody will
+    /// consume and to prevent callers from accidentally using the frozen
+    /// stale digest. Before negotiation both digests are populated as
+    /// before.
     pub fn snapshot(self: *Transcript) HashDigestCache {
+        if (self.locked_hash) |h| {
+            return switch (h) {
+                .sha256 => .{ .sha256 = self.finalizeSha256(), .sha384 = null },
+                .sha384 => .{ .sha256 = null, .sha384 = self.finalizeSha384() },
+            };
+        }
         return .{
             .sha256 = self.finalizeSha256(),
             .sha384 = self.finalizeSha384(),
@@ -767,4 +780,31 @@ test "Transcript.lockHash - reset clears lock" {
 
     transcript.reset();
     try testing.expect(transcript.locked_hash == null);
+}
+
+test "PERF-231: snapshot populates only locked hash" {
+    const testing = std.testing;
+
+    // Pre-lock sha256 snapshot: only sha256 populated.
+    var t256 = Transcript.init();
+    t256.update("hello");
+    t256.lockHash(.sha256);
+    const snap256 = t256.snapshot();
+    try testing.expect(snap256.sha256 != null);
+    try testing.expect(snap256.sha384 == null);
+
+    // Pre-lock sha384 snapshot: only sha384 populated.
+    var t384 = Transcript.init();
+    t384.update("hello");
+    t384.lockHash(.sha384);
+    const snap384 = t384.snapshot();
+    try testing.expect(snap384.sha256 == null);
+    try testing.expect(snap384.sha384 != null);
+
+    // Unlocked: both hashes remain populated (backward compat).
+    var both = Transcript.init();
+    both.update("hello");
+    const snap_both = both.snapshot();
+    try testing.expect(snap_both.sha256 != null);
+    try testing.expect(snap_both.sha384 != null);
 }
