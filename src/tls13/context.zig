@@ -478,6 +478,10 @@ pub const Context = struct {
     local_transport_parameters: ?[]u8 = null,
     peer_quic_transport_parameters: ?[]u8 = null,
     negotiated_alpn: ?[]u8 = null,
+    /// PERF-218: true when `negotiated_alpn` was allocated by this Context and
+    /// must be freed on deinit/replace; false when it borrows from `config`
+    /// (server path — `config` outlives `Context`).
+    negotiated_alpn_owned: bool = false,
 
     // --- Cold fields: rarely accessed, optional/conditional paths ---
     // Certificate validation state (client role)
@@ -537,6 +541,7 @@ pub const Context = struct {
             .hash_kind = .sha256,
             .local_transport_parameters = null,
             .negotiated_alpn = null,
+            .negotiated_alpn_owned = false,
             .negotiated_signature = null,
             .negotiated_cipher_suite = null,
             .handshake_secret = null,
