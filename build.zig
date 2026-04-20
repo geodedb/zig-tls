@@ -177,6 +177,16 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // QUAL-339: Standalone module rooted at src/tls13/messages/client_hello.zig
+    // so the trace-capture executable (tests/fuzz/client_hello_trace_capture.zig)
+    // can drive parseClientHello directly without pulling in the full
+    // tls13/tls13_full hierarchy. The file's relative imports
+    // ("core_types.zig", "helpers.zig") resolve from the same directory.
+    const client_hello_mod = b.addModule("client_hello", .{
+        .root_source_file = b.path("src/tls13/messages/client_hello.zig"),
+        .target = target,
+    });
+
     // RFC 8446: TLS 1.3 Core Protocol
     // RFC 9001: QUIC-TLS Integration
     // Main handshake state machine and context
@@ -1201,6 +1211,43 @@ pub fn build(b: *std.Build) void {
         // fuzz job.
         test_step.dependOn(&run_fuzz_rsa_pss_test.step);
     }
+
+    // ========================================================================
+    // QUAL-339: ClientHello Error-Trace Oracle Capture
+    // ========================================================================
+    //
+    // Standalone executable that drives `parseClientHello` across the seed
+    // corpus + deterministic single-bit-flip mutations and writes a binary
+    // error-trace file (tests/fuzz/corpus/client_hello_golden.bin). The file
+    // serves as an empirical regression oracle for the table-driven
+    // ExtHandler refactor — any divergence in post-refactor output indicates
+    // a security-invariant regression (SEC-054 errdefer / SEC-057 enum
+    // guard / CWE-345 psk_seen ordering).
+    //
+    // Run: zig build capture-client-hello-oracle
+
+    const trace_capture = b.addExecutable(.{
+        .name = "client_hello_trace_capture",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz/client_hello_trace_capture.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "client_hello", .module = client_hello_mod },
+            },
+        }),
+    });
+
+    const capture_step = b.step(
+        "capture-client-hello-oracle",
+        "Capture pre/post-refactor ClientHello parse error traces (QUAL-339)",
+    );
+    const run_capture = b.addRunArtifact(trace_capture);
+    run_capture.addArgs(&.{
+        "tests/fuzz/corpus/client_hello",
+        "tests/fuzz/corpus/client_hello_golden.bin",
+    });
+    capture_step.dependOn(&run_capture.step);
 
     // ========================================================================
     // Benchmark Suite (PERF-011)
