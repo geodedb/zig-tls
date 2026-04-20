@@ -1297,7 +1297,10 @@ pub const Context = struct {
         return null;
     }
 
-    fn selectServerAlpn(self: *Context, client: ClientHelloView) !?[]const u8 {
+    // PERF-218: `pub` visibility so regression test
+    // (tests/perf/test_alpn_server_borrow.zig) can call directly and assert
+    // both the allocation-count delta and the borrow-vs-own pointer identity.
+    pub fn selectServerAlpn(self: *Context, client: ClientHelloView) !?[]const u8 {
         if (self.negotiated_alpn) |prev| {
             if (prev.len != 0) self.allocator.free(prev);
             self.negotiated_alpn = null;

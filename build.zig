@@ -352,6 +352,14 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "tls13_full", .module = tls13_full_mod },
             },
         },
+        .{
+            .name = "perf_alpn_server_borrow",
+            .source = "tests/perf/test_alpn_server_borrow.zig",
+            .imports = &.{
+                .{ .name = "counting_allocator", .module = counting_allocator_mod },
+                .{ .name = "tls13", .module = tls13_mod },
+            },
+        },
     };
 
     for (tests) |test_info| {
