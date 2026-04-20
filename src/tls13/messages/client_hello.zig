@@ -557,165 +557,23 @@ pub fn buildClientHello(allocator: std.mem.Allocator, params: ClientHelloParams)
     const exts_start = buf.items.len;
 
     // --- Extensions ---
-
-    // 1. supported_versions (REQUIRED, RFC 8446 §4.2.1)
-    //    list_len=2 containing 0x0304 (TLS 1.3)
-    try buf.appendSlice(allocator, &.{ 0x00, 0x2b, 0x00, 0x03, 0x02, 0x03, 0x04 });
-
-    // 2. supported_groups (RFC 8446 §4.2.7)
-    if (params.supported_groups.len != 0) {
-        const group_list_len: u16 = @intCast(params.supported_groups.len * 2);
-        const group_ext_len: u16 = group_list_len + 2;
-        try buf.appendSlice(allocator, &.{
-            0x00,
-            0x0a,
-            @intCast(group_ext_len >> 8),
-            @intCast(group_ext_len & 0xff),
-            @intCast(group_list_len >> 8),
-            @intCast(group_list_len & 0xff),
-        });
-        for (params.supported_groups) |group| {
-            const gval: u16 = @intFromEnum(group);
-            try buf.appendSlice(allocator, &.{ @intCast(gval >> 8), @intCast(gval & 0xff) });
-        }
+    //
+    // QUAL-339: delegate per-extension emission to the shared HANDLERS
+    // table. The table order is authoritative (RFC 8446 §4.2), and
+    // handlers_mod.HANDLERS places `pre_shared_key` LAST (CWE-345).
+    // Build handlers check their params-source-of-truth field and
+    // early-return when the extension should be omitted.
+    var build_ctx = handlers_mod.BuildCtx{ .params = &params };
+    for (handlers_mod.HANDLERS) |h| {
+        try h.build(&build_ctx, &buf, allocator);
     }
 
-    // 3. signature_algorithms (RFC 8446 §4.2.3)
-    if (params.signature_algorithms.len != 0) {
-        const list_len: u16 = @intCast(params.signature_algorithms.len * 2);
-        const ext_len: u16 = list_len + 2;
-        try buf.appendSlice(allocator, &.{
-            0x00,
-            0x0d,
-            @intCast(ext_len >> 8),
-            @intCast(ext_len & 0xff),
-            @intCast(list_len >> 8),
-            @intCast(list_len & 0xff),
-        });
-        for (params.signature_algorithms) |scheme| {
-            const val: u16 = @intFromEnum(scheme);
-            try buf.appendSlice(allocator, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
-        }
-    }
-
-    // 4. key_share (RFC 8446 §4.2.8)
-    {
-        const group_val: u16 = @intFromEnum(params.key_share_group);
-        const key_share_entry_len: u16 = 2 + 2 + 32; // group(2) + key_len(2) + key(32)
-        const key_share_ext_len: u16 = key_share_entry_len + 2; // entries_list_len(2) + entry
-        try buf.appendSlice(allocator, &.{
-            0x00,
-            0x33,
-            @intCast(key_share_ext_len >> 8),
-            @intCast(key_share_ext_len & 0xff),
-            @intCast(key_share_entry_len >> 8),
-            @intCast(key_share_entry_len & 0xff),
-            @intCast(group_val >> 8),
-            @intCast(group_val & 0xff),
-            0x00,
-            32,
-        });
-        try buf.appendSlice(allocator, &params.client_pub);
-    }
-
-    // 5. cookie (RFC 8446 §4.2.2, only after HRR)
-    if (params.cookie) |ck| {
-        const ck_len: u16 = @intCast(ck.len);
-        try buf.appendSlice(allocator, &.{ 0x00, 0x2c, @intCast(ck_len >> 8), @intCast(ck_len & 0xff) });
-        try buf.appendSlice(allocator, ck);
-    }
-
-    // 6. ALPN (RFC 7301)
-    if (params.alpn_protocols) |alpn_list| {
-        if (alpn_list.len != 0) {
-            var names_len: usize = 0;
-            for (alpn_list) |p| names_len += 1 + p.len;
-            const list_len: u16 = @intCast(names_len);
-            const ext_len: u16 = list_len + 2;
-            try buf.appendSlice(allocator, &.{
-                0x00,
-                0x10,
-                @intCast(ext_len >> 8),
-                @intCast(ext_len & 0xff),
-                @intCast(list_len >> 8),
-                @intCast(list_len & 0xff),
-            });
-            for (alpn_list) |p| {
-                try buf.append(allocator, @intCast(p.len));
-                try buf.appendSlice(allocator, p);
-            }
-        }
-    }
-
-    // 7. QUIC transport parameters (RFC 9001 §8.2)
-    if (params.quic_transport_parameters) |tp| {
-        const tp_len: u16 = @intCast(tp.len);
-        try buf.appendSlice(allocator, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
-        try buf.appendSlice(allocator, tp);
-    }
-
-    // 8. early_data (RFC 8446 §4.2.10, before PSK which must be last)
-    if (params.include_early_data) {
-        try buf.appendSlice(allocator, &.{ 0x00, 0x2a, 0x00, 0x00 });
-    }
-
-    // --- PSK-related extensions (9 & 10) ---
     var result = ClientHelloResult{
         .body = undefined,
+        .binder_offset = build_ctx.psk_binder_offset,
+        .binder_len = build_ctx.psk_binder_len,
+        .binders_tail_len = build_ctx.psk_binders_tail_len,
     };
-
-    if (params.include_psk) {
-        const identity = params.psk_identity orelse return error.MissingPskIdentity;
-        const binder_len = params.psk_binder_len;
-        if (binder_len == 0) return error.InvalidBinderLength;
-
-        // 9. psk_key_exchange_modes (RFC 8446 §4.2.9) - psk_dhe_ke(1)
-        try buf.appendSlice(allocator, &.{ 0x00, 0x2d, 0x00, 0x02, 0x01, 0x01 });
-
-        // 10. pre_shared_key (MUST be last, RFC 8446 §4.2.11)
-        try buf.appendSlice(allocator, &.{ 0x00, 0x29 }); // extension type
-
-        const ext_data_start = buf.items.len + 2; // after ext length field
-        try buf.appendSlice(allocator, &.{ 0x00, 0x00 }); // placeholder for ext length
-
-        // Identities list: list_len(2) + identity_len(2) + identity + ticket_age(4)
-        const identity_len: u16 = @intCast(identity.len);
-        const identities_list_len: u16 = 2 + identity_len + 4;
-        try buf.appendSlice(allocator, &.{ @intCast(identities_list_len >> 8), @intCast(identities_list_len & 0xff) });
-        try buf.appendSlice(allocator, &.{ @intCast(identity_len >> 8), @intCast(identity_len & 0xff) });
-        try buf.appendSlice(allocator, identity);
-
-        const ticket_age = params.psk_ticket_age;
-        try buf.appendSlice(allocator, &.{
-            @intCast((ticket_age >> 24) & 0xff),
-            @intCast((ticket_age >> 16) & 0xff),
-            @intCast((ticket_age >> 8) & 0xff),
-            @intCast(ticket_age & 0xff),
-        });
-
-        // Binders list: list_len(2) + binder_entry_len(1) + binder_data(binder_len)
-        const binders_list_len: u16 = 1 + @as(u16, binder_len);
-        try buf.appendSlice(allocator, &.{ @intCast(binders_list_len >> 8), @intCast(binders_list_len & 0xff) });
-        try buf.append(allocator, binder_len);
-
-        // Record binder placeholder position
-        const binder_offset = buf.items.len;
-
-        // Write zero placeholder for binder
-        const zeros = [_]u8{0} ** 64; // max digest length
-        try buf.appendSlice(allocator, zeros[0..binder_len]);
-
-        // Patch PSK extension length
-        const ext_data_len = buf.items.len - ext_data_start;
-        buf.items[ext_data_start - 2] = @intCast((ext_data_len >> 8) & 0xff);
-        buf.items[ext_data_start - 1] = @intCast(ext_data_len & 0xff);
-
-        // Fill result with binder metadata
-        // binders_tail_len = binders_list_len_field(2) + binder_len_field(1) + binder_data
-        result.binder_offset = binder_offset;
-        result.binder_len = binder_len;
-        result.binders_tail_len = 2 + 1 + binder_len;
-    }
 
     // Patch extensions length
     const exts_total: u16 = @intCast(buf.items.len - exts_start);
