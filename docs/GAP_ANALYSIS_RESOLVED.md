@@ -763,13 +763,16 @@ Pre-existing pre-commit hook failures on files not touched by this run are flagg
 - **Evidence:** AEAD hot path inspected; deriveNonce + NRVO confirmed optimal.
 - **Resolved date:** 2026-04-19
 
-### GAP-0109: RSA-PSS verify triple copy-paste [RESOLVED -- scoped down]
+### GAP-0109: RSA-PSS verify triple copy-paste [RESOLVED -- fully canonicalized]
 
 - **Issue:** [#145](https://gitlab.com/devnw/zig/tls/-/issues/145)
 - **Category:** Code Quality / Maintainability (crypto)
-- **Resolution:** Phase 13 engine.zig deletion (4ae8ac7) dropped "triple" to "double". Cycle 2 commit 92f8f96 merged the remaining `parallel.zig` SHA-256/SHA-384 arms into a single comptime-generic `verifyRsaPssWithHash(comptime HashT: type, ...)` helper. Cross-file `sig.zig`<->`parallel.zig` canonicalization deferred to Cycle 3 (requires fuzz-regression harness and breaking-return-type refactor).
-- **Evidence:** Full `zig build test` green post-dedup.
-- **Resolved date:** 2026-04-19
+- **Resolution:**
+  - Phase 13 `src/tls13/engine.zig` deletion (commit 4ae8ac7) dropped "triple" to "double".
+  - Cycle 2 commit 92f8f96 merged the `parallel.zig` SHA-256/SHA-384 arms into a single comptime-generic `verifyRsaPssWithHash`.
+  - Cycle 4 (2026-04-20) completed cross-file canonicalization: commit 531c149 extracted `sig.rsaPssVerifyGeneric(comptime Hash, ...)` as the single shared core; commit 1eb1777 routed `parallel.verifyRsaPssWithHash` through it (preserving the `SignatureVerifyResult{valid, error_code}` contract); commit ff01e30 added `tests/fuzz/rsa_pss_verify.zig` + `tests/fuzz/corpus/rsa_pss/` as a differential oracle; commit dccc339 wired the harness into CI as a regression gate.
+- **Evidence:** `grep -c 'PSSSignature.verify' src/**/*.zig` = 1 (single call site); full `zig build test` green (591/593); fuzz seed corpus reports zero `DifferentialDivergence` pre- and post-refactor; LOC delta parallel.zig -11 / sig.zig +30 (net +19).
+- **Resolved date:** 2026-04-20 (Cycle 4 full closure on top of 2026-04-19 scoped closure)
 
 ### GAP-0127: Feature Request MR template MD031 fenced-code blanks [RESOLVED]
 

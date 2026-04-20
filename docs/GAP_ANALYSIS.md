@@ -27,7 +27,7 @@
 
 **Closed: 121 findings** - Cycle 3 / Phase 15 (2026-04-20) closed GAP-0104 (delivered via PERF-209 allocator swap, commit 24a275c). Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
 **Won't Do: 7 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133), GAP-0099 (issue tracker maintenance, separate from code), GAP-0093 (2 skipped tests require stdlib features not yet available)
-**Open: 2 findings** - GAP-0106 (bench 0.16 API drift, blocker for local perf validation), GAP-0110 partial (engine EE nesting subsumed by deletion; analogous Context nesting tracked separately). Cross-file `sig.zig`<->`parallel.zig` RSA-PSS canonicalization referenced in GAP-0109 is deferred to a future cycle pending a fuzz-regression harness.
+**Open: 2 findings** - GAP-0106 (bench 0.16 API drift, blocker for local perf validation), GAP-0110 partial (engine EE nesting subsumed by deletion; analogous Context nesting tracked separately). GAP-0109 cross-file RSA-PSS canonicalization fully closed in Cycle 4 (2026-04-20) via `sig.rsaPssVerifyGeneric` shared core + differential fuzz harness.
 
 ### Cycle 3 / Phase 15 Gap Closure Run (2026-04-20)
 
@@ -48,7 +48,6 @@
 - QUAL-317 (context.zig decomposition -- epic; pending user brainstorm on subsystem boundaries)
 - QUAL-315 (coverage tooling choice -- kcov recommended per planner)
 - QUAL-339 (ClientHello ExtHandler table dispatch -- blocked on fuzz harness, plan recorded)
-- GAP-0109 cross-file `sig.zig` <-> `parallel.zig` RSA-PSS canonicalization (needs fuzz-regression cycle)
 - GAP-0106 -- `zig build bench` 0.16 API drift residual Open
 
 ### Cycle 2 / Phase 14 Gap Closure Run (2026-04-20)
@@ -71,7 +70,7 @@
 
 **Known follow-ups for Cycle 3:**
 
-- GAP-0109 cross-file `sig.zig` <-> `parallel.zig` RSA-PSS canonicalization (needs fuzz-regression cycle)
+- GAP-0109 cross-file `sig.zig` <-> `parallel.zig` RSA-PSS canonicalization (closed 2026-04-20, Cycle 4)
 - GAP-0104 / PERF-209 -- ThreadPool `page_allocator` suspected; needs upstream reproducer
 - GAP-0106 -- `zig build bench` 0.16 API drift; partially addressed; full green gated on PERF-212 work already landed
 
@@ -690,19 +689,25 @@ All 11 remaining open issues from the third review have been implemented:
 - **Acceptance criteria:** Single definition; tests pass.
 - **Resolution:** 2026-04-19 -- Deleted `src/tls13/engine.zig` entirely (commit 4ae8ac7); `src/tls13/messages.zig:parseMinimalHelloPub` is now the sole definition.
 
-### GAP-0109: RSA-PSS verify triple copy-paste [CLOSED — scoped down]
+### GAP-0109: RSA-PSS verify triple copy-paste [CLOSED — fully canonicalized]
 
 - **Issue:** [#145](https://gitlab.com/devnw/zig/tls/-/issues/145)
 - **Category:** Code Quality / Maintainability (crypto)
 - **Severity:** Medium
-- **Status:** Closed (2026-04-19, this cycle) -- intra-file dedup landed; cross-file canonicalization with sig.zig intentionally left (return-type mismatch).
+- **Status:** Closed (2026-04-20, Cycle 4) -- cross-file canonicalization landed on shared `sig.rsaPssVerifyGeneric` comptime core, guarded by a differential fuzz harness.
 - **Requirement source:** Cryptographic primitives should have one implementation.
-- **Resolution (2026-04-19):**
-  - Engine-side RSA-PSS copy was already removed with `src/tls13/engine.zig` deletion (commit 4ae8ac7); "Triple" had become "Double".
-  - `src/parallel.zig` -- the two near-identical SHA-256 + SHA-384 switch arms (30 lines each) now dispatch to a single private comptime-generic helper `verifyRsaPssWithHash(comptime HashT: type, ...)`. Call sites reduce to one line each; semantics identical (same `SigResult{valid, error_code}` contract, same modulus-length inline-switch, same error-code mapping). Verified via full `zig build test` green.
-- **Remaining scope (not closed here):** `src/sig.zig:rsa_pss_verify_sha256/sha384` retains its own implementation with `!bool` return type. Unifying with the parallel.zig path requires either promoting `sig.zig` to return `SigResult` (breaking every caller) or wrapping in parallel.zig with error mapping. This is a larger cryptographic-path refactor with fuzz-regression risk and is tracked as the follow-up item. The parallel.zig dedup captured here is the highest-leverage slice (eliminates the most-duplicated lines in the hottest dispatch path).
-- **Follow-up tracking:** sig.zig<->parallel.zig canonicalization folded into the Phase 14 Cluster B follow-ups. Next-step plan unchanged from prior entry: land a shared `sig.rsaPssVerifyCore(hash_kind, ...)` returning `SigResult`; migrate both call sites; update parallel-verify fuzz harness.
-- **Acceptance criteria (this cycle):** parallel.zig has one RSA-PSS code path instead of two; full test suite green. Met.
+- **Resolution (2026-04-20, full closure):**
+  - Commit ff01e30 added `tests/fuzz/rsa_pss_verify.zig` + a 5-triple seed corpus at `tests/fuzz/corpus/rsa_pss/` that drives both verifiers with identical envelopes and asserts byte-equivalent verdicts.
+  - Commit 531c149 extracted `sig.rsaPssVerifyGeneric(comptime Hash, pubkey_spki_der, msg, sig, alloc) !bool` -- a single comptime-generic core over SHA-256/SHA-384. `sig.rsa_pss_verify_sha256` became a thin wrapper preserving its 5-arg signature for TLS 1.3 CertificateVerify callers.
+  - Commit 1eb1777 routed `parallel.verifyRsaPssWithHash` through `sig.rsaPssVerifyGeneric`; error-code mapping preserved (3 = allocator / SPKI parse, 4 = verify failure).
+  - Commit dccc339 wired `zig build fuzz-rsa-pss` into the `fuzz:` GitLab CI job as a 60s regression gate.
+- **Evidence:**
+  - `grep -c 'PSSSignature.verify' src/**/*.zig` = 1 (single call site in `sig.rsaPssVerifyGeneric`).
+  - Full `zig build test` green (591 pass / 2 skip, up from 587 by the 4 new RSA-PSS corpus tests).
+  - Fuzz harness seed corpus reports zero `DifferentialDivergence` across pre- and post-refactor runs.
+  - LOC delta: `src/parallel.zig` -11 lines, `src/sig.zig` +30 lines (new shared core + doc), net +19.
+- **Coverage-guided mutation note:** Zig 0.16.0's `std.testing.fuzz` currently triggers a stdlib compile error (`*builtin.StackTrace` vs `*debug.StackTrace` mismatch at `lib/compiler/test_runner.zig:566`) under `-ffuzz`. The harness enumerates the committed corpus as a conventional test; wrapping `differentialVerify` in `std.testing.fuzz({}, ...)` is a one-line flip once the upstream bug is fixed.
+- **Acceptance criteria (final):** single RSA-PSS verify path in the tree; full test suite green; regression-gate CI line active. Met.
 
 ### GAP-0110: 10-level nesting in engine.zig EE handler [CLOSED -- partial via engine deletion]
 
