@@ -64,6 +64,33 @@ var pool_mutex: tp.sync.Mutex = .{};
 /// Atomic flag for lock-free fast path on pool initialization check (PERF-005).
 var pool_initialized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
+/// Returns a pointer to the process-wide shared `ThreadPool` used for
+/// cryptographic offload (signature verification, certificate chain parsing).
+///
+/// # Lifecycle warning (QUAL-353)
+///
+/// The returned pointer is only valid until the next call to `deinitPool`.
+/// After `deinitPool` the underlying storage (`global_pool`) is set to `null`
+/// and any previously returned pointer becomes dangling. Callers MUST NOT
+/// cache the pointer across teardown boundaries.
+///
+/// Typical usage:
+///   - Library consumer calls `getPool()` once per batch of async work, and
+///     uses the returned pool locally without caching.
+///   - Embedders that wish to reclaim threads at shutdown call `deinitPool()`
+///     exactly once, and only after all TLS contexts that might dispatch
+///     work have been torn down.
+///
+/// # Thread safety
+///
+/// Safe to call from any thread. Uses a double-checked locking pattern with
+/// an atomic initialized flag (PERF-005) so the fast path avoids the mutex.
+///
+/// # Panics
+///
+/// Panics with `thread-pool: init failed` if the underlying `ThreadPool.init`
+/// returns an allocation error. This is intentional: the shared pool is a
+/// process-wide invariant and cannot be partially initialized.
 pub fn getPool() *tp.ThreadPool {
     // Fast path: if already initialized, return without acquiring mutex (PERF-005).
     if (pool_initialized.load(.acquire)) {
