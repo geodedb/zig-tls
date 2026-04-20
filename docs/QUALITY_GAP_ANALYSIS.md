@@ -52,13 +52,15 @@
 - **QUAL-315** -- coverage instrumentation -- tooling choice (kcov vs llvm-cov) pending
 - **QUAL-338, QUAL-339, QUAL-340, QUAL-341, QUAL-342** -- long-function splits / dispatch tables -- opportunistic Cluster O, scheduled next cycle
 
-### Top 5 Risks (by PriorityScore, open items first)
+### Top 5 Risks (by PriorityScore, open items first) — refreshed Cycle 2 (2026-04-19)
 
-1. **QUAL-317** (Open) -- `context.zig` monolith (3549 LOC, 32 methods) — decompose into subsystems. **PriorityScore 100.** [Issue #150](https://gitlab.com/devnw/zig/tls/-/work_items/150)
-2. **QUAL-301 + QUAL-323** (Open, single remediation) -- Duplicate BidirSecrets/SecretSchedule types in context.zig vs secrets.zig; contract-drift vector. **PriorityScore 64 each.** [Issue #154](https://gitlab.com/devnw/zig/tls/-/work_items/154) + [Issue #171](https://gitlab.com/devnw/zig/tls/-/work_items/171)
-3. **QUAL-304** (Open) -- 10-level nesting in EncryptedExtensions handler (engine.zig:811-848). **PriorityScore 64.** [Issue #157](https://gitlab.com/devnw/zig/tls/-/work_items/157)
-4. **QUAL-315** (Open) -- No coverage instrumentation despite 52k LOC. **PriorityScore 64.** [Issue #170](https://gitlab.com/devnw/zig/tls/-/work_items/170)
-5. **QUAL-319** (Open) -- Legacy engine.zig (2236 LOC) still publicly exported; quarantine or gate. **PriorityScore 64.** [Issue #166](https://gitlab.com/devnw/zig/tls/-/work_items/166)
+1. **QUAL-317** (Open) -- `context.zig` monolith (~3500 LOC, 32 methods) — decompose into subsystems. **PriorityScore 100.** [Issue #150](https://gitlab.com/devnw/zig/tls/-/work_items/150) -- deferred for this cycle.
+2. **QUAL-301 + QUAL-323** (Closed Phase 13, commit 674fbee) -- Duplicate BidirSecrets/SecretSchedule canonicalized in `src/tls13/secrets.zig`; listed here historically to explain the prior Top-5 position.
+3. **QUAL-315** (Open) -- No coverage instrumentation despite 52k LOC. **PriorityScore 64.** [Issue #170](https://gitlab.com/devnw/zig/tls/-/work_items/170) -- deferred pending tooling choice.
+4. **QUAL-304** (Closed 2026-04-19, commit 4ae8ac7) -- 10-level nesting lived inside deleted engine.zig.
+5. **QUAL-319** (Closed 2026-04-19, commit 4ae8ac7) -- engine.zig deleted outright; the keystone Phase 13 closure.
+
+The remaining **Open** leaders post-Phase-13 / Cycle-2 are QUAL-317 and QUAL-315; both are explicitly deferred. See "Deferred" list above.
 
 ### Phase 11 Closures (2026-04-18)
 
@@ -1639,37 +1641,25 @@ Consolidate to a single constant-time comparison function (preferably `std.crypt
 
 ---
 
-### QUAL-107 -- Inconsistent error types for same condition across Engine and Context
+### QUAL-107 -- Inconsistent error types for same condition across Engine and Context [CLOSED]
 
 - **ID:** QUAL-107
 - **Severity:** Low
 - **PriorityScore:** 9
 - **Category:** `api-contract`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed (2026-04-19, Cycle 2) -- Subsumed by engine deletion (commit 4ae8ac7).
 
-**File locations:**
+**Resolution:** The divergence tracked by QUAL-107 existed *between* Engine and Context. Commit `4ae8ac7` ("refactor(engine): delete src/tls13/engine.zig") removed the entire Engine code path (-2236 LOC). There is no second error-producer to reconcile; Context is the sole driver. Any remaining error-shape concern would be a fresh intra-Context finding, not the cross-module one QUAL-107 tracked. Per the Cycle 2 user-approved default: closed as subsumed.
 
-- `src/tls13/engine.zig` -- uses `CryptoBufferOverflow`
-- `src/tls13/context.zig` -- uses `UnexpectedMessage` for same condition
+**Original file locations (now moot):**
 
-**Description:**
-When Engine and Context encounter the same error condition (e.g., a message that exceeds the expected buffer size or arrives at the wrong handshake state), they return different error types. This makes it difficult for callers to write consistent error handling code that works with both APIs, and complicates the migration from Engine to Context.
+- `src/tls13/engine.zig` -- FILE DELETED
+- `src/tls13/context.zig` -- uses `UnexpectedMessage`
 
-**Evidence:**
+**Acceptance criteria:** Met (trivially) -- only Context remains; no cross-module inconsistency possible.
 
-```text
-// Same logical condition, different error types:
-engine.zig:  return error.CryptoBufferOverflow;
-context.zig: return error.UnexpectedMessage;
-```
-
-**Recommendation:**
-Define a shared error set in a common module (e.g., `tls13/errors.zig`) and use consistent error types across both Engine and Context for equivalent conditions.
-
-**Acceptance criteria:** Equivalent error conditions produce the same error type in both Engine and Context.
-
-**Verification:** Manual audit of error return sites. `zig build test` passes.
+**Verification:** `zig build test` PASS post-engine-deletion (Phase 13 verifier output).
 
 **Effort:** S
 
