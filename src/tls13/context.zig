@@ -80,6 +80,8 @@ const alpn_selection = @import("context/alpn_selection.zig");
 const server_hello_parsers = @import("context/server_hello_parsers.zig");
 // QUAL-317: pure PSK selection + binder transcript hashing (state-slice module).
 const psk_selection_mod = @import("context/psk_selection.zig");
+// QUAL-317: certificate chain parsing + CertificateVerify signature helpers.
+const cert_handlers = @import("context/cert_handlers.zig");
 
 // Note: ApiError and HandshakeError are now imported from types.zig (canonical source).
 // TrafficDirection, BidirSecrets, etc. remain defined here pending further extraction.
@@ -2401,65 +2403,35 @@ pub const Context = struct {
     /// RFC 8446 §4.4.2: Parse and store server Certificate message.
     /// The certificate chain will be validated when CertificateVerify is processed.
     fn handleCertificate(self: *Context, body: []const u8) !void {
-        // Parse Certificate message using tls13_full
-        const parsed = try tls13_full.parseCertificate(self.allocator, body);
-        // Free the parsed entries slice when done (the cert data itself points into body, not allocated)
-        defer self.allocator.free(parsed.entries);
+        // QUAL-317: delegate parsing to cert_handlers (pure module). Empty chain
+        // is NOT allowed on the server-cert path (RFC 8446 §4.4.2) — the module
+        // returns HandshakeError.EmptyCertificateChain for us.
+        const result = try cert_handlers.parseAndStoreChain(self.allocator, .{
+            .body = body,
+            .allow_empty = false,
+        });
+        const storage = result.storage.?;
+        // No errdefer needed: all operations below are infallible, so storage
+        // ownership transfers into Context fields without a failure window.
 
-        if (parsed.entries.len == 0) {
-            return HandshakeError.EmptyCertificateChain;
-        }
-
-        // Free any previously stored chain
+        // Free any previously stored chain before swapping in the new one.
         self.freePeerCertChain();
+        self.peer_cert_chain = storage.chain;
+        self.peer_cert_chain_buf = storage.buf;
 
-        // PERF-042: Allocate one contiguous buffer for all certificate data,
-        // then point the sub-slices into it. This replaces N+1 allocations
-        // (one per cert + the slice array) with exactly 2 (buffer + slice array).
-        var total_cert_bytes: usize = 0;
-        for (parsed.entries) |cert_entry| {
-            total_cert_bytes += cert_entry.cert.len;
-        }
-        const cert_buf = try self.allocator.alloc(u8, total_cert_bytes);
-        errdefer self.allocator.free(cert_buf);
-
-        var chain = try self.allocator.alloc([]const u8, parsed.entries.len);
-        errdefer self.allocator.free(chain);
-
-        var offset: usize = 0;
-        for (parsed.entries, 0..) |cert_entry, i| {
-            @memcpy(cert_buf[offset..][0..cert_entry.cert.len], cert_entry.cert);
-            chain[i] = cert_buf[offset..][0..cert_entry.cert.len];
-            offset += cert_entry.cert.len;
-        }
-
-        self.peer_cert_chain = chain;
-        self.peer_cert_chain_buf = cert_buf;
-
-        // Store OCSP response and SCT list from leaf certificate (first entry)
-        // RFC 8446 §4.4.2.1: Extensions in leaf certificate entry
-        // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
-        if (parsed.entries[0].ocsp_response) |ocsp_data| {
-            const new_copy = try self.allocator.dupe(u8, ocsp_data);
-            errdefer self.allocator.free(new_copy);
-            if (self.peer_ocsp_response) |old| {
-                self.allocator.free(old);
-            }
+        // QUAL-128: swap OCSP / SCT buffers (dup-before-free done inside module).
+        if (storage.ocsp_response) |new_copy| {
+            if (self.peer_ocsp_response) |old| self.allocator.free(old);
             self.peer_ocsp_response = new_copy;
-            traceHandshake("Client: Received OCSP response ({} bytes)\\n", .{ocsp_data.len});
+            traceHandshake("Client: Received OCSP response ({} bytes)\\n", .{new_copy.len});
         }
-
-        if (parsed.entries[0].sct_list) |sct_data| {
-            const new_copy = try self.allocator.dupe(u8, sct_data);
-            errdefer self.allocator.free(new_copy);
-            if (self.peer_sct_list) |old| {
-                self.allocator.free(old);
-            }
+        if (storage.sct_list) |new_copy| {
+            if (self.peer_sct_list) |old| self.allocator.free(old);
             self.peer_sct_list = new_copy;
-            traceHandshake("Client: Received SCT list ({} bytes)\\n", .{sct_data.len});
+            traceHandshake("Client: Received SCT list ({} bytes)\\n", .{new_copy.len});
         }
 
-        traceHandshake("Client: Received Certificate with {} cert(s)\\n", .{chain.len});
+        traceHandshake("Client: Received Certificate with {} cert(s)\\n", .{storage.chain.len});
     }
 
     /// RFC 8446 §4.4.3: Parse CertificateVerify and perform full certificate validation.
@@ -2599,40 +2571,29 @@ pub const Context = struct {
             // The signature is computed over the transcript hash up to (but not including) CertificateVerify
             const transcript_hash = self.transcripts.handshake.finalize(self.hash_kind);
 
-            // RFC 8446 §4.2.3: Enforce signature algorithm policy
-            // Verify that the algorithm used in CertificateVerify is in our supported list
-            var algorithm_supported = false;
-            for (self.config.supported_signature_schemes) |scheme| {
-                if (scheme == parsed.algorithm) {
-                    algorithm_supported = true;
-                    break;
-                }
-            }
-            if (!algorithm_supported) {
+            // RFC 8446 §4.2.3: Enforce signature algorithm policy (QUAL-317: via cert_handlers).
+            cert_handlers.validateSignatureAlgorithm(
+                parsed.algorithm,
+                self.config.supported_signature_schemes,
+            ) catch |err| {
                 traceHandshake("Client: CertificateVerify algorithm {} not in supported list\\n", .{parsed.algorithm});
-                return HandshakeError.UnsupportedSignatureAlgorithm;
-            }
-
-            // Get the leaf certificate's SPKI for signature verification
-            const sig_alg = sig.fromTls13SignatureScheme(parsed.algorithm) catch {
-                return HandshakeError.UnsupportedSignatureAlgorithm;
+                return err;
             };
 
             // PERF-037: Reuse leaf_parsed from above instead of parsing chain[0] again.
-            // Verify the signature using the leaf certificate's public key (SPKI)
-            const verified = try sig.verifyCertificateVerify(
-                sig_alg,
-                leaf_parsed.spki, // SPKI DER, not full certificate
-                parsed.signature,
-                "TLS 1.3, server CertificateVerify", // RFC 8446 §4.4.3 context string
-                transcript_hash.slice(),
-                self.allocator,
-            );
-
-            if (!verified) {
-                traceHandshake("Client: CertificateVerify signature verification failed\\n", .{});
-                return HandshakeError.InvalidSignature;
-            }
+            // QUAL-317: context-string selection + sig.verify wrapped in cert_handlers.
+            cert_handlers.verifyCertVerifySignature(.{
+                .role = .server,
+                .leaf_spki = leaf_parsed.spki,
+                .signature = parsed.signature,
+                .signature_scheme = @intFromEnum(parsed.algorithm),
+                .transcript_hash = transcript_hash.slice(),
+            }, self.allocator) catch |err| {
+                if (err == HandshakeError.InvalidSignature) {
+                    traceHandshake("Client: CertificateVerify signature verification failed\\n", .{});
+                }
+                return err;
+            };
 
             traceHandshake("Client: Certificate chain validated and CertificateVerify signature verified\\n", .{});
         } else {
@@ -2643,42 +2604,32 @@ pub const Context = struct {
     /// RFC 8446 §4.4.2: Parse and store client Certificate message (server-side mTLS).
     /// Reuses the existing peer_cert_chain storage (role-neutral).
     fn handleClientCertificate(self: *Context, body: []const u8) !void {
-        const parsed = try tls13_full.parseCertificate(self.allocator, body);
-        defer self.allocator.free(parsed.entries);
+        // QUAL-317: delegate parsing to cert_handlers. Empty chain IS allowed
+        // here per RFC 8446 §4.4.2 — the client signals "no cert" with an
+        // empty Certificate, and handleClientCertificateVerify infers this
+        // from peer_cert_chain being null.
+        const result = try cert_handlers.parseAndStoreChain(self.allocator, .{
+            .body = body,
+            .allow_empty = true,
+        });
 
-        // Empty certificate list is allowed (RFC 8446 §4.4.2) - client has no cert
-        if (parsed.entries.len == 0) {
+        if (result.was_empty) {
             traceHandshake("Server: Client sent empty Certificate (no client cert)\n", .{});
-            // Store empty chain so handleClientCertificateVerify knows no cert was sent
             self.freePeerCertChain();
             return;
         }
 
-        // Free any previously stored chain
+        const storage = result.storage.?;
+        // Free any previously stored chain before swapping in the new one.
         self.freePeerCertChain();
-
-        // PERF-042: Allocate one contiguous buffer for all certificate data,
-        // then point the sub-slices into it (same pattern as handleCertificate).
-        var total_cert_bytes: usize = 0;
-        for (parsed.entries) |cert_entry| {
-            total_cert_bytes += cert_entry.cert.len;
-        }
-        const client_cert_buf = try self.allocator.alloc(u8, total_cert_bytes);
-        errdefer self.allocator.free(client_cert_buf);
-
-        var chain = try self.allocator.alloc([]const u8, parsed.entries.len);
-        errdefer self.allocator.free(chain);
-
-        var client_offset: usize = 0;
-        for (parsed.entries, 0..) |cert_entry, i| {
-            @memcpy(client_cert_buf[client_offset..][0..cert_entry.cert.len], cert_entry.cert);
-            chain[i] = client_cert_buf[client_offset..][0..cert_entry.cert.len];
-            client_offset += cert_entry.cert.len;
-        }
-
-        self.peer_cert_chain = chain;
-        self.peer_cert_chain_buf = client_cert_buf;
-        traceHandshake("Server: Received client Certificate with {} cert(s)\n", .{chain.len});
+        self.peer_cert_chain = storage.chain;
+        self.peer_cert_chain_buf = storage.buf;
+        // Note: client-cert extensions (OCSP / SCT) are accepted but unused on
+        // server side — free the dupes here to mirror pre-refactor behaviour
+        // (the original inline code never stored them on the server path).
+        if (storage.ocsp_response) |o| self.allocator.free(o);
+        if (storage.sct_list) |s| self.allocator.free(s);
+        traceHandshake("Server: Received client Certificate with {} cert(s)\n", .{storage.chain.len});
     }
 
     /// RFC 8446 §4.4.3: Parse and verify client CertificateVerify (server-side mTLS).
@@ -2721,35 +2672,24 @@ pub const Context = struct {
             // Verify CertificateVerify signature with client context string
             const transcript_hash = self.transcripts.handshake.finalize(self.hash_kind);
 
-            // Check signature algorithm is supported
-            var algorithm_supported = false;
-            for (self.config.supported_signature_schemes) |scheme| {
-                if (scheme == parsed.algorithm) {
-                    algorithm_supported = true;
-                    break;
-                }
-            }
-            if (!algorithm_supported) {
-                return HandshakeError.UnsupportedSignatureAlgorithm;
-            }
-
-            const sig_alg = sig.fromTls13SignatureScheme(parsed.algorithm) catch {
-                return HandshakeError.UnsupportedSignatureAlgorithm;
-            };
-
-            const verified = try sig.verifyCertificateVerify(
-                sig_alg,
-                client_leaf.spki, // SPKI DER, not full certificate
-                parsed.signature,
-                "TLS 1.3, client CertificateVerify", // Client context string
-                transcript_hash.slice(),
-                self.allocator,
+            // QUAL-317: signature-scheme policy + signature verification both via cert_handlers.
+            try cert_handlers.validateSignatureAlgorithm(
+                parsed.algorithm,
+                self.config.supported_signature_schemes,
             );
 
-            if (!verified) {
-                traceHandshake("Server: Client CertificateVerify signature verification failed\n", .{});
-                return HandshakeError.InvalidSignature;
-            }
+            cert_handlers.verifyCertVerifySignature(.{
+                .role = .client,
+                .leaf_spki = client_leaf.spki,
+                .signature = parsed.signature,
+                .signature_scheme = @intFromEnum(parsed.algorithm),
+                .transcript_hash = transcript_hash.slice(),
+            }, self.allocator) catch |err| {
+                if (err == HandshakeError.InvalidSignature) {
+                    traceHandshake("Server: Client CertificateVerify signature verification failed\n", .{});
+                }
+                return err;
+            };
 
             traceHandshake("Server: Client certificate validated and CertificateVerify verified\n", .{});
         } else {
