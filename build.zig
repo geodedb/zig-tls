@@ -1211,4 +1211,36 @@ pub fn build(b: *std.Build) void {
     });
     const run_bench_allocs = b.addRunArtifact(bench_allocs_exe);
     bench_allocs_step.dependOn(&run_bench_allocs.step);
+
+    // ========================================================================
+    // PERF-209 Reproducer: ThreadPool allocator diagnostic
+    // ========================================================================
+    //
+    // Submits 10_000 small SHA-256 tasks into a freshly-initialised
+    // ThreadPool per allocator variant (page_allocator, smp_allocator,
+    // c_allocator) and prints wall-time / getrusage majflt / minflt /
+    // maxrss deltas. Used to decide whether PERF-209 (suspected
+    // page_allocator friction) is closed Won't-Do or promoted to a real
+    // allocator-swap follow-up.
+    //
+    // Run with: zig build bench-threadpool -Doptimize=ReleaseFast
+
+    if (tp_mod) |tm| {
+        const bench_tp_step = b.step("bench-threadpool", "ThreadPool allocator reproducer (PERF-209)");
+        const bench_tp_exe = b.addExecutable(.{
+            .name = "bench-threadpool",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/perf/bench_threadpool_alloc.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "thread_pool", .module = tm },
+                },
+            }),
+        });
+        // c_allocator needs libc.
+        bench_tp_exe.root_module.link_libc = true;
+        const run_bench_tp = b.addRunArtifact(bench_tp_exe);
+        bench_tp_step.dependOn(&run_bench_tp.step);
+    }
 }
