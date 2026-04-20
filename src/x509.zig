@@ -1468,20 +1468,30 @@ fn parseCertSignature(der: []const u8) !struct { algo_oid: []const u8, sig_der: 
     return .{ .algo_oid = oid, .sig_der = sig_bits };
 }
 
+// SEC-069: Use canonical full-length equality on the DER-encoded OID content
+// bytes. Previously these checks accepted any OID whose suffix matched the
+// known algorithm tail, which is over-permissive. The parsed `oid` slice is
+// the ObjectIdentifier content (no tag/length header), so exact equality is
+// the correct semantics.
 fn oidIsEcdsaSha256(oid: []const u8) bool {
-    // 1.2.840.10045.4.3.2 -> bytes end with 2A 86 48 CE 3D 04 03 02
-    return oid.len >= 8 and std.mem.eql(u8, oid[oid.len - 8 ..], &[_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02 });
+    // 1.2.840.10045.4.3.2
+    const expected = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02 };
+    return std.mem.eql(u8, oid, &expected);
 }
 fn oidIsEcdsaSha384(oid: []const u8) bool {
-    return oid.len >= 8 and std.mem.eql(u8, oid[oid.len - 8 ..], &[_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03 });
+    // 1.2.840.10045.4.3.3
+    const expected = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03 };
+    return std.mem.eql(u8, oid, &expected);
 }
 fn oidIsRsaPss(oid: []const u8) bool {
-    // 1.2.840.113549.1.1.10 -> 2A 86 48 86 F7 0D 01 01 0A
-    return oid.len >= 9 and std.mem.eql(u8, oid[oid.len - 9 ..], &[_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A });
+    // 1.2.840.113549.1.1.10
+    const expected = [_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A };
+    return std.mem.eql(u8, oid, &expected);
 }
 fn oidIsEd25519(oid: []const u8) bool {
-    // Ed25519 1.3.101.112 -> 2B 65 70
-    return oid.len >= 3 and std.mem.eql(u8, oid[oid.len - 3 ..], &[_]u8{ 0x2B, 0x65, 0x70 });
+    // Ed25519 1.3.101.112
+    const expected = [_]u8{ 0x2B, 0x65, 0x70 };
+    return std.mem.eql(u8, oid, &expected);
 }
 
 fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const u8, sig_der: []const u8, alloc: std.mem.Allocator) bool {
