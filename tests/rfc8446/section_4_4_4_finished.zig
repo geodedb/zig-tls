@@ -44,12 +44,9 @@ const testing = std.testing;
 const key_schedule = @import("quic_tls");
 
 // Helper to convert hex string to bytes
-fn hexToBytes(comptime hex: []const u8, out: []u8) void {
-    var i: usize = 0;
-    while (i < hex.len) : (i += 2) {
-        out[i / 2] = std.fmt.parseInt(u8, hex[i .. i + 2], 16) catch unreachable;
-    }
-}
+// QUAL-205: hexToBytes moved to tests/test_utils.zig.
+const test_utils = @import("test_utils");
+const hexToBytes = test_utils.hexToBytes;
 
 // Helper to compare hex string with bytes
 fn expectEqualHex(comptime hex: []const u8, actual: []const u8) !void {
@@ -254,17 +251,20 @@ test "RFC 8446 §4.4.4: Finished verification detects tampering" {
 //
 // Tests Finished computation with SHA-384 (used with TLS_AES_256_GCM_SHA384).
 test "RFC 8446 §4.4.4: Finished with SHA-384" {
-    // Traffic secret for SHA-384 cipher suite (48 bytes)
+    // Traffic secret for SHA-384 cipher suite (48 bytes = 96 hex chars).
+    // QUAL-205 migration surfaced that the previous literal was only
+    // 40 bytes (80 hex chars); the remaining 8 bytes were whatever
+    // `undefined` contained. Padded to exact 48 bytes.
     const traffic_secret_hex =
-        "0011223344556677889900112233445566778899001122334455" ++
-        "6677889900112233445566778899";
+        "001122334455667788990011223344556677889900112233" ++
+        "44556677889900112233445566778899aabbccddeeff0011";
     var traffic_secret: [48]u8 = undefined;
     hexToBytes(traffic_secret_hex, &traffic_secret);
 
-    // Transcript hash (SHA-384, 48 bytes)
+    // Transcript hash (SHA-384, 48 bytes = 96 hex chars).
     const transcript_hash_hex =
-        "aabbccddeeff00112233445566778899aabbccddeeff00112233" ++
-        "445566778899aabbccddeeff";
+        "aabbccddeeff00112233445566778899aabbccddeeff0011" ++
+        "2233445566778899aabbccddeeff00112233445566778899";
     var transcript_hash: [48]u8 = undefined;
     hexToBytes(transcript_hash_hex, &transcript_hash);
 

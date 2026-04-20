@@ -28,12 +28,9 @@ const testing = std.testing;
 const key_schedule = @import("quic_tls");
 
 // Helper to convert hex string to bytes
-fn hexToBytes(comptime hex: []const u8, out: []u8) void {
-    var i: usize = 0;
-    while (i < hex.len) : (i += 2) {
-        out[i / 2] = std.fmt.parseInt(u8, hex[i .. i + 2], 16) catch unreachable;
-    }
-}
+// QUAL-205: hexToBytes moved to tests/test_utils.zig.
+const test_utils = @import("test_utils");
+const hexToBytes = test_utils.hexToBytes;
 
 // Helper to compare hex string with bytes
 fn expectEqualHex(comptime hex: []const u8, actual: []const u8) !void {

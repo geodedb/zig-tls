@@ -44,6 +44,14 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/testing/counting_allocator.zig"),
     });
 
+    // QUAL-205: shared test helpers (hexToBytes, ...). Test-only. Consumed
+    // by tests/*.zig and tests/rfc*/*.zig; must be registered as a named
+    // module because Zig's module-path sandbox blocks `../test_utils.zig`
+    // relative imports from subdirectories.
+    const test_utils_mod = b.addModule("test_utils", .{
+        .root_source_file = b.path("tests/test_utils.zig"),
+    });
+
     // ITU-T X.690: ASN.1 DER encoding/decoding
     // Used for X.509 certificate parsing
     const asn1_mod = b.addModule("asn1", .{
@@ -437,6 +445,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "alert", .module = alert_mod },
                 // GAP-0120: RFC 8446 §8 0-RTT / anti-replay tests.
                 .{ .name = "zero_rtt", .module = zero_rtt_mod },
+                .{ .name = "test_utils", .module = test_utils_mod },
             },
         }),
     });
@@ -479,6 +488,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "quic_tls", .module = key_schedule_mod },
                 .{ .name = "record", .module = record_mod },
+                .{ .name = "test_utils", .module = test_utils_mod },
             },
         }),
     });
@@ -524,6 +534,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "x509", .module = x509_mod },
                 .{ .name = "asn1", .module = asn1_mod },
                 .{ .name = "sig", .module = sig_mod },
+                .{ .name = "test_utils", .module = test_utils_mod },
             },
         }),
     });
@@ -538,6 +549,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "sig", .module = sig_mod },
                 .{ .name = "asn1", .module = asn1_mod },
+                .{ .name = "test_utils", .module = test_utils_mod },
             },
         }),
     });
@@ -656,6 +668,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "quic_transport_params", .module = transport_params_mod },
                 .{ .name = "sct", .module = sct_mod },
                 .{ .name = "ocsp", .module = ocsp_mod },
+                .{ .name = "test_utils", .module = test_utils_mod },
             },
         }),
     });
@@ -684,6 +697,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "quic_transport_params", .module = transport_params_mod },
                 .{ .name = "sct", .module = sct_mod },
                 .{ .name = "ocsp", .module = ocsp_mod },
+                .{ .name = "test_utils", .module = test_utils_mod },
             },
         }),
     });
@@ -707,6 +721,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "x509", .module = x509_mod },
                 .{ .name = "asn1", .module = asn1_mod },
                 .{ .name = "sig", .module = sig_mod },
+                .{ .name = "test_utils", .module = test_utils_mod },
             },
         }),
     });

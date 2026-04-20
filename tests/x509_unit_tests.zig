@@ -16,18 +16,14 @@ const testing = std.testing;
 const x509 = @import("x509");
 const asn1 = @import("asn1");
 const sigmod = @import("sig");
+const test_utils = @import("test_utils");
 
 // ============================================================================
 // Helper Functions
 // ============================================================================
 
-fn hexToBytes(hex: []const u8, out: []u8) void {
-    std.debug.assert(hex.len == out.len * 2);
-    var i: usize = 0;
-    while (i < hex.len) : (i += 2) {
-        out[i / 2] = std.fmt.parseInt(u8, hex[i .. i + 2], 16) catch unreachable;
-    }
-}
+// QUAL-205: hexToBytes moved to tests/test_utils.zig.
+const hexToBytes = test_utils.hexToBytes;
 
 // ============================================================================
 // Time Parsing Tests
