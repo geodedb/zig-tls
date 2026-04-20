@@ -248,3 +248,30 @@ client_hello_oracle:
       fi
   needs:
     - build
+
+# QUAL-317: context.zig decomposition error-trace oracle regression gate.
+# Mirrors the QUAL-339 client_hello_oracle job. Re-runs the capture harness
+# against HEAD and fails if the regenerated golden diverges from the
+# committed one. Byte-identical output is the empirical proof that the
+# 8-module decomposition of Context has preserved every observable TLS 1.3
+# handshake behavior (RFC 8446 §4/§7.2, SEC-054 errdefer, CWE-226 KU
+# secret zeroization, PSK binder timing_safe, HRR transcript hash).
+context_decomp_oracle:
+  stage: test
+  image: debian:bookworm-slim
+  timeout: 5m
+  <<: *cache-zig
+  before_script:
+    - *install-zig
+  script:
+    - zig build capture-context-decomp-oracle
+    - |
+      if ! cmp tests/fuzz/corpus/context_decomp_golden.bin <(git show HEAD:tests/fuzz/corpus/context_decomp_golden.bin); then
+        echo "ERROR: context.zig error-trace oracle has diverged from the committed golden file"
+        echo "A recent commit changed observable TLS 1.3 handshake behavior"
+        echo "Either: (a) the change is intentional — regenerate the golden with 'zig build capture-context-decomp-oracle'"
+        echo "Or:     (b) the change is a security regression — revert and investigate"
+        exit 1
+      fi
+  needs:
+    - build
