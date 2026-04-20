@@ -1,8 +1,8 @@
 # Quality Gap Analysis
 
-> **Last updated:** 2026-04-19 (Phase 13 gap-close -- 21 QUAL closures this run)
+> **Last updated:** 2026-04-20 (Cycle 2 / Phase 14 gap-close -- 5 additional QUAL closures + 1 Won't-Do on top of Phase 13's 21)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Phase 13 -- Gap-close run closed 21 QUAL items: QUAL-302/304/307/308/309/311/314/319/320/321/322/325/326/327/330/332/334/335/336/337/343. Phase 12 previously filed QUAL-334..343 as GitLab issues (#204-#211, #214, #216). Phase 11 added QUAL-301..333.
+> **Review phase:** Cycle 2 / Phase 14 -- Closed QUAL-107, QUAL-205, QUAL-208, QUAL-209, QUAL-321, QUAL-337 (subsumed/delivered/duplicate-closures); QUAL-343 marked Won't-Do (Zig 0.16 module constraint blocks full shim deletion -- rationale in detail entry). Phase 13 previously closed 21 QUAL items. Phase 12 filed QUAL-334..343; Phase 11 added QUAL-301..333.
 
 ---
 
@@ -12,9 +12,36 @@
 |----------|------|---------|--------|-----------|----------|----------|-------|
 | Critical | 0    | 0       | 2      | 0         | 0        | 0        | 2     |
 | High     | 4    | 0       | 15     | 0         | 2        | 0        | 21    |
-| Medium   | 13   | 0       | 34     | 1         | 1        | 1        | 50    |
-| Low      | 11   | 0       | 26     | 2         | 0        | 3        | 42    |
-| **Total**| **28** | **0** | **77** | **3**   | **3**    | **4**    | **115**|
+| Medium   | 11   | 0       | 36     | 1         | 1        | 1        | 50    |
+| Low      | 8    | 0       | 29     | 2         | 0        | 3        | 42    |
+| **Total**| **23** | **0** | **82** | **3**   | **3**    | **4**    | **115**|
+
+### Cycle 2 / Phase 14 Gap Closure Run (2026-04-20)
+
+5 QUAL items closed + 1 Won't-Do landed across 18 commits on `main`. Verifier: `zig build` PASS, `zig build test` PASS, `zig fmt --check` clean, pre-commit clean.
+
+**Closed (5):**
+
+| QUAL-ID | Issue | Closing commit | Note |
+|---------|-------|----------------|------|
+| QUAL-107 | #114 | 4ae8ac7 / 59f5e50 | Cross-module error-type divergence; Engine deletion removed the second producer. Ledger prose closed in 59f5e50. |
+| QUAL-205 | -- (no issue filed) | efc573e | Extracted shared `hexToBytes` to `tests/test_utils.zig`; migrated 13 callers; fixed latent rfc8446 finished test. |
+| QUAL-208 | -- (no issue filed) | 599a1da / b4bf419 | Duplicate of QUAL-335; rename `parallel.KeyMaterial` -> `DerivedKeyMaterial` already landed Phase 13 in 599a1da; ledger alignment in b4bf419. |
+| QUAL-209 | -- (no issue filed) | b31f035 / b4bf419 | `pub const parallel = @import("parallel");` already landed in b31f035; ledger alignment in b4bf419. |
+| QUAL-321 | #193 | 9037778 / 59f5e50 | lib.zig facade curated (already closed Phase 13); Cycle 2 ledger prose aligned in 59f5e50. |
+| QUAL-337 | #207 | 148b6ba / 59f5e50 | `CipherSuite` enum parity pinned (Phase 13); ledger prose aligned in 59f5e50. |
+
+**Won't Do (1):**
+
+| QUAL-ID | Issue | Commit | Rationale |
+|---------|-------|--------|-----------|
+| QUAL-343 | #216 | 9ef0ba3 | `src/tls13_full.zig` 171 LOC constant-only shim. Full delete blocked by Zig 0.16 module-path constraint: `messages.zig` is relative-imported by `src/tls13/mod.zig` and `src/tls13/context.zig`, so it cannot simultaneously be the root of module `tls13_full`. Migrating all 27 consumers to direct submodule imports is high-churn work in security-adjacent code for zero runtime benefit; shim is stable, inert, costless. See Phase 12 `QUAL-343` recommendation block for full investigation detail. |
+
+**Deferred (carry-forward to Cycle 3):**
+
+- QUAL-317 (context.zig decomposition -- epic)
+- QUAL-315 (coverage instrumentation -- tooling choice pending)
+- QUAL-338, QUAL-339, QUAL-340, QUAL-341, QUAL-342 (long-function splits / dispatch tables -- mechanical)
 
 ### Phase 13 Gap Closure Run (2026-04-19)
 
@@ -121,7 +148,7 @@ The remaining **Open** leaders post-Phase-13 / Cycle-2 are QUAL-317 and QUAL-315
 | 41 | QUAL-080 | Medium | 12 | cleanup | 32x @constCast for freeing const slices | `context.zig`, `handshake_state.zig`, `quic_transport_params.zig` | [#75](https://gitlab.com/devnw/zig/tls/-/work_items/75) | Closed |
 | 42 | QUAL-123 | Low | 10 | maintainability | build.zig at 1112 lines exceeds 800-line guideline | `build.zig` | -- | Won't Do |
 | 43 | QUAL-106 | Low | 9 | maintainability | Constant-time comparison code duplicated 3 times with subtle variation | `engine.zig`, `context.zig` | [#113](https://gitlab.com/devnw/zig/tls/-/work_items/113) | Closed (Phase 11) |
-| 44 | QUAL-107 | Low | 9 | api-contract | Inconsistent error types -- CryptoBufferOverflow vs UnexpectedMessage for same condition | `engine.zig`, `context.zig` | -- | Open |
+| 44 | QUAL-107 | Low | 9 | api-contract | Inconsistent error types -- CryptoBufferOverflow vs UnexpectedMessage for same condition | `engine.zig`, `context.zig` | -- | Closed (2026-04-19, 4ae8ac7 + 59f5e50) |
 | 45 | QUAL-081 | Low | 8 | maintainability | cipherSuiteHash exact duplicate | `context.zig:128`, `engine.zig:108` | -- | Closed |
 | 46 | QUAL-124 | Low | 8 | maintainability | readU16 helper duplicated between sct.zig and messages/helpers.zig | `src/sct.zig:31`, `src/tls13/messages/helpers.zig:40` | -- | Won't Do |
 | 47 | QUAL-125 | Low | 8 | maintainability | HashDigestCache dead code removed from context.zig | `src/tls13/context.zig`, `src/tls13/transcript.zig:398` | -- | Closed |
@@ -143,12 +170,12 @@ The remaining **Open** leaders post-Phase-13 / Cycle-2 are QUAL-317 and QUAL-315
 | 63 | QUAL-201 | Medium | 24 | maintainability | parseCert 396 lines with 6 inline extension sub-parsers; extract helpers | `src/x509.zig:697-1092` | -- | Closed |
 | 64 | QUAL-203 | Medium | 20 | api-contract | OCSP error mapping loses diagnostic info; 32 catch-return discard ASN.1 errors | `src/ocsp.zig:138-319` | -- | Closed |
 | 65 | QUAL-204 | Medium | 20 | readability | Magic hex constants in engine.zig (0x0010, 0x0039, 0x0033) vs enum in context.zig | `src/tls13/engine.zig` | -- | Closed |
-| 66 | QUAL-205 | Medium | 20 | maintainability | `hexToBytes` duplicated 14 times across test files | `tests/*.zig` | -- | Open |
+| 66 | QUAL-205 | Medium | 20 | maintainability | `hexToBytes` duplicated 14 times across test files | `tests/*.zig` | -- | Closed (2026-04-19, efc573e) |
 | 67 | QUAL-202 | Medium | 18 | readability | Deep nesting (10 levels client_hello.zig, 9 levels x509.zig); addressed by parseCert extraction | `src/tls13/messages/client_hello.zig`, `src/x509.zig` | -- | Closed |
 | 68 | QUAL-206 | Low | 16 | cleanup | Redundant condition engine.zig:802-803 `if (elen >= 3) { if (elen >= 2)` inner check always true | `src/tls13/engine.zig:802-803` | -- | Closed |
 | 69 | QUAL-207 | Low | 16 | architecture | 17 `.?` unwraps in context.zig rely on implicit state invariants; confirmed correct but fragile | `src/tls13/context.zig` | -- | Closed |
-| 70 | QUAL-208 | Low | 16 | architecture | Dual `KeyMaterial` types with incompatible layouts: parallel.zig vs key_schedule.zig | `src/parallel.zig:616`, `src/key_schedule.zig:36` | -- | Open |
-| 71 | QUAL-209 | Low | 12 | api-contract | `parallel` module not exported from lib.zig; add pub export with doc comment | `src/lib.zig`, `src/parallel.zig` | -- | Closed (Phase 11) |
+| 70 | QUAL-208 | Low | 16 | architecture | Dual `KeyMaterial` types with incompatible layouts: parallel.zig vs key_schedule.zig | `src/parallel.zig:616`, `src/key_schedule.zig:36` | -- | Closed (2026-04-19, 599a1da -- dup of QUAL-335) |
+| 71 | QUAL-209 | Low | 12 | api-contract | `parallel` module not exported from lib.zig; add pub export with doc comment | `src/lib.zig`, `src/parallel.zig` | -- | Closed (2026-04-18, b31f035) |
 | 72 | QUAL-210 | Low | 12 | cleanup | `TicketEntryView` exported via mod.zig/tls13.zig but unused outside engine.zig | `src/tls13/mod.zig:263`, `src/tls13.zig:257` | -- | Closed |
 | 73 | QUAL-317 | High | 100 | maintainability | context.zig monolith (3549 LOC, 32 methods) — decompose into subsystems | `src/tls13/context.zig` | [#150](https://gitlab.com/devnw/zig/tls/-/work_items/150) | Open |
 | 74 | QUAL-301 | High | 64 | architecture | Duplicate BidirSecrets/SecretSchedule types in context.zig vs secrets.zig | `src/tls13/context.zig:300-353`, `src/tls13/secrets.zig:117-166` | [#154](https://gitlab.com/devnw/zig/tls/-/work_items/154) | Open |
@@ -2621,14 +2648,14 @@ Replace all magic hex with `@intFromEnum(ExtensionType.xxx)` or switch on `@as(E
 
 ---
 
-### QUAL-205 -- `hexToBytes` duplicated 14 times across test files
+### QUAL-205 -- `hexToBytes` duplicated 14 times across test files [CLOSED]
 
 - **ID:** QUAL-205
 - **Severity:** Medium
 - **PriorityScore:** 20 (Impact 2 x Likelihood 2.5 x 4)
 - **Category:** `maintainability`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed (2026-04-19, Cycle 2) -- commit efc573e. Extracted shared helper to `tests/test_utils.zig`; migrated 13 caller test files to import it; fixed a latent rfc8446 §4.4.4 finished test that silently depended on the old inline copy. Full `zig build test` PASS post-migration.
 
 **File locations:**
 
@@ -2755,14 +2782,12 @@ For the most critical paths (`negotiated_cipher_suite`, `server_secret_generated
 - **PriorityScore:** 16 (Impact 2 x Likelihood 2 x 4)
 - **Category:** `architecture`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed (2026-04-19, Cycle 2) -- duplicate of QUAL-335 which delivered the rename in commit 599a1da; Cycle 2 ledger alignment in commit b4bf419.
 
-**File locations:**
+**File locations (post-closure):**
 
 - `src/parallel.zig:600` -- `DerivedKeyMaterial` (renamed from `KeyMaterial` in Phase 13, commit 599a1da) with `key: [32]u8`, `iv: [12]u8`, `hp_key: [32]u8`, `key_len: usize`
 - `src/key_schedule.zig:36` -- `KeyMaterial` with `key: [16]u8`, `iv: [12]u8`, `hp: [16]u8` (canonical)
-
-**Status:** Closed (2026-04-19, Cycle 2) -- duplicate of QUAL-335 which delivered the rename.
 
 **Description:**
 Originally flagged two types named `KeyMaterial` with incompatible layouts:
@@ -2916,7 +2941,7 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-102 | Medium | 6x allocator.dupe catch null silently swallow OOM | Closed |
 | QUAL-074 | Medium | new_session_ticket silently dropped in Context path | Closed |
 | QUAL-207 | Low | 17 `.?` unwraps in context.zig rely on implicit state invariants; confirmed correct | Closed |
-| QUAL-208 | Low | Dual `KeyMaterial` types with incompatible layouts (parallel.zig vs key_schedule.zig) | Open |
+| QUAL-208 | Low | Dual `KeyMaterial` types with incompatible layouts (parallel.zig vs key_schedule.zig) | Closed (2026-04-19) |
 | QUAL-126 | Low | quic_transport_params.zig only 2 of 4 dupe sites have errdefer | Closed |
 | QUAL-109 | Low | TODO in context.zig:1207 -- QUAL-074 callback not wired (status inconsistent) | Closed |
 
@@ -2931,7 +2956,7 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-070 | High | Near-duplicate ClientHelloInfo struct+parse+deinit | Closed |
 | QUAL-091 | High | engine.zig uses legacy inline key schedule patterns | Deferred |
 | QUAL-201 | Medium | parseCert 396 lines with 6 inline extension sub-parsers | Closed |
-| QUAL-205 | Medium | `hexToBytes` duplicated 14 times across test files | Open |
+| QUAL-205 | Medium | `hexToBytes` duplicated 14 times across test files | Closed (2026-04-19) |
 | QUAL-116 | Medium | 9 additional source files over 800 lines not tracked | Open |
 | QUAL-117 | Medium | 14 functions over 100 lines (parseCert 396 lines) | Open |
 | QUAL-118 | Medium | SecretSlot duplicated between context.zig and secrets.zig | Closed |
@@ -2957,9 +2982,9 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-203 | Medium | OCSP error mapping loses diagnostic info; 32 catch-return discard ASN.1 errors | Closed |
 | QUAL-098 | Medium | queueServerHandshakeFlight returns void -- errors not propagated | Closed |
 | QUAL-103 | Medium | maybeAutoProgress swallows queueFinished error | Closed |
-| QUAL-209 | Low | `parallel` module not exported from lib.zig | Open |
+| QUAL-209 | Low | `parallel` module not exported from lib.zig | Closed (2026-04-18) |
 | QUAL-085 | Low | pollCrypto returns Unimplemented for empty buffer | Closed |
-| QUAL-107 | Low | Inconsistent error types -- CryptoBufferOverflow vs UnexpectedMessage | Open |
+| QUAL-107 | Low | Inconsistent error types -- CryptoBufferOverflow vs UnexpectedMessage | Closed (2026-04-19) |
 | QUAL-110 | Low | notifyMetadata callback error logged but not propagated | Closed (by-design) |
 
 ### Cleanup (9)
@@ -3045,7 +3070,7 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-104 | Replace magic hex extension constants with ExtensionType enum | S | Open |
 | QUAL-105 | Fix lib.zig Quick Start Context.init signature | S | Closed |
 | QUAL-106 | Consolidate constant-time comparison to single function | S | Open |
-| QUAL-107 | Unify error types between Engine and Context | S | Open |
+| QUAL-107 | Unify error types between Engine and Context | S | Closed (2026-04-19) |
 | QUAL-108 | Remove 14 unused imports | S | Closed |
 | QUAL-109 | Resolve stale QUAL-074 TODO or reopen QUAL-074 | S | Closed |
 | QUAL-110 | Documented as by-design (informational callback) | S | Closed |
@@ -3057,11 +3082,11 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-093 | Add CI cache directive for Zig toolchain | S | Won't Do |
 | QUAL-203 | Add log.debug before each OCSP catch-return to preserve ASN.1 error context | S | Closed |
 | QUAL-204 | Replace magic hex extension constants in engine.zig with ExtensionType enum | S | Closed |
-| QUAL-205 | Extract hexToBytes to shared tests/test_utils.zig (14 duplicates) | S | Open |
+| QUAL-205 | Extract hexToBytes to shared tests/test_utils.zig (14 duplicates) | S | Closed (2026-04-19) |
 | QUAL-206 | Delete redundant inner `if (elen >= 2)` check in engine.zig:803 | S | Closed |
 | QUAL-207 | Add `orelse return error.InvalidState` for critical-path `.?` unwraps in context.zig | S | Closed |
-| QUAL-208 | Rename parallel.KeyMaterial to DerivedKeyMaterial (or unify with key_schedule.KeyMaterial) | S | Open |
-| QUAL-209 | Add `pub const parallel = @import("parallel.zig")` to lib.zig | S | Open |
+| QUAL-208 | Rename parallel.KeyMaterial to DerivedKeyMaterial (or unify with key_schedule.KeyMaterial) | S | Closed (2026-04-19, dup of QUAL-335) |
+| QUAL-209 | Add `pub const parallel = @import("parallel.zig")` to lib.zig | S | Closed (2026-04-18) |
 | QUAL-210 | Remove unused TicketEntryView re-exports from mod.zig and tls13.zig | S | Closed |
 | QUAL-071 | Fix 0-RTT transcript hash ordering (server side) | S | Closed |
 | QUAL-072 | Propagate callback errors (or change signature to void) | S | Closed |
@@ -3167,12 +3192,12 @@ Thirty-three new findings captured from Phase 3 deep review and filed to GitLab 
 
 ### Phase 11 Carry-Forward Verified Open
 
-- **QUAL-091** -- engine.zig legacy key schedule patterns (Deferred; cross-ref QUAL-319)
+- **QUAL-091** -- engine.zig legacy key schedule patterns (Deferred; cross-ref QUAL-319 — which is now closed via 4ae8ac7; this carry-forward rolls into QUAL-319's closure)
 - **QUAL-093** -- CI build caching (superseded by QUAL-310)
 - **QUAL-116** -- 9 source files over 800 lines
 - **QUAL-117** -- 14 functions over 100 lines
-- **QUAL-205** -- hexToBytes x14 in tests
-- **QUAL-208** -- Dual KeyMaterial types
+- ~~**QUAL-205** -- hexToBytes x14 in tests~~ -- Closed Cycle 2 (efc573e)
+- ~~**QUAL-208** -- Dual KeyMaterial types~~ -- Closed Cycle 2 (dup of QUAL-335, commit 599a1da)
 
 ---
 

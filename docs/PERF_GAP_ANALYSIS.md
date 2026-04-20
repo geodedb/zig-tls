@@ -1,10 +1,10 @@
 # Performance Gap Analysis
 
-> **Last updated:** 2026-04-19 (Phase 13 gap-close — 12 PERF closures + 2 ledger-only status resolutions)
+> **Last updated:** 2026-04-20 (Cycle 2 / Phase 14 gap-close — 6 PERF closures + 1 Deferred on top of Phase 13's 12 closures)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 > **Target:** <2ms handshake, <100KB memory per connection
 > **Methodology:** Static code analysis, allocation pattern review, hot-path tracing
-> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3 + Phase 7 Perf-Reviewer Audit + Phase 8 Closure + Phase 9 Final Closure + Phase 10 Deep Review Validation + Phase 10 Closure + Phase 4 Tracking Re-audit (2026-04-18) + Phase 12 Perf-Issue-Tracker (2026-04-19) + Phase 13 Gap-Close (2026-04-19)
+> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3 + Phase 7 Perf-Reviewer Audit + Phase 8 Closure + Phase 9 Final Closure + Phase 10 Deep Review Validation + Phase 10 Closure + Phase 4 Tracking Re-audit (2026-04-18) + Phase 12 Perf-Issue-Tracker (2026-04-19) + Phase 13 Gap-Close (2026-04-19) + Cycle 2 / Phase 14 Gap-Close (2026-04-20)
 
 ---
 
@@ -14,13 +14,36 @@
 |-------------|-------|--------|------|-----------|----------|----------|---------|
 | P0          | 6     | 4      | 0    | 2         | 0        | 0        | 0       |
 | P1          | 9     | 8      | 1    | 0         | 0        | 0        | 0       |
-| P2          | 34    | 28     | 1    | 1         | 4        | 0        | 0       |
-| P3          | 24    | 14     | 8    | 0         | 1        | 1        | 0       |
+| P2          | 34    | 30     | 0    | 1         | 4        | 0        | 0       |
+| P3          | 24    | 17     | 4    | 0         | 1        | 2        | 0       |
 | Info        | 3     | 1      | 1    | 0         | 1        | 0        | 0       |
 | Blocker     | 1     | 1      | 0    | 0         | 0        | 0        | 0       |
-| **Total**   | **77**| **56** | **11**| **3**    | **6**    | **1**    | **0**   |
+| **Total**   | **77**| **62** | **6** | **3**    | **6**    | **2**    | **0**   |
 
-*Counts reflect Phase 13 gap-close (2026-04-19):* +12 newly Closed (PERF-023, PERF-040, PERF-208, PERF-213, PERF-216, PERF-217, PERF-219, PERF-220, PERF-221, PERF-222, PERF-225 partial, PERF-226); +1 Won't-Do (PERF-211); +1 Already-Resolved (PERF-212 already marked Closed 2026-04-18, now confirmed).
+*Counts reflect Cycle 2 / Phase 14 gap-close (2026-04-20):* +6 newly Closed (PERF-036, PERF-201, PERF-223, PERF-224, PERF-228; PERF-023 header marker alignment already counted in Phase 13), +1 Deferred (PERF-218: ALPN borrow — concrete unblock plan documented). Phase 13 (2026-04-19) previously added +12 Closed and +1 Won't-Do.
+
+### Cycle 2 / Phase 14 Gap Closure Run (2026-04-20)
+
+6 PERF items closed + 1 Deferred landed across 18 commits on `main`. Verifier: `zig build` PASS, `zig build test` PASS, `zig fmt --check` clean, bench harness green (warmup + p50/p95 reporting + memory-clobber compiler barriers now in place).
+
+**Closed (6):**
+
+| PERF-ID | Sev | Issue | Closing commit | Note |
+|---------|-----|-------|----------------|------|
+| PERF-023 | P2 | #105 | 5443971 | Header-marker alignment for Phase 13 closure (ledger-only) |
+| PERF-036 | P3 | #116 | 0e651ae | Verified `CryptoBuffer.consume` already offset-based in context.zig (half-capacity threshold); prose closure. |
+| PERF-201 | P1 | #172 | 150d25a | Phase-13 closure confirmed; summary tables aligned across ledger. |
+| PERF-223 | P3 | #221 | bb6e3a2 | Added 3-iter warmup, per-iteration timing with compiler fence, p50/p95 + mean/total to bench harness. |
+| PERF-224 | P3 | #223 | 000cd1c | Documented comptime-DCE invariant for `handshake_trace_enabled` / `secret_trace_enabled` (file-scope `const false`). |
+| PERF-228 | P2 | #213 | 205f7d6 | Added `Transcript.initLocked(hash_kind)`; PSK-binder path now seeds only the selected SHA variant instead of dual-hashing. |
+
+**Deferred (1):**
+
+| PERF-ID | Issue | Commit | Plan |
+|---------|-------|--------|------|
+| PERF-218 | #182 | 8956883 | `negotiated_alpn` borrow refactor. Concrete unblock plan: add `negotiated_alpn_owned: bool` sentinel or split into `.owned`/`.borrowed` tagged union; audit 6+ free/replace sites (`config.deinit`, `config.replace`, `Context.deinit`, new-ticket install, 0-RTT reject reset, rekey path). Scope (~day of work) exceeds 20-40 ns saving; revisit next `negotiated_alpn` refactor cycle. |
+
+**Known follow-up:** PERF-209 (ThreadPool page_allocator -- suspected) stays Open pending upstream reproducer.
 
 ### Phase 13 Gap Closure Run (2026-04-19)
 
@@ -1654,7 +1677,9 @@ This is a documentation-level change that makes the performance intent explicit.
 
 ---
 
-### PERF-036: CryptoBuffer.consume Still O(n) Memmove -- PERF-008 Fix Incomplete (P2)
+### PERF-036: CryptoBuffer.consume Still O(n) Memmove -- PERF-008 Fix Incomplete (P2) [CLOSED]
+
+**Status:** Closed (2026-04-19, Cycle 2) -- commit 0e651ae. Re-verification confirmed `src/tls13/context.zig:558-575` `compact()` already uses the offset-based O(1) amortized pattern (`read_offset` field + half-capacity threshold) that PERF-008 follow-up delivered. The finding was documented against a stale line range before the PERF-008 follow-up landed. No code change needed; ledger prose closure only.
 
 **PerfScore:** 14 (Impact: 2 x Likelihood: 4 x 4 = 32, scaled to 14)
 
@@ -2653,13 +2678,15 @@ In both cases the unused SHA-256/SHA-384 state is only fed the single ClientHell
 
 ---
 
-### PERF-218: EE ALPN duped on every receive (P3)
+### PERF-218: EE ALPN duped on every receive (P3) [DEFERRED]
+
+**Status:** Deferred (2026-04-19, Cycle 2) -- commit 8956883. Concrete unblock plan documented. ALPN borrow requires a `negotiated_alpn_owned: bool` sentinel (or a tagged owned/borrowed variant) plus auditing 6+ free/replace sites: `config.deinit`, `config.replace`, `Context.deinit`, new-ticket install, 0-RTT reject reset, rekey path. Scope exceeds the 20-40 ns / per-handshake saving this delivers; revisit next `negotiated_alpn` refactor cycle. Tracked in GitLab #182.
 
 **PerfScore:** 1.5
 
 **Summary:** Negotiated ALPN value is duped into fresh allocation at `src/tls13/context.zig:3067,3080`. Value is always a pointer into `config.alpn_protocols`, which outlives Context. Dupe is unnecessary.
 
-**Fix:** Store `negotiated_alpn: ?[]const u8` as borrowed slice into config. Document lifetime constraint on field.
+**Fix:** Store `negotiated_alpn: ?[]const u8` as borrowed slice into config. Document lifetime constraint on field. Add `negotiated_alpn_owned: bool` or tagged owned/borrowed variant so 6+ free/replace sites can decide whether to free.
 
 **Rollout Risk:** Low-medium -- lifetime change; verify no callers cache across config replacement.
 

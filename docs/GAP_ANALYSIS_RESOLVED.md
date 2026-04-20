@@ -726,3 +726,87 @@ Pre-existing pre-commit hook failures on files not touched by this run are flagg
   - `src/lib.zig:414` -- `pub const parallel = @import("parallel");`
   - `git show b31f035 --stat` -- `build.zig | 1 +`, `src/lib.zig | 16 ++++++++++++++++`, `src/parallel.zig | 4 +---`
 - **Resolved date:** 2026-04-18
+
+---
+
+## Phase 14 Closures (2026-04-20) -- Cycle 2
+
+### GAP-0098: 7 unused public symbols [RESOLVED]
+
+- **Issue:** N/A (ledger internal)
+- **Category:** Code Quality
+- **Resolution:** Subsumed by GAP-0122 (Phase 13 commit 9037778). Ledger alignment commit 46a3419 (Cycle 2) recorded the closure. 5 of the 6 originally listed symbols deleted; `parallel.deinitPool` now has a live caller at `src/lib.zig:556` (Phase 4); 3 varint re-exports in `quic_transport_params.zig` retained as intentional QUIC public API surface.
+- **Evidence:** GitLab issue search returns no remaining open issue for GAP-0098.
+- **Resolved date:** 2026-04-19
+
+### GAP-0102: validateChain parses+discards leaf, caller re-parses [RESOLVED]
+
+- **Issue:** [#138](https://gitlab.com/devnw/zig/tls/-/issues/138)
+- **Category:** Performance
+- **Resolution:** Delivered via PERF-207. Commits 090356c + 7c0c058 added `x509.validateChainReturnParsed` via a shared `runChainChecks` helper. Both client-side callers in `src/tls13/context.zig` (server cert verify, mTLS client cert verify) reuse the already-parsed leaf. Regression test: `tests/perf/test_validate_chain_parsed.zig`.
+- **Evidence:** No re-parse of `chain[0]` after validation at `context.zig:2823` or `:3036`.
+- **Resolved date:** 2026-04-19
+
+### GAP-0103: sendClientHello2 body/msg dual-alloc+memcpy [RESOLVED]
+
+- **Issue:** [#139](https://gitlab.com/devnw/zig/tls/-/issues/139)
+- **Category:** Performance
+- **Resolution:** Delivered via PERF-208. Commit 08045dd reserved 4 bytes of header space inside `buildClientHello`; the caller now writes the handshake-type/length header directly. Second alloc + body-to-outer memcpy eliminated.
+- **Evidence:** `sendClientHello2` issues one allocation; no body-to-outer memcpy.
+- **Resolved date:** 2026-04-19
+
+### GAP-0105: xorNonce/deriveNonce micro-optimization candidates [RESOLVED]
+
+- **Issue:** [#141](https://gitlab.com/devnw/zig/tls/-/issues/141)
+- **Category:** Performance
+- **Resolution:** Delivered via PERF-035 (LLVM auto-vectorization confirmed for `deriveNonce` in ReleaseFast) + PERF-211 Won't-Do (commit bca9b0a, NRVO elides the 12-byte return copy). PERF-210 (xorNonce per-byte loop) remains informational.
+- **Evidence:** AEAD hot path inspected; deriveNonce + NRVO confirmed optimal.
+- **Resolved date:** 2026-04-19
+
+### GAP-0109: RSA-PSS verify triple copy-paste [RESOLVED -- scoped down]
+
+- **Issue:** [#145](https://gitlab.com/devnw/zig/tls/-/issues/145)
+- **Category:** Code Quality / Maintainability (crypto)
+- **Resolution:** Phase 13 engine.zig deletion (4ae8ac7) dropped "triple" to "double". Cycle 2 commit 92f8f96 merged the remaining `parallel.zig` SHA-256/SHA-384 arms into a single comptime-generic `verifyRsaPssWithHash(comptime HashT: type, ...)` helper. Cross-file `sig.zig`<->`parallel.zig` canonicalization deferred to Cycle 3 (requires fuzz-regression harness and breaking-return-type refactor).
+- **Evidence:** Full `zig build test` green post-dedup.
+- **Resolved date:** 2026-04-19
+
+### GAP-0127: Feature Request MR template MD031 fenced-code blanks [RESOLVED]
+
+- **Issue:** N/A (ledger-only; no GitLab issue filed)
+- **Category:** Docs
+- **Resolution:** Commit 4bef6d4 inserted blank lines around fenced code blocks in `.gitlab/issue_templates/Feature Request.md` to satisfy markdownlint MD031.
+- **Evidence:** `pre-commit run markdownlint --all-files` clean.
+- **Resolved date:** 2026-04-19
+
+### GAP-0128: Default MR template MD032 list blanks [RESOLVED]
+
+- **Issue:** N/A (ledger-only)
+- **Category:** Docs
+- **Resolution:** Commit 118c3a1 added blank lines around bulleted lists in `.gitlab/merge_request_templates/Default.md` to satisfy MD032.
+- **Evidence:** `pre-commit run markdownlint --all-files` clean.
+- **Resolved date:** 2026-04-19
+
+### GAP-0129: SUPPORT.md bare email autolink MD034 [RESOLVED]
+
+- **Issue:** N/A (ledger-only)
+- **Category:** Docs
+- **Resolution:** Commit 54ebf35 converted bare email in `SUPPORT.md` to `<mailto:>` autolink.
+- **Evidence:** `pre-commit run markdownlint --all-files` clean.
+- **Resolved date:** 2026-04-19
+
+### GAP-0130: ARCHITECTURE.md stale engine.zig prose reference [RESOLVED]
+
+- **Issue:** N/A (ledger-only)
+- **Category:** Docs
+- **Resolution:** Commit 301729d removed residual `engine.zig` prose reference from `docs/ARCHITECTURE.md` after the Phase 13 engine deletion; module map refreshed.
+- **Evidence:** `grep engine.zig docs/ARCHITECTURE.md` returns no stale references.
+- **Resolved date:** 2026-04-19
+
+### PERF-023: encodeHandshake always allocates new buffer (P2) [RESOLVED]
+
+- **Issue:** [#105](https://gitlab.com/devnw/zig/tls/-/issues/105)
+- **Category:** Performance
+- **Resolution:** Subsumed by engine.zig deletion (Phase 13 commit 4ae8ac7). Cycle 2 header-marker alignment commit 5443971 aligned the detail entry header. All 8 production callers removed with the file; no alternative call sites exist.
+- **Evidence:** `grep encodeHandshake src/tls13/` shows zero production callers remaining.
+- **Resolved date:** 2026-04-19

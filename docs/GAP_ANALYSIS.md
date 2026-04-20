@@ -1,6 +1,6 @@
 # GAP Analysis
 
-> **Last updated:** 2026-04-19 (Phase 13 gap-close -- closes 16 GAPs across cross-domain sweep; Phase 4 previously added GAP-0118..0126)
+> **Last updated:** 2026-04-20 (Cycle 2 / Phase 14 gap-close -- 9 additional GAP closures on top of Phase 13's 16)
 > **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 >
@@ -8,7 +8,8 @@
 > ledger view. The GitLab issue tracker may show additional historical issues whose code
 > resolution predates this review cycle; those are tracked via "Won't Do -- issue tracker
 > maintenance" entries (GAP-0092, GAP-0099) and are intentionally not double-counted here.
-> New Phase 4 issues #227-235 correspond to GAP-0118..0126 in 1:1 order.
+> New Phase 4 issues #227-235 correspond to GAP-0118..0126 in 1:1 order. Cycle 2 (Phase 14)
+> added GAP-0127..0130 as ledger-only markdownlint/doc-hygiene items (no GitLab issue filed).
 
 ---
 
@@ -19,14 +20,38 @@
 | Critical | 8        | 8      | 0        | 0    |
 | High     | 22       | 24     | 0        | 1    |
 | Medium   | 48       | 47     | 1        | 2    |
-| Low      | 48       | 40     | 6        | 2    |
-| **Total**| **126**  | **111**| **7**    | **8** |
+| Low      | 52       | 49     | 6        | 2    |
+| **Total**| **130**  | **120**| **7**    | **5** |
 
 ### Implementation Status
 
-**Closed: 111 findings** - All implemented and verified. Phase 13 (2026-04-19) closed 16 additional GAPs: GAP-0107, GAP-0108, GAP-0110 (partial via engine.zig deletion), GAP-0113, GAP-0114, GAP-0115, GAP-0116, GAP-0118, GAP-0119, GAP-0120, GAP-0121, GAP-0122, GAP-0123, GAP-0124, GAP-0125, GAP-0126. Engine deletion (commit 4ae8ac7) removed 2283 LOC net across engine.zig and re-exports.
+**Closed: 120 findings** - Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
 **Won't Do: 7 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133), GAP-0099 (issue tracker maintenance, separate from code), GAP-0093 (2 skipped tests require stdlib features not yet available)
-**Open: 4 findings** - GAP-0104, GAP-0106, GAP-0109 remain from prior cycles (plus GAP-0110 partial). Cycle 2 (2026-04-19) closed GAP-0098 (subsumed by GAP-0122), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do). Phase 13 closed the Phase 4 batch (GAP-0118..GAP-0126) and backlog items GAP-0107, GAP-0108, GAP-0110 (partial), GAP-0113..GAP-0116.
+**Open: 3 findings** - GAP-0104 (thread_pool page_allocator, needs reproducer -- cross-ref PERF-209), GAP-0106 (bench 0.16 API drift, blocker for local perf validation), GAP-0110 partial (engine EE nesting subsumed by deletion; analogous Context nesting tracked separately). Cross-file `sig.zig`<->`parallel.zig` RSA-PSS canonicalization referenced in GAP-0109 is deferred to a future cycle pending a fuzz-regression harness.
+
+### Cycle 2 / Phase 14 Gap Closure Run (2026-04-20)
+
+18 commits landed on `main` closing **21 items across GAP/QUAL/PERF ledgers** (9 GAPs + 5 QUAL closures + 1 QUAL Won't-Do + 6 PERF closures + 1 PERF Deferred). Verifier: Step 3 gap-closer-verifier green -- `zig build` PASS, `zig build test` PASS, `zig fmt --check` clean, pre-commit clean, bench harness green.
+
+**Closed GAP items (9):**
+
+| GAP-ID | Commit | Note |
+|--------|--------|------|
+| GAP-0098 | 46a3419 | Subsumed by GAP-0122 (ledger alignment) |
+| GAP-0102 | 090356c, 7c0c058 | Delivered via PERF-207 (validateChainReturnParsed) |
+| GAP-0103 | 08045dd | Delivered via PERF-208 (ClientHello header reservation) |
+| GAP-0105 | bca9b0a | Delivered via PERF-035 + PERF-211 Won't-Do |
+| GAP-0109 | 92f8f96 | Scoped-down: parallel.zig intra-file RSA-PSS dedup via comptime-generic helper; cross-file sig.zig canonicalization deferred |
+| GAP-0127 | 4bef6d4 | Feature Request MR template MD031 autofix |
+| GAP-0128 | 118c3a1 | Default MR template MD032 autofix |
+| GAP-0129 | 54ebf35 | SUPPORT.md bare email -> autolink (MD034) |
+| GAP-0130 | 301729d | ARCHITECTURE.md stale engine.zig prose reference removed |
+
+**Known follow-ups for Cycle 3:**
+
+- GAP-0109 cross-file `sig.zig` <-> `parallel.zig` RSA-PSS canonicalization (needs fuzz-regression cycle)
+- GAP-0104 / PERF-209 -- ThreadPool `page_allocator` suspected; needs upstream reproducer
+- GAP-0106 -- `zig build bench` 0.16 API drift; partially addressed; full green gated on PERF-212 work already landed
 
 ### Phase 13 Gap Closure Run (2026-04-19)
 
@@ -936,6 +961,46 @@ All 11 remaining open issues from the third review have been implemented:
 - **Impact/Risk:** Newcomer friction; audit drag; no obvious home for decisions like "OCSP over CRL" or "Context supersedes Engine".
 - **Recommended fix:** Add `docs/adr/` with retrospective ADRs, `docs/RUNBOOK.md`, and `docs/rfc_coverage.md`.
 - **Acceptance criteria:** ADR directory with template and 3+ retrospective ADRs; RUNBOOK linked from README; rfc_coverage.md linked from README and covering every `tests/rfc*/section_*.zig`.
+
+### GAP-0127: Feature Request MR template MD031 fenced-code blanks [CLOSED]
+
+- **Issue:** N/A (ledger-only; no GitLab issue filed for mdlint autofix)
+- **Category:** Docs
+- **Severity:** Low
+- **Status:** Closed (2026-04-19, commit 4bef6d4)
+- **Requirement source:** Markdownlint hygiene across repo templates.
+- **Resolution:** 2026-04-19 -- Inserted blank lines around fenced code blocks in `.gitlab/issue_templates/Feature Request.md` so `markdownlint` MD031 passes in pre-commit. Commit: 4bef6d4.
+- **Acceptance criteria:** `pre-commit run markdownlint --all-files` clean on this file.
+
+### GAP-0128: Default MR template MD032 list blanks [CLOSED]
+
+- **Issue:** N/A (ledger-only)
+- **Category:** Docs
+- **Severity:** Low
+- **Status:** Closed (2026-04-19, commit 118c3a1)
+- **Requirement source:** Markdownlint hygiene across repo templates.
+- **Resolution:** 2026-04-19 -- Added blank lines surrounding bulleted lists in `.gitlab/merge_request_templates/Default.md` to satisfy MD032. Commit: 118c3a1.
+- **Acceptance criteria:** `pre-commit run markdownlint --all-files` clean on this file.
+
+### GAP-0129: SUPPORT.md bare email autolink MD034 [CLOSED]
+
+- **Issue:** N/A (ledger-only)
+- **Category:** Docs
+- **Severity:** Low
+- **Status:** Closed (2026-04-19, commit 54ebf35)
+- **Requirement source:** Markdownlint hygiene.
+- **Resolution:** 2026-04-19 -- Converted bare email address to `<mailto:>` autolink in `SUPPORT.md` to satisfy MD034. Commit: 54ebf35.
+- **Acceptance criteria:** `pre-commit run markdownlint --all-files` clean on this file.
+
+### GAP-0130: ARCHITECTURE.md stale engine.zig prose reference [CLOSED]
+
+- **Issue:** N/A (ledger-only)
+- **Category:** Docs
+- **Severity:** Low
+- **Status:** Closed (2026-04-19, commit 301729d)
+- **Requirement source:** Post-engine-deletion doc hygiene (follow-up to GAP-0125 / QUAL-330).
+- **Resolution:** 2026-04-19 -- Removed residual `engine.zig` prose reference left behind after Phase 13 engine deletion; updated module map to reflect Context as sole driver. Commit: 301729d.
+- **Acceptance criteria:** `grep engine.zig docs/ARCHITECTURE.md` returns no stale references.
 
 ### GAP-0099: 19 GitLab issues remain open despite documented resolution [WON'T DO]
 
