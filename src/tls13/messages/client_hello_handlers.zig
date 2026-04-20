@@ -153,6 +153,56 @@ fn buildSupportedGroups(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.
 }
 
 // ============================================================================
+// signature_algorithms (RFC 8446 §4.2.3)
+// ============================================================================
+
+fn parseSignatureAlgorithms(ctx: *ParseCtx, data: []const u8) anyerror!void {
+    if (data.len >= 2) {
+        const algs_len = helpers.readU16(data[0..2]);
+        if (2 + algs_len <= data.len) {
+            var algs = try std.ArrayList(core_types.SignatureScheme).initCapacity(ctx.alloc, 8);
+            defer algs.deinit(ctx.alloc);
+
+            var a_pos: usize = 2;
+            while (a_pos + 2 <= 2 + algs_len) : (a_pos += 2) {
+                const alg = helpers.readU16(data[a_pos .. a_pos + 2]);
+                // SEC-057: Only accept values that are actual enum tags.
+                // The prior 0x0401..0x080b range check admitted ~2034 values
+                // not in the exhaustive SignatureScheme enum, causing
+                // @enumFromInt to panic on malicious input.
+                if (std.enums.fromInt(core_types.SignatureScheme, alg)) |scheme| {
+                    try algs.append(ctx.alloc, scheme);
+                }
+            }
+
+            if (algs.items.len > 0) {
+                ctx.ch.signature_algorithms = try algs.toOwnedSlice(ctx.alloc);
+            }
+        }
+    }
+}
+
+fn buildSignatureAlgorithms(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const params = ctx.params;
+    if (params.signature_algorithms.len == 0) return;
+
+    const list_len: u16 = @intCast(params.signature_algorithms.len * 2);
+    const ext_len: u16 = list_len + 2;
+    try out.appendSlice(alloc, &.{
+        0x00,
+        0x0d,
+        @intCast(ext_len >> 8),
+        @intCast(ext_len & 0xff),
+        @intCast(list_len >> 8),
+        @intCast(list_len & 0xff),
+    });
+    for (params.signature_algorithms) |scheme| {
+        const val: u16 = @intFromEnum(scheme);
+        try out.appendSlice(alloc, &.{ @intCast(val >> 8), @intCast(val & 0xff) });
+    }
+}
+
+// ============================================================================
 // supported_versions (RFC 8446 §4.2.1) — REQUIRED for TLS 1.3
 // ============================================================================
 
@@ -179,6 +229,7 @@ pub const HANDLERS: []const ExtHandler = &.{
     // Build-order (RFC 8446 §4.2) authoritative:
     .{ .tag = .supported_versions, .parse = parseSupportedVersions, .build = buildSupportedVersions },
     .{ .tag = .supported_groups, .parse = parseSupportedGroups, .build = buildSupportedGroups },
+    .{ .tag = .signature_algorithms, .parse = parseSignatureAlgorithms, .build = buildSignatureAlgorithms },
     // Parse-only extensions that have no build emission live at the tail
     // (before pre_shared_key). Their relative order among themselves is
     // inconsequential because their build handlers are no-ops.
