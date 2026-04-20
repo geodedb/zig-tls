@@ -92,6 +92,12 @@ pub const SecretSlot = struct {
     /// - hash: Hash algorithm matching cipher suite
     /// - secret: Traffic secret to store
     pub fn store(self: *Self, level: EncryptionLevel, hash: Hash, secret: Secret) void {
+        // SEC-072: Zeroize the previous secret before overwriting. Without
+        // this, the old key material would linger in memory until the next
+        // `clear()` (which runs only on reset paths), widening the window
+        // for accidental disclosure via coredump or heap inspection
+        // (CWE-226).
+        std.crypto.secureZero(u8, &self.value.bytes);
         self.value = secret;
         self.hash = hash;
         self.valid = true;
