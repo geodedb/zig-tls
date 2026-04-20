@@ -2739,7 +2739,7 @@ Phase 2 scan confirmed 4 existing-issue findings (PERF-216, PERF-213, PERF-208, 
 | 7 | P2 | 32 | PERF-226: Per-record outbox appendSlice copies full plaintext | engine | src/tls13/engine.zig:549 + callers | #225 | Subsumed by Engine deletion | Closed (2026-04-19, 4ae8ac7) |
 | 8 | P3 | 20 | PERF-223: Bench harness lacks warmup / outlier rejection / memory barrier | bench | tests/bench.zig:40-56 | #221 | Add 3-iter warmup, drop min+max, @fence(.seq_cst), report p50/p95 | Open |
 | 9 | P3 | 12 | PERF-219: Hand-rolled BE byte writes in Engine Cert/CertVerify body builders | engine | src/tls13/engine.zig:1412-1426,1469-1478 | #215 | Use std.mem.writeInt(.big); subsumed by Engine deletion | Closed (2026-04-19, 4ae8ac7) |
-| 10 | P3 | 12 | PERF-224: Trace-hook gating may not comptime-resolve | transcript | src/tls13/transcript.zig:161-193 | #223 | Verify DCE; promote handshake_trace_enabled to @import("build_options") | Open |
+| 10 | P3 | 12 | PERF-224: Trace-hook gating may not comptime-resolve | transcript | src/tls13/transcript.zig:78-79 | #223 | Confirmed already-DCE'd: `const = false` at file scope is comptime-known; documented invariant in-file | Closed (2026-04-19, this cycle) |
 
 **ID disambiguation:** User-draft `PERF-217` (NewSessionTicket) and `PERF-218` (PSK-binder) collided with existing GitLab issues #179 and #182 (which reserve those IDs for unrelated findings). Phase 12 filed the new findings as **PERF-227** and **PERF-228** to preserve uniqueness; titles cross-reference the user-draft IDs.
 
@@ -2766,4 +2766,4 @@ Phase 2 scan confirmed 4 existing-issue findings (PERF-216, PERF-213, PERF-208, 
 
 - PERF-212 (#163) remains the bench blocker — `zig build bench` broken locally. **All Phase 12 validation plans are gated on fixing this first.**
 - PERF-220 closure depends on determining whether any non-Engine caller of `signCertificateVerify` exists; Engine deletion may auto-close it.
-- PERF-224 confidence is `suspected` pending objdump verification of release build.
+- PERF-224 closed (2026-04-19): `handshake_trace_enabled` and `secret_trace_enabled` are `const` file-scope `false`, which Zig treats as comptime-known; all `if (flag)` guards are eliminated by LLVM DCE under ReleaseFast/ReleaseSafe. Invariant documented in `src/tls13/transcript.zig:76-85` (extended comment block).

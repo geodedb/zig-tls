@@ -75,6 +75,14 @@ const MESSAGE_HASH_TYPE: u8 = 254;
 
 /// Debug tracing controls (DISABLED for production builds).
 /// Set to true locally when diagnosing handshake flows.
+///
+/// PERF-224: Both flags are `const` at file scope with literal `false`, so
+/// every `if (handshake_trace_enabled)` / `if (secret_trace_enabled)` branch
+/// is a comptime-known dead branch that the Zig compiler fully eliminates
+/// under ReleaseFast/ReleaseSafe (LLVM DCE). Changing these to `var`,
+/// runtime config, or build_options would re-introduce a runtime branch and
+/// invalidate the DCE guarantee. DO NOT promote without also updating the
+/// PERF-224 ledger entry.
 const handshake_trace_enabled = false;
 const secret_trace_enabled = false;
 
