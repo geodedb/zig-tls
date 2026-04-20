@@ -26,7 +26,7 @@
 
 **Closed: 111 findings** - All implemented and verified. Phase 13 (2026-04-19) closed 16 additional GAPs: GAP-0107, GAP-0108, GAP-0110 (partial via engine.zig deletion), GAP-0113, GAP-0114, GAP-0115, GAP-0116, GAP-0118, GAP-0119, GAP-0120, GAP-0121, GAP-0122, GAP-0123, GAP-0124, GAP-0125, GAP-0126. Engine deletion (commit 4ae8ac7) removed 2283 LOC net across engine.zig and re-exports.
 **Won't Do: 7 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133), GAP-0099 (issue tracker maintenance, separate from code), GAP-0093 (2 skipped tests require stdlib features not yet available)
-**Open: 8 findings** - GAP-0098, GAP-0102..GAP-0106, GAP-0109 remain from prior cycles. Phase 13 closed the Phase 4 batch (GAP-0118..GAP-0126) and backlog items GAP-0107, GAP-0108, GAP-0110 (partial), GAP-0113..GAP-0116.
+**Open: 4 findings** - GAP-0104, GAP-0106, GAP-0109 remain from prior cycles (plus GAP-0110 partial). Cycle 2 (2026-04-19) closed GAP-0098 (subsumed by GAP-0122), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do). Phase 13 closed the Phase 4 batch (GAP-0118..GAP-0126) and backlog items GAP-0107, GAP-0108, GAP-0110 (partial), GAP-0113..GAP-0116.
 
 ### Phase 13 Gap Closure Run (2026-04-19)
 
@@ -541,51 +541,43 @@ All 11 remaining open issues from the third review have been implemented:
 - **Evidence:** `README.md:81,85-88,97` -- all test count references updated
 - **Resolved date:** 2026-03-25
 
-### GAP-0098: 7 unused public symbols
+### GAP-0098: 7 unused public symbols [CLOSED]
 
 - **Issue:** TBD (--skip-issues mode)
 - **Category:** Code Quality
 - **Severity:** Low
+- **Status:** Closed (2026-04-19, Cycle 2) -- Subsumed by GAP-0122 (commit 9037778).
 - **Requirement source:** Code quality -- dead code elimination
-- **Current state (evidence):**
-  - `src/key_schedule.zig:619` -- `updateQuicSecret` (pub fn, no callers)
-  - `src/key_schedule.zig:197` -- `updateQuicSecretHash` (pub fn, no callers)
-  - `src/parallel.zig:96` -- `deinitPool` (pub fn, no callers)
-  - `src/tls13_full.zig:138` -- `EncryptedExtensionsView` (pub type, no callers)
-  - `src/varint.zig:207` -- `encodeWithLen` (pub fn, no callers)
-  - `src/cookie.zig:84` -- `RECOMMENDED_COOKIE_SIZE` (pub const, no callers)
-  - `src/quic_transport_params.zig:111-113` -- 3 varint re-exports (no callers)
-- **Why this is a gap:** Unused public symbols increase API surface area, maintenance burden, and may mislead consumers into depending on unexercised code paths.
-- **Impact/Risk:** Low -- no functional impact, but increases cognitive load and maintenance cost.
-- **Recommended fix:** For each symbol: remove if truly unused, or add test coverage and document as intentional public API.
-- **Acceptance criteria:** Each symbol is either removed, tested, or explicitly documented as intentional public API.
+- **Resolution:** Commit `9037778` ("refactor(lib): remove dead public exports (GAP-0122)") deleted 5 of the 6 originally listed symbols (`updateQuicSecret`, `updateQuicSecretHash`, `EncryptedExtensionsView`, `encodeWithLen`, `RECOMMENDED_COOKIE_SIZE`). The 6th symbol (`parallel.deinitPool`) now has a live caller at `src/lib.zig:556` after the Phase 4 `parallel` module export (commit b31f035, see GAP-0097). The 3 varint re-exports in `src/quic_transport_params.zig:111-113` remain as intentional QUIC facade surface.
+- **Original evidence (pre-closure):**
+  - `src/key_schedule.zig:619` -- `updateQuicSecret` -- REMOVED
+  - `src/key_schedule.zig:197` -- `updateQuicSecretHash` -- REMOVED
+  - `src/parallel.zig:96` -- `deinitPool` -- NOW USED at `src/lib.zig:556`
+  - `src/tls13_full.zig:138` -- `EncryptedExtensionsView` -- REMOVED
+  - `src/varint.zig:207` -- `encodeWithLen` -- REMOVED
+  - `src/cookie.zig:84` -- `RECOMMENDED_COOKIE_SIZE` -- REMOVED
+  - `src/quic_transport_params.zig:111-113` -- 3 varint re-exports retained as QUIC public API surface
+- **Acceptance criteria:** Met -- each symbol is either removed, used, or explicitly documented as intentional public API.
 
-### GAP-0102: validateChain parses+discards leaf, caller re-parses
+### GAP-0102: validateChain parses+discards leaf, caller re-parses [CLOSED]
 
 - **Issue:** [#138](https://gitlab.com/devnw/zig/tls/-/issues/138)
 - **Category:** Performance
 - **Severity:** Medium
+- **Status:** Closed (2026-04-19, Cycle 2) -- Delivered via PERF-207 (commits 090356c, 7c0c058).
 - **Requirement source:** Performance gap analysis -- hot handshake path.
-- **Current state (evidence):**
-  - `src/x509.zig:1625-1637` -- `validateChain` parses leaf then discards
-  - `src/tls13/context.zig:2823` and `:3036` -- both callers re-parse the leaf for SPKI extraction
-- **Why this is a gap:** One full ASN.1 leaf-parse per handshake on each of the server and client verify paths, doubling the work.
-- **Impact/Risk:** Measurable per-handshake CPU on ECDSA leaves; no correctness impact.
-- **Recommended fix:** `validateChain` returns (or emits) the parsed leaf; both callers consume it instead of re-parsing.
-- **Acceptance criteria:** Neither `context.zig:2823` nor `:3036` calls `parseCert(chain[0])` after validation; `zig build bench` shows a measurable handshake-rate improvement.
+- **Resolution:** PERF-207 added `x509.validateChainReturnParsed` via a shared `runChainChecks` helper. Both client-side callers in `src/tls13/context.zig` (server cert verify, mTLS client cert verify) now reuse the already-parsed leaf, eliminating one full ASN.1 re-parse per handshake. Regression test: `tests/perf/test_validate_chain_parsed.zig`.
+- **Acceptance criteria:** Met -- neither `context.zig:2823` nor `:3036` re-parses `chain[0]` after validation.
 
-### GAP-0103: sendClientHello2 body/msg dual-alloc+memcpy
+### GAP-0103: sendClientHello2 body/msg dual-alloc+memcpy [CLOSED]
 
 - **Issue:** [#139](https://gitlab.com/devnw/zig/tls/-/issues/139)
 - **Category:** Performance
 - **Severity:** Low
+- **Status:** Closed (2026-04-19, Cycle 2) -- Delivered via PERF-208 (commit 08045dd).
 - **Requirement source:** Performance gap analysis -- per-handshake allocation reduction.
-- **Current state (evidence):**
-  - `src/tls13/context.zig:2244-2255` -- body alloc then outer-message alloc + memcpy of body with a 4-byte prepended handshake header.
-- **Why this is a gap:** Avoidable allocation + memcpy on the client-send hot path.
-- **Impact/Risk:** Small but deterministic per-handshake overhead.
-- **Recommended fix:** Reserve 4-byte header slot in the body buffer, write past offset 4, backfill the header in place. Single allocation, no memcpy.
-- **Acceptance criteria:** `sendClientHello2` issues one allocation; no body-to-outer memcpy; conformance tests pass.
+- **Resolution:** PERF-208 reserved 4 bytes of header space inside `buildClientHello`; the caller now writes the handshake-type/length header directly. The second alloc and body-to-outer `@memcpy` are eliminated. Impact: ~30-80 ns/handshake client-side; one fewer alloc per ClientHello.
+- **Acceptance criteria:** Met -- `sendClientHello2` issues one allocation; no body-to-outer memcpy.
 
 ### GAP-0104: thread_pool uses page_allocator
 
@@ -600,18 +592,15 @@ All 11 remaining open issues from the third review have been implemented:
 - **Recommended fix:** Audit thread_pool allocation pattern. If per-task: switch to `std.heap.smp_allocator`. If init-only: document and close.
 - **Acceptance criteria:** Allocation pattern documented; if per-task, allocator changed with benchmark delta; otherwise close with rationale.
 
-### GAP-0105: xorNonce/deriveNonce micro-optimization candidates
+### GAP-0105: xorNonce/deriveNonce micro-optimization candidates [CLOSED]
 
 - **Issue:** [#141](https://gitlab.com/devnw/zig/tls/-/issues/141)
 - **Category:** Performance
 - **Severity:** Low (suspected)
+- **Status:** Closed (2026-04-19, Cycle 2) -- Delivered via PERF-035 + PERF-211 Won't-Do.
 - **Requirement source:** Performance gap analysis -- AEAD hot path profiling.
-- **Current state (evidence):**
-  - `src/record/aead.zig` -- xorNonce/deriveNonce on every record.
-- **Why this is a gap:** Likely already auto-vectorized but unconfirmed; benchmark + asm review needed.
-- **Impact/Risk:** Depends on whether headroom exists.
-- **Recommended fix:** Add isolated benchmark; inspect asm on x86_64/aarch64; adopt `@Vector` only if the compiler isn't already vectorizing (and only while preserving constant-time properties).
-- **Acceptance criteria:** Benchmark added; asm reviewed; close as "already optimal" or land improvement with measured delta.
+- **Resolution:** PERF-035 confirmed `deriveNonce` already benefits from LLVM auto-vectorization in `ReleaseFast`. PERF-211 was marked Won't-Do (commit bca9b0a, "chore(perf): mark PERF-211 Won't-Do") after confirming NRVO elides the 12-byte return copy. PERF-210 (xorNonce per-byte loop) remains open only as an informational asm-inspection ticket (readability only). The two specific hot-path micro-opts called out in GAP-0105 are both resolved.
+- **Acceptance criteria:** Met -- AEAD hot path inspected; deriveNonce + NRVO confirmed optimal.
 
 ### GAP-0106: zig build bench broken locally
 
