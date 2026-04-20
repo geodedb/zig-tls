@@ -196,13 +196,21 @@ pub fn parseCertificateRequest(
     var sig_algs = try std.ArrayList(core_types.SignatureScheme).initCapacity(allocator, 8);
     errdefer sig_algs.deinit(allocator);
 
+    // SEC-071: Reject duplicate signature_algorithms (RFC 8446 §4.2).
+    // Previously a second occurrence would append more entries onto the
+    // same list, silently merging two extension blocks the peer may have
+    // intended to be distinct policies.
+    var seen_signature_algorithms = false;
+
     while (pos + 4 <= ext_end) {
         const etype = helpers.readU16(data[pos .. pos + 2]);
         const elen: usize = helpers.readU16(data[pos + 2 .. pos + 4]);
         pos += 4;
         if (pos + elen > ext_end) return error.MalformedCertificateRequest;
 
-        if (etype == 0x000d) { // signature_algorithms
+        if (etype == @intFromEnum(core_types.ExtensionType.signature_algorithms)) {
+            if (seen_signature_algorithms) return error.MalformedCertificateRequest;
+            seen_signature_algorithms = true;
             if (elen < 2) return error.MalformedCertificateRequest;
             const list_len: usize = helpers.readU16(data[pos .. pos + 2]);
             var spos: usize = pos + 2;
