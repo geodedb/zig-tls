@@ -334,6 +334,13 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            .name = "sec066_clienthello_dup_ext",
+            .source = "tests/security/sec066_clienthello_dup_ext.zig",
+            .imports = &.{
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
+        .{
             .name = "counting_allocator",
             .source = "src/testing/counting_allocator.zig",
             .imports = &.{},

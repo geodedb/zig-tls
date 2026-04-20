@@ -324,6 +324,12 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
 
     const ext_end = pos + ext_len;
     var psk_seen = false; // RFC 8446 §4.2.11: Track if pre_shared_key was seen
+    // SEC-066: Track which extension types have been seen so duplicates are
+    // rejected. A repeated extension with its own allocated payload would
+    // overwrite the pointer stored by the first copy and leak the prior
+    // allocation. RFC 8446 §4.2: "There MUST NOT be more than one extension
+    // of the same type in a given extension block."
+    var seen_extensions = std.EnumSet(core_types.ExtensionType).initEmpty();
 
     // QUAL-339: ParseCtx threads ch + allocator into per-extension handlers.
     // Handlers only populate fields on `ch`; they never own cleanup or touch
@@ -349,6 +355,12 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
             pos += ext_data_len;
             continue;
         };
+
+        // SEC-066: Reject duplicate extension types (RFC 8446 §4.2).
+        if (seen_extensions.contains(ext)) {
+            return error.DecodeError;
+        }
+        seen_extensions.insert(ext);
 
         // CWE-345: pre_shared_key MUST be the last extension. Any non-PSK
         // extension after a PSK is a protocol violation.
