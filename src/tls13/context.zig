@@ -72,6 +72,8 @@ const key_derivation_mod = @import("key_derivation.zig");
 const messages_mod = @import("messages.zig");
 const finished_mod = @import("finished.zig");
 const cookie_mod = @import("messages/extensions/cookie.zig");
+// QUAL-317: pure cipher-suite / signature-scheme selection helpers.
+const cipher_negotiation = @import("context/cipher_negotiation.zig");
 
 // Note: ApiError and HandshakeError are now imported from types.zig (canonical source).
 // TrafficDirection, BidirSecrets, etc. remain defined here pending further extraction.
@@ -1297,15 +1299,6 @@ pub const Context = struct {
         }
     }
 
-    fn chooseCipherSuite(self: *const Context, offered: []const tls13_full.CipherSuite) ?tls13_full.CipherSuite {
-        for (self.config.supported_cipher_suites) |supported| {
-            for (offered) |candidate| {
-                if (supported == candidate) return supported;
-            }
-        }
-        return null;
-    }
-
     // PERF-218: `pub` visibility so regression test
     // (tests/perf/test_alpn_server_borrow.zig) can call directly and assert
     // both the allocation-count delta and the borrow-vs-own pointer identity.
@@ -1338,24 +1331,6 @@ pub const Context = struct {
             }
         }
         return HandshakeError.AlpnNegotiationFailed;
-    }
-
-    fn selectServerSignatureScheme(self: *Context, client: ClientHelloView) !tls13_full.SignatureScheme {
-        const server_list = self.config.supported_signature_schemes;
-        if (server_list.len == 0) return HandshakeError.NoSignatureScheme;
-
-        const client_list = client.signature_algorithms orelse return HandshakeError.NoSignatureScheme;
-        self.negotiated_signature = null;
-
-        for (server_list) |candidate| {
-            for (client_list) |offered| {
-                if (candidate == offered) {
-                    self.negotiated_signature = candidate;
-                    return candidate;
-                }
-            }
-        }
-        return HandshakeError.NoSignatureScheme;
     }
 
     fn ensureLocalTransportParameters(self: *Context) ![]const u8 {
@@ -1817,12 +1792,27 @@ pub const Context = struct {
     /// Returns null when an HRR was sent (caller should return immediately).
     fn negotiateCipherAndKeys(self: *Context) !?ServerNegotiationResult {
         const ch_view = self.state.clientHello() orelse return HandshakeError.UnexpectedMessage;
-        const cipher_suite = self.chooseCipherSuite(ch_view.cipher_suites) orelse return HandshakeError.NoCipherSuite;
+        const cipher_suite = cipher_negotiation.chooseCipherSuite(
+            ch_view.cipher_suites,
+            self.config.supported_cipher_suites,
+        ) orelse return HandshakeError.NoCipherSuite;
         self.hash_kind = cipherSuiteHash(cipher_suite);
         self.negotiated_cipher_suite = cipher_suite;
         // PERF-004: Lock transcript to the negotiated hash for the server path.
         self.transcripts.handshake.lockHash(self.hash_kind);
-        _ = try self.selectServerSignatureScheme(ch_view);
+
+        // QUAL-317: signature-scheme selection is now a pure helper. The
+        // shell (Context) owns the mutation of `self.negotiated_signature`.
+        // Preserve original semantics exactly: reset to null on entry,
+        // require a non-empty server list and a non-null peer list, then
+        // assign on successful overlap.
+        if (self.config.supported_signature_schemes.len == 0) return HandshakeError.NoSignatureScheme;
+        const peer_sig_schemes = ch_view.signature_algorithms orelse return HandshakeError.NoSignatureScheme;
+        self.negotiated_signature = null;
+        self.negotiated_signature = cipher_negotiation.chooseSignatureScheme(
+            peer_sig_schemes,
+            self.config.supported_signature_schemes,
+        ) orelse return HandshakeError.NoSignatureScheme;
 
         // RFC 8446 §4.1.4: Check if client's key_share group is supported
         if (ch_view.key_share.group != .x25519) {
