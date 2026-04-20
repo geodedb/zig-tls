@@ -1964,9 +1964,29 @@ pub fn validateChainReturnParsed(
 
     var certs = try alloc.alloc(Certificate, chain_der.len);
     defer alloc.free(certs);
+
+    // SEC-073: `parsed_count` is the state variable of a small 3-state
+    // ownership machine. Prior code left the invariants implicit; spell
+    // them out so future edits do not inadvertently break cleanup.
+    //
+    //   State A  parsed_count == 0                  nothing heap-owned by us.
+    //   State B  0 < parsed_count <= chain_der.len  certs[0..parsed_count]
+    //            are heap-owned; errdefer frees them.
+    //   State C  parsed_count == 0 AFTER success    ownership of certs[0]
+    //            transferred to caller; certs[1..] already freed. errdefer
+    //            runs but is a no-op because the slice is empty.
+    //
+    // Transitions:
+    //   A -> B: loop below parses each cert and increments parsed_count.
+    //   B -> B: continues until the whole chain is parsed.
+    //   B -> C: success path moves leaf out, frees intermediates, resets
+    //           parsed_count to 0 so the errdefer above runs harmlessly if
+    //           a later statement fails. Any fallible statement added
+    //           AFTER the reset MUST NOT assume `certs[0]` is still owned.
     var parsed_count: usize = 0;
     errdefer {
-        // On error, free all parsed certs including leaf.
+        // On error, free all parsed certs including leaf. Guarded by
+        // parsed_count which encodes the ownership state above.
         for (certs[0..parsed_count]) |c| c.deinit(alloc);
     }
 
@@ -1990,7 +2010,9 @@ pub fn validateChainReturnParsed(
             certs[i].deinit(alloc);
         }
     }
-    // Prevent errdefer from re-freeing: mark as released.
+    // SEC-073 state transition B -> C: mark that ownership of the remaining
+    // (leaf-only) entry has transferred to the caller, so the errdefer above
+    // treats the chain as cleanup-complete.
     parsed_count = 0;
 
     return leaf;
