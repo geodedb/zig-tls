@@ -78,6 +78,35 @@ pub const ExtHandler = struct {
 };
 
 // ============================================================================
+// server_name (RFC 6066 §3) — SNI hostname
+// ============================================================================
+
+fn parseServerName(ctx: *ParseCtx, data: []const u8) anyerror!void {
+    if (data.len >= 5) {
+        const list_len = helpers.readU16(data[0..2]);
+        if (list_len > 0 and data.len >= 5) {
+            const name_type = data[2];
+            if (name_type == 0) { // host_name
+                const name_len = helpers.readU16(data[3..5]);
+                if (5 + name_len <= data.len) {
+                    ctx.ch.server_name = data[5 .. 5 + name_len];
+                }
+            }
+        }
+    }
+}
+
+fn buildServerName(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    // The current buildClientHello does NOT emit server_name (the extension is
+    // managed by higher layers via Params only when a concrete hostname is
+    // supplied). Preserve that behavior: skip entirely. Keeping the handler
+    // slot so the table structure is uniform.
+    _ = ctx;
+    _ = out;
+    _ = alloc;
+}
+
+// ============================================================================
 // supported_versions (RFC 8446 §4.2.1) — REQUIRED for TLS 1.3
 // ============================================================================
 
@@ -101,5 +130,10 @@ fn buildSupportedVersions(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.me
 // in sequence and emits each extension's bytes.
 // ============================================================================
 pub const HANDLERS: []const ExtHandler = &.{
+    // Build-order (RFC 8446 §4.2) authoritative:
     .{ .tag = .supported_versions, .parse = parseSupportedVersions, .build = buildSupportedVersions },
+    // Parse-only extensions that have no build emission live at the tail
+    // (before pre_shared_key). Their relative order among themselves is
+    // inconsequential because their build handlers are no-ops.
+    .{ .tag = .server_name, .parse = parseServerName, .build = buildServerName },
 };
