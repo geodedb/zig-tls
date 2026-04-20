@@ -35,7 +35,7 @@ repos:
 
       # Security
   - id: detect-private-key
-    exclude: ^(certs/test_.*\.pem$|tests/fixtures/.*\.(pem|key)$|tests/data/mock_.*\.pem$|\.gitleaks\.toml$)
+    exclude: ^(certs/test_.*\.pem$|tests/fixtures/.*\.(pem|key)$|tests/data/mock_.*\.pem$|tests/test_certs/.*\.(pem|key)$|specs/.*\.txt$|\.gitleaks\.toml$)
   - id: check-added-large-files
     args: [--maxkb=1024]
     exclude: ^(vendor/|dist/)
