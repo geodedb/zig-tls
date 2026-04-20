@@ -2546,17 +2546,38 @@ zig build bench -Doptimize=ReleaseFast
 
 ---
 
-### PERF-209: ThreadPool uses page_allocator (P3, suspected)
+### PERF-209: ThreadPool uses page_allocator (P3, measured)
 
 **PerfScore:** 2.0
 
-**Summary:** Global `tp.ThreadPool` initialized with `std.heap.page_allocator`. If upstream `submit()` allocates per task, this path hits mmap/munmap syscalls in steady state.
+**Summary:** Global `tp.ThreadPool` initialized with `std.heap.page_allocator`. Measured impact under a 10_000-job parallel-verify-like workload: `page_allocator` is consistently slower than `c_allocator` by ~20-40% wall-time, and shows ~140 minor page faults per 10k jobs while `c_allocator` and `smp_allocator` show zero. The fault count (14 per 1000 jobs) is under the 100-per-1000 threshold, but the wall-time delta is above the 20% threshold, so this finding stays **Open** with a concrete follow-up.
 
 **Evidence:** `src/parallel.zig:78`
 
-**Fix:** Audit vendored `thread_pool`. If per-task alloc, switch to `smp_allocator` or per-worker pool. If upstream already pools, close with confidence note.
+**Reproducer:** `zig build bench-threadpool -Doptimize=ReleaseFast` (commit `88e4968`, `tests/perf/bench_threadpool_alloc.zig`). Representative output across three runs on Zig 0.16.0 Linux x86_64 (ReleaseFast, 10_000 SHA-256 tasks, 256 B payload):
 
-**Confidence:** `confidence::suspected` -- needs upstream inspection.
+```text
+# allocator               wall_ns   d_majflt   d_minflt    d_maxrss_KB
+  page_allocator       33 - 48 M         +0     +136 to +154       +0
+  smp_allocator        33 - 41 M         +0          +0            +0
+  c_allocator          26 - 31 M         +0          +0            +0
+```
+
+- `c_allocator` ~20-40% faster than `page_allocator` (ReleaseFast, 10k jobs)
+- `page_allocator` produces 136-154 minor page faults; other allocators produce 0
+- No major page faults in any run; peak RSS delta is 0 for all three (workload stays resident)
+
+**Decision (Cycle 3):** Leave PERF-209 **Open**. Wall-time delta exceeds the 20% decision-gate threshold.
+
+**Fix:** Switch `global_pool` initialisation at `src/parallel.zig:78` from `std.heap.page_allocator` to `std.heap.smp_allocator`. Rationale:
+
+- `smp_allocator` matches or beats `page_allocator` wall-time and shows zero page faults.
+- Unlike `c_allocator`, it does not require linking libc into consumers that do not otherwise need it — keeping the library pure-Zig for embedded / freestanding downstreams.
+- Drop-in (both are `std.mem.Allocator`); no API change for callers.
+
+Follow-up tracked as `PERF-209-followup` in the Cycle 4 queue. No test-count change expected; `tests/perf/bench_threadpool_alloc.zig` can be used pre- and post-fix to confirm the wall-time delta closes.
+
+**Confidence:** `confidence::measured` (Cycle 3, commit `88e4968`).
 
 ---
 
