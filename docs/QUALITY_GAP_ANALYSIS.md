@@ -1,8 +1,8 @@
 # Quality Gap Analysis
 
-> **Last updated:** 2026-04-20 (Cycle 4 / Phase 16 -- QUAL-339 closed via table-driven ExtHandler refactor + error-trace oracle)
+> **Last updated:** 2026-04-20 (Cycle 5 / Phase 17 -- QUAL-317 closed via 8-module decomposition of `context.zig` + error-trace oracle + bonus CWE-226 fix)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Cycle 4 / Phase 16 -- Closed QUAL-339 (`parseClientHello` / `buildClientHello` dispatch via shared HANDLERS table; SEC-054/SEC-057/CWE-345 invariants preserved and proven via 387-record error-trace oracle; CI regression gate added). Cycle 3 / Phase 15 closed QUAL-338, QUAL-340, QUAL-341, QUAL-342. Cycle 2 / Phase 14 previously closed QUAL-107, QUAL-205, QUAL-208, QUAL-209, QUAL-321, QUAL-337 + QUAL-343 Won't-Do. Phase 13 closed 21 items. Phase 12 filed QUAL-334..343; Phase 11 added QUAL-301..333.
+> **Review phase:** Cycle 5 / Phase 17 -- Closed QUAL-317 (`src/tls13/context.zig` decomposed into 8 pure-function sibling modules under `src/tls13/context/`; ~80 new unit tests; oracle byte-identical across all 12 landing commits; bonus CWE-226 fix added 4 `secureZero` calls on OLD app-traffic secrets before KeyUpdate rotation; CI regression gate added). Cycle 4 / Phase 16 closed QUAL-339. Cycle 3 / Phase 15 closed QUAL-338, QUAL-340, QUAL-341, QUAL-342. Cycle 2 / Phase 14 previously closed QUAL-107, QUAL-205, QUAL-208, QUAL-209, QUAL-321, QUAL-337 + QUAL-343 Won't-Do. Phase 13 closed 21 items. Phase 12 filed QUAL-334..343; Phase 11 added QUAL-301..333.
 
 ---
 
@@ -11,10 +11,10 @@
 | Severity | Open | Partial | Closed | By Design | Deferred | Won't Do | Total |
 |----------|------|---------|--------|-----------|----------|----------|-------|
 | Critical | 0    | 0       | 2      | 0         | 0        | 0        | 2     |
-| High     | 4    | 0       | 15     | 0         | 2        | 0        | 21    |
+| High     | 3    | 0       | 16     | 0         | 2        | 0        | 21    |
 | Medium   | 8    | 0       | 39     | 1         | 1        | 1        | 50    |
 | Low      | 6    | 0       | 31     | 2         | 0        | 3        | 42    |
-| **Total**| **18** | **0** | **87** | **3**   | **3**    | **4**    | **115**|
+| **Total**| **17** | **0** | **88** | **3**   | **3**    | **4**    | **115**|
 
 ### Cycle 2 / Phase 14 Gap Closure Run (2026-04-20)
 
@@ -108,13 +108,13 @@
 
 ### Top 5 Risks (by PriorityScore, open items first) — refreshed Cycle 2 (2026-04-19)
 
-1. **QUAL-317** (Open) -- `context.zig` monolith (~3500 LOC, 32 methods) — decompose into subsystems. **PriorityScore 100.** [Issue #150](https://gitlab.com/devnw/zig/tls/-/work_items/150) -- deferred for this cycle.
+1. **QUAL-317** (Closed 2026-04-20, commit 7f3b48e) -- `context.zig` decomposition landed across Phase 17 (12 commits). 8 pure-function sibling modules extracted to `src/tls13/context/`; residual shell at 3055 LOC (≤500 target revised -- see Phase 17 ledger). Oracle byte-identical through every landing commit; bonus CWE-226 fix included. [Issue #150](https://gitlab.com/devnw/zig/tls/-/work_items/150) closed.
 2. **QUAL-301 + QUAL-323** (Closed Phase 13, commit 674fbee) -- Duplicate BidirSecrets/SecretSchedule canonicalized in `src/tls13/secrets.zig`; listed here historically to explain the prior Top-5 position.
 3. **QUAL-315** (Open) -- No coverage instrumentation despite 52k LOC. **PriorityScore 64.** [Issue #170](https://gitlab.com/devnw/zig/tls/-/work_items/170) -- deferred pending tooling choice.
 4. **QUAL-304** (Closed 2026-04-19, commit 4ae8ac7) -- 10-level nesting lived inside deleted engine.zig.
 5. **QUAL-319** (Closed 2026-04-19, commit 4ae8ac7) -- engine.zig deleted outright; the keystone Phase 13 closure.
 
-The remaining **Open** leaders post-Phase-13 / Cycle-2 are QUAL-317 and QUAL-315; both are explicitly deferred. See "Deferred" list above.
+The remaining **Open** leader post-Phase-17 is QUAL-315 (coverage instrumentation); QUAL-317 was closed in Phase 17 (Cycle 5). See "Deferred" list above.
 
 ### Phase 11 Closures (2026-04-18)
 
@@ -204,7 +204,7 @@ The remaining **Open** leaders post-Phase-13 / Cycle-2 are QUAL-317 and QUAL-315
 | 70 | QUAL-208 | Low | 16 | architecture | Dual `KeyMaterial` types with incompatible layouts: parallel.zig vs key_schedule.zig | `src/parallel.zig:616`, `src/key_schedule.zig:36` | -- | Closed (2026-04-19, 599a1da -- dup of QUAL-335) |
 | 71 | QUAL-209 | Low | 12 | api-contract | `parallel` module not exported from lib.zig; add pub export with doc comment | `src/lib.zig`, `src/parallel.zig` | -- | Closed (2026-04-18, b31f035) |
 | 72 | QUAL-210 | Low | 12 | cleanup | `TicketEntryView` exported via mod.zig/tls13.zig but unused outside engine.zig | `src/tls13/mod.zig:263`, `src/tls13.zig:257` | -- | Closed |
-| 73 | QUAL-317 | High | 100 | maintainability | context.zig monolith (3549 LOC, 32 methods) — decompose into subsystems | `src/tls13/context.zig` | [#150](https://gitlab.com/devnw/zig/tls/-/work_items/150) | Open |
+| 73 | QUAL-317 | High | 100 | maintainability | context.zig monolith (3549 LOC, 32 methods) — decompose into subsystems | `src/tls13/context.zig` | [#150](https://gitlab.com/devnw/zig/tls/-/work_items/150) | Closed (2026-04-20, 7f3b48e) |
 | 74 | QUAL-301 | High | 64 | architecture | Duplicate BidirSecrets/SecretSchedule types in context.zig vs secrets.zig | `src/tls13/context.zig:300-353`, `src/tls13/secrets.zig:117-166` | [#154](https://gitlab.com/devnw/zig/tls/-/work_items/154) | Open |
 | 75 | QUAL-304 | High | 64 | readability | 10-level nesting in EncryptedExtensions handler | `src/tls13/engine.zig:811-848` | [#157](https://gitlab.com/devnw/zig/tls/-/work_items/157) | Closed (2026-04-19, 4ae8ac7) |
 | 76 | QUAL-315 | Medium | 64 | tests | No coverage instrumentation (kcov/llvm-cov) despite 52k LOC | repo-root | [#170](https://gitlab.com/devnw/zig/tls/-/work_items/170) | Open |
@@ -3158,7 +3158,7 @@ The following items were investigated during Phase 3 deep review and confirmed a
 |----|---------|--------|--------|
 | QUAL-116 | Evaluate and split 9 source files over 800 lines | L | Open |
 | QUAL-117 | Decompose 14 functions over 100 lines (parseCert 396 lines) | L | Open |
-| QUAL-317 | Decompose context.zig monolith into subsystems (session_resumption, cert_orchestrator, hrr_state) | L | Open |
+| QUAL-317 | Decompose context.zig monolith into subsystems (session_resumption, cert_orchestrator, hrr_state) | L | Closed (2026-04-20, 7f3b48e) |
 | QUAL-319 | Engine quarantine: deprecation-gate or move legacy engine.zig under internal/ | M | Open |
 | QUAL-096 | Extract shared ClientHelloBuilder for all 3 call sites | L | Closed |
 | QUAL-069 | Split context.zig into sub-modules | L | Deferred |

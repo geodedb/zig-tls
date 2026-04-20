@@ -886,3 +886,49 @@ Pre-existing pre-commit hook failures on files not touched by this run are flagg
 - **Category:** Performance
 - **Resolution:** Closed via PERF-209 (commit 24a275c). GAP-0104 was originally filed as a "needs reproducer" finding; Cycle 3 built the reproducer (`tests/perf/bench_threadpool_alloc.zig`) and promoted the finding to a measured closure. See PERF-209 above for allocator-swap evidence.
 - **Resolved date:** 2026-04-20
+
+## Phase 17 Closures (2026-04-20)
+
+### QUAL-317 — `context.zig` decomposition
+
+**Closing commit:** 7f3b48e
+**LOC delta:** `src/tls13/context.zig` 3426 → 3055 (original plan
+target ≤500; revised to ~3055 due to orchestrator constraint —
+see below).
+**New modules:** 8 pure-function files under `src/tls13/context/`
+totaling ~2600 LOC + ~80 new unit tests.
+
+**Architectural constraint discovered during implementation:** three
+stateful orchestrators (`negotiateCipherAndKeys`, `emitServerFlight`,
+`driveServerHandshakeFlight`) mutate ≥20 Context fields each. Wrapping
+them behind pure APIs would require state slices that defeat the
+purpose. These remain in the shell as documented adapters. Target
+revised from "≤500 LOC" to "extract every pure-testable helper" —
+achieved at 3055 LOC.
+
+**Security invariants preserved verbatim** (oracle byte-identical
+across all 12 landing commits):
+
+- `secureZero` on secret replacement stays in shell
+- `timing_safe.compare` on PSK binder colocated in `psk_selection.zig`
+- SEC-054 errdefer unchanged
+- SEC-057 `std.enums.fromInt` guards preserved
+- RFC 8446 §4.4.1 transcript transformation (HRR)
+- RFC 8446 §4.4.3 CertificateVerify context strings
+- RFC 8446 §4.6.3 KeyUpdate semantics + reciprocal-loop break
+- RFC 8446 §7.2 traffic-secret rotation
+
+**Bonus security hardening** (discovered during extraction):
+
+- **CWE-226 fix**: Task 9 added 4 new `secureZero` calls on OLD
+  app-traffic secrets before KeyUpdate installs new ones. Pre-refactor
+  KU paths had zero zeroization — secrets silently persisted in
+  memory after rotation. Strictly additive (oracle byte-identical).
+
+**Test count delta:** ~591 → 659 pass (across all 12 commits).
+
+**CI regression gate:** `.gitlab-ci.yml:context_decomp_oracle` runs
+every pipeline and cmps against the committed golden file.
+
+Closes QUAL-317 (BLOCKED at Cycle 3, design brainstormed 2026-04-20,
+delivered Phase 17).
