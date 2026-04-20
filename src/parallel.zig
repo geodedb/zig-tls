@@ -375,15 +375,20 @@ fn verifySignature(input: SignatureVerifyInput) SignatureVerifyResult {
     }
 }
 
-/// GAP-0109: Shared RSA-PSS verify body used by both `rsa_pss_rsae_sha256`
-/// and `rsa_pss_rsae_sha384`. The two switch arms were byte-for-byte
-/// identical apart from the SHA variant; this helper takes the hash type
-/// as a `comptime` so each call site monomorphizes to a fully-inlined copy
-/// while the source-level duplication is gone. All input validation, SPKI
-/// parsing, modulus-length dispatch, and error-code mapping are shared.
+/// GAP-0109: RSA-PSS verification dispatcher shared by the parallel-verify
+/// path's `rsa_pss_rsae_sha256` and `rsa_pss_rsae_sha384` arms.
 ///
-/// Canonicalization with `sig.zig:rsa_pss_verify_sha*` is tracked separately
-/// (those return `!bool`; this path returns `SigResult{valid, error_code}`).
+/// Now a thin wrapper over `sig.rsaPssVerifyGeneric(HashT, ...)` — the
+/// canonical comptime-generic RSA-PSS core. Collapses the previous
+/// inline SPKI-parse / modulus-strip / exponent-pack / inline-switch
+/// recipe (duplicated with `sig.rsa_pss_verify_sha256`) onto one
+/// implementation, so future hardening only has to touch `src/sig.zig`.
+///
+/// Error-code mapping preserved for callers of `verifySignature`:
+///   - allocator failure in `parseRsaSpki`  → error_code 3
+///   - generic verification failure         → error_code 4
+///   - success                              → valid=true, error_code=null
+///
 /// Exposed `pub` so the GAP-0109 differential fuzz harness
 /// (`tests/fuzz/rsa_pss_verify.zig`) can drive it alongside
 /// `sig.rsa_pss_verify_sha256`. Internal callers go through
@@ -393,35 +398,15 @@ pub fn verifyRsaPssWithHash(
     input: SignatureVerifyInput,
     alloc: std.mem.Allocator,
 ) SignatureVerifyResult {
-    const rsa = std.crypto.Certificate.rsa;
-    var spki = sigmod.parseRsaSpki(input.public_key_der, alloc) catch
-        return .{ .valid = false, .error_code = 3 };
-    defer spki.deinit();
-    // Strip leading zero from modulus (ASN.1 sign padding).
-    const modulus_raw = spki.modulus;
-    const modulus_offset = for (modulus_raw, 0..) |byte, i| {
-        if (byte != 0) break i;
-    } else modulus_raw.len;
-    const modulus = modulus_raw[modulus_offset..];
-    var exp_buf: [8]u8 = undefined;
-    std.mem.writeInt(u64, &exp_buf, spki.exponent, .big);
-    const exp_offset = for (exp_buf, 0..) |byte, i| {
-        if (byte != 0) break i;
-    } else exp_buf.len - 1;
-    const exponent = exp_buf[exp_offset..];
-    if (exponent.len > modulus.len or input.signature.len != modulus.len) {
-        return .{ .valid = false, .error_code = 2 };
-    }
-    switch (modulus.len) {
-        inline 128, 256, 384, 512 => |modulus_len| {
-            const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch
-                return .{ .valid = false, .error_code = 3 };
-            rsa.PSSSignature.verify(modulus_len, input.signature[0..modulus_len].*, input.signed_data, public_key, HashT) catch
-                return .{ .valid = false, .error_code = 4 };
-            return .{ .valid = true, .error_code = null };
-        },
-        else => return .{ .valid = false, .error_code = 2 },
-    }
+    const ok = sigmod.rsaPssVerifyGeneric(
+        HashT,
+        input.public_key_der,
+        input.signed_data,
+        input.signature,
+        alloc,
+    ) catch return .{ .valid = false, .error_code = 3 };
+    if (!ok) return .{ .valid = false, .error_code = 4 };
+    return .{ .valid = true, .error_code = null };
 }
 
 // ============================================================================
