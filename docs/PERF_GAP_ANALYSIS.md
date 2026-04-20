@@ -124,7 +124,7 @@
 
 **New Real Findings:**
 
-- PERF-201 (P1): ClientHelloInfo.parse double-allocation -- ~16 allocs per ClientHello, 6 freed immediately. Supersedes PERF-032 scope.
+- PERF-201 (P1 -> Closed 2026-04-18): ClientHelloInfo.parse double-allocation resolved by refactor to borrowed slices; 8 -> 4 allocs (page_allocator) / <=7 (testing allocator). See line 195 detail.
 - PERF-202 (P2): sendKeyUpdate allocates 5-byte buffer via encodeHandshake. Fix: use stack buffer.
 - PERF-203 (P2): HRR client path uses allocating encodeHandshake at context.zig:1532. Fix: encodeHandshakeBuf.
 - PERF-204 (P2): HRR server path same issue at context.zig:1649. Fix: encodeHandshakeBuf.
@@ -2352,7 +2352,7 @@ zig build bench -Doptimize=ReleaseFast
 | PERF-013 | P1 | 10+ alloc/free cycles per server flight | Closed |
 | PERF-014 | P1 | Unbounded CryptoBuffer inbound growth | Closed |
 | PERF-015 | P1 | Double buffer copy in ClientHello construction | Closed |
-| PERF-201 | P1 | ClientHelloInfo.parse double-allocation (~16 allocs per CH) | **Open** |
+| PERF-201 | P1 | ClientHelloInfo.parse double-allocation (~16 allocs per CH) | Closed (2026-04-18, commits 06842ba, 65a553f) |
 | PERF-007 | P2 | ServerHello builder zero-capacity ArrayLists | Closed |
 | PERF-008 | P2 | CryptoBuffer.consume O(n) memmove | Closed |
 | PERF-009 | P2 | empty_hash recomputed in key derivation | Closed |
@@ -2452,7 +2452,7 @@ zig build bench -Doptimize=ReleaseFast
 | PERF-023 | 2 days | ~150ns/handshake -- direct-write encodeHandshake variant | **Open** |
 | PERF-027 | 1 day | DoS prevention -- max chain depth in validateChain | Closed |
 | PERF-029 | 3 days | Validation infrastructure -- expand bench.zig with 7 critical benchmarks | Closed |
-| PERF-201 | 2 days | ~1-3us/connection -- refactor parseClientHello to return borrowed slices, eliminate double alloc | **Open** |
+| PERF-201 | 2 days | ~1-3us/connection -- refactor parseClientHello to return borrowed slices, eliminate double alloc | Closed (2026-04-18, commits 06842ba, 65a553f) |
 | PERF-036 | 1 day | ~90-300ns/handshake -- offset-based O(1) consume for context.zig CryptoBuffer | Closed (2026-04-19) |
 | PERF-038 | 1 day | ~2-4us/mTLS handshake -- zero-alloc client flight encoding | **Closed** |
 | PERF-042 | 1 day | ~100-400ns/handshake -- single contiguous buffer for cert chain | **Closed** |
