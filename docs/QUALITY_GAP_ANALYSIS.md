@@ -2748,7 +2748,7 @@ For the most critical paths (`negotiated_cipher_suite`, `server_secret_generated
 
 ---
 
-### QUAL-208 -- Dual `KeyMaterial` types with incompatible layouts
+### QUAL-208 -- Dual `KeyMaterial` types with incompatible layouts [CLOSED]
 
 - **ID:** QUAL-208
 - **Severity:** Low
@@ -2759,11 +2759,13 @@ For the most critical paths (`negotiated_cipher_suite`, `server_secret_generated
 
 **File locations:**
 
-- `src/parallel.zig:616` -- `KeyMaterial` with `key: [32]u8`, `iv: [12]u8`, `hp_key: [32]u8`, `key_len: usize`
-- `src/key_schedule.zig:36` -- `KeyMaterial` with `key: [16]u8`, `iv: [12]u8`, `hp: [16]u8`
+- `src/parallel.zig:600` -- `DerivedKeyMaterial` (renamed from `KeyMaterial` in Phase 13, commit 599a1da) with `key: [32]u8`, `iv: [12]u8`, `hp_key: [32]u8`, `key_len: usize`
+- `src/key_schedule.zig:36` -- `KeyMaterial` with `key: [16]u8`, `iv: [12]u8`, `hp: [16]u8` (canonical)
+
+**Status:** Closed (2026-04-19, Cycle 2) -- duplicate of QUAL-335 which delivered the rename.
 
 **Description:**
-Two types named `KeyMaterial` exist with incompatible layouts:
+Originally flagged two types named `KeyMaterial` with incompatible layouts:
 
 ```zig
 // parallel.zig:616
@@ -2802,18 +2804,20 @@ Option 2 is lower risk since the parallel module is not yet exported.
 
 ---
 
-### QUAL-209 -- `parallel` module not exported from lib.zig
+### QUAL-209 -- `parallel` module not exported from lib.zig [CLOSED]
 
 - **ID:** QUAL-209
 - **Severity:** Low
 - **PriorityScore:** 12 (Impact 1.5 x Likelihood 2 x 4)
 - **Category:** `api-contract`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** Closed (Phase 11, commit b31f035) -- verified in Cycle 2 (2026-04-19).
 
-**File locations:**
+**Resolution:** `src/lib.zig:414` now contains `pub const parallel = @import("parallel");` with a doc-comment referencing the public helpers. A smoke test at `src/lib.zig:550-556` proves the re-export works end-to-end and exercises `parallel.getPool` + `parallel.deinitPool`. Commit: `b31f035`.
 
-- `src/lib.zig` -- no `parallel` import or re-export
+**File locations (post-closure):**
+
+- `src/lib.zig:414` -- `pub const parallel = @import("parallel");` (doc-commented)
 - `src/parallel.zig` -- module exists with public API
 
 **Description:**
