@@ -1182,9 +1182,9 @@ return try self.outbox.toOwnedSlice(alloc);
 
 ---
 
-### PERF-023: encodeHandshake Always Allocates New Buffer (P2)
+### PERF-023: encodeHandshake Always Allocates New Buffer (P2) [CLOSED]
 
-**Status: Closed (2026-04-19, commit 4ae8ac7)** -- Subsumed by engine.zig deletion. All engine-side call sites of `encodeHandshake` removed with the file. Remaining callers in `src/tls13/messages.zig` are off-hot-path; context.zig uses the zero-alloc `appendOutboundFramed` variant (closed previously as PERF-038).
+**Status: Closed (2026-04-19, commit 4ae8ac7)** -- Subsumed by engine.zig deletion. All engine-side call sites of `encodeHandshake` removed with the file. Remaining callers in `src/tls13/messages.zig` are off-hot-path; context.zig uses the zero-alloc `appendOutboundFramed` variant (closed previously as PERF-038). Explicitly marked [CLOSED] in the header in Cycle 2 (2026-04-19) so the ledger summary counts reflect resolution.
 
 **PerfScore:** 11 (Impact: 2 x Likelihood: 3 x 4 = 24, scaled to 11 per Phase 3 scoring)
 
