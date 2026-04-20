@@ -2067,7 +2067,9 @@ pub const Context = struct {
                 const selected_version = readU16(body[pos .. pos + 2]);
                 if (selected_version != 0x0304) return HandshakeError.UnsupportedVersion;
                 found_supported_versions = true;
-            } else if (etype == 0x0033) { // key_share
+            } else if (etype == @intFromEnum(tls13_full.ExtensionType.key_share)) {
+                // RFC 8446 §4.2.8: ServerHello key_share contains the selected
+                // group and the server's ECDHE public key.
                 if (elen < 4 + 32) return HandshakeError.MissingKeyShare;
                 const group = readU16(body[pos .. pos + 2]);
                 const klen = readU16(body[pos + 2 .. pos + 4]);

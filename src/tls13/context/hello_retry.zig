@@ -112,12 +112,12 @@ pub fn parseHelloRetryRequest(body: []const u8) !HrrParsed {
         pos += 4;
         if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
 
-        // RFC 8446 §4.2.2: cookie extension (0x002c)
-        if (etype == 0x002c) {
+        // RFC 8446 §4.2.2: cookie extension.
+        if (etype == @intFromEnum(tls13_full.ExtensionType.cookie)) {
             cookie = body[pos .. pos + elen];
         }
         // RFC 8446 §4.2.8: key_share HRR variant — 2-byte selected_group.
-        else if (etype == 0x0033) {
+        else if (etype == @intFromEnum(tls13_full.ExtensionType.key_share)) {
             if (elen == 2) {
                 const group_val = readU16(body[pos .. pos + 2]);
                 selected_group = std.enums.fromInt(tls13_full.NamedGroup, group_val);
