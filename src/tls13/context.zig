@@ -2411,8 +2411,23 @@ pub const Context = struct {
             .allow_empty = false,
         });
         const storage = result.storage.?;
-        // No errdefer needed: all operations below are infallible, so storage
-        // ownership transfers into Context fields without a failure window.
+
+        // QUAL-356: Ownership transfer below relies on every statement being
+        // infallible so we can skip `errdefer`. If you add a fallible call
+        // (anything returning `!T`, `!!T`, allocations, I/O, or a function
+        // that calls such) between here and the final `traceHandshake`, you
+        // MUST add an `errdefer` that frees `storage.chain`, `storage.buf`,
+        // `storage.ocsp_response`, and `storage.sct_list` to avoid leaking
+        // the freshly parsed chain on error. The helpers below are
+        // verified-infallible:
+        //   - `self.freePeerCertChain()` -- frees heap and nulls fields, no alloc.
+        //   - plain pointer-field assignments.
+        //   - `std.mem.Allocator.free` (infallible by contract).
+        //   - `traceHandshake` (wraps `std.debug.print`, infallible).
+        //
+        // This invariant is enforced at review time; compile-time enforcement
+        // would require a dedicated "infallible block" wrapper which Zig
+        // does not currently express. See QUAL-356.
 
         // Free any previously stored chain before swapping in the new one.
         self.freePeerCertChain();
