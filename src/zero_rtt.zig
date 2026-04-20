@@ -243,6 +243,11 @@ pub fn AntiReplayWindowSized(comptime size: usize) type {
         randoms: [window_size][32]u8 = undefined, // Fixed-size FIFO buffer
         count: usize = 0, // Total randoms added (wraps for FIFO index)
         allocator: std.mem.Allocator, // Reserved for future heap-based extensions
+        /// SEC-067: Protects contains()+insert in `add` so two threads cannot
+        /// both pass the contains() check and race past the insert, leaving
+        /// a replayed ClientHello recorded only once. `contains` remains
+        /// lock-free for read-only uses but `add` acquires the mutex.
+        mutex: std.Io.Mutex = .init,
 
         /// Initialize an empty anti-replay window.
         ///
@@ -334,6 +339,14 @@ pub fn AntiReplayWindowSized(comptime size: usize) type {
         /// `error.ReplayDetected`, the server MUST reject the 0-RTT attempt and
         /// treat the connection as a regular 1-RTT handshake.
         pub fn add(self: *Self, random: [32]u8) !void {
+            // SEC-067: Serialize the check-then-insert sequence. Without the
+            // mutex two threads could both observe `contains == false`,
+            // each reach the insert, and silently accept a replayed
+            // ClientHello (violating RFC 8446 §8.1 single-use guarantee).
+            const io = std.Io.Threaded.global_single_threaded.io();
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
+
             if (self.contains(random)) {
                 return error.ReplayDetected; // RFC 8446 §8.1: Reject replay
             }
@@ -676,4 +689,64 @@ test "ZeroRttLimits validation" {
 
     const max_valid = try ZeroRttLimits.withEarlyDataSize(ZeroRttLimits.max_early_data_size_limit);
     try std.testing.expectEqual(ZeroRttLimits.max_early_data_size_limit, max_valid.max_early_data_size);
+}
+
+// ============================================================================
+// SEC-067: AntiReplayWindow.add must serialize check-then-insert across threads.
+// ============================================================================
+
+const Sec067Worker = struct {
+    window: *AntiReplayWindow,
+    random: [32]u8,
+    accepted: *std.atomic.Value(u32),
+    rejected: *std.atomic.Value(u32),
+    start_gate: *std.atomic.Value(bool),
+
+    fn run(self: *@This()) void {
+        // Wait for all workers to be released so the race is as tight as
+        // possible. Spin rather than block to avoid pulling in std.Thread.ResetEvent
+        // (not available in this Zig stdlib).
+        while (!self.start_gate.load(.acquire)) std.atomic.spinLoopHint();
+        if (self.window.add(self.random)) {
+            _ = self.accepted.fetchAdd(1, .seq_cst);
+        } else |_| {
+            _ = self.rejected.fetchAdd(1, .seq_cst);
+        }
+    }
+};
+
+test "SEC-067: concurrent add() of same random accepts exactly once" {
+    const thread_count = 16;
+    var window = AntiReplayWindow.init(std.testing.allocator);
+    defer window.deinit();
+
+    var random: [32]u8 = undefined;
+    @memset(&random, 0x77);
+
+    var accepted = std.atomic.Value(u32).init(0);
+    var rejected = std.atomic.Value(u32).init(0);
+    var start_gate = std.atomic.Value(bool).init(false);
+
+    var workers: [thread_count]Sec067Worker = undefined;
+    var threads: [thread_count]std.Thread = undefined;
+    for (&workers, &threads) |*w, *t| {
+        w.* = .{
+            .window = &window,
+            .random = random,
+            .accepted = &accepted,
+            .rejected = &rejected,
+            .start_gate = &start_gate,
+        };
+        t.* = try std.Thread.spawn(.{}, Sec067Worker.run, .{w});
+    }
+
+    // Release all workers to race simultaneously.
+    start_gate.store(true, .release);
+    for (threads) |t| t.join();
+
+    // SEC-067 invariant: exactly one thread must observe success; all others
+    // must see ReplayDetected. Without the mutex, N threads could each pass
+    // the contains() check and all accept.
+    try std.testing.expectEqual(@as(u32, 1), accepted.load(.seq_cst));
+    try std.testing.expectEqual(@as(u32, thread_count - 1), rejected.load(.seq_cst));
 }
