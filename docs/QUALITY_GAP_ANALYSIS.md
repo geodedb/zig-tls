@@ -1,6 +1,6 @@
 # Quality Gap Analysis
 
-> **Last updated:** 2026-04-20 (Cycle 6 / Phase 18 gap-sync + `/codepros:audit` Phase 4 quality-issue-tracker -- filed QUAL-344..356 from quality-reviewer findings; earlier this phase: QUAL-069/QUAL-073/QUAL-091 closed as subsumed by engine.zig deletion (4ae8ac7) + QUAL-317 decomposition (0841721); QUAL-104 reopened for 2 residual `0x0033` sites; QUAL-116 refreshed + filed as GitLab [#242](https://gitlab.com/devnw/zig/tls/-/work_items/242); QUAL-315 promoted Deferred → Open with kcov recommendation)
+> **Last updated:** 2026-04-20 (Cycle 6 / Phase 19 gap-closure — closed QUAL-104, 346, 348, 349, 352, 353, 356 (7 items); QUAL-347 confirmed Won't-Do with rationale (`computeExpectedBinder`/`computeBinderTranscriptHash` are live PSK binder validators, not dead code). Cycle 6 / Phase 18 sync preceded: QUAL-069/QUAL-073/QUAL-091 closed as subsumed by engine.zig deletion (4ae8ac7) + QUAL-317 decomposition (0841721); QUAL-104 reopened then closed this phase; QUAL-116 filed as GitLab [#242](https://gitlab.com/devnw/zig/tls/-/work_items/242); QUAL-315 promoted Deferred → Open with kcov recommendation.)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 > **Review phase:** Phase 4 `/codepros:audit` quality-issue-tracker filed **QUAL-344..QUAL-356 (13 new issues)** from Phase 3 quality-reviewer confirmed findings -- remaining client-handler decomposition, errdefer gaps, X25519-only correctness, doc/ADR debt. Cycle 5 / Phase 17 Closed QUAL-317 (`src/tls13/context.zig` decomposed into 8 pure-function sibling modules under `src/tls13/context/`; ~80 new unit tests; oracle byte-identical across all 12 landing commits; bonus CWE-226 fix added 4 `secureZero` calls on OLD app-traffic secrets before KeyUpdate rotation; CI regression gate added). Cycle 4 / Phase 16 closed QUAL-339. Cycle 3 / Phase 15 closed QUAL-338, QUAL-340, QUAL-341, QUAL-342. Cycle 2 / Phase 14 previously closed QUAL-107, QUAL-205, QUAL-208, QUAL-209, QUAL-321, QUAL-337 + QUAL-343 Won't-Do. Phase 13 closed 21 items. Phase 12 filed QUAL-334..343; Phase 11 added QUAL-301..333.
 
@@ -11,44 +11,83 @@
 | Severity | Open | Partial | Closed | By Design | Deferred | Won't Do | Total |
 |----------|------|---------|--------|-----------|----------|----------|-------|
 | Critical | 0    | 0       | 2      | 0         | 0        | 0        | 2     |
-| High     | 4    | 0       | 18     | 0         | 0        | 0        | 22    |
-| Medium   | 12   | 0       | 40     | 1         | 0        | 1        | 54    |
-| Low      | 15   | 0       | 30     | 2         | 0        | 3        | 50    |
-| **Total**| **31** | **0** | **90** | **3**   | **0**    | **4**    | **128**|
+| High     | 3    | 0       | 19     | 0         | 0        | 0        | 22    |
+| Medium   | 11   | 0       | 41     | 1         | 0        | 1        | 54    |
+| Low      | 10   | 0       | 35     | 2         | 0        | 3        | 50    |
+| **Total**| **24** | **0** | **97** | **3**   | **0**    | **4**    | **128**|
 
-### Top 5 Risks (post Phase 18 / Phase 4 audit)
+*Counts reflect Cycle 6 / Phase 19 gap-close (2026-04-20):* -1 High Open (+1 Closed: QUAL-346), -1 Medium Open (+1 Closed: QUAL-356), -5 Low Open (+5 Closed: QUAL-104, 348, 349, 352, 353). QUAL-347 remained Won't-Do; counts unchanged on that axis.
 
-1. **QUAL-346** (High, PS 48) -- Missing `errdefer` on partial traffic-secret install (`context.zig:2094-2096` + symmetric server path). Silent reliability bug today.
-2. **QUAL-351** (Medium, PS 48) -- `handleServerHello` hardcodes X25519 group check while `Config.supported_groups` claims agility. Correctness/interop bug.
-3. **QUAL-345** (Medium, PS 48) -- `handleCertificateVerify` mixes 4 security-critical operations in one 164L function -- blocks per-path security audit.
-4. **QUAL-344** (Medium, PS 48) -- Client-side message handlers remain inlined in `context.zig` (3055 LOC); mirror QUAL-317 pattern to extract.
-5. **QUAL-350** (Medium, PS 48) -- `handleHandshakeMessage` 152L dispatcher with inline QUIC-TP parsing (dup with canonical parser).
+### Top 5 Risks (post Phase 19 / Cycle 6)
+
+1. ~~**QUAL-346** (High, PS 48)~~ -- **Closed Cycle 6 / Phase 19 (commit 8c7ced3)**: atomic handshake traffic-pair install with `errdefer` rollback landed; symmetric client + server paths now rollback-safe.
+2. **QUAL-351** (Medium, PS 48) -- `handleServerHello` hardcodes X25519 group check while `Config.supported_groups` claims agility. Correctness/interop bug. Deferred — feature work.
+3. **QUAL-345** (Medium, PS 48) -- `handleCertificateVerify` mixes 4 security-critical operations in one 164L function -- blocks per-path security audit. Deferred to Wave 4 refactor.
+4. **QUAL-344** (Medium, PS 48) -- Client-side message handlers remain inlined in `context.zig` (3055 LOC); mirror QUAL-317 pattern to extract. Deferred to Wave 4 refactor.
+5. **QUAL-350** (Medium, PS 48) -- `handleHandshakeMessage` 152L dispatcher with inline QUIC-TP parsing (dup with canonical parser). Deferred to Wave 4 refactor.
 
 ### Cycle 5 / Phase 17 Phase-4 Audit Filings (2026-04-20, QUAL-344..356)
 
 13 new issues filed from `/codepros:audit` Phase 3 `quality-reviewer` confirmed findings. All `confidence::confirmed`, evidence cited file:line. Ranked by PriorityScore (`Impact * Likelihood * 4`).
 
-| QUAL-ID | Issue | Severity | PS | Category | Finding |
-|---------|-------|----------|----|----------|---------|
-| QUAL-346 | [#247](https://gitlab.com/devnw/zig/tls/-/work_items/247) | High | 48 | maintainability | Missing errdefer for partial traffic-secret install (`context.zig:2094-2096` + symmetric server path) |
-| QUAL-344 | [#236](https://gitlab.com/devnw/zig/tls/-/work_items/236) | Medium | 48 | maintainability | Extract client-side handlers (handleServerHello 130L, handleCertificateVerify 164L, handleEncryptedExtensions, startClientHandshake 115L) into `context/client_handlers.zig` mirroring QUAL-317 |
-| QUAL-345 | [#238](https://gitlab.com/devnw/zig/tls/-/work_items/238) | Medium | 48 | maintainability | Split `handleCertificateVerify` (`context.zig:2404`) into 4 sub-functions (validateCertChain / validateOcsp / validateSct / verifyCvSig) |
-| QUAL-350 | [#241](https://gitlab.com/devnw/zig/tls/-/work_items/241) | Medium | 48 | maintainability | `handleHandshakeMessage` dispatcher 152L with inline TP parsing (`context.zig:999`) |
-| QUAL-351 | [#244](https://gitlab.com/devnw/zig/tls/-/work_items/244) | Medium | 48 | api-contract | `handleServerHello` hardcodes X25519-only check (`context.zig:2039`) contradicting `supported_groups` config |
-| QUAL-348 | [#240](https://gitlab.com/devnw/zig/tls/-/work_items/240) | Low | 40 | docs | `Context` struct + `HandshakePhase` enum undocumented (`context.zig:487`) -- onboarding blocker |
-| QUAL-356 | [#254](https://gitlab.com/devnw/zig/tls/-/work_items/254) | Medium | 36 | maintainability | "No errdefer needed" comment at `context.zig:2379` is fragile -- future fallible insert breaks invariant silently |
-| QUAL-349 | [#245](https://gitlab.com/devnw/zig/tls/-/work_items/245) | Low | 24 | readability | Magic hex 0x0033 / 0x001d in handleServerHello (`context.zig:2035,2039`) -- use enum refs (overlaps QUAL-104) |
-| QUAL-352 | [#246](https://gitlab.com/devnw/zig/tls/-/work_items/246) | Low | 24 | api-contract | Error taxonomy split `ApiError` vs `HandshakeError` (`context.zig:299,303`) undocumented |
-| QUAL-353 | [#250](https://gitlab.com/devnw/zig/tls/-/work_items/250) | Low | 24 | docs | `parallel.getPool` docstring missing lifecycle/deinit warning (relates QUAL-325, QUAL-314) |
-| QUAL-347 | [#239](https://gitlab.com/devnw/zig/tls/-/work_items/239) | Low | 16 | cleanup | **Won't Do — false positive.** `computeExpectedBinder` and `computeBinderTranscriptHash` in `psk_selection.zig` ARE used in production (5 call sites at lines 410, 447, 490, 556, 596 — PSK binder validation per RFC 8446 §4.2.11). Deleting would break resumption. Static-analysis "unused" signal missed legitimate call sites. Status: **Closed (Won't Do)** 2026-04-20. |
-| QUAL-354 | [#248](https://gitlab.com/devnw/zig/tls/-/work_items/248) | Low | 16 | ci-cd | `build.zig` monolithic 1379 LOC -- split by concern |
-| QUAL-355 | [#252](https://gitlab.com/devnw/zig/tls/-/work_items/252) | Low | 16 | docs | No ADR for QUAL-317 context.zig decomposition decision |
+| QUAL-ID | Issue | Severity | PS | Category | Finding | Status |
+|---------|-------|----------|----|----------|---------|--------|
+| QUAL-346 | [#238](https://gitlab.com/devnw/zig/tls/-/work_items/238) | High | 48 | maintainability | Missing errdefer for partial traffic-secret install (`context.zig:2094-2096` + symmetric server path) | **Closed** (Cycle 6 / Phase 19, commit 8c7ced3) |
+| QUAL-344 | [#236](https://gitlab.com/devnw/zig/tls/-/work_items/236) | Medium | 48 | maintainability | Extract client-side handlers (handleServerHello 130L, handleCertificateVerify 164L, handleEncryptedExtensions, startClientHandshake 115L) into `context/client_handlers.zig` mirroring QUAL-317 | Open (deferred to Wave 4) |
+| QUAL-345 | [#237](https://gitlab.com/devnw/zig/tls/-/work_items/237) | Medium | 48 | maintainability | Split `handleCertificateVerify` (`context.zig:2404`) into 4 sub-functions (validateCertChain / validateOcsp / validateSct / verifyCvSig) | Open (deferred to Wave 4) |
+| QUAL-350 | [#244](https://gitlab.com/devnw/zig/tls/-/work_items/244) | Medium | 48 | maintainability | `handleHandshakeMessage` dispatcher 152L with inline TP parsing (`context.zig:999`) | Open (deferred to Wave 4) |
+| QUAL-351 | [#245](https://gitlab.com/devnw/zig/tls/-/work_items/245) | Medium | 48 | api-contract | `handleServerHello` hardcodes X25519-only check (`context.zig:2039`) contradicting `supported_groups` config | Open (deferred — feature work) |
+| QUAL-348 | [#240](https://gitlab.com/devnw/zig/tls/-/work_items/240) | Low | 40 | docs | `Context` struct + `HandshakePhase` enum undocumented (`context.zig:487`) -- onboarding blocker | **Closed** (Cycle 6 / Phase 19, commit 21d6c77) |
+| QUAL-356 | [#254](https://gitlab.com/devnw/zig/tls/-/work_items/254) | Medium | 36 | maintainability | "No errdefer needed" comment at `context.zig:2379` is fragile -- future fallible insert breaks invariant silently | **Closed** (Cycle 6 / Phase 19, commit 8c69643) |
+| QUAL-349 | [#241](https://gitlab.com/devnw/zig/tls/-/work_items/241) | Low | 24 | readability | Magic hex 0x0033 / 0x001d in handleServerHello (`context.zig:2035,2039`) -- use enum refs (overlaps QUAL-104) | **Closed** (Cycle 6 / Phase 19, commit e17c025) |
+| QUAL-352 | [#246](https://gitlab.com/devnw/zig/tls/-/work_items/246) | Low | 24 | api-contract | Error taxonomy split `ApiError` vs `HandshakeError` (`context.zig:299,303`) undocumented | **Closed** (Cycle 6 / Phase 19, commit 1447ab5) |
+| QUAL-353 | [#248](https://gitlab.com/devnw/zig/tls/-/work_items/248) | Low | 24 | docs | `parallel.getPool` docstring missing lifecycle/deinit warning (relates QUAL-325, QUAL-314) | **Closed** (Cycle 6 / Phase 19, commit cf11e31) |
+| QUAL-347 | [#239](https://gitlab.com/devnw/zig/tls/-/work_items/239) | Low | 16 | cleanup | **Won't Do — false positive.** `computeExpectedBinder` and `computeBinderTranscriptHash` in `psk_selection.zig` ARE used in production (5 call sites at lines 410, 447, 490, 556, 596 — PSK binder validation per RFC 8446 §4.2.11). Deleting would break resumption. Static-analysis "unused" signal missed legitimate call sites. | **Won't Do** (Cycle 6 / Phase 19, commit 3a42503) |
+| QUAL-354 | [#250](https://gitlab.com/devnw/zig/tls/-/work_items/250) | Low | 16 | ci-cd | `build.zig` monolithic 1379 LOC -- split by concern | Open (deferred to Wave 5) |
+| QUAL-355 | [#252](https://gitlab.com/devnw/zig/tls/-/work_items/252) | Low | 16 | docs | No ADR for QUAL-317 context.zig decomposition decision | Open (deferred — separate ADR stream) |
 
 **Roadmap for QUAL-344..356:**
 
 - **Quick wins (< 1 day, S effort):** QUAL-346 (errdefer), QUAL-347 (dead-code delete), QUAL-348 (docstring), QUAL-349 (magic hex), QUAL-352 (error-set doc), QUAL-353 (pool doc), QUAL-355 (ADR), QUAL-356 (errdefer comment hardening).
 - **Medium (1-5 days, M effort):** QUAL-345 (CertVerify split), QUAL-350 (dispatcher extraction), QUAL-351 (X25519 correctness), QUAL-354 (build.zig split).
 - **Strategic (> 5 days, L effort):** QUAL-344 (client-side handler extraction, mirrors QUAL-317 multi-commit pattern).
+
+### Cycle 6 / Phase 19 Gap Closure Run (2026-04-20)
+
+Execution of the Cycle 5 / Phase 17 audit findings. 17 gaps closed + 1 Won't-Do across 17 code commits on `main`. Verifier (gap-closer-verifier, APPROVED): `zig build` PASS, `zig build test` 668/668 PASS (+9 new tests), both oracles byte-identical (context-decomp + client_hello ExtHandler), `zig fmt --check` clean, pre-commit clean.
+
+**Closed (6 QUAL items):**
+
+| QUAL-ID | Severity | Issue | Closing commit | Note |
+|---------|----------|-------|----------------|------|
+| QUAL-104 | Low | [#112](https://gitlab.com/devnw/zig/tls/-/work_items/112) | e17c025 | 2 residual magic-hex `0x0033` sites (`context.zig:2035`, `context/hello_retry.zig:120`) replaced with `@intFromEnum(ExtensionType.key_share)`. `grep -rn "0x0033" src/tls13/context*` now returns zero readability-matches. |
+| QUAL-346 | High | [#238](https://gitlab.com/devnw/zig/tls/-/work_items/238) | 8c7ced3 | Atomic handshake traffic-secret pair install: `errdefer` now rolls back partial-install on OOM in both client and server install paths (`context.zig:2094-2096` + symmetric server). |
+| QUAL-348 | Low | [#240](https://gitlab.com/devnw/zig/tls/-/work_items/240) | 21d6c77 | `Context` struct + `HandshakePhase` enum now have `///` docstrings covering role, phase semantics, invariants, and callback interaction (`context.zig:487`). |
+| QUAL-349 | Low | [#241](https://gitlab.com/devnw/zig/tls/-/work_items/241) | e17c025 | Overlaps QUAL-104; closed by same enum-ref cleanup commit. |
+| QUAL-352 | Low | [#246](https://gitlab.com/devnw/zig/tls/-/work_items/246) | 1447ab5 | `ApiError` vs `HandshakeError` taxonomy split documented inline at `context.zig:299,303` with which entrypoints raise which error set. |
+| QUAL-353 | Low | [#248](https://gitlab.com/devnw/zig/tls/-/work_items/248) | cf11e31 | `parallel.getPool` docstring now explicitly documents process-global lifecycle, panic semantics, and deinit expectation. |
+| QUAL-356 | Medium | [#254](https://gitlab.com/devnw/zig/tls/-/work_items/254) | 8c69643 | `handleCertificate` infallibility invariant spelled out: the prior "No errdefer needed" comment is replaced by a documented contract (`context.zig:2379`) that future edits must not introduce fallible inserts without restoring the errdefer pattern. |
+
+**Won't Do (1 QUAL item):**
+
+| QUAL-ID | Severity | Issue | Commit | Rationale |
+|---------|----------|-------|--------|-----------|
+| QUAL-347 | Low | [#239](https://gitlab.com/devnw/zig/tls/-/work_items/239) | 3a42503 | `computeExpectedBinder` / `computeBinderTranscriptHash` in `psk_selection.zig` are **not** dead code. 5 production call sites at lines 410, 447, 490, 556, 596 perform PSK binder validation per RFC 8446 §4.2.11. Deleting would break TLS 1.3 PSK resumption. Static-analysis "unused" signal missed these legitimate calls. |
+
+**Deferred to Wave 4 / Wave 5 (4 items):**
+
+- **QUAL-344** — client-side handler extraction to `context/client_handlers.zig` (mirrors QUAL-317 multi-commit pattern; multi-file refactor).
+- **QUAL-345** — split `handleCertificateVerify` into 4 validators (Wave 4 refactor).
+- **QUAL-350** — refactor `handleHandshakeMessage` dispatcher + move TP parsing into helper (Wave 4 refactor).
+- **QUAL-354** — split `build.zig` 1379 LOC into `build/` modules (Wave 5 refactor).
+
+**Deferred (strategic, separate work streams):**
+
+- **QUAL-315** — coverage tooling choice (kcov vs llvm-cov). Requires ADR.
+- **QUAL-351** — X25519-only hardcode vs `supported_groups` agility. Feature work.
+- **QUAL-355** — ADR for QUAL-317 context.zig decomposition. Separate doc stream.
+
+**Cross-ledger cycle scope:** Cycle 6 / Phase 19 also closed 8 SEC items (SEC-066..073) and 3 PERF items (PERF-230, PERF-231, PERF-234). See `docs/SECURITY_GAP_ANALYSIS.md` and `docs/PERF_GAP_ANALYSIS.md` Cycle 6 / Phase 19 sections.
 
 ### Cycle 6 / Phase 18 Gap Sync (2026-04-20)
 
@@ -192,7 +231,7 @@ The remaining **Open** leader post-Phase-17 is QUAL-315 (coverage instrumentatio
 
 | QUAL-ID | Prev. Status | New Status | Evidence |
 |---------|--------------|------------|----------|
-| QUAL-104 | Open | Reopened (Low) | Phase 4 gap-sync (2026-04-20) found 2 residual magic-hex sites: `src/tls13/context.zig:2035` and `src/tls13/context/hello_retry.zig:120` both dispatch on `0x0033` (key_share). GitLab [#112](https://gitlab.com/devnw/zig/tls/-/work_items/112) reopened; severity remains Low. |
+| QUAL-104 | Open | Closed (Cycle 6 / Phase 19, commit e17c025) | Phase 4 gap-sync (2026-04-20) found 2 residual magic-hex sites: `src/tls13/context.zig:2035` and `src/tls13/context/hello_retry.zig:120` both dispatch on `0x0033` (key_share). Cycle 6 / Phase 19 replaced both with `@intFromEnum(ExtensionType.key_share)` (commit e17c025). GitLab [#112](https://gitlab.com/devnw/zig/tls/-/work_items/112) closed. |
 | QUAL-106 | Open | Closed | `std.crypto.timing_safe.*` used exclusively (11 call sites); 0 local constant-time implementations remain. GitLab #113 closed. |
 | QUAL-113 | Partial | Closed | 1 residual `.?` at `src/tls13/engine.zig:2207` (test code path); production clean. GitLab #117 closed. |
 | QUAL-119 | Open | Closed (retargeted) | `src/asn1.zig` max nesting is 3 levels (original scope met); deep nesting now tracked under **QUAL-304** (engine.zig:811-848, 10-level). |
@@ -238,7 +277,7 @@ The remaining **Open** leader post-Phase-17 is QUAL-315 (coverage instrumentatio
 | 32 | QUAL-122 | Medium | 16 | architecture | Engine dupe calls at 9 sites lack errdefer | `src/tls13/engine.zig` | [#125](https://gitlab.com/devnw/zig/tls/-/work_items/125) | Closed |
 | 33 | QUAL-102 | Medium | 16 | architecture | 6x allocator.dupe catch null silently swallow OOM | `src/tls13/engine.zig:674,682,1643,1923,1941` | -- | Closed |
 | 34 | QUAL-103 | Medium | 16 | api-contract | maybeAutoProgress swallows queueFinished error | `src/tls13/engine.zig:1684` | -- | Closed |
-| 35 | QUAL-104 | Low | 15 | readability | Magic hex constants for extension types instead of ExtensionType enum | `src/tls13/context.zig:2035`, `src/tls13/context/hello_retry.zig:120` (residual 0x0033 key_share) | [#112](https://gitlab.com/devnw/zig/tls/-/work_items/112) | Reopened 2026-04-20 (residual) |
+| 35 | QUAL-104 | Low | 15 | readability | Magic hex constants for extension types instead of ExtensionType enum | `src/tls13/context.zig:2035`, `src/tls13/context/hello_retry.zig:120` (residual 0x0033 key_share) | [#112](https://gitlab.com/devnw/zig/tls/-/work_items/112) | Closed (Cycle 6 / Phase 19, commit e17c025) |
 | 36 | QUAL-105 | Low | 15 | docs | lib.zig Quick Start example has wrong Context.init signature | `src/lib.zig` | -- | Closed |
 | 37 | QUAL-092 | Medium | 12 | cleanup | byteorder.zig duplicated verbatim across two module paths | `src/byteorder.zig`, `src/byteorder/byteorder.zig` | [#92](https://gitlab.com/devnw/zig/tls/-/work_items/92) | Closed |
 | 38 | QUAL-078 | Medium | 12 | perf | Duplicated x25519KeypairAndShared with behavioral divergence | `messages.zig:191`, `engine.zig:1723` | -- | Closed |
@@ -1675,7 +1714,7 @@ Five sites in `engine.zig` use `allocator.dupe(...) catch null` to silently swal
 - **PriorityScore:** 15
 - **Category:** `readability`
 - **Confidence:** `confidence::confirmed`
-- **Status:** Open
+- **Status:** **Closed (Cycle 6 / Phase 19, commit e17c025)** — 2 residual magic-hex `0x0033` sites at `src/tls13/context.zig:2035` and `src/tls13/context/hello_retry.zig:120` replaced with `@intFromEnum(ExtensionType.key_share)`. Also resolves QUAL-349.
 - **Cross-reference:** QUAL-204 (Phase 3 deep review confirms additional magic hex in engine.zig: 0x0010, 0x0039, 0x0033; recommends `@intFromEnum(ExtensionType.xxx)` consistently)
 
 **File locations:**
@@ -3138,7 +3177,7 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-202 | Medium | Deep nesting (10 levels client_hello.zig, 9 levels x509.zig); cross-ref QUAL-119 | Closed |
 | QUAL-119 | Medium | Deep nesting in client_hello.zig (10) and x509.zig (9) | Open |
 | QUAL-084 | Low | 13x inline u16 big-endian read instead of readU16 helper | Closed |
-| QUAL-104 | Low | Magic hex constants for extension types instead of ExtensionType enum | Open |
+| QUAL-104 | Low | Magic hex constants for extension types instead of ExtensionType enum | Closed (Cycle 6 / Phase 19, commit e17c025) |
 | QUAL-129 | Low | Engine zero errdefer usage across all allocator.dupe calls | Closed |
 | QUAL-112 | Low | Engine.init is a single 262-character line | Closed |
 
@@ -3166,7 +3205,7 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-102 | Replace allocator.dupe catch null with try | S | Closed |
 | QUAL-103 | Propagate queueFinished error in maybeAutoProgress | S | Closed |
 | QUAL-100 | Add doc comments to Config fields | S | Closed |
-| QUAL-104 | Replace magic hex extension constants with ExtensionType enum | S | Open |
+| QUAL-104 | Replace magic hex extension constants with ExtensionType enum | S | Closed (Cycle 6 / Phase 19, commit e17c025) |
 | QUAL-105 | Fix lib.zig Quick Start Context.init signature | S | Closed |
 | QUAL-106 | Consolidate constant-time comparison to single function | S | Open |
 | QUAL-107 | Unify error types between Engine and Context | S | Closed (2026-04-19) |

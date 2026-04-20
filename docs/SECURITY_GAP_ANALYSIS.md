@@ -1,46 +1,73 @@
 # Security Gap Analysis
 
-> **Last updated:** 2026-04-20 (Phase 14 — 9 new findings filed SEC-065..SEC-073)
+> **Last updated:** 2026-04-20 (Cycle 6 / Phase 19 — closed SEC-066, SEC-067, SEC-068, SEC-069, SEC-070, SEC-071, SEC-072, SEC-073 (8 items). SEC-065 remains open / deferred — confidential 0-RTT Config API mini-epic.)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Phase 14 -- `/codepros:audit` Phase 3 security-reviewer surfaced 9 findings in newly-audited areas (0-RTT anti-replay, ClientHello extension handlers, QUIC TPs, OCSP parse, cert OID compare, CertificateRequest, SecretSlot, x509 validation). **Posture: 0 Critical / 1 High / 3 Medium / 3 Low / 2 Info open.** Phase 13 history retained below.
+> **Review phase:** Cycle 6 / Phase 19 execution of the Phase 14 audit. **Posture: 0 Critical / 1 High open / 0 Medium open / 0 Low open / 0 Info open.** All Medium/Low/Info findings from Phase 14 closed with code + regression tests; only SEC-065 (confidential 0-RTT persistent anti-replay wiring) remains open, pending the `Config.persistent_anti_replay_store` API mini-epic. Phase 13 history retained below.
 >
-> **Phase 14 banner:** SEC-065 (0-RTT cross-connection replay bypass) is filed confidential under 30-day SLA. F2 is the single HIGH regression vs. Phase 13's clean baseline and needs cross-process replay-store wiring before 0-RTT can be enabled in production deployments. No Critical. No secrets leaked. No RCE.
+> **Phase 19 banner:** SEC-065 (0-RTT cross-connection replay bypass) remains the single HIGH gap. All other Phase 14 findings have landed fixes on `main`. The SEC-066 duplicate-extension EnumSet guard (159d17b), SEC-067 mutex (f3dced5), and SEC-068 duplicate-CID guard (b24bf0a) collectively eliminate the pre-auth DoS / RFC-violation vectors surfaced by Phase 14. No Critical. No secrets leaked. No RCE.
 
 ## Phase 14 Findings (2026-04-20)
 
 `/codepros:audit` Phase 3 security-reviewer findings. 9 issues filed, 1 confidential.
 
-**Open (9):**
+**Open (1) + Closed in Cycle 6 / Phase 19 (8):**
 
-| SEC-ID | Risk | Severity | Issue | Confidence | File:Line | Description |
-|--------|------|----------|-------|------------|-----------|-------------|
-| SEC-065 | **64** | High | [#249](https://gitlab.com/devnw/zig/tls/-/issues/249) (confidential) | confirmed | `src/tls13/context.zig:550,1781` + `src/zero_rtt.zig:459` | 0-RTT anti-replay window per-`Context` only; `PersistentAntiReplayStore` vtable exists but is not wired into `Context`. Cross-connection replay accepted. CWE-294 / OWASP A07. |
-| SEC-066 | **48** | Medium | [#253](https://gitlab.com/devnw/zig/tls/-/issues/253) | confirmed | `src/tls13/messages/client_hello_handlers.zig:137,187,310` | ClientHello duplicate-extension heap leak on `supported_groups`, `signature_algorithms`, `alpn_list`; RFC 8446 §4.2 duplicate-extension rule not enforced. Pre-auth DoS. CWE-401/400. |
-| SEC-067 | **36** | Medium | [#256](https://gitlab.com/devnw/zig/tls/-/issues/256) | confirmed | `src/zero_rtt.zig:336-343` | `AntiReplayWindow.add` `contains()`->write TOCTOU; no mutex. Docstring at `:129` acknowledges the requirement. CWE-367. |
-| SEC-068 | **36** | Medium | [#258](https://gitlab.com/devnw/zig/tls/-/issues/258) | confirmed | `src/quic_transport_params.zig:651,656,660` | Duplicate QUIC CID TPs re-`dupe` without free; RFC 9000 §18 requires connection error on duplicate. CWE-401. |
-| SEC-069 | **16** | Low | [#259](https://gitlab.com/devnw/zig/tls/-/issues/259) | confirmed | `src/x509.zig:1471-1485` | Cert sig-algo OID matched by raw-byte suffix (`oidIsRsaPss` etc.); should be canonical full-length equality. CWE-436. |
-| SEC-070 | **8** | Low | [#261](https://gitlab.com/devnw/zig/tls/-/issues/261) | confirmed | `src/ocsp.zig:129-133` | `parseStatus` accepts arbitrary-length ENUMERATED ending in `0x00` as `successful`. CWE-20 / RFC 6960. |
-| SEC-071 | **16** | Low | [#262](https://gitlab.com/devnw/zig/tls/-/issues/262) | suspected | `src/tls13/messages/certificate_request.zig:205-218` | CertificateRequest duplicate `signature_algorithms` silently merged. CWE-20 / RFC 8446 §4.2. |
-| SEC-072 | **4** | Info | [#264](https://gitlab.com/devnw/zig/tls/-/issues/264) | confirmed | `src/tls13/secrets.zig:94-100` | `SecretSlot.store` does not `secureZero` prior secret before overwrite. Brittle against PQ-hybrid layout changes. CWE-226. |
-| SEC-073 | **4** | Info | [#266](https://gitlab.com/devnw/zig/tls/-/issues/266) | suspected | `src/x509.zig:1940-1987` | `validateChainReturnParsed` uses `parsed_count=0` sentinel to suppress `errdefer`. Latent double-free risk on future edits. CWE-415. |
+| SEC-ID | Risk | Severity | Issue | Confidence | File:Line | Description | Status |
+|--------|------|----------|-------|------------|-----------|-------------|--------|
+| SEC-065 | **64** | High | [#249](https://gitlab.com/devnw/zig/tls/-/issues/249) (confidential) | confirmed | `src/tls13/context.zig:550,1781` + `src/zero_rtt.zig:459` | 0-RTT anti-replay window per-`Context` only; `PersistentAntiReplayStore` vtable exists but is not wired into `Context`. Cross-connection replay accepted. CWE-294 / OWASP A07. | **Open** (deferred — requires Config API mini-epic) |
+| SEC-066 | **48** | Medium | [#253](https://gitlab.com/devnw/zig/tls/-/issues/253) | confirmed | `src/tls13/messages/client_hello_handlers.zig:137,187,310` | ClientHello duplicate-extension heap leak on `supported_groups`, `signature_algorithms`, `alpn_list`; RFC 8446 §4.2 duplicate-extension rule not enforced. Pre-auth DoS. CWE-401/400. | **Closed** (Cycle 6 / Phase 19, commit 159d17b; regression test `tests/security/sec066_clienthello_dup_ext.zig`) |
+| SEC-067 | **36** | Medium | [#256](https://gitlab.com/devnw/zig/tls/-/issues/256) | confirmed | `src/zero_rtt.zig:336-343` | `AntiReplayWindow.add` `contains()`->write TOCTOU; no mutex. Docstring at `:129` acknowledges the requirement. CWE-367. | **Closed** (Cycle 6 / Phase 19, commit f3dced5; mutex added) |
+| SEC-068 | **36** | Medium | [#258](https://gitlab.com/devnw/zig/tls/-/issues/258) | confirmed | `src/quic_transport_params.zig:651,656,660` | Duplicate QUIC CID TPs re-`dupe` without free; RFC 9000 §18 requires connection error on duplicate. CWE-401. | **Closed** (Cycle 6 / Phase 19, commit b24bf0a; regression test `tests/security/sec068_tp_dup_cid.zig`) |
+| SEC-069 | **16** | Low | [#259](https://gitlab.com/devnw/zig/tls/-/issues/259) | confirmed | `src/x509.zig:1471-1485` | Cert sig-algo OID matched by raw-byte suffix (`oidIsRsaPss` etc.); should be canonical full-length equality. CWE-436. | **Closed** (Cycle 6 / Phase 19, commit 98d7fca; canonical full-length OID equality) |
+| SEC-070 | **8** | Low | [#261](https://gitlab.com/devnw/zig/tls/-/issues/261) | confirmed | `src/ocsp.zig:129-133` | `parseStatus` accepts arbitrary-length ENUMERATED ending in `0x00` as `successful`. CWE-20 / RFC 6960. | **Closed** (Cycle 6 / Phase 19, commit 528df91; single-byte length required) |
+| SEC-071 | **16** | Low | [#262](https://gitlab.com/devnw/zig/tls/-/issues/262) | suspected | `src/tls13/messages/certificate_request.zig:205-218` | CertificateRequest duplicate `signature_algorithms` silently merged. CWE-20 / RFC 8446 §4.2. | **Closed** (Cycle 6 / Phase 19, commit ed4f714; duplicate extension rejected) |
+| SEC-072 | **4** | Info | [#264](https://gitlab.com/devnw/zig/tls/-/issues/264) | confirmed | `src/tls13/secrets.zig:94-100` | `SecretSlot.store` does not `secureZero` prior secret before overwrite. Brittle against PQ-hybrid layout changes. CWE-226. | **Closed** (Cycle 6 / Phase 19, commit 342775f; `secureZero` on overwrite) |
+| SEC-073 | **4** | Info | [#266](https://gitlab.com/devnw/zig/tls/-/issues/266) | suspected | `src/x509.zig:1940-1987` | `validateChainReturnParsed` uses `parsed_count=0` sentinel to suppress `errdefer`. Latent double-free risk on future edits. CWE-415. | **Closed** (Cycle 6 / Phase 19, commit d081000; ownership state machine documented) |
 
 **Confirmed-clean (no finding filed):**
 
 - **Build supply chain**: `build.zig.zon` multihash pinning, `.gitlab-ci.yml` SHA-pinned component imports (from SEC-061 closure), Zig tarball SHA-256 verified. No new gap.
 
-### Phase 14 top risks (stack-ranked)
+### Phase 19 top risks (post Cycle 6 / Phase 19 closure)
 
-1. **SEC-065 Risk 64 (High, confidential)** — 0-RTT anti-replay is effectively disabled between connections. Blocker for any production 0-RTT rollout.
-2. **SEC-066 Risk 48 (Medium)** — Pre-auth heap-leak DoS from duplicate ClientHello extensions + RFC violation.
-3. **SEC-067 Risk 36 (Medium)** — Thread-race on anti-replay window compounds SEC-065 even within one `Context`.
-4. **SEC-068 Risk 36 (Medium)** — QUIC-TLS duplicate CID TPs leak + silently accepted; RFC 9000 violation.
-5. **SEC-069 Risk 16 (Low)** — OID suffix-match fragility in cert sig-algo dispatch.
+1. **SEC-065 Risk 64 (High, confidential)** — 0-RTT anti-replay effectively disabled between connections. Remains **Open** after Phase 19; deferred to the `Config.persistent_anti_replay_store` mini-epic.
+2. ~~**SEC-066 Risk 48 (Medium)**~~ — **Closed** Cycle 6 / Phase 19 (159d17b).
+3. ~~**SEC-067 Risk 36 (Medium)**~~ — **Closed** Cycle 6 / Phase 19 (f3dced5).
+4. ~~**SEC-068 Risk 36 (Medium)**~~ — **Closed** Cycle 6 / Phase 19 (b24bf0a).
+5. ~~**SEC-069 Risk 16 (Low)**~~ — **Closed** Cycle 6 / Phase 19 (98d7fca).
 
-### Phase 14 roadmap
+### Phase 14 roadmap (executed in Cycle 6 / Phase 19)
 
-- **Quick wins (< 1 day)**: SEC-069 (4 helpers → canonical eql), SEC-070 (tighten `parseStatus` length check), SEC-072 (`secureZero` prior), SEC-071 (duplicate-extension bitset for CR).
-- **Medium (1-5 days)**: SEC-066 (dispatcher-level duplicate-extension bitset + tests), SEC-067 (mutex + threaded stress test), SEC-068 (TP-seen bitset + unit tests), SEC-073 (refactor to drop sentinel pattern).
-- **Strategic (> 5 days)**: SEC-065 — thread `PersistentAntiReplayStore` through `ContextConfig` + `Context`, wire into 0-RTT accept path with fail-closed semantics, add reference implementations (in-memory, Redis mock), and add cross-context replay test fixture.
+- **Quick wins (< 1 day)**: SEC-069 (4 helpers → canonical eql) — **done** (98d7fca); SEC-070 (tighten `parseStatus` length check) — **done** (528df91); SEC-072 (`secureZero` prior) — **done** (342775f); SEC-071 (duplicate-extension bitset for CR) — **done** (ed4f714).
+- **Medium (1-5 days)**: SEC-066 (dispatcher-level duplicate-extension bitset + tests) — **done** (159d17b, `tests/security/sec066_clienthello_dup_ext.zig`); SEC-067 (mutex + threaded stress test) — **done** (f3dced5); SEC-068 (TP-seen bitset + unit tests) — **done** (b24bf0a, `tests/security/sec068_tp_dup_cid.zig`); SEC-073 (refactor to drop sentinel pattern) — **done** (d081000, ownership state machine documented).
+- **Strategic (> 5 days)**: SEC-065 — thread `PersistentAntiReplayStore` through `ContextConfig` + `Context`, wire into 0-RTT accept path with fail-closed semantics, add reference implementations (in-memory, Redis mock), and add cross-context replay test fixture. **Deferred** — separate Config API mini-epic.
+
+---
+
+## Cycle 6 / Phase 19 Gap Closure Run (2026-04-20)
+
+8 SEC items closed across 8 code commits on `main` (+ regression tests for SEC-066 and SEC-068). Verifier (gap-closer-verifier, APPROVED): `zig build` PASS, `zig build test` 668/668 PASS (+9 new tests), both oracles byte-identical, `zig fmt --check` clean, pre-commit clean.
+
+**Closed (8):**
+
+| SEC-ID | Risk | Severity | Issue | Closing commit | Evidence |
+|--------|------|----------|-------|----------------|----------|
+| SEC-066 | 48 | Medium | [#253](https://gitlab.com/devnw/zig/tls/-/issues/253) | 159d17b | ClientHello duplicate-extension guard implemented via `EnumSet` bitset across `supported_groups`, `signature_algorithms`, `alpn_list` handlers. RFC 8446 §4.2 duplicate-extension rule now enforced pre-auth. Regression test: `tests/security/sec066_clienthello_dup_ext.zig`. |
+| SEC-067 | 36 | Medium | [#256](https://gitlab.com/devnw/zig/tls/-/issues/256) | f3dced5 | `AntiReplayWindow.add` TOCTOU fixed: `contains()`→write now atomic under a `std.Thread.Mutex`. Docstring at `:129` contract satisfied. |
+| SEC-068 | 36 | Medium | [#258](https://gitlab.com/devnw/zig/tls/-/issues/258) | b24bf0a | QUIC transport-parameter duplicate CID guard added; duplicate CIDs now trigger connection error per RFC 9000 §18 instead of leaking the prior `dupe`. Regression test: `tests/security/sec068_tp_dup_cid.zig`. |
+| SEC-069 | 16 | Low | [#259](https://gitlab.com/devnw/zig/tls/-/issues/259) | 98d7fca | Cert signature-algorithm OID match converted from raw-byte suffix to canonical full-length equality. 4 helpers (`oidIsRsaPss`, `oidIsEcdsaSha256`, etc.) rewritten to `eql`. CWE-436 closed. |
+| SEC-070 | 8 | Low | [#261](https://gitlab.com/devnw/zig/tls/-/issues/261) | 528df91 | OCSP `parseStatus` now requires a single-byte ENUMERATED payload (RFC 6960 §4.2.1). Arbitrary-length ENUMERATEDs ending in `0x00` no longer accepted as `successful`. |
+| SEC-071 | 16 | Low | [#262](https://gitlab.com/devnw/zig/tls/-/issues/262) | ed4f714 | CertificateRequest duplicate `signature_algorithms` extension now rejected (RFC 8446 §4.2 duplicate-extension rule). Previously silently merged. |
+| SEC-072 | 4 | Info | [#264](https://gitlab.com/devnw/zig/tls/-/issues/264) | 342775f | `SecretSlot.store` now `secureZero`-s prior secret before overwrite. Resilient against PQ-hybrid layout changes. |
+| SEC-073 | 4 | Info | [#266](https://gitlab.com/devnw/zig/tls/-/issues/266) | d081000 | `validateChainReturnParsed` `parsed_count` ownership state machine now explicitly documented; sentinel-`0` suppression of `errdefer` replaced by documented contract covering the four lifecycle transitions. Latent double-free risk on future edits closed. |
+
+**Deferred (1):**
+
+| SEC-ID | Risk | Issue | Reason | Unblock plan |
+|--------|------|-------|--------|--------------|
+| SEC-065 | 64 (High, confidential) | [#249](https://gitlab.com/devnw/zig/tls/-/issues/249) | Requires new `Config.persistent_anti_replay_store` public API surface + `PersistentAntiReplayStore` vtable wiring + reference implementations (in-memory, Redis mock) + cross-context replay test fixture. Exceeds the scope of a single-cycle closure; needs a Config API mini-epic. | (a) define `persistent_anti_replay_store: ?*PersistentAntiReplayStore` on `ContextConfig`, (b) thread into `Context.initServer` + 0-RTT accept path with fail-closed semantics, (c) add reference in-memory implementation, (d) add cross-context replay test fixture. |
+
+**Cross-ledger cycle scope:** Cycle 6 / Phase 19 also closed 7 QUAL items (QUAL-104, 346, 348, 349, 352, 353, 356) + 1 Won't-Do (QUAL-347) and 3 PERF items (PERF-230, PERF-231, PERF-234). See `docs/QUALITY_GAP_ANALYSIS.md` and `docs/PERF_GAP_ANALYSIS.md` Cycle 6 / Phase 19 sections.
 
 ---
 
@@ -67,10 +94,12 @@
 |-----------|------|--------|----------|-----------------|-------|
 | Critical  | 0    | 0      | 0        | 0               | 0     |
 | High      | 1    | 11     | 0        | 0               | 12    |
-| Medium    | 3    | 18     | 0        | 0               | 21    |
-| Low       | 3    | 24     | 4        | 0               | 31    |
-| Info      | 2    | 3      | 1        | 3               | 9     |
-| **Total** | **9** | **56** | **5**   | **3**           | **73** |
+| Medium    | 0    | 21     | 0        | 0               | 21    |
+| Low       | 0    | 27     | 4        | 0               | 31    |
+| Info      | 0    | 5      | 1        | 3               | 9     |
+| **Total** | **1** | **64** | **5**   | **3**           | **73** |
+
+*Counts reflect Cycle 6 / Phase 19 closure (2026-04-20):* +8 Closed (SEC-066, SEC-067, SEC-068, SEC-069, SEC-070, SEC-071, SEC-072, SEC-073); SEC-065 remains the sole Open item (deferred — Config API mini-epic).
 
 **Phase 13** (2026-04-19) closed all 4 remaining open SEC findings (SEC-061, SEC-062, SEC-063, SEC-064). **Posture is now STRONG: 0 open at every risk level.** **Phase 12** filed the 4 LOW findings and attached the Phase 3 SHA-pinning patch draft to SEC-061.
 

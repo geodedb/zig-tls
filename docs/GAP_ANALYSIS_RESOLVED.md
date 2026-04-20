@@ -5,6 +5,48 @@
 
 ---
 
+## Cycle 6 / Phase 19 Gap Closure (2026-04-20)
+
+Execution of Cycle 5 / Phase 17 audit findings. 17 cross-ledger closures + 1 Won't-Do landed across 17 code commits + 1 doc commit on `main`. Verifier (gap-closer-verifier, APPROVED): `zig build` PASS, `zig build test` 668/668 PASS (+9 new tests), both oracles byte-identical (context-decomp + client_hello ExtHandler), `zig fmt --check` clean, pre-commit clean. No GAP-* ledger items touched this cycle; all closures are on the QUAL / SEC / PERF ledgers.
+
+### QUAL closures (6 + 1 Won't-Do)
+
+- **QUAL-104** ([#112](https://gitlab.com/devnw/zig/tls/-/work_items/112)) — Closed (commit e17c025). 2 residual magic-hex `0x0033` sites at `src/tls13/context.zig:2035` and `src/tls13/context/hello_retry.zig:120` replaced with `@intFromEnum(ExtensionType.key_share)`. Also closes QUAL-349 (overlapping finding).
+- **QUAL-346** ([#238](https://gitlab.com/devnw/zig/tls/-/work_items/238)) — Closed (commit 8c7ced3). Atomic handshake traffic-secret pair install via `errdefer` rollback in both client and server install paths (`context.zig:2094-2096` + symmetric server).
+- **QUAL-348** ([#240](https://gitlab.com/devnw/zig/tls/-/work_items/240)) — Closed (commit 21d6c77). `Context` struct + `HandshakePhase` enum docstrings landed (`context.zig:487`).
+- **QUAL-349** ([#241](https://gitlab.com/devnw/zig/tls/-/work_items/241)) — Closed (commit e17c025; same commit as QUAL-104).
+- **QUAL-352** ([#246](https://gitlab.com/devnw/zig/tls/-/work_items/246)) — Closed (commit 1447ab5). `ApiError` vs `HandshakeError` taxonomy documented inline.
+- **QUAL-353** ([#248](https://gitlab.com/devnw/zig/tls/-/work_items/248)) — Closed (commit cf11e31). `parallel.getPool` docstring now covers process-global lifecycle, panic semantics, deinit expectations.
+- **QUAL-356** ([#254](https://gitlab.com/devnw/zig/tls/-/work_items/254)) — Closed (commit 8c69643). `handleCertificate` infallibility invariant documented; fragile "No errdefer needed" comment replaced by explicit contract.
+- **QUAL-347** ([#239](https://gitlab.com/devnw/zig/tls/-/work_items/239)) — **Won't Do** (commit 3a42503). `computeExpectedBinder` / `computeBinderTranscriptHash` in `psk_selection.zig` are **not** dead code — 5 production call sites at lines 410, 447, 490, 556, 596 perform PSK binder validation per RFC 8446 §4.2.11. Audit finding was incorrect.
+
+### SEC closures (8)
+
+- **SEC-066** ([#253](https://gitlab.com/devnw/zig/tls/-/issues/253)) — Closed (commit 159d17b). ClientHello duplicate-extension guard via `EnumSet`; regression test at `tests/security/sec066_clienthello_dup_ext.zig`.
+- **SEC-067** ([#256](https://gitlab.com/devnw/zig/tls/-/issues/256)) — Closed (commit f3dced5). `AntiReplayWindow.add` TOCTOU fixed with mutex.
+- **SEC-068** ([#258](https://gitlab.com/devnw/zig/tls/-/issues/258)) — Closed (commit b24bf0a). QUIC TP duplicate CID guard; regression test at `tests/security/sec068_tp_dup_cid.zig`.
+- **SEC-069** ([#259](https://gitlab.com/devnw/zig/tls/-/issues/259)) — Closed (commit 98d7fca). Cert signature-algorithm OID matched by canonical full-length equality.
+- **SEC-070** ([#261](https://gitlab.com/devnw/zig/tls/-/issues/261)) — Closed (commit 528df91). OCSP `parseStatus` now requires single-byte ENUMERATED payload.
+- **SEC-071** ([#262](https://gitlab.com/devnw/zig/tls/-/issues/262)) — Closed (commit ed4f714). CertificateRequest duplicate `signature_algorithms` now rejected.
+- **SEC-072** ([#264](https://gitlab.com/devnw/zig/tls/-/issues/264)) — Closed (commit 342775f). `SecretSlot` zeroizes prior secret on overwrite.
+- **SEC-073** ([#266](https://gitlab.com/devnw/zig/tls/-/issues/266)) — Closed (commit d081000). `parsed_count` ownership state machine documented; sentinel pattern contract formalized.
+
+### PERF closures (3)
+
+- **PERF-230** ([#247](https://gitlab.com/devnw/zig/tls/-/issues/247)) — Closed (commit 821e929). ThreadPool capped at `min(getCpuCount(), 16)`.
+- **PERF-231** ([#251](https://gitlab.com/devnw/zig/tls/-/issues/251)) — Closed (commit 5a048dc). `Transcript.snapshot` honors `locked_hash`.
+- **PERF-234** ([#260](https://gitlab.com/devnw/zig/tls/-/issues/260)) — Closed (commit a77bb54). `Context.processCrypto` pre-allocates via `ensureTotalCapacity`.
+
+### Deferred (9, separate work streams — NOT closed this cycle)
+
+- **QUAL-344, QUAL-345, QUAL-350** — Wave 4 client-handler decomposition refactors (multi-file).
+- **QUAL-354** — Wave 5 `build.zig` split.
+- **QUAL-351** — X25519 / `supported_groups` correctness; feature work.
+- **QUAL-355, QUAL-315** — ADRs (context.zig decomp ADR; coverage tooling choice).
+- **SEC-065** (confidential) — 0-RTT `PersistentAntiReplayStore` wiring; Config API mini-epic.
+- **PERF-229** (P0) — ECDSA-P256 stdlib ADR.
+- **PERF-232, PERF-233, PERF-235, PERF-236** — bench harness + CI perf gate stream.
+
 ## Cycle 6 / Phase 18 Gap Sync (2026-04-20)
 
 Doc-drift sweep — tracker/ledger alignment only (no GAP-*items moved here this
