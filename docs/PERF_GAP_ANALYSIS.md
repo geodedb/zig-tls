@@ -182,7 +182,7 @@ Context driver (production) is well-optimized with zero-alloc appendOutboundFram
 | PERF-215 | P3 | 2.5 | [!172](https://gitlab.com/devnw/zig/tls/-/issues/172) | HRR second-CH path re-runs full 14-alloc parse. Folds into PERF-201 fix. |
 | PERF-216 | P3 | 4.0 | [!177](https://gitlab.com/devnw/zig/tls/-/issues/177) | SHA-384 transcript updates wasted on pre-lockHash ClientHellos. Fix: speculative SHA-256 lock. `confidence::suspected`. |
 | PERF-217 | P3 | 3.0 | [!179](https://gitlab.com/devnw/zig/tls/-/issues/179) | CryptoBuffer.outbound starts empty -> 3-6 reallocs during server flight. Fix: ensureTotalCapacity(4096) for .Handshake. `confidence::suspected`. |
-| PERF-218 | P3 | 1.5 | [!182](https://gitlab.com/devnw/zig/tls/-/issues/182) | EE ALPN duped on every receive; ALPN value is always pointer into config. Hold pointer not copy. |
+| PERF-218 | P3 | 1.5 | [!182](https://gitlab.com/devnw/zig/tls/-/issues/182) | DEFERRED (2026-04-19): received ALPN points into transient EE body; borrow would require adding a "borrowed" sentinel to `negotiated_alpn` field and auditing 6+ free/replace sites. Scope too large for 20-40 ns saving; revisit on next `negotiated_alpn` refactor. |
 
 **SLO context:** Top fixes (PERF-201 + PERF-207 + PERF-216) could save ~20-80 us + 3-7 KB transient allocation per handshake against the <2 ms / <100 KB targets.
 
@@ -269,7 +269,7 @@ Remaining PERF-208..211, PERF-213..218 are out of this plan's scope and remain O
 | 62 | PERF-215 | P3 | 2.5 | HRR second-CH path re-runs full 14-alloc parse | app | `src/tls13/handshake_state.zig:469-474`; `src/tls13/context.zig:1117-1124` | Doubles PERF-201 cost on HRR handshakes | [#172](https://gitlab.com/devnw/zig/tls/-/issues/172) | Folds into PERF-201 fix | git blame owner | Backlog | Open |
 | 63 | PERF-216 | P3 | 4.0 | SHA-384 transcript updates wasted on pre-lockHash CHs | app | `src/tls13/transcript.zig:149-158` | ~3-7us/handshake (SHA-384 discarded >95% of traffic) | [#177](https://gitlab.com/devnw/zig/tls/-/issues/177) | `lockHash` hoisted to cipher-selection sites in context.zig (server:1953, client:2342). Commit 9146aa80. | Claude | 2026-04-19 | Closed |
 | 64 | PERF-217 | P3 | 3.0 | CryptoBuffer.outbound empty -> 3-6 reallocs | app | `src/tls13/context.zig:581`, `:1427-1437` | ~200-600ns/handshake (3-6 realloc+memcpy) | [#179](https://gitlab.com/devnw/zig/tls/-/issues/179) | ensureTotalCapacity(4096) for .Handshake at init | git blame owner | Backlog | Open |
-| 65 | PERF-218 | P3 | 1.5 | EE ALPN duped on every receive | app | `src/tls13/context.zig:3067,3080` | ~20-40ns/handshake (1 unnecessary small alloc) | [#182](https://gitlab.com/devnw/zig/tls/-/issues/182) | Hold pointer into config.alpn_protocols; skip dupe | git blame owner | Backlog | Open |
+| 65 | PERF-218 | P3 | 1.5 | EE ALPN duped on every receive | app | `src/tls13/context.zig:2933` | ~20-40ns/handshake (1 unnecessary small alloc) | [#182](https://gitlab.com/devnw/zig/tls/-/issues/182) | DEFERRED (2026-04-19): `parsed.alpn` lifetimes into transient EE body buffer (freed before Context persists the value). Safe borrow requires either (a) matching received bytes against `config.alpn_protocols[i]` + sentinel "borrowed" bool on `negotiated_alpn`, or (b) reshaping `negotiated_alpn` to a tagged union. Both expand scope to 6+ free/replace sites across client handshake and reset paths; risk > 20-40 ns/handshake benefit. Revisit when `negotiated_alpn` is already being refactored for another reason. | Claude | Backlog | Deferred |
 
 ---
 
