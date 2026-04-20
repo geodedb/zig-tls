@@ -10,8 +10,9 @@
 const std = @import("std");
 
 /// Match the first server-preferred protocol that the client also offered.
-/// Returns a slice pointing into `supported` (NOT allocated). Returns null
-/// if either list is empty or there is no overlap.
+/// Returns a slice pointing into `supported` — never into `client_protocols`.
+/// The slice is NOT allocated; caller must ensure `supported` outlives it.
+/// Returns null if either list is empty or there is no overlap.
 pub fn selectServerAlpn(
     client_protocols: []const []const u8,
     supported: []const []const u8,
@@ -32,11 +33,23 @@ test "alpn_selection: first-match — server preference wins" {
     try std.testing.expectEqualStrings("h3", selectServerAlpn(&client, &server).?);
 }
 
-test "alpn_selection: borrow — returned slice is pointer-equal to supported[i]" {
-    const server = [_][]const u8{ "h3", "h2" };
+test "alpn_selection: borrow — returned slice is pointer-equal to supported[i], NOT client[i]" {
+    // Zig deduplicates identical string literals, so `"h3"` used in both
+    // arrays would alias to the same pointer and make this assertion
+    // tautological. Use a mutable stack buffer for the server entry so the
+    // two "h3" sequences live at distinct addresses — then pointer equality
+    // actually proves the function returned the SERVER's slice, not the
+    // client's.
+    var server_h3_buf = [_]u8{ 'h', '3' };
+    const server = [_][]const u8{server_h3_buf[0..]};
     const client = [_][]const u8{"h3"};
+    // Sanity: the two "h3" slices have different backing memory.
+    try std.testing.expect(@intFromPtr(server[0].ptr) != @intFromPtr(client[0].ptr));
+
     const got = selectServerAlpn(&client, &server).?;
+    // Returned slice MUST point at the server's buffer, not the client's.
     try std.testing.expectEqual(@intFromPtr(server[0].ptr), @intFromPtr(got.ptr));
+    try std.testing.expect(@intFromPtr(got.ptr) != @intFromPtr(client[0].ptr));
 }
 
 test "alpn_selection: no-match returns null" {
