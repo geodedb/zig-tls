@@ -97,6 +97,15 @@ pub const Secret = struct {
     }
 };
 
+/// Return the digest length in bytes for the selected hash algorithm.
+///
+/// The value is the fixed output size of the underlying hash used throughout
+/// the TLS 1.3 key schedule (RFC 8446 §7.1): 32 bytes for SHA-256, 48 bytes
+/// for SHA-384. Used to size HKDF `Hash.length` outputs and the `Secret`
+/// truncation length.
+///
+/// ## RFC Reference
+/// - RFC 8446 §7.1 - HKDF-Expand-Label / Hash.length
 pub fn digestLength(hash: Hash) usize {
     return switch (hash) {
         .sha256 => Sha256.digest_length,
@@ -115,6 +124,18 @@ fn secretFromSlice(hash: Hash, slice: []const u8) Secret {
     return Secret.fromSlice(hash, slice);
 }
 
+/// Return a `Secret` of the correct digest length filled with zero bytes.
+///
+/// TLS 1.3 key derivation seeds the first HKDF-Extract with a zero IKM when
+/// no PSK is configured; this helper produces that canonical zero seed sized
+/// to the negotiated hash (32 bytes for SHA-256, 48 bytes for SHA-384).
+///
+/// ## Returns
+/// A `Secret` whose `len` equals `digestLength(hash)` and whose `bytes`
+/// buffer is initialised to zero.
+///
+/// ## RFC Reference
+/// - RFC 8446 §7.1 - initial Early Secret IKM is a string of Hash.length zeros
 pub fn zeroSecret(hash: Hash) Secret {
     var out = Secret.empty();
     out.len = @intCast(digestLength(hash));
@@ -122,6 +143,25 @@ pub fn zeroSecret(hash: Hash) Secret {
     return out;
 }
 
+/// Run HKDF-Extract for the selected hash over `(salt, ikm)`.
+///
+/// Mirrors RFC 5869 HKDF-Extract as invoked by the TLS 1.3 key schedule.
+/// Passing `salt = null` is equivalent to an empty salt, which HKDF then
+/// replaces with a Hash.length string of zeros - the form used for the
+/// Early Secret at the top of the TLS 1.3 schedule.
+///
+/// ## Parameters
+/// - `salt`: HKDF salt. `null` is treated as the empty slice.
+/// - `ikm`: Input keying material (PSK, (EC)DHE shared secret, or Hash.length
+///   zeros when deriving the Master Secret).
+///
+/// ## Returns
+/// A `Secret` of length `digestLength(hash)` containing the PRK produced by
+/// HKDF-Extract.
+///
+/// ## RFC References
+/// - RFC 8446 §7.1 - Key Schedule (Extract stages)
+/// - RFC 5869 §2.2 - HKDF-Extract
 pub fn extractHash(hash: Hash, salt: ?[]const u8, ikm: []const u8) Secret {
     const actual_salt = salt orelse &[_]u8{};
     return switch (hash) {
@@ -130,6 +170,30 @@ pub fn extractHash(hash: Hash, salt: ?[]const u8, ikm: []const u8) Secret {
     };
 }
 
+/// Run TLS 1.3 HKDF-Expand-Label into a caller-supplied output buffer.
+///
+/// Constructs the `HkdfLabel` struct (see `hkdfLabel`) on the stack and calls
+/// HKDF-Expand with the provided PRK. The "tls13 " prefix is added by
+/// `hkdfLabel`; callers pass only the TLS-specific label (e.g. "key", "iv",
+/// "finished").
+///
+/// ## Parameters
+/// - `prk`: Pseudorandom key from HKDF-Extract (or a prior Derive-Secret).
+///   Must satisfy `prk.len == digestLength(hash)`.
+/// - `label`: Label without the "tls13 " prefix. Combined length with the
+///   prefix must fit in the internal 128-byte `HkdfLabel` buffer (label
+///   body up to ~115 bytes; TLS 1.3 labels are far shorter).
+/// - `context`: Optional context bytes (often a transcript hash). Must also
+///   fit within the same 128-byte buffer.
+/// - `out`: Destination slice. `out.len` becomes the HkdfLabel `length`
+///   field and must be <= 255 * Hash.length (HKDF limit).
+///
+/// ## Errors
+/// `error.BufferTooSmall` if the encoded `HkdfLabel` exceeds the 128-byte
+/// stack buffer (not reachable for any in-tree caller).
+///
+/// ## RFC Reference
+/// - RFC 8446 §7.1 - HKDF-Expand-Label definition
 pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, context: []const u8, out: []u8) !void {
     // PERF-045: Use a stack buffer directly instead of FixedBufferAllocator.
     // Max HkdfLabel size: 2 + 1 + 6 + label.len + 1 + context.len.
@@ -156,6 +220,29 @@ pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, contex
     }
 }
 
+/// Run TLS 1.3 Derive-Secret over a base secret and return a new `Secret`.
+///
+/// Derive-Secret is defined in RFC 8446 §7.1 as:
+/// ```
+/// Derive-Secret(Secret, Label, Messages)
+///     = HKDF-Expand-Label(Secret, Label,
+///                         Transcript-Hash(Messages), Hash.length)
+/// ```
+/// This wrapper calls `expandLabelHash` with `out.len = digestLength(hash)`
+/// and wraps the result in a `Secret`.
+///
+/// ## Parameters
+/// - `secret`: Base secret (Handshake Secret, Master Secret, etc.).
+/// - `label`: Label without "tls13 " prefix ("c hs traffic", "s ap traffic",
+///   "exp master", etc.).
+/// - `context`: Transcript hash bytes (may be empty for traffic secret
+///   updates).
+///
+/// ## Returns
+/// A `Secret` of length `digestLength(hash)`.
+///
+/// ## RFC Reference
+/// - RFC 8446 §7.1 - Derive-Secret
 pub fn deriveSecretHash(hash: Hash, secret: *const Secret, label: []const u8, context: []const u8) Secret {
     var derived = Secret.empty();
     derived.len = @intCast(digestLength(hash));
@@ -165,6 +252,21 @@ pub fn deriveSecretHash(hash: Hash, secret: *const Secret, label: []const u8, co
     return derived;
 }
 
+/// Compute HMAC over `data` using `key` with the selected hash.
+///
+/// Used internally by `deriveFinishedVerifyDataHash` to produce the
+/// Finished MAC and by the exporter/resumption paths that need raw HMAC.
+///
+/// ## Parameters
+/// - `key`: HMAC key material (typically the `finished_key`).
+/// - `data`: Message bytes (typically the transcript hash slice).
+///
+/// ## Returns
+/// A `Secret` of length `digestLength(hash)` containing the HMAC tag.
+///
+/// ## RFC References
+/// - RFC 8446 §4.4.4 - Finished verify_data uses HMAC(finished_key, ...)
+/// - RFC 2104 - HMAC construction
 pub fn hmacHash(hash: Hash, key: []const u8, data: []const u8) Secret {
     return switch (hash) {
         .sha256 => blk: {
@@ -180,6 +282,28 @@ pub fn hmacHash(hash: Hash, key: []const u8, data: []const u8) Secret {
     };
 }
 
+/// Derive the next application traffic secret after a KeyUpdate.
+///
+/// Implements the `application_traffic_secret_N+1` recursion from
+/// RFC 8446 §7.2:
+/// ```
+/// application_traffic_secret_N+1 =
+///     HKDF-Expand-Label(application_traffic_secret_N,
+///                       "traffic upd", "", Hash.length)
+/// ```
+/// Used by both the TLS 1.3 record-layer KeyUpdate path and the QUIC key
+/// update path after successful negotiation.
+///
+/// ## Parameters
+/// - `current_secret`: The current generation's `*_application_traffic_secret`
+///   with `len == digestLength(hash)`.
+///
+/// ## Returns
+/// The next-generation traffic secret, same length.
+///
+/// ## RFC References
+/// - RFC 8446 §7.2 - Updating Traffic Keys
+/// - RFC 9001 §6 - QUIC Key Update (reuses the same derivation)
 pub fn updateTrafficSecretHash(hash: Hash, current_secret: *const Secret) Secret {
     var next = Secret.empty();
     next.len = @intCast(digestLength(hash));
@@ -193,6 +317,26 @@ pub fn updateTrafficSecretHash(hash: Hash, current_secret: *const Secret) Secret
 // remained after the engine deletion. "quic ku" key-update callers now
 // derive directly via `expandLabelHash` in the QUIC key-update path.
 
+/// Derive QUIC record-protection key material (key, IV, header-protection key).
+///
+/// Calls HKDF-Expand-Label three times using the QUIC labels defined in
+/// RFC 9001 §5.1 (v1) or RFC 9369 §3.3.1 (v2). AEAD key and header
+/// protection key are both 16 bytes; the AEAD IV is 12 bytes, matching
+/// AES-128-GCM / AES-256-GCM's nonce requirement used by the QUIC packet
+/// protection profile.
+///
+/// ## Parameters
+/// - `secret`: The per-direction traffic secret with length `digestLength(hash)`.
+/// - `v2`: If `true`, use the QUIC v2 labels ("quicv2 key", "quicv2 iv",
+///   "quicv2 hp") from RFC 9369; otherwise use the v1 labels ("quic key",
+///   "quic iv", "quic hp") from RFC 9001.
+///
+/// ## Returns
+/// `KeyMaterial` with fixed-size arrays: `key` (16), `iv` (12), `hp` (16).
+///
+/// ## RFC References
+/// - RFC 9001 §5.1 - QUIC key material (v1)
+/// - RFC 9369 §3.3.1 - QUIC v2 label differentiation
 pub fn deriveKeyIvHpHash(hash: Hash, secret: *const Secret, v2: bool) KeyMaterial {
     var key: [16]u8 = undefined;
     var iv: [12]u8 = undefined;
@@ -215,6 +359,20 @@ pub fn deriveKeyIvHpHash(hash: Hash, secret: *const Secret, v2: bool) KeyMateria
     return .{ .key = key, .iv = iv, .hp = hp };
 }
 
+/// Hash `data` with the selected algorithm and return the digest as a `Secret`.
+///
+/// Primary callers are the handshake-transcript hash path (the "" context in
+/// Derive-Secret is `Transcript-Hash("") = Hash("")`) and TLS 1.3 exporter
+/// helpers that need a `Secret` wrapper around a raw digest.
+///
+/// ## Parameters
+/// - `data`: Bytes to hash (may be empty).
+///
+/// ## Returns
+/// A `Secret` of length `digestLength(hash)` containing the digest.
+///
+/// ## RFC Reference
+/// - RFC 8446 §4.4.1 - Transcript-Hash(Messages) = Hash(Messages)
 pub fn hashBytes(hash: Hash, data: []const u8) Secret {
     return switch (hash) {
         .sha256 => blk: {
@@ -230,6 +388,29 @@ pub fn hashBytes(hash: Hash, data: []const u8) Secret {
     };
 }
 
+/// Compute the TLS 1.3 Finished `verify_data` value.
+///
+/// Implements the two-step derivation from RFC 8446 §4.4.4:
+/// ```
+/// finished_key = HKDF-Expand-Label(BaseKey, "finished", "", Hash.length)
+/// verify_data  = HMAC(finished_key, Transcript-Hash(Handshake Context))
+/// ```
+/// `BaseKey` is `client_handshake_traffic_secret` when the client sends
+/// Finished, `server_handshake_traffic_secret` when the server sends it.
+///
+/// ## Parameters
+/// - `traffic_secret`: Sender's handshake traffic secret with
+///   `len == digestLength(hash)`.
+/// - `transcript_hash`: Precomputed transcript hash over the appropriate
+///   handshake prefix, with `len == digestLength(hash)`.
+///
+/// ## Returns
+/// A `Secret` of length `digestLength(hash)` containing the Finished
+/// `verify_data` tag. The caller places `verify_data.slice()` directly into
+/// the Finished message.
+///
+/// ## RFC Reference
+/// - RFC 8446 §4.4.4 - Finished MAC construction
 pub fn deriveFinishedVerifyDataHash(hash: Hash, traffic_secret: *const Secret, transcript_hash: *const Secret) Secret {
     var finished_key = Secret.empty();
     finished_key.len = @intCast(digestLength(hash));

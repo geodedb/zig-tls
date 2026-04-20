@@ -810,3 +810,13 @@ Pre-existing pre-commit hook failures on files not touched by this run are flagg
 - **Resolution:** Subsumed by engine.zig deletion (Phase 13 commit 4ae8ac7). Cycle 2 header-marker alignment commit 5443971 aligned the detail entry header. All 8 production callers removed with the file; no alternative call sites exist.
 - **Evidence:** `grep encodeHandshake src/tls13/` shows zero production callers remaining.
 - **Resolved date:** 2026-04-19
+
+## Phase 15 Closures (2026-04-19) -- Cycle 3
+
+### QUAL-342: key_schedule.zig public-fn docstring coverage [RESOLVED]
+
+- **Issue:** [#214](https://gitlab.com/devnw/zig/tls/-/work_items/214)
+- **Category:** Docs / readability
+- **Resolution:** Added `///` doc blocks to the 10 public functions that were missing them (`digestLength`, `zeroSecret`, `extractHash`, `expandLabelHash`, `deriveSecretHash`, `hmacHash`, `updateTrafficSecretHash`, `deriveKeyIvHpHash`, `hashBytes`, `deriveFinishedVerifyDataHash`). `hmacSha256` was already documented. Each new block cites the governing RFC section (RFC 8446 §4.4.1, §4.4.4, §7.1, §7.2; RFC 9001 §5.1 / §6; RFC 9369 §3.3.1; RFC 5869 §2.2; RFC 2104) and documents input-length invariants and the returned `Secret` / array shape.
+- **Evidence:** All 11 public fns now precede with `///` block. `zig fmt --check src/key_schedule.zig` clean. `zig build test` 521 pass / 2 skip — unchanged from pre-edit baseline (doc-only change).
+- **Resolved date:** 2026-04-19
