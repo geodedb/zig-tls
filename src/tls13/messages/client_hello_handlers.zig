@@ -360,6 +360,22 @@ fn buildEarlyData(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Alloca
 }
 
 // ============================================================================
+// psk_key_exchange_modes (RFC 8446 §4.2.9)
+// ============================================================================
+
+fn parsePskKeyExchangeModes(ctx: *ParseCtx, data: []const u8) anyerror!void {
+    ctx.ch.psk_key_exchange_modes = data;
+}
+
+fn buildPskKeyExchangeModes(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const params = ctx.params;
+    if (!params.include_psk) return;
+    // Current buildClientHello emits psk_dhe_ke(1) literal. Preserve
+    // byte-identical output.
+    try out.appendSlice(alloc, &.{ 0x00, 0x2d, 0x00, 0x02, 0x01, 0x01 });
+}
+
+// ============================================================================
 // supported_versions (RFC 8446 §4.2.1) — REQUIRED for TLS 1.3
 // ============================================================================
 
@@ -392,6 +408,7 @@ pub const HANDLERS: []const ExtHandler = &.{
     .{ .tag = .alpn, .parse = parseAlpn, .build = buildAlpn },
     .{ .tag = .quic_transport_parameters, .parse = parseQuicTransportParameters, .build = buildQuicTransportParameters },
     .{ .tag = .early_data, .parse = parseEarlyData, .build = buildEarlyData },
+    .{ .tag = .psk_key_exchange_modes, .parse = parsePskKeyExchangeModes, .build = buildPskKeyExchangeModes },
     // Parse-only extensions that have no build emission live at the tail
     // (before pre_shared_key). Their relative order among themselves is
     // inconsequential because their build handlers are no-ops.
