@@ -2120,8 +2120,11 @@ pub const Context = struct {
             // framed msg including the handshake header).
             const truncated_len = msg.len - ch_result.binders_tail_len;
 
-            // Hash truncated message (header is at msg[0..4])
-            var transcript = Transcript.init();
+            // Hash truncated message (header is at msg[0..4]).
+            // PERF-228: use initLocked so only the selected SHA variant is
+            // fed by update(), avoiding the redundant dual-SHA work of
+            // `Transcript.init()` for this single-hash ephemeral computation.
+            var transcript = Transcript.initLocked(self.hash_kind);
             transcript.update(msg[0..truncated_len]);
             const transcript_hash = transcript.finalize(self.hash_kind);
 

@@ -137,6 +137,25 @@ pub const Transcript = struct {
         };
     }
 
+    /// Initialize a new transcript already locked to a single hash algorithm.
+    ///
+    /// PERF-228: Short-lived ephemeral transcripts used only for PSK binder
+    /// computation (or any post-negotiation context where the hash is already
+    /// known) waste CPU if both SHA-256 and SHA-384 are fed. Callers that
+    /// know the hash up-front should use this constructor so that
+    /// `update()` only feeds the selected algorithm.
+    ///
+    /// Behaviour identical to `init()` followed by `lockHash(hash)`, but
+    /// packaged as a single call for clarity at call sites that only
+    /// finalize one algorithm.
+    pub fn initLocked(hash: Hash) Transcript {
+        return .{
+            .sha256 = Sha256.init(.{}),
+            .sha384 = Sha384.init(.{}),
+            .locked_hash = hash,
+        };
+    }
+
     /// Lock the transcript to a single hash algorithm after cipher suite negotiation.
     ///
     /// Once locked, `update()` will only feed data into the selected hash,
