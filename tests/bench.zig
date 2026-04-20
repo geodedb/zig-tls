@@ -36,28 +36,94 @@ fn nowMonotonicNs() ?u64 {
     return sec_ns + @as(u64, @intCast(ts.nsec));
 }
 
-/// Simple timer-based benchmark runner.
+/// PERF-223: Warmup iterations executed before timing begins. The first few
+/// calls pay cold-cache/branch-predictor costs that distort the reported
+/// mean and percentiles; discarding them stabilizes readings across runs.
+const warmup_iters: u32 = 3;
+
+/// PERF-223: Maximum per-sample buffer size for p50/p95 computation. Benches
+/// with higher iteration counts still run all iterations; only the first
+/// `max_samples` are retained for percentile reporting. Keeps stack usage
+/// bounded while preserving statistical validity for iteration counts
+/// <= 10_000 (which is the maximum currently used by any bench in main()).
+const max_samples: usize = 10_000;
+
+/// Compiler memory barrier. Zig 0.16 removed both `@fence` and
+/// `std.atomic.fence`; inline asm with a memory clobber is the remaining
+/// portable way to prevent the optimizer from reordering benchmarked work
+/// across the timer reads. Without this the compiler is free to hoist
+/// `func()` above the `t0` read or sink it below `t1`, producing near-zero
+/// sample times. A full hardware barrier is not required on x86-64 (TSO),
+/// but we still want the compiler barrier on every architecture.
+inline fn perfFence() void {
+    asm volatile ("" ::: .{ .memory = true });
+}
+
+/// PERF-223: Per-iteration timer-based benchmark runner with warmup, memory
+/// fences, and p50/p95 reporting.
+///
+/// Each iteration is timed individually so percentiles are meaningful. The
+/// first `warmup_iters` samples are discarded. Samples are sorted and p50
+/// (median) and p95 are reported alongside mean/total. A `seq_cst` fence
+/// surrounds each timer read to prevent reordering.
 fn benchmarkFn(comptime name: []const u8, comptime iterations: u32, func: anytype) void {
+    // Warmup: pay cold-cache costs without recording samples.
+    {
+        var w: u32 = 0;
+        while (w < warmup_iters) : (w += 1) func();
+    }
+
+    const sample_count: usize = @min(@as(usize, iterations), max_samples);
+    var samples: [max_samples]u64 = undefined;
+
     const start_ns = nowMonotonicNs() orelse {
         std.debug.print("[bench] {s}: timer unavailable, skipping\n", .{name});
         return;
     };
+
     var i: u32 = 0;
+    var recorded: usize = 0;
     while (i < iterations) : (i += 1) {
-        func();
+        if (recorded < sample_count) {
+            perfFence();
+            const t0 = nowMonotonicNs() orelse {
+                std.debug.print("[bench] {s}: timer unavailable mid-run, skipping\n", .{name});
+                return;
+            };
+            perfFence();
+            func();
+            perfFence();
+            const t1 = nowMonotonicNs() orelse {
+                std.debug.print("[bench] {s}: timer unavailable mid-run, skipping\n", .{name});
+                return;
+            };
+            perfFence();
+            samples[recorded] = if (t1 >= t0) (t1 - t0) else 0;
+            recorded += 1;
+        } else {
+            func();
+        }
     }
+
     const end_ns = nowMonotonicNs() orelse {
         std.debug.print("[bench] {s}: timer unavailable mid-run, skipping\n", .{name});
         return;
     };
     const elapsed_ns = end_ns - start_ns;
     const per_op_ns = elapsed_ns / iterations;
-    std.debug.print("[bench] {s}: {d} iterations, {d}ns total, {d}ns/op\n", .{
-        name,
-        iterations,
-        elapsed_ns,
-        per_op_ns,
-    });
+
+    // Sort recorded samples for percentile extraction.
+    std.mem.sort(u64, samples[0..recorded], {}, std.sort.asc(u64));
+    const p50: u64 = if (recorded == 0) 0 else samples[recorded / 2];
+    const p95: u64 = if (recorded == 0) 0 else blk: {
+        const idx = (recorded * 95) / 100;
+        break :blk samples[if (idx >= recorded) recorded - 1 else idx];
+    };
+
+    std.debug.print(
+        "[bench] {s}: {d} iters (warmup {d}, sampled {d}), {d}ns total, mean {d}ns/op, p50 {d}ns, p95 {d}ns\n",
+        .{ name, iterations, warmup_iters, recorded, elapsed_ns, per_op_ns, p50, p95 },
+    );
 }
 
 /// Benchmark: HKDF-Extract + HKDF-Expand-Label (key derivation hot path).
