@@ -107,6 +107,52 @@ fn buildServerName(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Alloc
 }
 
 // ============================================================================
+// supported_groups (RFC 8446 §4.2.7) — Named groups for ECDHE/FFDHE
+// ============================================================================
+
+fn parseSupportedGroups(ctx: *ParseCtx, data: []const u8) anyerror!void {
+    if (data.len >= 2) {
+        const groups_len = helpers.readU16(data[0..2]);
+        if (2 + groups_len <= data.len) {
+            var groups = try std.ArrayList(core_types.NamedGroup).initCapacity(ctx.alloc, 4);
+            defer groups.deinit(ctx.alloc);
+
+            var g_pos: usize = 2;
+            while (g_pos + 2 <= 2 + groups_len) : (g_pos += 2) {
+                const group = helpers.readU16(data[g_pos .. g_pos + 2]);
+                if (group == 0x001d) { // x25519
+                    try groups.append(ctx.alloc, .x25519);
+                }
+            }
+
+            if (groups.items.len > 0) {
+                ctx.ch.supported_groups = try groups.toOwnedSlice(ctx.alloc);
+            }
+        }
+    }
+}
+
+fn buildSupportedGroups(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const params = ctx.params;
+    if (params.supported_groups.len == 0) return;
+
+    const group_list_len: u16 = @intCast(params.supported_groups.len * 2);
+    const group_ext_len: u16 = group_list_len + 2;
+    try out.appendSlice(alloc, &.{
+        0x00,
+        0x0a,
+        @intCast(group_ext_len >> 8),
+        @intCast(group_ext_len & 0xff),
+        @intCast(group_list_len >> 8),
+        @intCast(group_list_len & 0xff),
+    });
+    for (params.supported_groups) |group| {
+        const gval: u16 = @intFromEnum(group);
+        try out.appendSlice(alloc, &.{ @intCast(gval >> 8), @intCast(gval & 0xff) });
+    }
+}
+
+// ============================================================================
 // supported_versions (RFC 8446 §4.2.1) — REQUIRED for TLS 1.3
 // ============================================================================
 
@@ -132,6 +178,7 @@ fn buildSupportedVersions(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.me
 pub const HANDLERS: []const ExtHandler = &.{
     // Build-order (RFC 8446 §4.2) authoritative:
     .{ .tag = .supported_versions, .parse = parseSupportedVersions, .build = buildSupportedVersions },
+    .{ .tag = .supported_groups, .parse = parseSupportedGroups, .build = buildSupportedGroups },
     // Parse-only extensions that have no build emission live at the tail
     // (before pre_shared_key). Their relative order among themselves is
     // inconsequential because their build handlers are no-ops.
