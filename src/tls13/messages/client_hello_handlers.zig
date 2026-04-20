@@ -59,8 +59,16 @@ pub const ParseCtx = struct {
 /// `params` carries the source of truth for which extensions to emit; the
 /// build handler consults the corresponding field (e.g. `params.alpn_protocols`)
 /// and silently skips emission when the field is null/empty.
+///
+/// `psk_binder_offset`, `psk_binder_len`, `psk_binders_tail_len` are populated
+/// in place by the `pre_shared_key` build handler so the outer loop can
+/// propagate the binder metadata into `ClientHelloResult` without the handler
+/// needing to return a tuple.
 pub const BuildCtx = struct {
     params: *const ClientHelloParams,
+    psk_binder_offset: ?usize = null,
+    psk_binder_len: u8 = 0,
+    psk_binders_tail_len: usize = 0,
 };
 
 /// One row in the table-driven dispatch.
@@ -376,6 +384,118 @@ fn buildPskKeyExchangeModes(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.
 }
 
 // ============================================================================
+// pre_shared_key (RFC 8446 §4.2.11) — MUST be LAST in HANDLERS (CWE-345)
+// ============================================================================
+
+fn parsePreSharedKey(ctx: *ParseCtx, data: []const u8) anyerror!void {
+    if (data.len < 2) return error.TooShort;
+    const identities_len = helpers.readU16(data[0..2]);
+    if (identities_len + 2 > data.len) return error.TooShort;
+
+    var identities = try std.ArrayList(PskIdentity).initCapacity(ctx.alloc, 2);
+    defer identities.deinit(ctx.alloc);
+
+    var id_pos: usize = 2;
+    const identities_end = 2 + identities_len;
+    while (id_pos < identities_end) {
+        if (id_pos + 2 > identities_end) return error.TooShort;
+        const identity_len = helpers.readU16(data[id_pos .. id_pos + 2]);
+        id_pos += 2;
+        if (id_pos + identity_len > identities_end) return error.TooShort;
+        const identity_bytes = data[id_pos .. id_pos + identity_len];
+        id_pos += identity_len;
+        if (id_pos + 4 > identities_end) return error.TooShort;
+        const ticket_age = helpers.readU32(data[id_pos .. id_pos + 4]);
+        id_pos += 4;
+        try identities.append(ctx.alloc, .{
+            .identity = identity_bytes,
+            .obfuscated_ticket_age = ticket_age,
+        });
+    }
+    if (id_pos != identities_end) return error.TooShort;
+
+    if (id_pos + 2 > data.len) return error.TooShort;
+    const binders_len = helpers.readU16(data[id_pos .. id_pos + 2]);
+    id_pos += 2;
+    if (id_pos + binders_len > data.len) return error.TooShort;
+
+    var binders = try std.ArrayList([]const u8).initCapacity(ctx.alloc, 2);
+    defer binders.deinit(ctx.alloc);
+
+    var binder_pos: usize = 0;
+    while (binder_pos < binders_len) {
+        if (binder_pos >= binders_len) return error.TooShort;
+        const binder_len = data[id_pos + binder_pos];
+        binder_pos += 1;
+        if (binder_pos + binder_len > binders_len) return error.TooShort;
+        const binder_slice = data[id_pos + binder_pos .. id_pos + binder_pos + binder_len];
+        binder_pos += binder_len;
+        try binders.append(ctx.alloc, binder_slice);
+    }
+    if (binder_pos != binders_len) return error.TooShort;
+
+    ctx.ch.pre_shared_key = PreSharedKey{
+        .identities = try identities.toOwnedSlice(ctx.alloc),
+        .binders = try binders.toOwnedSlice(ctx.alloc),
+    };
+    // NOTE: the outer parse loop sets `psk_seen = true` immediately after
+    // dispatch returns when `tag == .pre_shared_key` (CWE-345 sentinel stays
+    // at outer scope; handlers never touch it).
+}
+
+fn buildPreSharedKey(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const params = ctx.params;
+    if (!params.include_psk) return;
+
+    const identity = params.psk_identity orelse return error.MissingPskIdentity;
+    const binder_len = params.psk_binder_len;
+    if (binder_len == 0) return error.InvalidBinderLength;
+
+    // pre_shared_key extension type
+    try out.appendSlice(alloc, &.{ 0x00, 0x29 });
+
+    const ext_data_start = out.items.len + 2; // after ext length field
+    try out.appendSlice(alloc, &.{ 0x00, 0x00 }); // placeholder for ext length
+
+    // Identities list: list_len(2) + identity_len(2) + identity + ticket_age(4)
+    const identity_len: u16 = @intCast(identity.len);
+    const identities_list_len: u16 = 2 + identity_len + 4;
+    try out.appendSlice(alloc, &.{ @intCast(identities_list_len >> 8), @intCast(identities_list_len & 0xff) });
+    try out.appendSlice(alloc, &.{ @intCast(identity_len >> 8), @intCast(identity_len & 0xff) });
+    try out.appendSlice(alloc, identity);
+
+    const ticket_age = params.psk_ticket_age;
+    try out.appendSlice(alloc, &.{
+        @intCast((ticket_age >> 24) & 0xff),
+        @intCast((ticket_age >> 16) & 0xff),
+        @intCast((ticket_age >> 8) & 0xff),
+        @intCast(ticket_age & 0xff),
+    });
+
+    // Binders list: list_len(2) + binder_entry_len(1) + binder_data(binder_len)
+    const binders_list_len: u16 = 1 + @as(u16, binder_len);
+    try out.appendSlice(alloc, &.{ @intCast(binders_list_len >> 8), @intCast(binders_list_len & 0xff) });
+    try out.append(alloc, binder_len);
+
+    // Record binder placeholder position
+    const binder_offset = out.items.len;
+
+    // Write zero placeholder for binder
+    const zeros = [_]u8{0} ** 64; // max digest length
+    try out.appendSlice(alloc, zeros[0..binder_len]);
+
+    // Patch PSK extension length
+    const ext_data_len = out.items.len - ext_data_start;
+    out.items[ext_data_start - 2] = @intCast((ext_data_len >> 8) & 0xff);
+    out.items[ext_data_start - 1] = @intCast(ext_data_len & 0xff);
+
+    // Propagate binder metadata back to the outer loop.
+    ctx.psk_binder_offset = binder_offset;
+    ctx.psk_binder_len = binder_len;
+    ctx.psk_binders_tail_len = 2 + 1 + binder_len;
+}
+
+// ============================================================================
 // supported_versions (RFC 8446 §4.2.1) — REQUIRED for TLS 1.3
 // ============================================================================
 
@@ -413,4 +533,7 @@ pub const HANDLERS: []const ExtHandler = &.{
     // (before pre_shared_key). Their relative order among themselves is
     // inconsequential because their build handlers are no-ops.
     .{ .tag = .server_name, .parse = parseServerName, .build = buildServerName },
+    // CWE-345 / RFC 8446 §4.2.11: pre_shared_key MUST be last on the wire
+    // and in this table.
+    .{ .tag = .pre_shared_key, .parse = parsePreSharedKey, .build = buildPreSharedKey },
 };
