@@ -102,7 +102,16 @@ pub fn getPool() *tp.ThreadPool {
     defer pool_mutex.unlock();
 
     if (global_pool == null) {
-        global_pool = tp.ThreadPool.init(std.heap.smp_allocator, .{}) catch @panic("thread-pool: init failed");
+        // PERF-230: Cap thread count at min(cpu_count, 16). A TLS library
+        // rarely benefits from more than ~16 concurrent signature verifies —
+        // beyond that the overhead of signaling and cache contention
+        // outweighs the throughput win and balloons process RSS on hosts
+        // with large CPU counts.
+        const cpu_count = std.Thread.getCpuCount() catch 4;
+        const thread_cap: usize = @min(cpu_count, 16);
+        global_pool = tp.ThreadPool.init(std.heap.smp_allocator, .{
+            .max_threads = thread_cap,
+        }) catch @panic("thread-pool: init failed");
         pool_initialized.store(true, .release);
     }
     return &global_pool.?;
