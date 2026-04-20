@@ -329,6 +329,22 @@ fn buildAlpn(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) 
 }
 
 // ============================================================================
+// quic_transport_parameters (RFC 9001 §8.2)
+// ============================================================================
+
+fn parseQuicTransportParameters(ctx: *ParseCtx, data: []const u8) anyerror!void {
+    ctx.ch.quic_transport_parameters = data;
+}
+
+fn buildQuicTransportParameters(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const params = ctx.params;
+    const tp = params.quic_transport_parameters orelse return;
+    const tp_len: u16 = @intCast(tp.len);
+    try out.appendSlice(alloc, &.{ 0x00, 0x39, @intCast(tp_len >> 8), @intCast(tp_len & 0xff) });
+    try out.appendSlice(alloc, tp);
+}
+
+// ============================================================================
 // supported_versions (RFC 8446 §4.2.1) — REQUIRED for TLS 1.3
 // ============================================================================
 
@@ -359,6 +375,7 @@ pub const HANDLERS: []const ExtHandler = &.{
     .{ .tag = .key_share, .parse = parseKeyShare, .build = buildKeyShare },
     .{ .tag = .cookie, .parse = parseCookie, .build = buildCookie },
     .{ .tag = .alpn, .parse = parseAlpn, .build = buildAlpn },
+    .{ .tag = .quic_transport_parameters, .parse = parseQuicTransportParameters, .build = buildQuicTransportParameters },
     // Parse-only extensions that have no build emission live at the tail
     // (before pre_shared_key). Their relative order among themselves is
     // inconsequential because their build handlers are no-ops.
