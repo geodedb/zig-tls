@@ -384,7 +384,11 @@ fn verifySignature(input: SignatureVerifyInput) SignatureVerifyResult {
 ///
 /// Canonicalization with `sig.zig:rsa_pss_verify_sha*` is tracked separately
 /// (those return `!bool`; this path returns `SigResult{valid, error_code}`).
-fn verifyRsaPssWithHash(
+/// Exposed `pub` so the GAP-0109 differential fuzz harness
+/// (`tests/fuzz/rsa_pss_verify.zig`) can drive it alongside
+/// `sig.rsa_pss_verify_sha256`. Internal callers go through
+/// `verifySignature`.
+pub fn verifyRsaPssWithHash(
     comptime HashT: type,
     input: SignatureVerifyInput,
     alloc: std.mem.Allocator,

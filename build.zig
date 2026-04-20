@@ -1168,6 +1168,41 @@ pub fn build(b: *std.Build) void {
     // They are not included in the default test step
 
     // ========================================================================
+    // GAP-0109: RSA-PSS Differential Fuzz Harness
+    // ========================================================================
+    //
+    // Drives both `sig.rsa_pss_verify_sha256` and
+    // `parallel.verifyRsaPssWithHash` with identical inputs and asserts
+    // byte-equivalent verdicts. Seed corpus lives under
+    // tests/fuzz/corpus/rsa_pss/ and is consumed via @embedFile.
+    //
+    // Run seeds only:   zig build fuzz-rsa-pss
+    // Run fuzz:         zig build fuzz-rsa-pss --fuzz
+    //
+    // Only registered when the `parallel` module is built (thread-pool on).
+
+    if (parallel_mod) |pm| {
+        const fuzz_rsa_pss_step = b.step("fuzz-rsa-pss", "Run RSA-PSS differential fuzz harness (GAP-0109)");
+        const fuzz_rsa_pss_test = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/fuzz/rsa_pss_verify.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "sig", .module = sig_mod },
+                    .{ .name = "parallel", .module = pm },
+                },
+            }),
+        });
+        const run_fuzz_rsa_pss_test = b.addRunArtifact(fuzz_rsa_pss_test);
+        fuzz_rsa_pss_step.dependOn(&run_fuzz_rsa_pss_test.step);
+        // Also exercise the seed corpus as part of the default `test` step
+        // so regressions are caught by routine CI, not only by the explicit
+        // fuzz job.
+        test_step.dependOn(&run_fuzz_rsa_pss_test.step);
+    }
+
+    // ========================================================================
     // Benchmark Suite (PERF-011)
     // ========================================================================
     //

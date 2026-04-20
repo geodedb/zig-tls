@@ -382,7 +382,11 @@ const Sha384 = std.crypto.hash.sha2.Sha384;
 /// Stdlib RSA module with constant-time operations.
 const rsa = std.crypto.Certificate.rsa;
 
-fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []const u8, sig: []const u8, salt_len: usize, alloc: std.mem.Allocator) !bool {
+/// RSA-PSS SHA-256 verification entry point. Exposed `pub` so the
+/// GAP-0109 differential fuzz harness (`tests/fuzz/rsa_pss_verify.zig`)
+/// can drive it alongside `parallel.verifyRsaPssWithHash`. Internal
+/// callers go through `verifyCertificateVerify`.
+pub fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []const u8, sig: []const u8, salt_len: usize, alloc: std.mem.Allocator) !bool {
     _ = salt_len; // stdlib uses Hash.digest_length (32 for SHA-256) as salt length
     // Parse SPKI to get modulus and exponent
     var spki = try parseRsaSpki(pubkey_spki_der, alloc);
