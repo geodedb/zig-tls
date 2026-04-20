@@ -345,6 +345,21 @@ fn buildQuicTransportParameters(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: 
 }
 
 // ============================================================================
+// early_data (RFC 8446 §4.2.10) — 0-RTT indication
+// ============================================================================
+
+fn parseEarlyData(ctx: *ParseCtx, data: []const u8) anyerror!void {
+    _ = data;
+    ctx.ch.early_data = true;
+}
+
+fn buildEarlyData(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const params = ctx.params;
+    if (!params.include_early_data) return;
+    try out.appendSlice(alloc, &.{ 0x00, 0x2a, 0x00, 0x00 });
+}
+
+// ============================================================================
 // supported_versions (RFC 8446 §4.2.1) — REQUIRED for TLS 1.3
 // ============================================================================
 
@@ -376,6 +391,7 @@ pub const HANDLERS: []const ExtHandler = &.{
     .{ .tag = .cookie, .parse = parseCookie, .build = buildCookie },
     .{ .tag = .alpn, .parse = parseAlpn, .build = buildAlpn },
     .{ .tag = .quic_transport_parameters, .parse = parseQuicTransportParameters, .build = buildQuicTransportParameters },
+    .{ .tag = .early_data, .parse = parseEarlyData, .build = buildEarlyData },
     // Parse-only extensions that have no build emission live at the tail
     // (before pre_shared_key). Their relative order among themselves is
     // inconsequential because their build handlers are no-ops.
