@@ -57,6 +57,30 @@ pub const HandshakeMetadata = struct {
 pub const SignatureScheme = tls13_full.SignatureScheme;
 
 /// Error type for TLS API operations.
+///
+/// # QUAL-352: ApiError vs HandshakeError
+///
+/// This library uses two distinct error sets for two distinct concerns:
+///
+/// - `ApiError` — **Non-fatal, caller-workflow** errors. These signal that
+///   the embedder asked for something the library cannot (yet) do or that
+///   no data is available right now. An `ApiError` DOES NOT abort the
+///   handshake. It does not map to a TLS alert. Callers are expected to
+///   handle these (e.g. retry, pump more data, feature-detect).
+///
+/// - `HandshakeError` — **Fatal protocol** errors. These indicate the peer
+///   sent bytes that violate RFC 8446. They map 1:1 to TLS alerts (see
+///   `alert.fromHandshakeError()`) and, in QUIC, to CRYPTO_ERROR codes per
+///   RFC 9001 §4.8. They always abort the connection.
+///
+/// Rule of thumb:
+///   - If the embedder can recover (more data, different arg, next poll),
+///     use `ApiError`.
+///   - If a byte-level RFC violation is detected, use `HandshakeError`.
+///
+/// Mixed return types (`ApiError || HandshakeError`) are expressed via
+/// Zig error-set unions. Callers typically `try` them and let the error
+/// propagate; boundary code distinguishes by the specific error tag.
 pub const ApiError = error{
     /// Requested operation not yet implemented.
     Unimplemented,
