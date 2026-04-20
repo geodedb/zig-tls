@@ -846,3 +846,39 @@ Pre-existing pre-commit hook failures on files not touched by this run are flagg
 - **Resolution:** Split the 199-LOC `validateStapledResponse` (src/ocsp.zig) into a 20-LOC orchestrator plus four validators: `decodeResponseBytes` (responseStatus + responseBytes + BasicOCSPResponse decode, 71 LOC), `parseResponseData` (tbsResponseData up through producedAt + responses SEQUENCE, 29 LOC), `matchSingleResponse` (SingleResponse iteration + CertID match, 66 LOC), and `verifySignerChain` (delegated responder cert validation + signature verification, 22 LOC). A secondary helper `parseSingleResponseTimes` (32 LOC) keeps the SingleResponse status + thisUpdate + nextUpdate tail out of `matchSingleResponse`. Two helper record types (`DecodedResponse`, `ParsedResponseData`) carry the intermediate shape through the pipeline. The CWE-328 SHA-1 skip (two `continue` sites) is preserved inside `matchSingleResponse` with prominent in-code comments noting its security-critical status.
 - **Evidence:** Orchestrator `validateStapledResponse` = 20 LOC (< 60 target). All helpers under the 80-LOC bound (71/29/66/32/22 LOC). `zig fmt src/ocsp.zig` clean. `zig build test` 521 pass / 2 skip (unchanged from pre-refactor baseline). `tests/ocsp_unit_tests.zig` green, `tests/ocsp_openssl_conformance.zig` green.
 - **Resolved date:** 2026-04-19
+
+### PERF-209: ThreadPool uses page_allocator [RESOLVED]
+
+- **Issue:** [#155](https://gitlab.com/devnw/zig/tls/-/issues/155)
+- **Category:** Performance (allocator hygiene)
+- **Resolution:** Commit 24a275c swapped `src/parallel.zig:78` from `std.heap.page_allocator` to `std.heap.smp_allocator`. Cycle 3 added a reproducer (`tests/perf/bench_threadpool_alloc.zig`, commit 88e4968) that quantified the prior allocator tax: under a 10,000-job parallel-verify-like workload the `page_allocator` configuration produced +136..+154 minor page faults per run while `smp_allocator` and `c_allocator` both produced zero. Post-swap runs confirm `smp_allocator` eliminates those faults. `smp_allocator` was chosen over `c_allocator` to preserve the pure-Zig/no-libc property of the library (relevant for embedded / freestanding downstream consumers). Ledger closed in commit e94fdbb. Also resolves GAP-0104.
+- **Evidence:** Reproducer output recorded in `docs/PERF_GAP_ANALYSIS.md` § PERF-209 (three independent ReleaseFast runs). `zig build` PASS, `zig build test` 586 pass / 2 skip, `zig fmt --check` clean, bench harness green.
+- **Resolved date:** 2026-04-20
+
+### PERF-218: EE ALPN dupe -- Cycle 3 audit (not promoted)
+
+- **Issue:** [#182](https://gitlab.com/devnw/zig/tls/-/issues/182) (kept **OPEN** with Cycle 3 audit findings; Cycle 2 deferral plan remains valid)
+- **Category:** Performance (allocator hygiene)
+- **Cycle 3 outcome:** Not promoted to implementation; audit committed (29a3ef1) strengthens the Cycle 2 deferral.
+- **Audit findings:** Single-file concentration (`src/tls13/context.zig`, 10 references, 0 external consumers of `Context.negotiatedAlpn()`). Critical: the field has an **asymmetric ownership contract** — the server-path write at `context.zig:1314` (`selectServerAlpn`, sourced from long-lived `config.alpn_protocols`) is borrow-safe, but the client-path write at `context.zig:2933` (`handleEncryptedExtensions`, sourced from the transient EE parse buffer) **must stay owned** unless the parser is taught to hand Context a longer-lived view. A blanket "flip to borrow" would introduce UAF on the client path. The safe refactor remains the Cycle 2 tagged-ownership plan (`negotiated_alpn_owned: bool` sentinel or `.owned`/`.borrowed` tagged union) with audit of 6+ free/replace sites.
+- **Evidence:** `rg '\bnegotiated_alpn\b' src/ tests/ examples/ docs/` output captured in `docs/PERF_GAP_ANALYSIS.md` § PERF-218; 10 `context.zig` references, 0 cross-file references.
+- **Audit date:** 2026-04-20
+
+### QUAL-339: parseClientHello ExtHandler table dispatch [BLOCKED]
+
+- **Issue:** [#209](https://gitlab.com/devnw/zig/tls/-/work_items/209) (kept **OPEN** on GitLab; ledger status: Blocked for Cycle 3, deferred to Cycle 4)
+- **Category:** Readability / Maintainability
+- **Blocker:** Safe mechanical conversion from the `parseClientHello` extension-dispatch switch into a table-driven `ExtHandler` array is blocked by three interleaved security-critical state machines:
+  1. **SEC-054 errdefer block** (`client_hello.zig:262-271`) -- frees partial allocations through the `ch` pointer; must either remain at the orchestrator scope or be restructured so every handler's error path runs equivalent cleanup.
+  2. **SEC-057 `std.enums.fromInt` guard** -- prevents `@enumFromInt` panics on ~2034 non-enumerated `ExtensionType` values sent by a hostile peer.
+  3. **CWE-345 `psk_seen` ordering sentinel** -- RFC 8446 §4.2.11 mandates `pre_shared_key` MUST be the final extension in ClientHello; a straight table-driven dispatch drops the per-arm ordering invariant unless `psk_seen` is threaded explicitly.
+- **Unblock plan:** (a) Define `ParseCtx { ch: *ClientHello, alloc: Allocator, psk_seen: *bool }` + `BuildCtx { buf: []u8, pos: *usize, ... }` to thread state into each handler. (b) Extract each switch arm into `fn parseXxx(ctx: *ParseCtx, ext_data: []const u8) !void`. (c) Re-run the client_hello fuzz corpus (`tests/fuzz/client_hello/**`) against both the pre- and post-refactor branches and diff error traces; zero deltas required before merge.
+- **Ledger commit:** e0ca05d.
+- **Deferred to:** Cycle 4 / Phase 16.
+
+### GAP-0104: thread_pool uses page_allocator [RESOLVED]
+
+- **Issue:** [#140](https://gitlab.com/devnw/zig/tls/-/issues/140)
+- **Category:** Performance
+- **Resolution:** Closed via PERF-209 (commit 24a275c). GAP-0104 was originally filed as a "needs reproducer" finding; Cycle 3 built the reproducer (`tests/perf/bench_threadpool_alloc.zig`) and promoted the finding to a measured closure. See PERF-209 above for allocator-swap evidence.
+- **Resolved date:** 2026-04-20

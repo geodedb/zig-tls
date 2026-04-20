@@ -1,6 +1,6 @@
 # GAP Analysis
 
-> **Last updated:** 2026-04-20 (Cycle 2 / Phase 14 gap-close -- 9 additional GAP closures on top of Phase 13's 16)
+> **Last updated:** 2026-04-20 (Cycle 3 / Phase 15 gap-close -- GAP-0104 closed via PERF-209 on top of Cycle 2's 9 + Phase 13's 16)
 > **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 >
@@ -20,14 +20,36 @@
 | Critical | 8        | 8      | 0        | 0    |
 | High     | 22       | 24     | 0        | 1    |
 | Medium   | 48       | 47     | 1        | 2    |
-| Low      | 52       | 49     | 6        | 2    |
-| **Total**| **130**  | **120**| **7**    | **5** |
+| Low      | 52       | 50     | 6        | 1    |
+| **Total**| **130**  | **121**| **7**    | **4** |
 
 ### Implementation Status
 
-**Closed: 120 findings** - Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
+**Closed: 121 findings** - Cycle 3 / Phase 15 (2026-04-20) closed GAP-0104 (delivered via PERF-209 allocator swap, commit 24a275c). Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
 **Won't Do: 7 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133), GAP-0099 (issue tracker maintenance, separate from code), GAP-0093 (2 skipped tests require stdlib features not yet available)
-**Open: 3 findings** - GAP-0104 (thread_pool page_allocator, needs reproducer -- cross-ref PERF-209), GAP-0106 (bench 0.16 API drift, blocker for local perf validation), GAP-0110 partial (engine EE nesting subsumed by deletion; analogous Context nesting tracked separately). Cross-file `sig.zig`<->`parallel.zig` RSA-PSS canonicalization referenced in GAP-0109 is deferred to a future cycle pending a fuzz-regression harness.
+**Open: 2 findings** - GAP-0106 (bench 0.16 API drift, blocker for local perf validation), GAP-0110 partial (engine EE nesting subsumed by deletion; analogous Context nesting tracked separately). Cross-file `sig.zig`<->`parallel.zig` RSA-PSS canonicalization referenced in GAP-0109 is deferred to a future cycle pending a fuzz-regression harness.
+
+### Cycle 3 / Phase 15 Gap Closure Run (2026-04-20)
+
+10 code commits + 1 ledger commit landed on `main` closing 1 GAP item (GAP-0104 via PERF-209) plus 5 cross-ledger closures (4 QUAL + 1 PERF) and 1 Blocked (QUAL-339). Verifier (Step 3 gap-closer-verifier, 2026-04-20): `zig build` PASS, `zig build test` 586 pass / 2 skip, `zig fmt --check` clean, pre-commit clean, bench harness green.
+
+**Closed GAP items (1):**
+
+| GAP-ID | Commit | Note |
+|--------|--------|------|
+| GAP-0104 | 24a275c | Delivered via PERF-209 — ThreadPool `page_allocator` → `smp_allocator` swap. Reproducer (88e4968) confirmed +136..+154 minor page faults per 10k tasks eliminated. |
+
+**Cross-ledger closures (this cycle):** 4 QUAL (QUAL-338, QUAL-340, QUAL-341, QUAL-342) + 1 PERF (PERF-209) + 1 PERF audit-only (PERF-218). Details in `docs/QUALITY_GAP_ANALYSIS.md` and `docs/PERF_GAP_ANALYSIS.md`.
+
+**Blocked / Deferred (this cycle):** QUAL-339 (client_hello ExtHandler dispatch) — interleaved with SEC-054 errdefer + SEC-057 enum guard + CWE-345 psk_seen ordering; safe refactor requires fuzz-regression cycle. Ledger e0ca05d captures the unblock plan.
+
+**Known follow-ups for Cycle 4:**
+
+- QUAL-317 (context.zig decomposition -- epic; pending user brainstorm on subsystem boundaries)
+- QUAL-315 (coverage tooling choice -- kcov recommended per planner)
+- QUAL-339 (ClientHello ExtHandler table dispatch -- blocked on fuzz harness, plan recorded)
+- GAP-0109 cross-file `sig.zig` <-> `parallel.zig` RSA-PSS canonicalization (needs fuzz-regression cycle)
+- GAP-0106 -- `zig build bench` 0.16 API drift residual Open
 
 ### Cycle 2 / Phase 14 Gap Closure Run (2026-04-20)
 
@@ -604,18 +626,14 @@ All 11 remaining open issues from the third review have been implemented:
 - **Resolution:** PERF-208 reserved 4 bytes of header space inside `buildClientHello`; the caller now writes the handshake-type/length header directly. The second alloc and body-to-outer `@memcpy` are eliminated. Impact: ~30-80 ns/handshake client-side; one fewer alloc per ClientHello.
 - **Acceptance criteria:** Met -- `sendClientHello2` issues one allocation; no body-to-outer memcpy.
 
-### GAP-0104: thread_pool uses page_allocator
+### GAP-0104: thread_pool uses page_allocator [CLOSED]
 
 - **Issue:** [#140](https://gitlab.com/devnw/zig/tls/-/issues/140)
 - **Category:** Performance
-- **Severity:** Low (suspected)
-- **Requirement source:** Performance gap analysis -- parallel module allocator audit.
-- **Current state (evidence):**
-  - `src/parallel.zig:78` -- thread_pool wired with `page_allocator`.
-- **Why this is a gap:** If thread_pool allocates per-task, every task pays the OS page-allocator tax; `smp_allocator` would be faster.
-- **Impact/Risk:** Unknown without internal-allocator inspection.
-- **Recommended fix:** Audit thread_pool allocation pattern. If per-task: switch to `std.heap.smp_allocator`. If init-only: document and close.
-- **Acceptance criteria:** Allocation pattern documented; if per-task, allocator changed with benchmark delta; otherwise close with rationale.
+- **Severity:** Low (measured)
+- **Status:** Closed (2026-04-20, Cycle 3) -- Delivered via PERF-209.
+- **Resolution:** Cycle 3 added a reproducer (`tests/perf/bench_threadpool_alloc.zig`, commit 88e4968) that confirmed `page_allocator` produces +136..+154 minor page faults per 10k SHA-256 tasks where `smp_allocator` and `c_allocator` produce zero. Commit 24a275c swapped `src/parallel.zig:78` from `std.heap.page_allocator` to `std.heap.smp_allocator`. Post-swap run confirms zero minor page faults. `smp_allocator` was chosen over `c_allocator` to avoid pulling libc into pure-Zig downstream consumers. Ledger closed in commit e94fdbb.
+- **Acceptance criteria:** Met -- allocation pattern documented; allocator changed with benchmark delta (-136..-154 minflt / 10k tasks); no libc dependency added.
 
 ### GAP-0105: xorNonce/deriveNonce micro-optimization candidates [CLOSED]
 

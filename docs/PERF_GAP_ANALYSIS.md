@@ -1,10 +1,10 @@
 # Performance Gap Analysis
 
-> **Last updated:** 2026-04-20 (Cycle 2 / Phase 14 gap-close — 6 PERF closures + 1 Deferred on top of Phase 13's 12 closures)
+> **Last updated:** 2026-04-20 (Cycle 3 / Phase 15 gap-close — PERF-209 measured + closed; PERF-218 audit-only ledger strengthening)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 > **Target:** <2ms handshake, <100KB memory per connection
 > **Methodology:** Static code analysis, allocation pattern review, hot-path tracing
-> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3 + Phase 7 Perf-Reviewer Audit + Phase 8 Closure + Phase 9 Final Closure + Phase 10 Deep Review Validation + Phase 10 Closure + Phase 4 Tracking Re-audit (2026-04-18) + Phase 12 Perf-Issue-Tracker (2026-04-19) + Phase 13 Gap-Close (2026-04-19) + Cycle 2 / Phase 14 Gap-Close (2026-04-20)
+> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3 + Phase 7 Perf-Reviewer Audit + Phase 8 Closure + Phase 9 Final Closure + Phase 10 Deep Review Validation + Phase 10 Closure + Phase 4 Tracking Re-audit (2026-04-18) + Phase 12 Perf-Issue-Tracker (2026-04-19) + Phase 13 Gap-Close (2026-04-19) + Cycle 2 / Phase 14 Gap-Close (2026-04-20) + Cycle 3 / Phase 15 Gap-Close (2026-04-20)
 
 ---
 
@@ -45,6 +45,24 @@
 | PERF-218 | #182 | 8956883 | `negotiated_alpn` borrow refactor. Concrete unblock plan: add `negotiated_alpn_owned: bool` sentinel or split into `.owned`/`.borrowed` tagged union; audit 6+ free/replace sites (`config.deinit`, `config.replace`, `Context.deinit`, new-ticket install, 0-RTT reject reset, rekey path). Scope (~day of work) exceeds 20-40 ns saving; revisit next `negotiated_alpn` refactor cycle. |
 
 **PERF-209 Closed:** Swapped `std.heap.page_allocator` → `std.heap.smp_allocator` at `src/parallel.zig:78` (commit 24a275c).
+
+### Cycle 3 / Phase 15 Gap Closure Run (2026-04-20)
+
+Cycle 3 delivered 1 PERF closure (PERF-209, promoted from Cycle 2's measurement-only state) and 1 audit-only ledger strengthening (PERF-218). Verifier (Step 3 gap-closer-verifier, 2026-04-20): `zig build` PASS, `zig build test` 586 pass / 2 skip, `zig fmt --check` clean, pre-commit clean, bench harness green.
+
+**Closed (1):**
+
+| PERF-ID | Sev | Issue | Closing commit | Note |
+|---------|-----|-------|----------------|------|
+| PERF-209 | P3 | #155 | 24a275c (+ ledger e94fdbb) | ThreadPool allocator swapped `page_allocator` → `smp_allocator` at `src/parallel.zig:78`. Reproducer (`tests/perf/bench_threadpool_alloc.zig`, commit 88e4968) confirmed +136..+154 minor page faults per 10k tasks fully eliminated post-swap. Pure-Zig (no libc dependency). Also resolves GAP-0104 on the GAP ledger. |
+
+**Audit-only (1) — not promoted to implementation:**
+
+| PERF-ID | Sev | Issue | Commit | Note |
+|---------|-----|-------|--------|------|
+| PERF-218 | P3 | #182 | 29a3ef1 | Cycle 3 audit of `negotiated_alpn` caller sites across the repo. Findings: single-file concentration (`src/tls13/context.zig`, 10 references; 0 external consumers of the `Context.negotiatedAlpn()` accessor); **asymmetric lifetime contract** — server-path dupe at L1314 is unnecessary (borrow-safe), client-path dupe at L2933 is *required* because the source slice points into the transient EE parse buffer. This strengthens the Cycle 2 deferral: a blanket "flip to borrow" is unsafe; the clean fix remains the tagged-ownership refactor. Kept OPEN on GitLab #182 with audit findings posted. |
+
+**Cross-ledger note:** Four QUAL closures (QUAL-338, QUAL-340, QUAL-341, QUAL-342) and one QUAL Blocked (QUAL-339) landed in the same cycle. See `docs/QUALITY_GAP_ANALYSIS.md` for details.
 
 ### Phase 13 Gap Closure Run (2026-04-19)
 
