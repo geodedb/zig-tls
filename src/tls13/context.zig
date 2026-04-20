@@ -479,11 +479,46 @@ const CryptoStreams = struct {
     }
 };
 
-/// TLS 1.3 driver that will orchestrate QUIC CRYPTO data flow (RFC 8446 §4, RFC 9001 §4.1.4).
+/// TLS 1.3 driver that orchestrates QUIC CRYPTO data flow (RFC 8446 §4,
+/// RFC 9001 §4.1.4).
 ///
-/// PERF-043: Fields are ordered hot-to-cold for cache locality.
-/// Hot fields (accessed on every handshake message) are grouped first,
-/// followed by warm fields (phase-specific), then cold/rare fields.
+/// # Overview (QUAL-348)
+///
+/// `Context` owns the full state machine for a single TLS 1.3 endpoint
+/// (client or server) during handshake and post-handshake traffic. It is
+/// QUIC-native: CRYPTO frame data flows in via `processCrypto(level, data)`
+/// and produced flights are drained via the outbound `streams` buffers. It
+/// does **not** own a network socket or framing layer; the embedder wires
+/// that up.
+///
+/// # Lifecycle
+///
+/// 1. `Context.init(allocator, config, callbacks)` — allocate and configure.
+/// 2. Client: call `startClientHandshake` to enqueue ClientHello on the
+///    Initial encryption level. Server: wait for inbound ClientHello.
+/// 3. Feed inbound CRYPTO bytes via `processCrypto` as they arrive at each
+///    encryption level; drive outbound via the emitted buffers.
+/// 4. When `handshakeComplete()` returns true, traffic keys for the
+///    Application level are installed and the embedder may forward
+///    application data.
+/// 5. Post-handshake: accept `NewSessionTicket`, send/receive `KeyUpdate`.
+/// 6. `deinit()` must be called to release heap-owned handshake state,
+///    secrets, and transcript hashes.
+///
+/// # Thread safety
+///
+/// A `Context` is **not** thread-safe: all mutating methods (processCrypto,
+/// queueKeyUpdate, etc.) must be serialized by the caller. Immutable reads
+/// such as `currentPhase()` are safe to call from any thread that already
+/// holds a synchronization barrier with the last mutator. See `parallel.zig`
+/// for the shared pool used for handshake signature verification.
+///
+/// # Field ordering (PERF-043)
+///
+/// Fields are ordered hot-to-cold for cache locality. Hot fields (accessed
+/// on every `processCrypto` / message dispatch) are grouped first, followed
+/// by warm fields (phase-specific), then cold/rare fields (post-handshake,
+/// diagnostics).
 pub const Context = struct {
     // --- Hot fields: accessed on every processCrypto / message dispatch ---
     phase: HandshakePhase = .initial,

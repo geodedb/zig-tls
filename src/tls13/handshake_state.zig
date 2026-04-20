@@ -15,20 +15,50 @@ const readU16 = tls13_full.readU16;
 
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
-/// RFC 8446 §4: Handshake protocol phases
+/// RFC 8446 §4: Handshake protocol phases.
 ///
-/// The handshake progresses through well-defined phases used for progress tracking
-/// and ensuring messages are processed in correct order.
+/// QUAL-348: The handshake progresses through well-defined phases used for
+/// progress tracking and ensuring messages are processed in correct order.
+/// Transitions are monotonic forward (never regress) except for explicit
+/// HelloRetryRequest flows which re-enter `negotiating` via a dedicated
+/// retry path.
+///
+/// Phase transition graph (RFC 8446 §4, §4.4.4; RFC 9001 §5):
+///
+///     initial
+///        |  ClientHello produced (client) / received (server)
+///        v
+///     negotiating
+///        |  ServerHello + handshake traffic secrets derived
+///        v
+///     keys_installed
+///        |  Both peers send + verify Finished
+///        v
+///     application_ready
+///        |  NewSessionTicket / KeyUpdate arrive post-handshake
+///        v
+///     post_handshake
+///
+/// Any alert or fatal error transitions into an error path tracked via
+/// `HandshakeFlags.alert` and does not correspond to a phase enum value.
 pub const HandshakePhase = enum {
-    /// RFC 8446 §4: Before any messages
+    /// RFC 8446 §4: Initial state. No handshake messages have been produced
+    /// or consumed yet. Only the Initial encryption level is usable.
     initial,
-    /// RFC 8446 §4.1.2: After ClientHello received/sent
+    /// RFC 8446 §4.1.2: ClientHello exchange is in progress. The endpoint has
+    /// either produced (client) or received (server) a ClientHello but
+    /// handshake traffic keys have not yet been installed.
     negotiating,
-    /// RFC 9001 §5: After handshake secrets installed
+    /// RFC 9001 §5: Handshake encryption level keys are installed on both
+    /// directions. EncryptedExtensions / Certificate / CertificateVerify /
+    /// Finished messages flow here.
     keys_installed,
-    /// RFC 8446 §4.4.4: After both Finished messages
+    /// RFC 8446 §4.4.4: Both peers have verified each other's Finished
+    /// message. Application-level traffic keys are installed and user data
+    /// may be sent.
     application_ready,
-    /// Post-handshake state (key updates, NewSessionTicket)
+    /// RFC 8446 §4.6: Post-handshake messages (NewSessionTicket, KeyUpdate)
+    /// are being exchanged on the Application encryption level.
     post_handshake,
 };
 
