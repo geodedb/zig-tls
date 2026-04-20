@@ -275,6 +275,60 @@ fn buildCookie(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator
 }
 
 // ============================================================================
+// alpn (RFC 7301) — Application-Layer Protocol Negotiation
+// ============================================================================
+
+fn parseAlpn(ctx: *ParseCtx, data: []const u8) anyerror!void {
+    if (data.len >= 2) {
+        const list_len = helpers.readU16(data[0..2]);
+        if (2 + list_len <= data.len) {
+            var alpn_list = try std.ArrayList([]const u8).initCapacity(ctx.alloc, 4);
+            defer alpn_list.deinit(ctx.alloc);
+
+            var a_pos: usize = 2;
+            while (a_pos < 2 + list_len) {
+                if (a_pos >= data.len) break;
+                const proto_len = data[a_pos];
+                a_pos += 1;
+                if (a_pos + proto_len <= data.len) {
+                    try alpn_list.append(ctx.alloc, data[a_pos .. a_pos + proto_len]);
+                    a_pos += proto_len;
+                } else {
+                    break;
+                }
+            }
+
+            if (alpn_list.items.len > 0) {
+                ctx.ch.alpn_list = try alpn_list.toOwnedSlice(ctx.alloc);
+            }
+        }
+    }
+}
+
+fn buildAlpn(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const params = ctx.params;
+    const alpn_list = params.alpn_protocols orelse return;
+    if (alpn_list.len == 0) return;
+
+    var names_len: usize = 0;
+    for (alpn_list) |p| names_len += 1 + p.len;
+    const list_len: u16 = @intCast(names_len);
+    const ext_len: u16 = list_len + 2;
+    try out.appendSlice(alloc, &.{
+        0x00,
+        0x10,
+        @intCast(ext_len >> 8),
+        @intCast(ext_len & 0xff),
+        @intCast(list_len >> 8),
+        @intCast(list_len & 0xff),
+    });
+    for (alpn_list) |p| {
+        try out.append(alloc, @intCast(p.len));
+        try out.appendSlice(alloc, p);
+    }
+}
+
+// ============================================================================
 // supported_versions (RFC 8446 §4.2.1) — REQUIRED for TLS 1.3
 // ============================================================================
 
@@ -304,6 +358,7 @@ pub const HANDLERS: []const ExtHandler = &.{
     .{ .tag = .signature_algorithms, .parse = parseSignatureAlgorithms, .build = buildSignatureAlgorithms },
     .{ .tag = .key_share, .parse = parseKeyShare, .build = buildKeyShare },
     .{ .tag = .cookie, .parse = parseCookie, .build = buildCookie },
+    .{ .tag = .alpn, .parse = parseAlpn, .build = buildAlpn },
     // Parse-only extensions that have no build emission live at the tail
     // (before pre_shared_key). Their relative order among themselves is
     // inconsequential because their build handlers are no-ops.
