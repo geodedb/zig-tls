@@ -255,6 +255,26 @@ fn buildKeyShare(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocat
 }
 
 // ============================================================================
+// cookie (RFC 8446 §4.2.2) — HelloRetryRequest cookie echo
+// ============================================================================
+
+fn parseCookie(ctx: *ParseCtx, data: []const u8) anyerror!void {
+    // The current parser silently ignores cookie in ClientHello (falls
+    // through the switch's `else` arm); the ClientHello struct has no
+    // `cookie` field today. Preserve literal behavior.
+    _ = ctx;
+    _ = data;
+}
+
+fn buildCookie(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
+    const params = ctx.params;
+    const ck = params.cookie orelse return;
+    const ck_len: u16 = @intCast(ck.len);
+    try out.appendSlice(alloc, &.{ 0x00, 0x2c, @intCast(ck_len >> 8), @intCast(ck_len & 0xff) });
+    try out.appendSlice(alloc, ck);
+}
+
+// ============================================================================
 // supported_versions (RFC 8446 §4.2.1) — REQUIRED for TLS 1.3
 // ============================================================================
 
@@ -283,6 +303,7 @@ pub const HANDLERS: []const ExtHandler = &.{
     .{ .tag = .supported_groups, .parse = parseSupportedGroups, .build = buildSupportedGroups },
     .{ .tag = .signature_algorithms, .parse = parseSignatureAlgorithms, .build = buildSignatureAlgorithms },
     .{ .tag = .key_share, .parse = parseKeyShare, .build = buildKeyShare },
+    .{ .tag = .cookie, .parse = parseCookie, .build = buildCookie },
     // Parse-only extensions that have no build emission live at the tail
     // (before pre_shared_key). Their relative order among themselves is
     // inconsequential because their build handlers are no-ops.
