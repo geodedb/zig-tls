@@ -222,3 +222,29 @@ fuzz:
       when: manual
   needs:
     - build
+
+# QUAL-339: ClientHello error-trace oracle regression gate.
+# Re-runs the capture harness against HEAD and fails if the regenerated
+# golden file diverges from the committed one. Byte-identical output is
+# the empirical proof that SEC-054 errdefer, SEC-057 enum guard, and
+# CWE-345 psk_seen ordering invariants all still hold after any future
+# ClientHello parser/builder change.
+client_hello_oracle:
+  stage: test
+  image: debian:bookworm-slim
+  timeout: 5m
+  <<: *cache-zig
+  before_script:
+    - *install-zig
+  script:
+    - zig build capture-client-hello-oracle
+    - |
+      if ! cmp tests/fuzz/corpus/client_hello_golden.bin <(git show HEAD:tests/fuzz/corpus/client_hello_golden.bin); then
+        echo "ERROR: ClientHello error-trace oracle has diverged from the committed golden file"
+        echo "This means a recent commit changed ClientHello parser behavior"
+        echo "Either: (a) the change is intentional — regenerate the golden with 'zig build capture-client-hello-oracle'"
+        echo "Or:     (b) the change is a security regression — revert and investigate"
+        exit 1
+      fi
+  needs:
+    - build
