@@ -793,6 +793,11 @@ pub const Context = struct {
             return HandshakeError.UnexpectedMessage;
         }
 
+        // PERF-234: Pre-size the inbound buffer so the appendSlice does not
+        // trigger incremental reallocations. We already know the final size
+        // is bounded by max_crypto_buffer (SEC-018) and cannot exceed 64 KB.
+        const needed_capacity = stream.inbound.items.len + data.len;
+        try stream.inbound.ensureTotalCapacity(self.allocator, needed_capacity);
         try stream.inbound.appendSlice(self.allocator, data);
 
         // Process all complete messages in buffer
