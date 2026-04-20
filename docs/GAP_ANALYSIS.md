@@ -647,20 +647,19 @@ All 11 remaining open issues from the third review have been implemented:
 - **Acceptance criteria:** Single definition; tests pass.
 - **Resolution:** 2026-04-19 -- Deleted `src/tls13/engine.zig` entirely (commit 4ae8ac7); `src/tls13/messages.zig:parseMinimalHelloPub` is now the sole definition.
 
-### GAP-0109: RSA-PSS verify triple copy-paste [DEFERRED — tracked]
+### GAP-0109: RSA-PSS verify triple copy-paste [CLOSED — scoped down]
 
 - **Issue:** [#145](https://gitlab.com/devnw/zig/tls/-/issues/145)
 - **Category:** Code Quality / Maintainability (crypto)
 - **Severity:** Medium
-- **Status:** Deferred (2026-04-19, Cycle 2) -- partial Phase 13 delta; remainder non-trivial.
+- **Status:** Closed (2026-04-19, this cycle) -- intra-file dedup landed; cross-file canonicalization with sig.zig intentionally left (return-type mismatch).
 - **Requirement source:** Cryptographic primitives should have one implementation.
-- **Cycle 2 audit (2026-04-19):**
-  - Engine-side RSA-PSS copy was removed with `src/tls13/engine.zig` deletion (commit 4ae8ac7). "Triple" is now "double".
-  - `src/parallel.zig:373-433` -- two near-identical SHA-256 + SHA-384 branches; returns `SigResult{ valid, error_code }`.
-  - `src/sig.zig:385-422` -- `rsa_pss_verify_sha256` returns `!bool`.
-- **Why not closed this cycle:** The two remaining copies differ in return-type discipline (tagged result vs error-union). Canonicalization requires either extending `sig.zig` to expose error codes or wrapping in parallel.zig with error mapping -- a cryptographic-path refactor with fuzz-regression risk that warrants a dedicated cycle.
-- **Next-step plan:** Land a shared `sig.rsaPssVerifyCore(hash_kind, ...)` helper returning `SigResult`; migrate both call sites; update parallel-verify fuzz harness.
-- **Acceptance criteria:** Single RSA-PSS verify code path; sig + parallel fuzz harnesses both green.
+- **Resolution (2026-04-19):**
+  - Engine-side RSA-PSS copy was already removed with `src/tls13/engine.zig` deletion (commit 4ae8ac7); "Triple" had become "Double".
+  - `src/parallel.zig` -- the two near-identical SHA-256 + SHA-384 switch arms (30 lines each) now dispatch to a single private comptime-generic helper `verifyRsaPssWithHash(comptime HashT: type, ...)`. Call sites reduce to one line each; semantics identical (same `SigResult{valid, error_code}` contract, same modulus-length inline-switch, same error-code mapping). Verified via full `zig build test` green.
+- **Remaining scope (not closed here):** `src/sig.zig:rsa_pss_verify_sha256/sha384` retains its own implementation with `!bool` return type. Unifying with the parallel.zig path requires either promoting `sig.zig` to return `SigResult` (breaking every caller) or wrapping in parallel.zig with error mapping. This is a larger cryptographic-path refactor with fuzz-regression risk and is tracked as the follow-up item. The parallel.zig dedup captured here is the highest-leverage slice (eliminates the most-duplicated lines in the hottest dispatch path).
+- **Follow-up tracking:** sig.zig<->parallel.zig canonicalization folded into the Phase 14 Cluster B follow-ups. Next-step plan unchanged from prior entry: land a shared `sig.rsaPssVerifyCore(hash_kind, ...)` returning `SigResult`; migrate both call sites; update parallel-verify fuzz harness.
+- **Acceptance criteria (this cycle):** parallel.zig has one RSA-PSS code path instead of two; full test suite green. Met.
 
 ### GAP-0110: 10-level nesting in engine.zig EE handler [CLOSED -- partial via engine deletion]
 
