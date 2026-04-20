@@ -1250,6 +1250,49 @@ pub fn build(b: *std.Build) void {
     capture_step.dependOn(&run_capture.step);
 
     // ========================================================================
+    // QUAL-317: context.zig Decomposition Error-Trace Oracle Capture
+    // ========================================================================
+    //
+    // Standalone executable that drives `Context.processCrypto(.Initial, ...)`
+    // across handshake byte fixtures aggregated from the existing
+    // client_hello/, quic_tp/, and rsa_pss/ corpora (collected via
+    // tests/fuzz/corpus/context_decomp/collect_fixtures.sh) and writes a
+    // binary error-trace file (tests/fuzz/corpus/context_decomp_golden.bin).
+    // The file serves as an empirical regression oracle for the 8-module
+    // Context decomposition plan -- every extraction commit must re-run
+    // `zig build capture-context-decomp-oracle` and cmp the output against
+    // this committed golden. Any divergence means the refactor changed
+    // observable Context behavior, which should block the offending commit.
+    //
+    // Pattern mirrors Cycle 4 QUAL-339's client_hello_trace_capture above.
+    //
+    // Run: zig build capture-context-decomp-oracle
+
+    const ctx_decomp_trace_capture = b.addExecutable(.{
+        .name = "context_decomp_trace_capture",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz/context_decomp_trace_capture.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        }),
+    });
+
+    const capture_ctx_decomp_step = b.step(
+        "capture-context-decomp-oracle",
+        "Capture pre/post-refactor Context.processCrypto error traces (QUAL-317)",
+    );
+    const run_capture_ctx_decomp = b.addRunArtifact(ctx_decomp_trace_capture);
+    run_capture_ctx_decomp.addArgs(&.{
+        "tests/fuzz/corpus/context_decomp",
+        "tests/fuzz/corpus/context_decomp_golden.bin",
+    });
+    capture_ctx_decomp_step.dependOn(&run_capture_ctx_decomp.step);
+
+    // ========================================================================
     // Benchmark Suite (PERF-011)
     // ========================================================================
     //
