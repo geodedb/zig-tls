@@ -925,47 +925,22 @@ fn parseExtPolicyConstraints(inner: []const u8) ?PolicyConstraints {
 /// - Check validity period (use checkValidity)
 /// - Validate name constraints
 /// - Enforce policy constraints
-pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
-    var d = asn1.Decoder.init(der);
-    const cert_seq = try d.readSequence();
-    var ci = asn1.Decoder.init(cert_seq);
+/// QUAL-338 helpers: parseCert is split into step-wise helpers that follow
+/// the RFC 5280 §4.1 TBSCertificate field order (version, serial, signature
+/// algorithm, issuer, validity, subject, SPKI, extensions). Each helper
+/// advances a shared `asn1.Decoder` positioned inside the TBSCertificate
+/// content. The orchestrator `parseCert` handles the outer Certificate
+/// SEQUENCE, TBS slice capture, outer signature algorithm/value extraction,
+/// and result construction.
+const TbsHeaderInfo = struct {
+    serial_bytes: []const u8,
+};
 
-    // RFC 5280 §4.1 - Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
-    // Capture full DER-encoded TBSCertificate (tag + length + value) for signature verification.
-    const tbs_hdr = try ci.nextHeader();
-    if (asn1.tagClass(tbs_hdr.tag) != .universal or asn1.tagNumber(tbs_hdr.tag) != 16) {
-        return error.UnexpectedTag;
-    }
-    const tbs_start = ci.off - tbs_hdr.hdr_len;
-    const tbs_end = ci.off + tbs_hdr.len;
-    if (tbs_end > cert_seq.len) return error.Truncated;
-    const tbs_seq = cert_seq[ci.off..tbs_end];
-    const tbs_bytes = cert_seq[tbs_start..tbs_end];
-    ci.off = tbs_end;
-
-    // PERF-017: Extract outer signatureAlgorithm OID and signatureValue from the
-    // Certificate SEQUENCE so that validateChain can skip re-parsing via parseCertSignature.
-    var outer_sig_algo_oid: []const u8 = &[_]u8{};
-    var outer_sig_value: []const u8 = &[_]u8{};
-    {
-        // Save decoder position to restore if parsing fails (best-effort extraction)
-        const saved_off = ci.off;
-        if (ci.readSequence()) |sa_seq| {
-            var sa_dec = asn1.Decoder.init(sa_seq);
-            if (sa_dec.readOID()) |oid| {
-                outer_sig_algo_oid = oid;
-            } else |_| {}
-        } else |_| {
-            ci.off = saved_off;
-        }
-        if (ci.readBitString()) |sig_bits| {
-            outer_sig_value = sig_bits;
-        } else |_| {}
-    }
-
-    var ti = asn1.Decoder.init(tbs_seq);
-
-    // RFC 5280 §4.1.2.1 - Parse optional version followed by serialNumber
+/// Parse the optional [0] version tag and the serialNumber INTEGER. Also
+/// consumes and discards the inner signature AlgorithmIdentifier SEQUENCE
+/// (the outer one is captured separately by `parseCert`). Leaves `ti`
+/// positioned at the issuer SEQUENCE.
+fn parseTbsHeader(ti: *asn1.Decoder) !TbsHeaderInfo {
     const first_tlv = try ti.readTLV();
     var serial_tlv = first_tlv;
     if (asn1.tagClass(first_tlv.tag) == .context and asn1.tagNumber(first_tlv.tag) == 0) {
@@ -975,66 +950,87 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     }
     if (!(asn1.tagClass(serial_tlv.tag) == .universal and asn1.tagNumber(serial_tlv.tag) == 2))
         return error.UnexpectedTag;
-    const serial_bytes = serial_tlv.val;
 
-    // Skip signature algorithm (AlgorithmIdentifier)
+    // Skip signature algorithm (AlgorithmIdentifier) inside TBS.
     _ = try ti.readSequence();
 
-    // Issuer Name (DER)
-    const issuer_seq = try ti.readSequence();
-    const issuer_der = issuer_seq;
+    return .{ .serial_bytes = serial_tlv.val };
+}
 
-    // Validity
+const IssuerValidityInfo = struct {
+    issuer_der: []const u8,
+    not_before_unix: i64,
+    not_after_unix: i64,
+};
+
+/// Parse the issuer Name SEQUENCE and the Validity SEQUENCE (notBefore,
+/// notAfter). Leaves `ti` positioned at the subject Name SEQUENCE.
+fn parseIssuerValidity(ti: *asn1.Decoder) !IssuerValidityInfo {
+    const issuer_seq = try ti.readSequence();
     const validity_seq = try ti.readSequence();
     var vd = asn1.Decoder.init(validity_seq);
     const not_before_tlv = try vd.readTLV();
     const not_after_tlv = try vd.readTLV();
-    const not_before = try parseDerTime(not_before_tlv.val);
-    const not_after = try parseDerTime(not_after_tlv.val);
+    return .{
+        .issuer_der = issuer_seq,
+        .not_before_unix = try parseDerTime(not_before_tlv.val),
+        .not_after_unix = try parseDerTime(not_after_tlv.val),
+    };
+}
 
-    // Subject Name (DER)
+const SubjectInfo = struct {
+    subject_der: []const u8,
+    cn: ?[]const u8,
+};
+
+/// Parse the subject Name SEQUENCE and extract the Common Name attribute
+/// value (OID 2.5.4.3) if present. Leaves `ti` positioned at the SPKI.
+fn parseSubjectAndCN(ti: *asn1.Decoder) !SubjectInfo {
     const subject_seq = try ti.readSequence();
-    const subject_der = subject_seq;
 
-    // Extract Common Name from X.509 Name structure
     // RFC 5280 §4.1.2.6 - Name ::= SEQUENCE OF RelativeDistinguishedName
     // RelativeDistinguishedName ::= SET OF AttributeTypeAndValue
     // AttributeTypeAndValue ::= SEQUENCE { type OID, value ANY }
     var subj_cn: ?[]const u8 = null;
-    {
-        var sdec = asn1.Decoder.init(subject_seq);
-        // Iterate through RDNs (SETs)
+    var sdec = asn1.Decoder.init(subject_seq);
+    // Iterate through RDNs (SETs)
+    while (true) {
+        const rdn_tlv = sdec.readTLV() catch break;
+        // Check it's a SET (tag 17 = 0x11)
+        if (asn1.tagClass(rdn_tlv.tag) != .universal or asn1.tagNumber(rdn_tlv.tag) != 17) continue;
+
+        var rdn_dec = asn1.Decoder.init(rdn_tlv.val);
+        // Iterate through AttributeTypeAndValue pairs in this RDN
         while (true) {
-            const rdn_tlv = sdec.readTLV() catch break;
-            // Check it's a SET (tag 17 = 0x11)
-            if (asn1.tagClass(rdn_tlv.tag) != .universal or asn1.tagNumber(rdn_tlv.tag) != 17) continue;
+            const attr_seq = rdn_dec.readSequence() catch break;
+            var attr_dec = asn1.Decoder.init(attr_seq);
 
-            var rdn_dec = asn1.Decoder.init(rdn_tlv.val);
-            // Iterate through AttributeTypeAndValue pairs in this RDN
-            while (true) {
-                const attr_seq = rdn_dec.readSequence() catch break;
-                var attr_dec = asn1.Decoder.init(attr_seq);
+            // Read OID
+            const oid_tlv = attr_dec.readTLV() catch break;
+            if (asn1.tagClass(oid_tlv.tag) != .universal or asn1.tagNumber(oid_tlv.tag) != 6) continue;
 
-                // Read OID
-                const oid_tlv = attr_dec.readTLV() catch break;
-                if (asn1.tagClass(oid_tlv.tag) != .universal or asn1.tagNumber(oid_tlv.tag) != 6) continue;
-
-                // Check if this is the CN OID (2.5.4.3)
-                // DER encoding: 06 03 55 04 03
-                if (oid_tlv.val.len == 3 and oid_tlv.val[0] == 0x55 and
-                    oid_tlv.val[1] == 0x04 and oid_tlv.val[2] == 0x03)
-                {
-                    // Read the value (can be UTF8String, PrintableString, etc.)
-                    const value_tlv = attr_dec.readTLV() catch break;
-                    subj_cn = value_tlv.val;
-                    break;
-                }
+            // Check if this is the CN OID (2.5.4.3)
+            // DER encoding: 06 03 55 04 03
+            if (oid_tlv.val.len == 3 and oid_tlv.val[0] == 0x55 and
+                oid_tlv.val[1] == 0x04 and oid_tlv.val[2] == 0x03)
+            {
+                // Read the value (can be UTF8String, PrintableString, etc.)
+                const value_tlv = attr_dec.readTLV() catch break;
+                subj_cn = value_tlv.val;
+                break;
             }
-            if (subj_cn != null) break;
         }
+        if (subj_cn != null) break;
     }
 
-    // SubjectPublicKeyInfo (capture full DER, not just value)
+    return .{ .subject_der = subject_seq, .cn = subj_cn };
+}
+
+/// Parse the SubjectPublicKeyInfo SEQUENCE and return its full DER
+/// (including tag + length header), as required by the signature
+/// verification path which hashes the entire SPKI. Advances `ti` past
+/// the SPKI.
+fn parseSpki(ti: *asn1.Decoder, tbs_seq: []const u8) ![]const u8 {
     const spki_hdr = try ti.nextHeader();
     if (asn1.tagClass(spki_hdr.tag) != .universal or asn1.tagNumber(spki_hdr.tag) != 16) {
         return error.UnexpectedTag;
@@ -1044,23 +1040,48 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     if (spki_end > tbs_seq.len) return error.Truncated;
     const spki_bytes = tbs_seq[spki_start..spki_end];
     ti.off = spki_end;
+    return spki_bytes;
+}
 
-    // Extensions (if any)
-    var san_result: ?SubjectAltName = null;
-    errdefer if (san_result) |san| alloc.free(san.dns);
-    var basic_res: ?BasicConstraints = null;
-    var ku_res: ?KeyUsage = null;
-    var eku_res: ?ExtKeyUsage = null;
-    var name_constraints_res: ?NameConstraints = null;
-    errdefer if (name_constraints_res) |nc| {
+const ParsedExtensions = struct {
+    san: ?SubjectAltName,
+    basic: ?BasicConstraints,
+    ku: ?KeyUsage,
+    eku: ?ExtKeyUsage,
+    name_constraints: ?NameConstraints,
+    policy_mappings: ?PolicyMappings,
+    policy_constraints: ?PolicyConstraints,
+};
+
+/// Parse the optional Extensions block ([3] EXPLICIT SEQUENCE OF Extension)
+/// and dispatch each recognised id-ce-* OID to the existing `parseExt*`
+/// helpers. Unknown extensions are skipped (non-critical handling is
+/// delegated to the caller if needed).
+///
+/// Allocation ownership: SAN `dns`, nameConstraints `permitted_dns` /
+/// `excluded_dns`, and policyMappings `mappings` are allocator-owned by
+/// the inner `parseExt*` helpers. This function's `errdefer` blocks
+/// release them if a later `parseExt*` call fails, preserving the
+/// pre-refactor error-path ownership contract.
+fn parseExtensionsBlock(alloc: std.mem.Allocator, ti: *asn1.Decoder) !ParsedExtensions {
+    var out: ParsedExtensions = .{
+        .san = null,
+        .basic = null,
+        .ku = null,
+        .eku = null,
+        .name_constraints = null,
+        .policy_mappings = null,
+        .policy_constraints = null,
+    };
+
+    errdefer if (out.san) |san| alloc.free(san.dns);
+    errdefer if (out.name_constraints) |nc| {
         if (nc.permitted_dns.len > 0) alloc.free(nc.permitted_dns);
         if (nc.excluded_dns.len > 0) alloc.free(nc.excluded_dns);
     };
-    var policy_mappings_res: ?PolicyMappings = null;
-    errdefer if (policy_mappings_res) |pm| {
+    errdefer if (out.policy_mappings) |pm| {
         if (pm.mappings.len > 0) alloc.free(pm.mappings);
     };
-    var policy_constraints_res: ?PolicyConstraints = null;
 
     while (true) {
         const tlv = ti.readTLV() catch break;
@@ -1084,36 +1105,87 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
 
             if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d) {
                 switch (oid[2]) {
-                    0x11 => san_result = try parseExtSan(alloc, inner), // subjectAltName
-                    0x13 => basic_res = parseExtBasicConstraints(inner), // basicConstraints
-                    0x0f => ku_res = parseExtKeyUsage(inner), // keyUsage
-                    0x25 => eku_res = parseExtExtKeyUsage(inner), // extKeyUsage
-                    0x1e => name_constraints_res = try parseExtNameConstraints(alloc, inner), // nameConstraints
-                    0x21 => policy_mappings_res = try parseExtPolicyMappings(alloc, inner), // policyMappings
-                    0x24 => policy_constraints_res = parseExtPolicyConstraints(inner), // policyConstraints
+                    0x11 => out.san = try parseExtSan(alloc, inner), // subjectAltName
+                    0x13 => out.basic = parseExtBasicConstraints(inner), // basicConstraints
+                    0x0f => out.ku = parseExtKeyUsage(inner), // keyUsage
+                    0x25 => out.eku = parseExtExtKeyUsage(inner), // extKeyUsage
+                    0x1e => out.name_constraints = try parseExtNameConstraints(alloc, inner), // nameConstraints
+                    0x21 => out.policy_mappings = try parseExtPolicyMappings(alloc, inner), // policyMappings
+                    0x24 => out.policy_constraints = parseExtPolicyConstraints(inner), // policyConstraints
                     else => {},
                 }
             }
         }
     }
 
-    const subject: Name = .{ .cn = subj_cn };
+    return out;
+}
+
+pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
+    // QUAL-338: Orchestrator for the RFC 5280 §4.1 parse. Handles the
+    // outer Certificate SEQUENCE, TBS slice capture for signature
+    // verification, and outer signatureAlgorithm/signatureValue
+    // extraction (PERF-017); delegates TBS field parsing to per-boundary
+    // helpers (`parseTbsHeader`, `parseIssuerValidity`, `parseSubjectAndCN`,
+    // `parseSpki`, `parseExtensionsBlock`).
+    var d = asn1.Decoder.init(der);
+    const cert_seq = try d.readSequence();
+    var ci = asn1.Decoder.init(cert_seq);
+
+    // RFC 5280 §4.1 - Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
+    // Capture full DER-encoded TBSCertificate (tag + length + value) for signature verification.
+    const tbs_hdr = try ci.nextHeader();
+    if (asn1.tagClass(tbs_hdr.tag) != .universal or asn1.tagNumber(tbs_hdr.tag) != 16) {
+        return error.UnexpectedTag;
+    }
+    const tbs_start = ci.off - tbs_hdr.hdr_len;
+    const tbs_end = ci.off + tbs_hdr.len;
+    if (tbs_end > cert_seq.len) return error.Truncated;
+    const tbs_seq = cert_seq[ci.off..tbs_end];
+    const tbs_bytes = cert_seq[tbs_start..tbs_end];
+    ci.off = tbs_end;
+
+    // PERF-017: Extract outer signatureAlgorithm OID and signatureValue.
+    var outer_sig_algo_oid: []const u8 = &[_]u8{};
+    var outer_sig_value: []const u8 = &[_]u8{};
+    {
+        const saved_off = ci.off;
+        if (ci.readSequence()) |sa_seq| {
+            var sa_dec = asn1.Decoder.init(sa_seq);
+            if (sa_dec.readOID()) |oid| {
+                outer_sig_algo_oid = oid;
+            } else |_| {}
+        } else |_| {
+            ci.off = saved_off;
+        }
+        if (ci.readBitString()) |sig_bits| {
+            outer_sig_value = sig_bits;
+        } else |_| {}
+    }
+
+    var ti = asn1.Decoder.init(tbs_seq);
+
+    const hdr_info = try parseTbsHeader(&ti);
+    const iv_info = try parseIssuerValidity(&ti);
+    const subj_info = try parseSubjectAndCN(&ti);
+    const spki_bytes = try parseSpki(&ti, tbs_seq);
+    const ext = try parseExtensionsBlock(alloc, &ti);
 
     return .{
         .tbs = tbs_bytes,
-        .issuer_der = issuer_der,
-        .subject_der = subject_der,
-        .serial_number = serial_bytes,
-        .subject = subject,
-        .san = san_result,
-        .basic = basic_res,
-        .ku = ku_res,
-        .eku = eku_res,
-        .name_constraints = name_constraints_res,
-        .policy_mappings = policy_mappings_res,
-        .policy_constraints = policy_constraints_res,
-        .not_before_unix = not_before,
-        .not_after_unix = not_after,
+        .issuer_der = iv_info.issuer_der,
+        .subject_der = subj_info.subject_der,
+        .serial_number = hdr_info.serial_bytes,
+        .subject = .{ .cn = subj_info.cn },
+        .san = ext.san,
+        .basic = ext.basic,
+        .ku = ext.ku,
+        .eku = ext.eku,
+        .name_constraints = ext.name_constraints,
+        .policy_mappings = ext.policy_mappings,
+        .policy_constraints = ext.policy_constraints,
+        .not_before_unix = iv_info.not_before_unix,
+        .not_after_unix = iv_info.not_after_unix,
         .spki = spki_bytes,
         .sig_algo_oid = outer_sig_algo_oid,
         .sig_value = outer_sig_value,
@@ -1608,30 +1680,34 @@ pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, no
 /// PERF-207: Chain validation pipeline extracted from validateChainEx.
 /// Operates on pre-parsed certs so the caller can either free them
 /// (validateChainEx) or retain the leaf (validateChainReturnParsed).
-fn runChainChecks(
-    alloc: std.mem.Allocator,
-    certs: []Certificate,
-    chain_der: []const []const u8,
-    now_unix: i64,
-    server_name: []const u8,
-    eku_purpose: EkuPurpose,
-    trust_store_override: ?TrustStore,
-) !void {
-    // Special case: single self-signed certificate (trust anchor)
-    const is_single_self_signed = chain_der.len == 1 and
-        std.mem.eql(u8, certs[0].subject_der, certs[0].issuer_der);
-
-    // Leaf validity period check applies to all certificates
+/// QUAL-338: Validate leaf-only time-based validity (RFC 5280 §4.1.2.5).
+/// Intermediate/root validity is checked inside
+/// `validateBasicConstraintsAndKu` to preserve the pre-refactor error
+/// priority (BasicConstraints / KU failures surface before expiry on a
+/// given intermediate, matching the original loop order).
+fn validateLeafValidity(certs: []Certificate, now_unix: i64) !void {
     try checkValidity(now_unix, &certs[0]);
+}
 
-    // SEC-030: Hostname and EKU validation apply to ALL leaf certs, including
-    // self-signed. Only the chain-walk logic (intermediate CA checks, pathLen
-    // constraints) is skipped for single self-signed certs.
+/// QUAL-338: Validate leaf EKU purpose and hostname binding (RFC 5280
+/// §4.2.1.12 + SEC-030). Applied to leaves regardless of self-signed
+/// status so the hostname/EKU contract holds for anchor certs too.
+fn validateEku(certs: []Certificate, server_name: []const u8, eku_purpose: EkuPurpose) !void {
     if (server_name.len != 0 and !matchDnsName(&certs[0], server_name)) return error.NameMismatch;
     if (certs[0].eku) |eku| {
         if (!checkEkuPurpose(eku, eku_purpose)) return error.EkuNotAllowed;
     }
+}
 
+/// QUAL-338: Validate BasicConstraints + KeyUsage + validity for leaf
+/// and each intermediate/root. Preserves the pre-refactor loop order
+/// (for each intermediate: BasicConstraints, then KU, then validity) so
+/// error priority is identical to the original `runChainChecks`.
+fn validateBasicConstraintsAndKu(
+    certs: []Certificate,
+    now_unix: i64,
+    is_single_self_signed: bool,
+) !void {
     if (!is_single_self_signed) {
         if (certs[0].ku) |ku| {
             // Require digitalSignature bit when KeyUsage present (RFC 5280 §4.2.1.3)
@@ -1648,7 +1724,9 @@ fn runChainChecks(
         }
     }
 
-    // Intermediates must be CA and within pathLenConstraint
+    // Intermediates must be CA and within pathLenConstraint; per-cert
+    // validity is checked inside the same loop iteration so error
+    // priority matches the pre-refactor behaviour.
     var i: usize = 1;
     while (i < certs.len) : (i += 1) {
         const c = certs[i];
@@ -1668,88 +1746,97 @@ fn runChainChecks(
         }
         try checkValidity(now_unix, &c);
     }
+}
 
-    // Name Constraints Enforcement (RFC 5280 §4.2.1.10, §6.1.4)
-    // For each certificate, validate its SAN names against name constraints from issuers above it.
-    //
-    // PERF-213 / PERF-221 / PERF-222: Single-pass accumulation.
-    //   * Hoist the accumulator ArrayLists outside the outer loop so we
-    //     allocate once per validateChain call instead of once per cert.
-    //   * Pre-pass: sum permitted/excluded entries across every cert in the
-    //     chain. The same union of issuer constraints is rebuilt for each
-    //     cert position, so the sum is a tight upper bound for the
-    //     accumulator capacity at any step.
-    //   * Between positions we call clearRetainingCapacity() to keep the
-    //     amortised-O(1) append without releasing the backing buffer.
-    if (!is_single_self_signed) {
-        var total_permitted: usize = 0;
-        var total_excluded: usize = 0;
-        for (certs) |c| {
-            if (c.name_constraints) |nc| {
-                total_permitted += nc.permitted_dns.len;
-                total_excluded += nc.excluded_dns.len;
+/// QUAL-338: Enforce Name Constraints across the chain
+/// (RFC 5280 §4.2.1.10, §6.1.4).
+///
+/// PERF-213 / PERF-221 / PERF-222: Single-pass accumulation — hoist
+/// `ArrayList` capacity outside the outer loop and reuse the backing
+/// storage across positions. The union of issuer constraints at any
+/// position is a subset of the grand total across the chain, so
+/// pre-summing gives a tight capacity bound.
+fn validateNameConstraints(
+    alloc: std.mem.Allocator,
+    certs: []Certificate,
+    is_single_self_signed: bool,
+) !void {
+    if (is_single_self_signed) return;
+
+    var total_permitted: usize = 0;
+    var total_excluded: usize = 0;
+    for (certs) |c| {
+        if (c.name_constraints) |nc| {
+            total_permitted += nc.permitted_dns.len;
+            total_excluded += nc.excluded_dns.len;
+        }
+    }
+
+    var accumulated_permitted = try std.ArrayList([]const u8).initCapacity(alloc, total_permitted);
+    defer accumulated_permitted.deinit(alloc);
+    var accumulated_excluded = try std.ArrayList([]const u8).initCapacity(alloc, total_excluded);
+    defer accumulated_excluded.deinit(alloc);
+
+    var i: usize = 0;
+    while (i < certs.len) : (i += 1) {
+        const cert = &certs[i];
+
+        // Reuse buffers without releasing their backing storage.
+        accumulated_permitted.clearRetainingCapacity();
+        accumulated_excluded.clearRetainingCapacity();
+
+        var issuer_idx = i + 1;
+        while (issuer_idx < certs.len) : (issuer_idx += 1) {
+            if (certs[issuer_idx].name_constraints) |nc| {
+                // Safe: capacity is the grand total across the chain.
+                accumulated_permitted.appendSliceAssumeCapacity(nc.permitted_dns);
+                accumulated_excluded.appendSliceAssumeCapacity(nc.excluded_dns);
             }
         }
 
-        var accumulated_permitted = try std.ArrayList([]const u8).initCapacity(alloc, total_permitted);
-        defer accumulated_permitted.deinit(alloc);
-        var accumulated_excluded = try std.ArrayList([]const u8).initCapacity(alloc, total_excluded);
-        defer accumulated_excluded.deinit(alloc);
+        if (accumulated_permitted.items.len > 0 or accumulated_excluded.items.len > 0) {
+            const constraints = NameConstraints{
+                .permitted_dns = accumulated_permitted.items,
+                .excluded_dns = accumulated_excluded.items,
+            };
 
-        i = 0;
-        while (i < certs.len) : (i += 1) {
-            const cert = &certs[i];
-
-            // Reuse buffers without releasing their backing storage.
-            accumulated_permitted.clearRetainingCapacity();
-            accumulated_excluded.clearRetainingCapacity();
-
-            var issuer_idx = i + 1;
-            while (issuer_idx < certs.len) : (issuer_idx += 1) {
-                if (certs[issuer_idx].name_constraints) |nc| {
-                    // Safe: capacity is the grand total across the chain.
-                    accumulated_permitted.appendSliceAssumeCapacity(nc.permitted_dns);
-                    accumulated_excluded.appendSliceAssumeCapacity(nc.excluded_dns);
-                }
-            }
-
-            // If there are any name constraints, validate this cert's SAN names
-            if (accumulated_permitted.items.len > 0 or accumulated_excluded.items.len > 0) {
-                const constraints = NameConstraints{
-                    .permitted_dns = accumulated_permitted.items,
-                    .excluded_dns = accumulated_excluded.items,
-                };
-
-                // Check SAN DNS names (leaf) or subject DN (intermediates)
-                // For simplicity, we only check SAN DNS names if present
-                if (cert.san) |san| {
-                    for (san.dns) |dns_name| {
-                        if (!checkNameConstraints(dns_name, constraints)) {
-                            return error.NameConstraintsViolation;
-                        }
-                    }
-                }
-                // If no SAN but there's a CN, check it (for backwards compatibility)
-                else if (cert.subject.cn) |cn| {
-                    if (!checkNameConstraints(cn, constraints)) {
+            if (cert.san) |san| {
+                for (san.dns) |dns_name| {
+                    if (!checkNameConstraints(dns_name, constraints)) {
                         return error.NameConstraintsViolation;
                     }
+                }
+            } else if (cert.subject.cn) |cn| {
+                if (!checkNameConstraints(cn, constraints)) {
+                    return error.NameConstraintsViolation;
                 }
             }
         }
     }
+}
 
-    // PERF-016: Resolve trust store once, using override if provided.
+/// QUAL-338: Walk the signature chain, verifying each certificate's
+/// signature against its issuer's SPKI and enforcing the root-anchor
+/// trust contract.
+///
+/// PERF-016: Trust-store resolution is hoisted out of the walk so the
+/// override / global-store lookup runs once per chain.
+///
+/// PERF-017: Prefer the `sig_algo_oid` / `sig_value` fields that were
+/// populated by `parseCert`; fall back to a full `parseCertSignature`
+/// only if those fields are empty (defensive path for older parses).
+fn validateSignatureChain(
+    alloc: std.mem.Allocator,
+    certs: []Certificate,
+    chain_der: []const []const u8,
+    trust_store_override: ?TrustStore,
+) !void {
     const resolved_trust_store: ?TrustStore = trust_store_override orelse getTrustStore();
 
-    // Verify signatures along the chain
-    // PERF-017: Use pre-parsed sig_algo_oid/sig_value from parseCert instead of
-    // re-parsing each certificate via parseCertSignature.
-    i = 0;
+    var i: usize = 0;
     while (i < certs.len) : (i += 1) {
         const issuer_index: usize = if (i + 1 < certs.len) i + 1 else i; // root self-signed
         const issuer_spki = certs[issuer_index].spki;
-        // Use pre-parsed fields; fall back to parseCertSignature if extraction failed
         const algo_oid = if (certs[i].sig_algo_oid.len > 0)
             certs[i].sig_algo_oid
         else blk: {
@@ -1776,6 +1863,33 @@ fn runChainChecks(
             }
         }
     }
+}
+
+fn runChainChecks(
+    alloc: std.mem.Allocator,
+    certs: []Certificate,
+    chain_der: []const []const u8,
+    now_unix: i64,
+    server_name: []const u8,
+    eku_purpose: EkuPurpose,
+    trust_store_override: ?TrustStore,
+) !void {
+    // QUAL-338: Thin orchestrator. Delegates each RFC 5280 check to a
+    // single-purpose `validate*` helper; order preserves the
+    // pre-refactor failure priority (leaf validity -> name/EKU ->
+    // BasicConstraints+KU+intermediate validity -> name constraints ->
+    // signature chain + anchor trust).
+    const is_single_self_signed = chain_der.len == 1 and
+        std.mem.eql(u8, certs[0].subject_der, certs[0].issuer_der);
+
+    try validateLeafValidity(certs, now_unix);
+    // SEC-030: Hostname and EKU validation apply to ALL leaf certs,
+    // including self-signed. Only the chain-walk logic is skipped for
+    // single self-signed certs.
+    try validateEku(certs, server_name, eku_purpose);
+    try validateBasicConstraintsAndKu(certs, now_unix, is_single_self_signed);
+    try validateNameConstraints(alloc, certs, is_single_self_signed);
+    try validateSignatureChain(alloc, certs, chain_der, trust_store_override);
 }
 
 /// PERF-016: Extended validateChain that accepts an optional pre-resolved TrustStore.

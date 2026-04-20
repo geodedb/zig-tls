@@ -829,6 +829,16 @@ Pre-existing pre-commit hook failures on files not touched by this run are flagg
 - **Evidence:** Orchestrator LOC: `verifyCertificateVerify` = 7 LOC, `signCertificateVerify` = 8 LOC (well under the 40 LOC bound). `zig fmt src/sig.zig` clean. `zig build test` 521 pass / 2 skip, identical to pre-refactor baseline. `tests/sig_unit_tests.zig` (76 pass) and `tests/rfc8446/mod.zig` RFC 8446 vector suite (106 pass) both green.
 - **Resolved date:** 2026-04-19
 
+### QUAL-338: parseCert + runChainChecks split into stepwise helpers [RESOLVED]
+
+- **Issue:** [#208](https://gitlab.com/devnw/zig/tls/-/work_items/208)
+- **Category:** Maintainability
+- **Resolution:** Split `parseCert` (was 193 LOC) and `runChainChecks` (was 152 LOC) in `src/x509.zig` into step-wise helpers at natural RFC 5280 boundaries.
+  - **parseCert**: orchestrator now 70 LOC. Private helpers at natural DER boundaries: `parseTbsHeader` (version + serial, 16 LOC), `parseIssuerValidity` (issuer + validity, 12 LOC), `parseSubjectAndCN` (subject + CN extraction, 40 LOC), `parseSpki` (SubjectPublicKeyInfo with full DER header, 12 LOC), `parseExtensionsBlock` (dispatch to existing `parseExt*` helpers, 57 LOC). Four internal record types (`TbsHeaderInfo`, `IssuerValidityInfo`, `SubjectInfo`, `ParsedExtensions`) carry the intermediate shape through the pipeline. The parseExtensionsBlock helper consolidates the errdefer ownership contract for SAN / nameConstraints / policyMappings allocations.
+  - **runChainChecks**: orchestrator now 26 LOC. Private validators: `validateLeafValidity` (3 LOC), `validateEku` (6 LOC), `validateBasicConstraintsAndKu` (44 LOC), `validateNameConstraints` (58 LOC), `validateSignatureChain` (39 LOC). Per-intermediate validity check remains interleaved inside `validateBasicConstraintsAndKu` rather than being hoisted, preserving the pre-refactor error priority (e.g. BasicConstraints/KU failures on cert *i* still surface before a later cert's validity failure).
+- **Evidence:** No function in `src/x509.zig` exceeds 100 LOC after the split (verified via awk pass over the file). `zig fmt src/x509.zig` clean. `zig build test` shows **586 pass / 2 skip** — identical to the Cycle 2 baseline. `tests/rfc5280/**`, `tests/x509_unit_tests.zig`, and `tests/x509_openssl_conformance.zig` all green.
+- **Resolved date:** 2026-04-19
+
 ### QUAL-340: validateStapledResponse split into 4 validators [RESOLVED]
 
 - **Issue:** [#210](https://gitlab.com/devnw/zig/tls/-/work_items/210)
