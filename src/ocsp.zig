@@ -128,8 +128,14 @@ pub fn computeDigest(alg: HashAlg, data: []const u8, out: *[64]u8) ComputeDigest
 
 pub fn parseStatus(bytes: []const u8) OcspError!void {
     // OCSPResponseStatus ::= ENUMERATED { successful (0), ... }
-    if (bytes.len == 0) return OcspError.MalformedResponse;
-    if (bytes[bytes.len - 1] != 0) return OcspError.MalformedResponse;
+    // SEC-070: ENUMERATED values in DER for the RFC 6960-defined statuses
+    // (0..6) are always encoded as a single byte. Any other length
+    // indicates a malformed (or BER-permissive) encoding we do not accept.
+    // Strict single-byte equality also rules out leading-zero-padded
+    // encodings that could otherwise hide a non-zero status behind a 0x00
+    // prefix byte.
+    if (bytes.len != 1) return OcspError.MalformedResponse;
+    if (bytes[0] != 0) return OcspError.MalformedResponse;
 }
 pub fn normalizeInteger(bytes: []const u8) []const u8 {
     var idx: usize = 0;
