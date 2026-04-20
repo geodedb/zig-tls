@@ -187,8 +187,15 @@ fuzz:
     - *install-zig
     - mkdir -p zig-out/fuzz
     - if [ -d tests/fuzz/corpus ]; then cp -R tests/fuzz/corpus/. zig-out/fuzz/; fi
+  # GAP-0109: RSA-PSS differential regression gate runs the committed seed
+  # corpus against both sig.rsa_pss_verify_sha256 and
+  # parallel.verifyRsaPssWithHash, and fails the job if they diverge.
+  # Coverage-guided mutation is deferred until Zig 0.16's std.testing.fuzz
+  # stdlib compile error (writeStackTrace signature mismatch in
+  # lib/compiler/test_runner.zig:566) is upstream-fixed.
   script:
     - timeout 60 zig build test --fuzz; rc=$?; if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then exit $rc; fi
+    - timeout 60 zig build fuzz-rsa-pss; rc=$?; if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then exit $rc; fi
   artifacts:
     when: always
     paths:
