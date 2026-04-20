@@ -1325,10 +1325,15 @@ pub const Context = struct {
         for (server_list) |candidate| {
             for (client_list) |offered| {
                 if (std.mem.eql(u8, candidate, offered)) {
-                    const copy = try self.allocator.dupe(u8, candidate);
-                    self.negotiated_alpn = copy;
-                    self.negotiated_alpn_owned = true;
-                    return copy;
+                    // PERF-218: borrow from config — `config.alpn_protocols`
+                    // outlives Context, so a dupe is unnecessary here.
+                    // `negotiated_alpn` field type is `?[]u8` but the deinit
+                    // path now consults `negotiated_alpn_owned` before
+                    // freeing, so storing a `[]const u8` slice cast to `[]u8`
+                    // is sound: it will never be freed.
+                    self.negotiated_alpn = @constCast(candidate);
+                    self.negotiated_alpn_owned = false;
+                    return candidate;
                 }
             }
         }

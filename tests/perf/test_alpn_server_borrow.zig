@@ -17,8 +17,6 @@ const counting = @import("counting_allocator");
 const tls13 = @import("tls13");
 
 test "PERF-218: selectServerAlpn borrows from config (no dupe)" {
-    if (true) return error.SkipZigTest;
-
     const base = std.testing.allocator;
     var ca = counting.CountingAllocator.init(base);
     const alloc = ca.allocator();
