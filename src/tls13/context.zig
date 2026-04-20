@@ -78,6 +78,8 @@ const cipher_negotiation = @import("context/cipher_negotiation.zig");
 const alpn_selection = @import("context/alpn_selection.zig");
 // QUAL-317: pure ServerHello byte parsers (supported_versions, pre_shared_key).
 const server_hello_parsers = @import("context/server_hello_parsers.zig");
+// QUAL-317: pure PSK selection + binder transcript hashing (state-slice module).
+const psk_selection_mod = @import("context/psk_selection.zig");
 
 // Note: ApiError and HandshakeError are now imported from types.zig (canonical source).
 // TrafficDirection, BidirSecrets, etc. remain defined here pending further extraction.
@@ -1569,214 +1571,47 @@ pub const Context = struct {
         traceHandshake("Server: HelloRetryRequest sent successfully\n", .{});
     }
 
-    /// Compute transcript hash for PSK binder verification (RFC 8446 §4.2.11.2).
+    /// QUAL-317: Thin adapter around `psk_selection_mod.selectPsk`.
     ///
-    /// The binder is computed over a hash of the ClientHello up to (but not including)
-    /// the binders list. This function computes that hash.
-    ///
-    /// Parameters:
-    /// - hash: Hash algorithm (SHA-256 or SHA-384 based on cipher suite)
-    /// - header: 4-byte handshake message header (Type + Length)
-    /// - truncated_body: ClientHello body truncated before binders list
-    ///
-    /// Returns:
-    /// - Secret containing the transcript hash
-    fn computeBinderTranscriptHash(hash: ks.Hash, header: *const [4]u8, truncated_body: []const u8) ks.Secret {
-        // RFC 8446 §4.2.11.2: The hash is over the concatenation of:
-        // - Handshake header (4 bytes: Type + 3-byte length)
-        // - Truncated ClientHello body (up to but not including binders)
-        //
-        // We compute this incrementally to avoid allocating a buffer.
-        return switch (hash) {
-            .sha256 => blk: {
-                var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-                hasher.update(header);
-                hasher.update(truncated_body);
-                var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-                hasher.final(&digest);
-                break :blk ks.Secret.fromSlice(hash, &digest);
-            },
-            .sha384 => blk: {
-                var hasher = std.crypto.hash.sha2.Sha384.init(.{});
-                hasher.update(header);
-                hasher.update(truncated_body);
-                var digest: [std.crypto.hash.sha2.Sha384.digest_length]u8 = undefined;
-                hasher.final(&digest);
-                break :blk ks.Secret.fromSlice(hash, &digest);
-            },
-        };
-    }
-
-    /// Select a PSK from the ClientHello offered PSKs (RFC 8446 §4.2.11).
-    ///
-    /// Iterates through offered identities and calls the on_ticket_lookup callback.
-    /// If a match is found, verifies the PSK binder.
-    ///
-    /// ## Ticket Age Validation
-    ///
-    /// RFC 8446 §4.2.11.1 requires validation of obfuscated_ticket_age to prevent
-    /// replay attacks. The ticket age must be within the ticket lifetime bounds.
-    ///
-    /// **IMPORTANT**: The on_ticket_lookup callback MUST validate ticket age before
-    /// returning the PSK. The callback should:
-    /// 1. Deobfuscate the ticket age using ticket_age_add
-    /// 2. Compare against ticket issue time and lifetime
-    /// 3. Return null for expired or invalid tickets
-    ///
-    /// This implementation provides basic validation but delegates full age checking
-    /// to the callback since it has access to ticket metadata.
-    ///
-    /// Result of PSK selection: carries both the early secret and the selected identity index.
-    const PskSelection = struct {
-        early_secret: Secret,
-        selected_index: u16,
-    };
-
-    /// Returns:
-    /// - A PskSelection with the early secret and selected identity index
-    /// - null if no PSK selected (caller should use zero early secret)
-    fn selectPsk(self: *Context, ch_view: ClientHelloView) !?PskSelection {
+    /// Constructs a `PskInput` state-slice from Context fields, invokes the
+    /// pure module, and returns its `PskOutput` (renamed locally to match
+    /// prior call-site shape). Early-exit paths that used to return null
+    /// before even touching state (no pre_shared_key, no ticket lookup
+    /// callback) are preserved so the oracle stays byte-identical.
+    fn selectPsk(self: *Context, ch_view: ClientHelloView) !?psk_selection_mod.PskOutput {
         const psk_ext = ch_view.pre_shared_key orelse return null;
-        const lookup_cb = self.callbacks.on_ticket_lookup orelse return null;
 
-        // RFC 8446 §4.2.9: Validate psk_key_exchange_modes extension is present
-        // When using PSK, client MUST include psk_key_exchange_modes extension
-        const psk_modes = ch_view.psk_key_exchange_modes orelse {
-            traceHandshake("Server: PSK offered but no psk_key_exchange_modes extension (CWE-345)\\n", .{});
-            return HandshakeError.MissingPskKeyExchangeModes;
+        // Wrap the on_ticket_lookup callback into a type-erased adapter.
+        // The opaque `ctx` pointer is the `*Context` itself.
+        const Shim = struct {
+            fn lookup(opaque_ctx: *anyopaque, identity: []const u8) ?[]const u8 {
+                const self_ptr: *Context = @ptrCast(@alignCast(opaque_ctx));
+                const cb = self_ptr.callbacks.on_ticket_lookup orelse return null;
+                return cb(self_ptr, identity);
+            }
         };
 
-        // RFC 8446 §4.2.9: Verify psk_dhe_ke (0x01) is supported
-        // TLS 1.3 requires (EC)DHE with PSK for forward secrecy
-        var supports_psk_dhe_ke = false;
-        for (psk_modes) |mode| {
-            if (mode == 0x01) { // psk_dhe_ke
-                supports_psk_dhe_ke = true;
-                break;
-            }
-        }
-        if (!supports_psk_dhe_ke) {
-            traceHandshake("Server: PSK offered but psk_dhe_ke mode not supported (CWE-345)\\n", .{});
-            return HandshakeError.PskDheKeModeRequired;
-        }
+        // Preserve the original short-circuit: if the callback is not
+        // configured AND no external PSK is available, there is nothing to
+        // match, so return null without any further work (including without
+        // entering psk_key_exchange_modes validation). This matches the
+        // pre-refactor behaviour of `lookup_cb orelse return null`.
+        const has_lookup_cb = self.callbacks.on_ticket_lookup != null;
+        const has_external_psk = self.config.external_psk != null and self.config.external_psk_identity != null;
+        if (!has_lookup_cb and !has_external_psk) return null;
 
-        // Iterate over identities
-        for (psk_ext.identities, 0..) |ident, idx| {
-            // RFC 8446 §4.2.11.1: Validate obfuscated_ticket_age bounds
-            // The ticket age should not be unreasonably large (e.g., > 7 days in milliseconds)
-            // This is a basic sanity check; full validation must be done by the callback
-            const max_ticket_age_ms = 7 * 24 * 60 * 60 * 1000; // 7 days
-            if (ident.obfuscated_ticket_age > max_ticket_age_ms * 2) {
-                // Skip this PSK if the obfuscated age is unreasonably large
-                // Note: The factor of 2 accounts for obfuscation via ticket_age_add
-                traceHandshake("Server: Skipping PSK with excessive ticket age: {}\\n", .{ident.obfuscated_ticket_age});
-                continue;
-            }
-
-            // RFC 8446 §4.2.11: Try external PSK config first, then fall back to ticket lookup callback.
-            // External PSKs are provisioned out-of-band and use "ext binder" label.
-            // Resumption PSKs come from NewSessionTicket and use "res binder" label.
-            // SEC-046: Use constant-time comparison for PSK identity matching to prevent
-            // timing side-channel leaks (CWE-208). Length check is non-secret.
-            // SAFETY: .? unwraps below are guarded by the preceding `!= null` checks
-            // in this `and`-chain; Zig evaluates `and` left-to-right with short-circuit.
-            const is_external_psk = self.config.external_psk != null and
-                self.config.external_psk_identity != null and
-                ident.identity.len == self.config.external_psk_identity.?.len and
-                std.crypto.timing_safe.compare(u8, ident.identity, self.config.external_psk_identity.?, .big) == .eq;
-            const psk_bytes_opt: ?[]const u8 = if (is_external_psk)
-                self.config.external_psk
-            else
-                lookup_cb(self, ident.identity);
-            if (psk_bytes_opt) |psk_bytes| {
-                // Found a matching PSK. Now verify the binder.
-                // RFC 8446 §4.2.11: Binder validation
-                // NOTE: For resumption PSKs, the callback MUST have validated ticket age/lifetime before returning PSK
-
-                // 1. Derive early secret and binder key (RFC 8446 §7.1)
-                // early_secret = HKDF-Extract(0, psk)
-                const early_secret = key_derivation_mod.deriveEarlySecret(self.hash_kind, psk_bytes);
-                // binder_key = Derive-Secret(early_secret, "ext binder" | "res binder", "")
-                // RFC 8446 §7.1: Use "ext binder" for external PSKs, "res binder" for resumption PSKs.
-                const binder_key = key_derivation_mod.deriveBinderKey(self.hash_kind, &early_secret, is_external_psk);
-
-                // 2. Calculate truncated ClientHello for binder verification (RFC 8446 §4.2.11.2)
-                // The transcript for binder computation is the ClientHello truncated before the binders list.
-                // Calculate binders length (each binder is 1-byte length + binder bytes)
-                var binders_len: usize = 0;
-                for (psk_ext.binders) |b| {
-                    binders_len += 1 + b.len;
-                }
-
-                // Validate we have enough bytes for truncation
-                // binders_len + 2 = binders list length (2 bytes) + binder entries
-                if (ch_view.raw.len < binders_len + 2) return HandshakeError.UnexpectedMessage;
-                const truncated_len = ch_view.raw.len - (binders_len + 2);
-                const truncated_ch = ch_view.raw[0..truncated_len];
-
-                // Check if we have a binder for this identity
-                if (idx >= psk_ext.binders.len) return HandshakeError.UnexpectedMessage;
-                const received_binder = psk_ext.binders[idx];
-
-                // 3. Compute transcript hash for binder (RFC 8446 §4.2.11.2)
-                // The transcript includes the handshake header (Type + Length) + truncated body.
-                // ch_view.raw is just the body, so we need to prepend the header.
-                var header: [4]u8 = undefined;
-                header[0] = @intFromEnum(HsType.client_hello);
-                header[1] = @intCast((ch_view.raw.len >> 16) & 0xFF);
-                header[2] = @intCast((ch_view.raw.len >> 8) & 0xFF);
-                header[3] = @intCast(ch_view.raw.len & 0xFF);
-
-                // Compute hash of (Header + TruncatedBody)
-                // For first ClientHello (no HRR), this is the entire binder transcript.
-                // For ClientHello2 after HRR, we would need to include prior messages,
-                // but since we handle HRR separately and this is called for the initial CH,
-                // we compute the hash directly here.
-                const transcript_hash = computeBinderTranscriptHash(self.hash_kind, &header, truncated_ch);
-
-                // 4. Compute expected binder (RFC 8446 §4.2.11.2)
-                // finished_key = HKDF-Expand-Label(binder_key, "finished", "", Hash.length)
-                // binder = HMAC(finished_key, Transcript-Hash(Truncated ClientHello))
-                const digest_len = ks.digestLength(self.hash_kind);
-                var finished_key_buf: [ks.max_digest_length]u8 = undefined;
-                const finished_key = finished_key_buf[0..digest_len];
-                ks.expandLabelHash(self.hash_kind, &binder_key, "finished", &[_]u8{}, finished_key) catch {
-                    return HandshakeError.CryptoError;
-                };
-
-                const expected_binder = ks.hmacHash(self.hash_kind, finished_key, transcript_hash.slice());
-
-                // 5. Verify binder using constant-time comparison (security critical!)
-                // RFC 8446 §4.2.11.2: "Servers SHOULD check that it is valid"
-                // We use constant-time comparison to prevent timing attacks.
-                const expected_len = ks.digestLength(self.hash_kind);
-                if (received_binder.len != expected_len or expected_binder.len != expected_len) {
-                    return HandshakeError.DecryptError; // Binder length mismatch
-                }
-                const binder_ok = switch (self.hash_kind) {
-                    .sha256 => blk: {
-                        const received_bytes: *const [32]u8 = received_binder[0..32];
-                        const expected_bytes: *const [32]u8 = expected_binder.bytes[0..32];
-                        break :blk std.crypto.timing_safe.eql([32]u8, received_bytes.*, expected_bytes.*);
-                    },
-                    .sha384 => blk: {
-                        const received_bytes: *const [48]u8 = received_binder[0..48];
-                        const expected_bytes: *const [48]u8 = expected_binder.bytes[0..48];
-                        break :blk std.crypto.timing_safe.eql([48]u8, received_bytes.*, expected_bytes.*);
-                    },
-                };
-                if (!binder_ok) {
-                    return HandshakeError.DecryptError; // Binder verification failed
-                }
-
-                // Binder verified successfully - PSK is authentic
-                return PskSelection{
-                    .early_secret = early_secret,
-                    .selected_index = @intCast(idx),
-                };
-            }
-        }
-        return null;
+        const input = psk_selection_mod.PskInput{
+            .offered_identities = psk_ext.identities,
+            .offered_binders = psk_ext.binders,
+            .psk_key_exchange_modes = ch_view.psk_key_exchange_modes,
+            .ch_raw = ch_view.raw,
+            .hash_kind = self.hash_kind,
+            .external_psk = self.config.external_psk,
+            .external_psk_identity = self.config.external_psk_identity,
+            .ticket_lookup = if (has_lookup_cb) Shim.lookup else null,
+            .ticket_lookup_ctx = @ptrCast(self),
+        };
+        return psk_selection_mod.selectPsk(input);
     }
     // QUAL-095: Shared state produced by negotiateCipherAndKeys, consumed by
     // the individual message builders and the flight emitter.
