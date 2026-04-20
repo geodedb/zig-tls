@@ -2682,6 +2682,50 @@ In both cases the unused SHA-256/SHA-384 state is only fed the single ClientHell
 
 **Status:** Deferred (2026-04-19, Cycle 2) -- commit 8956883. Concrete unblock plan documented. ALPN borrow requires a `negotiated_alpn_owned: bool` sentinel (or a tagged owned/borrowed variant) plus auditing 6+ free/replace sites: `config.deinit`, `config.replace`, `Context.deinit`, new-ticket install, 0-RTT reject reset, rekey path. Scope exceeds the 20-40 ns / per-handshake saving this delivers; revisit next `negotiated_alpn` refactor cycle. Tracked in GitLab #182.
 
+**Cycle 3 audit (2026-04-19):** `rg '\bnegotiated_alpn\b' src/ tests/ examples/ docs/` shows the field appears in exactly **one source file** (`src/tls13/context.zig`, 10 references). Zero references in `tests/`, `examples/`, or any module outside `context.zig`. The public accessor `Context.negotiatedAlpn()` (context.zig:948) has **zero** callers in the repo (verified via `rg 'negotiatedAlpn\('` — the only non-declaration match is the field body inside the accessor itself).
+
+However, the field ownership is **not uniformly redundant**:
+
+- **Server path (context.zig:1314, `selectServerAlpn`):** `allocator.dupe(u8, candidate)` where `candidate` is a slice into `self.config.alpn_protocols[].`. Config outlives Context, so the dupe is unnecessary here — this site could borrow.
+- **Client path (context.zig:2933, `handleEncryptedExtensions`):** `allocator.dupe(u8, alpn)` where `alpn` is `parsed.alpn`, a slice into the transient EncryptedExtensions parse buffer. The parse buffer is freed as soon as the caller returns from EE handling, so this dupe **is required** unless the parser is refactored to hand Context a long-lived view (e.g. a slice into the handshake-record plaintext buffer that lives until `freeHandshakeBuffers`).
+
+Because the two write sites have *different* ownership realities, a simple "flip to borrow" is not safe. The clean fix is still the tagged owned/borrowed approach (or a `negotiated_alpn_owned: bool` sentinel) covering both paths. That remains the Cycle 2 deferral's concrete plan; the Cycle 3 audit raises one additional constraint: the **client-path dupe cannot be removed without also teaching the caller which lifetime class the value has**, else `Context.deinit`/`selectServerAlpn`/rekey paths will double-free or UAF.
+
+**Promotion decision (Cycle 3):** **Do not promote.** The audit surfaces a lifetime asymmetry between server and client write sites that was not fully reflected in the Cycle 2 deferral text; the safest change is still the tagged-ownership refactor (~day of work) rather than a partial flip. External API surface (the `pub fn negotiatedAlpn` accessor) has zero callers, so future work has full freedom to change the return type/lifetime without consumer impact.
+
+**Audit raw evidence:**
+
+```text
+$ rg '\bnegotiated_alpn\b' src/ tests/ examples/ docs/
+src/tls13/context.zig:480:    negotiated_alpn: ?[]u8 = null,
+src/tls13/context.zig:539:            .negotiated_alpn = null,
+src/tls13/context.zig:595:        if (self.negotiated_alpn) |proto| {
+src/tls13/context.zig:597:            self.negotiated_alpn = null;
+src/tls13/context.zig:808:            .alpn = self.negotiated_alpn,
+src/tls13/context.zig:949:        if (self.negotiated_alpn) |proto| {
+src/tls13/context.zig:1301:        if (self.negotiated_alpn) |prev| {
+src/tls13/context.zig:1303:            self.negotiated_alpn = null;
+src/tls13/context.zig:1315:                    self.negotiated_alpn = copy;
+src/tls13/context.zig:2935:            if (self.negotiated_alpn) |old| {
+src/tls13/context.zig:2938:            self.negotiated_alpn = alpn_copy;
+
+$ rg 'negotiatedAlpn\(' src/ tests/ examples/
+src/tls13/context.zig:948:    pub fn negotiatedAlpn(self: *const Context) ?[]const u8 {
+  # 0 external callers (only the declaration matches)
+```
+
+**Summary of the lifetime contract across call sites:**
+
+| Site | Role | Source | Current | Safe target |
+|------|------|--------|---------|-------------|
+| `selectServerAlpn` L1314 | server write | `config.alpn_protocols[]` | owned dupe | borrow |
+| `handleEncryptedExtensions` L2933 | client write | transient EE parse buf | owned dupe | owned (must stay) |
+| `deinit` L595, L597 | free | own buf | unconditional free | free iff owned |
+| `selectServerAlpn` prev-clear L1301-1303 | free | own buf | unconditional free | free iff owned |
+| `handleEncryptedExtensions` old-replace L2935-2938 | free | own buf | unconditional free | free iff owned |
+| Extension read L808 | EE build | own field | passthrough | unchanged |
+| `negotiatedAlpn()` accessor L949 | public read | own field | returns `?[]const u8` | unchanged |
+
 **PerfScore:** 1.5
 
 **Summary:** Negotiated ALPN value is duped into fresh allocation at `src/tls13/context.zig:3067,3080`. Value is always a pointer into `config.alpn_protocols`, which outlives Context. Dupe is unnecessary.
