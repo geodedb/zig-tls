@@ -74,6 +74,8 @@ const finished_mod = @import("finished.zig");
 const cookie_mod = @import("messages/extensions/cookie.zig");
 // QUAL-317: pure cipher-suite / signature-scheme selection helpers.
 const cipher_negotiation = @import("context/cipher_negotiation.zig");
+// QUAL-317: pure server-side ALPN selection helper.
+const alpn_selection = @import("context/alpn_selection.zig");
 
 // Note: ApiError and HandshakeError are now imported from types.zig (canonical source).
 // TrafficDirection, BidirSecrets, etc. remain defined here pending further extraction.
@@ -1303,34 +1305,33 @@ pub const Context = struct {
     // (tests/perf/test_alpn_server_borrow.zig) can call directly and assert
     // both the allocation-count delta and the borrow-vs-own pointer identity.
     pub fn selectServerAlpn(self: *Context, client: ClientHelloView) !?[]const u8 {
+        // Clear previous selection (honors PERF-218 ownership sentinel).
         if (self.negotiated_alpn) |prev| {
             // PERF-218: only free when owned; borrowed slices must not be freed.
             if (self.negotiated_alpn_owned and prev.len != 0) self.allocator.free(prev);
             self.negotiated_alpn = null;
             self.negotiated_alpn_owned = false;
         }
+
         const server_list = self.config.alpn_protocols orelse return null;
         if (server_list.len == 0) return null;
 
+        // If the client sent ALPN at all, they MUST get a match or we abort.
         const client_list = client.alpn_list orelse return HandshakeError.AlpnNegotiationFailed;
         if (client_list.len == 0) return HandshakeError.AlpnNegotiationFailed;
 
-        for (server_list) |candidate| {
-            for (client_list) |offered| {
-                if (std.mem.eql(u8, candidate, offered)) {
-                    // PERF-218: borrow from config — `config.alpn_protocols`
-                    // outlives Context, so a dupe is unnecessary here.
-                    // `negotiated_alpn` field type is `?[]u8` but the deinit
-                    // path now consults `negotiated_alpn_owned` before
-                    // freeing, so storing a `[]const u8` slice cast to `[]u8`
-                    // is sound: it will never be freed.
-                    self.negotiated_alpn = @constCast(candidate);
-                    self.negotiated_alpn_owned = false;
-                    return candidate;
-                }
-            }
-        }
-        return HandshakeError.AlpnNegotiationFailed;
+        // QUAL-317: pure match step delegated to alpn_selection module.
+        const matched = alpn_selection.selectServerAlpn(client_list, server_list) orelse
+            return HandshakeError.AlpnNegotiationFailed;
+
+        // PERF-218: borrow from config — `config.alpn_protocols` outlives
+        // Context, so a dupe is unnecessary here. `negotiated_alpn` field
+        // type is `?[]u8` but the deinit path consults `negotiated_alpn_owned`
+        // before freeing, so storing a `[]const u8` slice cast to `[]u8` is
+        // sound: it will never be freed.
+        self.negotiated_alpn = @constCast(matched);
+        self.negotiated_alpn_owned = false;
+        return matched;
     }
 
     fn ensureLocalTransportParameters(self: *Context) ![]const u8 {
