@@ -79,6 +79,12 @@
 - **QUAL-315** -- coverage instrumentation -- tooling choice (kcov vs llvm-cov) pending
 - **QUAL-338, QUAL-339, QUAL-340, QUAL-341, QUAL-342** -- long-function splits / dispatch tables -- opportunistic Cluster O, scheduled next cycle
 
+### Phase 15 Cycle 3 Gap Closure (2026-04-19)
+
+Five items landed this cycle: QUAL-342 (key_schedule doc coverage), QUAL-341 (sig scheme-dispatch table), QUAL-340 (validateStapledResponse split), QUAL-338 (parseCert + runChainChecks split), plus PERF-209 measurement and PERF-218 audit.
+
+**QUAL-339 (client_hello ExtHandler dispatch)** -- **BLOCKED this cycle, deferred to Cycle 4.** The extension-dispatch switch in `parseClientHello` at L352-540 interleaves with three security-critical state machines: the SEC-054 errdefer block at L262-271 (frees partial allocations via the `ch` pointer), the SEC-057 `std.enums.fromInt` guard (prevents `@enumFromInt` panics on ~2034 out-of-enum values), and the CWE-345 `psk_seen` ordering sentinel (RFC 8446 §4.2.11 — pre_shared_key MUST be the last extension). A clean table-driven refactor needs to thread all three into each handler's signature (likely via a `ParseCtx *` + `*bool` psk_seen), and the errdefer block must either stay at the orchestrator scope or be restructured so partial-allocation cleanup runs on every error path in every handler. The mechanical swap is straightforward; the security audit of the new errdefer semantics requires a fuzz-regression pass over `tests/fuzz/client_hello/**` corpus that is out of scope for this cycle. Deferred with concrete unblock plan: (a) define `ParseCtx { ch: *ClientHello, alloc: Allocator, psk_seen: *bool }` + `BuildCtx { buf: []u8, pos: *usize, ... }`, (b) extract each switch arm into a `fn parseXxx(ctx: *ParseCtx, ext_data: []const u8) !void`, (c) re-run the client_hello fuzz corpus and diff error traces against the pre-refactor branch.
+
 ### Top 5 Risks (by PriorityScore, open items first) — refreshed Cycle 2 (2026-04-19)
 
 1. **QUAL-317** (Open) -- `context.zig` monolith (~3500 LOC, 32 methods) — decompose into subsystems. **PriorityScore 100.** [Issue #150](https://gitlab.com/devnw/zig/tls/-/work_items/150) -- deferred for this cycle.
