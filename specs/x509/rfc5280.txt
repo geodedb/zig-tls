@@ -56,7 +56,7 @@ Abstract
 
 
 Cooper, et al.              Standards Track                     [Page 1]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -112,7 +112,7 @@ Table of Contents
 
 
 Cooper, et al.              Standards Track                     [Page 2]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -168,7 +168,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                     [Page 3]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -224,7 +224,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                     [Page 4]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -280,7 +280,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                     [Page 5]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -336,7 +336,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                     [Page 6]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -392,7 +392,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                     [Page 7]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -448,7 +448,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                     [Page 8]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -504,7 +504,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                     [Page 9]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -560,7 +560,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 10]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -616,7 +616,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 11]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -672,7 +672,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 12]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -728,7 +728,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 13]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -784,7 +784,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 14]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -840,7 +840,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 15]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -896,7 +896,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 16]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -952,7 +952,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 17]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1008,7 +1008,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 18]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1064,7 +1064,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 19]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1120,7 +1120,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 20]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1176,7 +1176,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 21]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1232,7 +1232,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 22]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1288,7 +1288,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 23]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1344,7 +1344,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 24]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1400,7 +1400,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 25]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1456,7 +1456,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 26]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1512,7 +1512,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 27]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1568,7 +1568,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 28]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1624,7 +1624,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 29]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1680,7 +1680,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 30]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1736,7 +1736,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 31]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1792,7 +1792,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 32]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1848,7 +1848,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 33]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1904,7 +1904,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 34]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -1960,7 +1960,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 35]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2016,7 +2016,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 36]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2072,7 +2072,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 37]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2128,7 +2128,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 38]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2184,7 +2184,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 39]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2240,7 +2240,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 40]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2296,7 +2296,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 41]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2352,7 +2352,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 42]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2408,7 +2408,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 43]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2464,7 +2464,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 44]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2520,7 +2520,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 45]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2576,7 +2576,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 46]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2632,7 +2632,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 47]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2688,7 +2688,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 48]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2744,7 +2744,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 49]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2800,7 +2800,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 50]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2856,7 +2856,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 51]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2912,7 +2912,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 52]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -2968,7 +2968,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 53]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3024,7 +3024,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 54]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3080,7 +3080,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 55]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3136,7 +3136,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 56]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3192,7 +3192,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 57]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3248,7 +3248,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 58]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3304,7 +3304,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 59]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3360,7 +3360,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 60]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3416,7 +3416,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 61]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3472,7 +3472,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 62]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3528,7 +3528,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 63]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3584,7 +3584,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 64]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3640,7 +3640,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 65]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3696,7 +3696,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 66]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3752,7 +3752,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 67]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3808,7 +3808,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 68]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3864,7 +3864,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 69]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3920,7 +3920,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 70]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -3976,7 +3976,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 71]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4032,7 +4032,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 72]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4088,7 +4088,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 73]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4144,7 +4144,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 74]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4200,7 +4200,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 75]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4256,7 +4256,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 76]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4312,7 +4312,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 77]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4368,7 +4368,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 78]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4424,7 +4424,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 79]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4480,7 +4480,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 80]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4536,7 +4536,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 81]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4592,7 +4592,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 82]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4648,7 +4648,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 83]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4704,7 +4704,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 84]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4760,7 +4760,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 85]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4816,7 +4816,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 86]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4872,7 +4872,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 87]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4928,7 +4928,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 88]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -4984,7 +4984,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 89]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5040,7 +5040,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 90]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5096,7 +5096,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 91]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5152,7 +5152,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 92]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5208,7 +5208,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 93]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5264,7 +5264,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 94]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5320,7 +5320,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 95]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5376,7 +5376,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 96]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5432,7 +5432,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 97]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5488,7 +5488,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 98]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5544,7 +5544,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                    [Page 99]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5600,7 +5600,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 100]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5656,7 +5656,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 101]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5712,7 +5712,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 102]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5768,7 +5768,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 103]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5824,7 +5824,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 104]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5880,7 +5880,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 105]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5936,7 +5936,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 106]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -5992,7 +5992,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 107]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6048,7 +6048,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 108]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6104,7 +6104,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 109]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6160,7 +6160,7 @@ id-pkix  OBJECT IDENTIFIER  ::=
 
 
 Cooper, et al.              Standards Track                   [Page 110]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6216,7 +6216,7 @@ AttributeTypeAndValue   ::= SEQUENCE {
 
 
 Cooper, et al.              Standards Track                   [Page 111]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6272,7 +6272,7 @@ X520CommonName ::= CHOICE {
 
 
 Cooper, et al.              Standards Track                   [Page 112]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6328,7 +6328,7 @@ X520StateOrProvinceName ::= CHOICE {
 
 
 Cooper, et al.              Standards Track                   [Page 113]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6384,7 +6384,7 @@ X520OrganizationalUnitName ::= CHOICE {
 
 
 Cooper, et al.              Standards Track                   [Page 114]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6440,7 +6440,7 @@ X520Pseudonym ::= CHOICE {
 
 
 Cooper, et al.              Standards Track                   [Page 115]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6496,7 +6496,7 @@ Certificate  ::=  SEQUENCE  {
 
 
 Cooper, et al.              Standards Track                   [Page 116]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6552,7 +6552,7 @@ Extension  ::=  SEQUENCE  {
 
 
 Cooper, et al.              Standards Track                   [Page 117]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6608,7 +6608,7 @@ ORAddress ::= SEQUENCE {
 
 
 Cooper, et al.              Standards Track                   [Page 118]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6664,7 +6664,7 @@ NumericUserIdentifier ::= NumericString
 
 
 Cooper, et al.              Standards Track                   [Page 119]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6720,7 +6720,7 @@ CommonName ::= PrintableString (SIZE (1..ub-common-name-length))
 
 
 Cooper, et al.              Standards Track                   [Page 120]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6776,7 +6776,7 @@ physical-delivery-office-name INTEGER ::= 10
 
 
 Cooper, et al.              Standards Track                   [Page 121]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6832,7 +6832,7 @@ local-postal-attributes INTEGER ::= 21
 
 
 Cooper, et al.              Standards Track                   [Page 122]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6888,7 +6888,7 @@ TeletexDomainDefinedAttribute ::= SEQUENCE {
 
 
 Cooper, et al.              Standards Track                   [Page 123]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -6944,7 +6944,7 @@ ub-x121-address-length INTEGER ::= 16
 
 
 Cooper, et al.              Standards Track                   [Page 124]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7000,7 +7000,7 @@ KeyIdentifier ::= OCTET STRING
 
 
 Cooper, et al.              Standards Track                   [Page 125]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7056,7 +7056,7 @@ CertPolicyId ::= OBJECT IDENTIFIER
 
 
 Cooper, et al.              Standards Track                   [Page 126]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7112,7 +7112,7 @@ GeneralNames ::= SEQUENCE SIZE (1..MAX) OF GeneralName
 
 
 Cooper, et al.              Standards Track                   [Page 127]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7168,7 +7168,7 @@ BasicConstraints ::= SEQUENCE {
 
 
 Cooper, et al.              Standards Track                   [Page 128]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7224,7 +7224,7 @@ DistributionPointName ::= CHOICE {
 
 
 Cooper, et al.              Standards Track                   [Page 129]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7280,7 +7280,7 @@ FreshestCRL ::= CRLDistributionPoints
 
 
 Cooper, et al.              Standards Track                   [Page 130]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7336,7 +7336,7 @@ BaseCRLNumber ::= CRLNumber
 
 
 Cooper, et al.              Standards Track                   [Page 131]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7392,7 +7392,7 @@ id-holdinstruction-reject OBJECT IDENTIFIER ::= {holdInstruction 3}
 
 
 Cooper, et al.              Standards Track                   [Page 132]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7448,7 +7448,7 @@ Appendix B.  ASN.1 Notes
 
 
 Cooper, et al.              Standards Track                   [Page 133]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7504,7 +7504,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 134]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7560,7 +7560,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 135]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7616,7 +7616,7 @@ Appendix C.  Examples
 
 
 Cooper, et al.              Standards Track                   [Page 136]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7672,7 +7672,7 @@ C.1.  RSA Self-Signed Certificate
 
 
 Cooper, et al.              Standards Track                   [Page 137]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7728,7 +7728,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 138]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7784,7 +7784,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 139]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7840,7 +7840,7 @@ C.2.  End Entity Certificate Using RSA
 
 
 Cooper, et al.              Standards Track                   [Page 140]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7896,7 +7896,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 141]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -7952,7 +7952,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 142]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -8008,7 +8008,7 @@ C.3.  End Entity Certificate Using DSA
 
 
 Cooper, et al.              Standards Track                   [Page 143]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -8064,7 +8064,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 144]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -8120,7 +8120,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 145]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -8176,7 +8176,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 146]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -8232,7 +8232,7 @@ C.4.  Certificate Revocation List
 
 
 Cooper, et al.              Standards Track                   [Page 147]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -8288,7 +8288,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 148]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -8344,7 +8344,7 @@ RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
 Cooper, et al.              Standards Track                   [Page 149]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -8400,7 +8400,7 @@ Authors' Addresses
 
 
 Cooper, et al.              Standards Track                   [Page 150]
-
+
 RFC 5280            PKIX Certificate and CRL Profile            May 2008
 
 
@@ -8456,4 +8456,3 @@ Intellectual Property
 
 
 Cooper, et al.              Standards Track                   [Page 151]
-

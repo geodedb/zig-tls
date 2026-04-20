@@ -56,7 +56,7 @@ Status of This Memo
 
 
 Yee                          Standards Track                    [Page 1]
-
+
 RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
@@ -112,7 +112,7 @@ Table of Contents
 
 
 Yee                          Standards Track                    [Page 2]
-
+
 RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
@@ -168,7 +168,7 @@ RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
 Yee                          Standards Track                    [Page 3]
-
+
 RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
@@ -224,7 +224,7 @@ RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
 Yee                          Standards Track                    [Page 4]
-
+
 RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
@@ -280,7 +280,7 @@ RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
 Yee                          Standards Track                    [Page 5]
-
+
 RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
@@ -336,7 +336,7 @@ RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
 Yee                          Standards Track                    [Page 6]
-
+
 RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
@@ -392,7 +392,7 @@ RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
 Yee                          Standards Track                    [Page 7]
-
+
 RFC 6818                 RFC 5280 Clarifications            January 2013
 
 
@@ -448,4 +448,3 @@ Author's Address
 
 
 Yee                          Standards Track                    [Page 8]
-

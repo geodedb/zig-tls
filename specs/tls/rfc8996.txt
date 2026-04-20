@@ -7,20 +7,20 @@ Request for Comments: 8996                                           CIS
 BCP: 195                                                      S. Farrell
 Obsoletes: 5469, 7507                             Trinity College Dublin
 Updates: 3261, 3329, 3436, 3470, 3501, 3552,                  March 2021
-         3568, 3656, 3749, 3767, 3856, 3871,                            
-         3887, 3903, 3943, 3983, 4097, 4111,                            
-         4162, 4168, 4217, 4235, 4261, 4279,                            
-         4497, 4513, 4531, 4540, 4582, 4616,                            
-         4642, 4680, 4681, 4712, 4732, 4743,                            
-         4744, 4785, 4791, 4823, 4851, 4964,                            
-         4975, 4976, 4992, 5018, 5019, 5023,                            
-         5024, 5049, 5054, 5091, 5158, 5216,                            
-         5238, 5263, 5281, 5364, 5415, 5422,                            
-         5456, 5734, 5878, 5953, 6012, 6042,                            
-         6083, 6084, 6176, 6347, 6353, 6367,                            
-         6460, 6614, 6739, 6749, 6750, 7030,                            
-         7465, 7525, 7562, 7568, 8261, 8422                             
-Category: Best Current Practice                                         
+         3568, 3656, 3749, 3767, 3856, 3871,
+         3887, 3903, 3943, 3983, 4097, 4111,
+         4162, 4168, 4217, 4235, 4261, 4279,
+         4497, 4513, 4531, 4540, 4582, 4616,
+         4642, 4680, 4681, 4712, 4732, 4743,
+         4744, 4785, 4791, 4823, 4851, 4964,
+         4975, 4976, 4992, 5018, 5019, 5023,
+         5024, 5049, 5054, 5091, 5158, 5216,
+         5238, 5263, 5281, 5364, 5415, 5422,
+         5456, 5734, 5878, 5953, 6012, 6042,
+         6083, 6084, 6176, 6347, 6353, 6367,
+         6460, 6614, 6739, 6749, 6750, 7030,
+         7465, 7525, 7562, 7568, 8261, 8422
+Category: Best Current Practice
 ISSN: 2070-1721
 
 
@@ -242,14 +242,14 @@ Table of Contents
    |  errors exist.  Further implementation considerations for CBC modes
    |  (which were not included in RFC 4346 [24]) are discussed in
    |  Section 3.3.2.
-   |  
+   |
    |  TLS 1.2, specified in RFC 5246 [25], made several cryptographic
    |  enhancements, particularly in the area of hash functions, with the
    |  ability to use or specify the SHA-2 family of algorithms for hash,
    |  MAC, and Pseudorandom Function (PRF) computations.  TLS 1.2 also
    |  adds authenticated encryption with associated data (AEAD) cipher
    |  suites.
-   |  
+   |
    |  TLS 1.3, specified in RFC 8446 [57], represents a significant
    |  change to TLS that aims to address threats that have arisen over
    |  the years.  Among the changes are a new handshake protocol, a new
