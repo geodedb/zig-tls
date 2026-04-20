@@ -82,6 +82,8 @@ const server_hello_parsers = @import("context/server_hello_parsers.zig");
 const psk_selection_mod = @import("context/psk_selection.zig");
 // QUAL-317: certificate chain parsing + CertificateVerify signature helpers.
 const cert_handlers = @import("context/cert_handlers.zig");
+// QUAL-317: HelloRetryRequest parser + emit + CH2 rebuild helpers.
+const hello_retry_mod = @import("context/hello_retry.zig");
 
 // Note: ApiError and HandshakeError are now imported from types.zig (canonical source).
 // TrafficDirection, BidirSecrets, etc. remain defined here pending further extraction.
@@ -1352,99 +1354,50 @@ pub const Context = struct {
 
     /// Handle HelloRetryRequest from server (client-side).
     /// RFC 8446 §4.1.4: Parse HRR, extract cookie and selected_group, send ClientHello2.
+    /// QUAL-317: thin adapter around `hello_retry_mod.parseHelloRetryRequest`
+    /// + `applyHrrTranscript`. All security invariants (RFC 8446 §4.1.4
+    /// double-HRR rejection, §4.4.1 transcript transformation, §4.2.8 missing
+    /// key_share rejection) are preserved verbatim; the pure module owns the
+    /// algorithm while Context retains the `hrr_received = true` write after
+    /// successful parse (handshake-ordering state stays in the shell).
     fn handleHelloRetryRequest(self: *Context, body: []const u8) !void {
         if (self.hrr_received) {
-            // Already received HRR once - server sent HRR twice
+            // Already received HRR once - server sent HRR twice (§4.1.4).
             return HandshakeError.UnexpectedMessage;
         }
 
         traceHandshake("Client: Received HelloRetryRequest\n", .{});
 
-        // Parse extensions to extract cookie and selected_group
-        if (body.len < 2 + 32 + 1) return HandshakeError.UnexpectedMessage;
-        var pos: usize = 2 + 32; // skip legacy_version + random
+        const parsed = try hello_retry_mod.parseHelloRetryRequest(body);
 
-        // Skip session_id
-        // SEC-035: Bounds-check sid_len before advancing pos
-        if (pos >= body.len) return HandshakeError.UnexpectedMessage;
-        const sid_len: usize = body[pos];
-        if (pos + 1 + sid_len > body.len) return HandshakeError.UnexpectedMessage;
-        pos += 1 + sid_len;
-
-        // Skip cipher_suite + compression
-        if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
-        pos += 2 + 1;
-
-        // Parse extensions
-        if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
-        const exts_len: usize = readU16(body[pos .. pos + 2]);
-        pos += 2;
-        if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
-
-        const exts_end = pos + exts_len;
-        var cookie: ?[]const u8 = null;
-        var selected_group: ?tls13_full.NamedGroup = null;
-
-        while (pos + 4 <= exts_end) {
-            const etype = readU16(body[pos .. pos + 2]);
-            const elen: usize = readU16(body[pos + 2 .. pos + 4]);
-            pos += 4;
-            if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
-
-            // RFC 8446 §4.2.2: cookie extension (0x002c)
-            if (etype == 0x002c) {
-                cookie = body[pos .. pos + elen];
-            }
-            // RFC 8446 §4.2.8: key_share extension with selected_group (2 bytes)
-            else if (etype == 0x0033) {
-                if (elen == 2) {
-                    const group_val = readU16(body[pos .. pos + 2]);
-                    selected_group = std.enums.fromInt(tls13_full.NamedGroup, group_val);
-                }
-            }
-
-            pos += elen;
-        }
-
-        // Cookie is optional in HRR, but selected_group is required
-        if (selected_group == null) {
-            return HandshakeError.MissingKeyShare;
-        }
-
-        // SAFETY: null case returns MissingKeyShare above; selected_group is guaranteed non-null.
-        traceHandshake("Client: HRR requests group: {s}\n", .{@tagName(selected_group.?)});
+        traceHandshake("Client: HRR requests group: {s}\n", .{@tagName(parsed.selected_group)});
 
         // RFC 8446 §4.4.1: Update transcript for HelloRetryRequest
-        // Get the first ClientHello from the buffer we need to re-send
+        // (message_hash(CH1) + HRR replay prefix, zero-alloc).
         const ch1_raw = self.streams.buffer(.Initial).outbound.items;
+        hello_retry_mod.applyHrrTranscript(
+            &self.transcripts.handshake,
+            self.hash_kind,
+            ch1_raw,
+            body,
+        );
 
-        // Update transcript: replace with message_hash(CH1) || HRR
-        self.transcripts.handshake.handleHelloRetryRequest(ch1_raw, self.hash_kind);
-
-        // PERF-203: Zero-alloc transcript update for HRR.
-        // Instead of allocating via encodeHandshake, feed the 4-byte handshake header
-        // and body separately into the transcript hash (streaming update).
-        var hrr_hdr: [4]u8 = undefined;
-        hrr_hdr[0] = @intFromEnum(HsType.server_hello);
-        const hrr_len: u32 = @intCast(body.len);
-        hrr_hdr[1] = @intCast((hrr_len >> 16) & 0xff);
-        hrr_hdr[2] = @intCast((hrr_len >> 8) & 0xff);
-        hrr_hdr[3] = @intCast(hrr_len & 0xff);
-        self.transcripts.handshake.update(&hrr_hdr);
-        self.transcripts.handshake.update(body);
-
-        // Mark that we received HRR
+        // Mark that we received HRR (handshake ordering — owned by Context).
         self.hrr_received = true;
 
-        // SAFETY: selected_group null case returns MissingKeyShare earlier in this function.
-        // Send ClientHello2 with new key_share and cookie
-        try self.sendClientHello2(selected_group.?, cookie);
+        // Send ClientHello2 with new key_share and (optional) cookie echo.
+        try self.sendClientHello2(parsed.selected_group, parsed.cookie);
 
-        traceHandshake("Client: Sent ClientHello2 with group {s}\n", .{@tagName(selected_group.?)});
+        traceHandshake("Client: Sent ClientHello2 with group {s}\n", .{@tagName(parsed.selected_group)});
     }
 
     /// Send ClientHello2 after receiving HelloRetryRequest.
     /// RFC 8446 §4.1.4: Second ClientHello includes cookie and new key_share.
+    ///
+    /// QUAL-317: thin adapter — SEC-036/SEC-050 ephemeral-key handling stays
+    /// in Context because it mutates `self.client_priv`/`self.client_pub`;
+    /// the actual CH2 body encoding is delegated to
+    /// `hello_retry_mod.buildClientHello2Body`.
     fn sendClientHello2(self: *Context, selected_group: tls13_full.NamedGroup, cookie: ?[]const u8) !void {
         // Generate new key pair for the requested group
         // Currently only X25519 is supported
@@ -1481,10 +1434,10 @@ pub const Context = struct {
         // RFC 8446 §4.1.4: MUST use same random as ClientHello1.
         const rnd = self.client_random orelse return HandshakeError.UnexpectedMessage;
 
-        const ch_result = try tls13_full.buildClientHello(self.allocator, .{
-            .random = rnd,
+        const ch_result = try hello_retry_mod.buildClientHello2Body(self.allocator, .{
+            .client_random = rnd,
             .client_pub = pub_key,
-            .key_share_group = selected_group,
+            .selected_group = selected_group,
             .cipher_suites = self.config.supported_cipher_suites,
             .supported_groups = self.config.supported_groups,
             .signature_algorithms = self.config.supported_signature_schemes,
@@ -1522,52 +1475,45 @@ pub const Context = struct {
 
     /// Send HelloRetryRequest to client requesting a different key share group.
     /// RFC 8446 §4.1.4: HelloRetryRequest is a ServerHello with special random value.
+    ///
+    /// QUAL-317: thin adapter — cookie generation + HRR body encoding are
+    /// delegated to `hello_retry_mod.buildHrrBody`, and the zero-alloc
+    /// transcript transformation to `hello_retry_mod.applyHrrTranscript`.
+    /// Context retains `hrr_sent = true` write (handshake ordering) and the
+    /// outbound framing + ensureServerSecret (which mutates
+    /// `server_secret_generated`).
     fn sendHelloRetryRequest(self: *Context, ch_view: ClientHelloView, selected_group: tls13_full.NamedGroup) !void {
         traceHandshake("Server: Sending HelloRetryRequest (requesting group: {s})\n", .{@tagName(selected_group)});
 
         // RFC 8446 §4.2.2: Generate cookie binding this HRR to the client's first ClientHello
         const server_secret = try self.ensureServerSecret();
 
-        // Compute transcript hash of first ClientHello
+        // Compute transcript hash of first ClientHello.
         const ch1_hash = self.transcripts.handshake.finalize(self.hash_kind);
 
-        // Generate HMAC-authenticated cookie
-        const cookie = try cookie_mod.generateCookie(
-            self.allocator,
-            server_secret,
-            ch_view.random,
-            ch1_hash.slice(),
-        );
-        defer self.allocator.free(cookie);
-
-        // Build HelloRetryRequest message
-        const hrr_body = try tls13_full.buildHelloRetryRequest(
-            self.allocator,
-            selected_group,
-            cookie,
-            if (ch_view.session_id.len > 0) ch_view.session_id else null,
-        );
-        defer self.allocator.free(hrr_body);
+        // Delegate cookie generation + HRR body encoding to the pure module.
+        const hrr_result = try hello_retry_mod.buildHrrBody(self.allocator, .{
+            .server_secret = server_secret,
+            .client_random = ch_view.random,
+            .ch1_transcript_hash = ch1_hash.slice(),
+            .selected_group = selected_group,
+            .session_id = ch_view.session_id,
+        });
+        defer self.allocator.free(hrr_result.body);
 
         // RFC 8446 §4.4.1: Update transcript hash for HelloRetryRequest
-        // Replace transcript with: message_hash(ClientHello1) || HelloRetryRequest
-        self.transcripts.handshake.handleHelloRetryRequest(ch_view.raw, self.hash_kind);
-
-        // PERF-204: Zero-alloc transcript update and outbound framing for HRR.
-        // Feed 4-byte handshake header + body into transcript without allocating.
-        var srv_hrr_hdr: [4]u8 = undefined;
-        srv_hrr_hdr[0] = @intFromEnum(HsType.server_hello);
-        const srv_hrr_len: u32 = @intCast(hrr_body.len);
-        srv_hrr_hdr[1] = @intCast((srv_hrr_len >> 16) & 0xff);
-        srv_hrr_hdr[2] = @intCast((srv_hrr_len >> 8) & 0xff);
-        srv_hrr_hdr[3] = @intCast(srv_hrr_len & 0xff);
-        self.transcripts.handshake.update(&srv_hrr_hdr);
-        self.transcripts.handshake.update(hrr_body);
+        // (message_hash(ClientHello1) || HelloRetryRequest) — zero-alloc.
+        hello_retry_mod.applyHrrTranscript(
+            &self.transcripts.handshake,
+            self.hash_kind,
+            ch_view.raw,
+            hrr_result.body,
+        );
 
         // Queue HRR for transmission at Initial encryption level (zero-alloc framing)
-        try self.appendOutboundFramed(.Initial, .server_hello, hrr_body, false);
+        try self.appendOutboundFramed(.Initial, .server_hello, hrr_result.body, false);
 
-        // Mark that we sent HRR
+        // Mark that we sent HRR (handshake ordering — owned by Context).
         self.hrr_sent = true;
 
         traceHandshake("Server: HelloRetryRequest sent successfully\n", .{});
