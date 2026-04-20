@@ -85,7 +85,7 @@
 
 ### Phase 7 Updates (Perf-Reviewer Audit)
 
-- PERF-036 (P2): CryptoBuffer.consume still O(n) memmove in context.zig -- PERF-008 fix was incomplete
+- PERF-036 (P3 -> Closed 2026-04-19): CryptoBuffer already offset-based (read_offset + half-capacity compact); PERF-008 follow-up fully delivered.
 - PERF-037 (P2): Redundant leaf cert re-parse within handleCertificateVerify -- PERF-017 incomplete
 - PERF-038 (P2): Client sendClientFinished uses 3-4 allocating encodeHandshake calls
 - PERF-039 (P2): tls13_build_context_and_hash allocates ~130 bytes per sig operation
@@ -238,7 +238,7 @@ Remaining PERF-208..211, PERF-213..218 are out of this plan's scope and remain O
 | 31 | PERF-027 | P3 | 7 | No timeout on X.509 chain validation | app | `src/x509.zig:1480-1541` | Potential hang on malformed/deep chains | -- | Documented max_chain_depth=10 as sufficient DoS defense; ASN.1 parsing has bounded complexity | Claude | 2026-03-24 | Closed |
 | 32 | PERF-034 | P3 | 5 | hkdfLabel uses std.mem.concat for "tls13 " prefix on FixedBufferAllocator | app | `src/key_schedule.zig:312` | ~10ns/call x 6-12 calls per handshake = ~60-120ns total | -- | Replaced std.mem.concat with inline @memcpy of prefix+label directly into output buffer | Claude | 2026-03-24 | Closed |
 | 33 | PERF-035 | P3 | 4 | Missing inline hint on deriveNonce (AEAD hot path) | app | `src/record/aead.zig:577` | Likely zero impact -- LLVM inlines in ReleaseFast | -- | Added `inline` keyword to deriveNonce for defense-in-depth in debug builds | Claude | 2026-03-24 | Closed |
-| 34 | PERF-036 | P3 | 6 | CryptoBuffer.compact() now O(1) amortized via half-capacity threshold | app | `src/tls13/context.zig:558-575` | Amortized O(1) -- only memmoves when offset > cap/2 | [#116](https://gitlab.com/devnw/zig/tls/-/issues/116) | Downgraded 2026-04-18; close candidate | Claude | Backlog | Open (close candidate) |
+| 34 | PERF-036 | P3 | 6 | CryptoBuffer.compact() now O(1) amortized via half-capacity threshold | app | `src/tls13/context.zig:373-428` | Amortized O(1) -- only memmoves when offset > cap/2 | [#116](https://gitlab.com/devnw/zig/tls/-/issues/116) | `CryptoBuffer` already carries `read_offset: usize`, `consume()` advances it in O(1), and `compact()` defers memmove until offset crosses capacity/2. Verified in-code (line 373 comment "PERF-036: Uses offset-based O(1) amortized consume"). | Claude | 2026-04-19 | Closed |
 | 35 | PERF-037 | P2 | 12 | Redundant leaf cert re-parse in handleCertificateVerify (consolidated into PERF-207) | app | `src/tls13/context.zig:2749` | ~15-30us/handshake (1 redundant ASN.1 DER walk + alloc) | [#118](https://gitlab.com/devnw/zig/tls/-/issues/118) | Consolidated 2026-04-18 with PERF-207 (broader chain-level scope) | Claude | -- | Consolidated w/ PERF-207 |
 | 36 | PERF-038 | P2 | 12 | Client sendClientFinished uses 3-4 allocating encodeHandshake calls | app | `src/tls13/context.zig:2391-2448` | ~2-4us/mTLS handshake (3-4 alloc/free + memcpy cycles) | [#120](https://gitlab.com/devnw/zig/tls/-/issues/120) | appendOutboundFramed replaces 4 encodeHandshake calls; zero-alloc client flight | Claude | 2026-03-24 | Closed |
 | 37 | PERF-039 | P2 | 10 | tls13_build_context_and_hash allocates ~130 bytes per sig operation | app | `src/sig.zig:318-328` | ~20-40ns/handshake (1-2 alloc/free for bounded buffer) | [#121](https://gitlab.com/devnw/zig/tls/-/issues/121) | Replaced heap alloc with caller-provided `*[512]u8` stack buffer | Claude | 2026-03-24 | Closed |
@@ -2365,7 +2365,7 @@ zig build bench -Doptimize=ReleaseFast
 | PERF-023 | P2 | encodeHandshake always allocates new buffer | **Open** |
 | PERF-031 | P2 | 13 zero-capacity ArrayLists in message builders | Closed |
 | PERF-032 | P2 | 12 individual allocator.dupe calls in ClientHelloInfo.parse | Superseded (PERF-201) |
-| PERF-036 | P2 | CryptoBuffer.consume still O(n) memmove -- PERF-008 fix incomplete | **Open** |
+| PERF-036 | P3 | CryptoBuffer offset-based consume (O(1) amortized) | Closed (2026-04-19) |
 | PERF-037 | P2 | Redundant leaf cert re-parse in handleCertificateVerify | Closed |
 | PERF-038 | P2 | Client sendClientFinished 3-4 allocating encodeHandshake calls | Closed |
 | PERF-039 | P2 | tls13_build_context_and_hash allocates ~130 bytes per sig op | Closed |
@@ -2453,7 +2453,7 @@ zig build bench -Doptimize=ReleaseFast
 | PERF-027 | 1 day | DoS prevention -- max chain depth in validateChain | Closed |
 | PERF-029 | 3 days | Validation infrastructure -- expand bench.zig with 7 critical benchmarks | Closed |
 | PERF-201 | 2 days | ~1-3us/connection -- refactor parseClientHello to return borrowed slices, eliminate double alloc | **Open** |
-| PERF-036 | 1 day | ~90-300ns/handshake -- offset-based O(1) consume for context.zig CryptoBuffer | **Open** |
+| PERF-036 | 1 day | ~90-300ns/handshake -- offset-based O(1) consume for context.zig CryptoBuffer | Closed (2026-04-19) |
 | PERF-038 | 1 day | ~2-4us/mTLS handshake -- zero-alloc client flight encoding | **Closed** |
 | PERF-042 | 1 day | ~100-400ns/handshake -- single contiguous buffer for cert chain | **Closed** |
 | PERF-043 | 1 day | Cache-line optimization -- group hot fields in Context struct | **Closed** |
