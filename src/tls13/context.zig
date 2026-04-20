@@ -15,20 +15,33 @@
 //!
 //! # Architecture
 //!
+//! **Context** (this file): imperative shell holding connection state +
+//! dispatching to pure-function modules under `src/tls13/context/`:
+//!
+//! - cipher_negotiation.zig     cipher-suite + sig-scheme selection
+//! - alpn_selection.zig         ALPN match (PERF-218 borrow semantics)
+//! - psk_selection.zig          PSK identity + binder hash + timing_safe
+//! - server_hello_parsers.zig   ServerHello extension parsers
+//! - server_flight_builders.zig ServerHello → Finished emission
+//! - hello_retry.zig            HRR emit + handle + CH2 rebuild
+//! - cert_handlers.zig          Cert chain + CertificateVerify
+//! - key_update.zig             Post-handshake KeyUpdate (CWE-226 fixed)
+//!
+//! Each module is value-in / value-out — no *Context parameter. Context
+//! reads its own fields, builds state-slice literals (or passes explicit
+//! parameters), and writes results back. Adapter pattern retained in
+//! Context for flows whose Context-state breadth makes pure extraction
+//! impractical (emitServerFlight, negotiateCipherAndKeys, driveServerHandshakeFlight).
+//!
+//! See docs/superpowers/specs/2026-04-20-context-decomposition-design.md
+//! for the full architecture rationale.
+//!
 //! **Callbacks**: Function pointers for QUIC layer integration
 //! - on_secret_available: Install traffic secrets for packet protection
 //! - on_handshake_metadata: Receive negotiated ALPN and transport params
 //! - on_peer_finished: Notification of peer Finished verification
 //! - on_handshake_complete: Full handshake completion notification
 //! - fetch_certificate_chain: Dynamic certificate retrieval (server)
-//!
-//! **Context**: High-level TLS 1.3 handshake driver
-//! - Full RFC 8446 compliant flow
-//! - Automatic format detection (standard vs. minimal)
-//! - Certificate validation and signature verification
-//! - Transcript hash management
-//! - Secret derivation and installation
-//! - ALPN and transport parameter negotiation
 //!
 //! # Usage
 //!
