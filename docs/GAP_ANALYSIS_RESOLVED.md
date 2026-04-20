@@ -820,3 +820,11 @@ Pre-existing pre-commit hook failures on files not touched by this run are flagg
 - **Resolution:** Added `///` doc blocks to the 10 public functions that were missing them (`digestLength`, `zeroSecret`, `extractHash`, `expandLabelHash`, `deriveSecretHash`, `hmacHash`, `updateTrafficSecretHash`, `deriveKeyIvHpHash`, `hashBytes`, `deriveFinishedVerifyDataHash`). `hmacSha256` was already documented. Each new block cites the governing RFC section (RFC 8446 §4.4.1, §4.4.4, §7.1, §7.2; RFC 9001 §5.1 / §6; RFC 9369 §3.3.1; RFC 5869 §2.2; RFC 2104) and documents input-length invariants and the returned `Secret` / array shape.
 - **Evidence:** All 11 public fns now precede with `///` block. `zig fmt --check src/key_schedule.zig` clean. `zig build test` 521 pass / 2 skip — unchanged from pre-edit baseline (doc-only change).
 - **Resolved date:** 2026-04-19
+
+### QUAL-341: Scheme-dispatch table for verify/signCertificateVerify [RESOLVED]
+
+- **Issue:** [#211](https://gitlab.com/devnw/zig/tls/-/work_items/211)
+- **Category:** Readability / maintainability
+- **Resolution:** Replaced the 4-arm `switch` bodies in `verifyCertificateVerify` and `signCertificateVerify` (src/sig.zig) with table-driven dispatch. New `SchemeEntry { alg, verify, sign: ?SignFn }` table (`SCHEMES`) holds one entry per TLS 1.3 signature scheme; both public functions are now 7-LOC and 8-LOC orchestrators that call `schemeEntry(alg)` and forward to the matching helper. Per-scheme bodies (`verifyEd25519`, `verifyRsaPssSha256`, `verifyEcdsaP256Sha256`, `verifyEcdsaP384Sha384`, `signEd25519`, `signEcdsaP256Sha256`) are lifted verbatim from the pre-refactor switch arms, preserving bit-exact RFC 8446 §4.2.3 behaviour (including the `error.Unsupported` return for RSA-PSS/ECDSA-P384 sign paths). `schemeEntry` uses an explicit linear scan (N=4) rather than `@intFromEnum` indexing to avoid coupling to enum declaration order.
+- **Evidence:** Orchestrator LOC: `verifyCertificateVerify` = 7 LOC, `signCertificateVerify` = 8 LOC (well under the 40 LOC bound). `zig fmt src/sig.zig` clean. `zig build test` 521 pass / 2 skip, identical to pre-refactor baseline. `tests/sig_unit_tests.zig` (76 pass) and `tests/rfc8446/mod.zig` RFC 8446 vector suite (106 pass) both green.
+- **Resolved date:** 2026-04-19

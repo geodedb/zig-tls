@@ -503,158 +503,257 @@ fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []cons
 /// if (!ok) return error.BadCertificateVerify;
 /// ```
 pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []const u8, context: []const u8, transcript_hash: []const u8, alloc: std.mem.Allocator) !bool {
-    switch (alg) {
-        .ed25519 => {
-            // Parse Ed25519 public key from SPKI
-            const pubkey_bytes = try parseEd25519Spki(pubkey_spki_der);
-            const pubkey = try Ed25519.PublicKey.fromBytes(pubkey_bytes);
-            // Build TLS 1.3 signed content
-            var sc_buf: [512]u8 = undefined;
-            const sc = tls13_build_context_and_hash(alg, context, transcript_hash, &sc_buf);
-            // Verify Ed25519 signature
-            if (sig.len != 64) return false;
-            const signature = Ed25519.Signature.fromBytes(sig[0..64].*);
-            signature.verify(sc, pubkey) catch return false;
-            return true;
-        },
-        .rsa_pss_sha256 => {
-            // Build TLS 1.3 signed content: 64 spaces || context || 0x00 || transcript_hash
-            var sc_buf: [512]u8 = undefined;
-            const sc = tls13_build_context_and_hash(alg, context, transcript_hash, &sc_buf);
-            return rsa_pss_verify_sha256(pubkey_spki_der, sc, sig, 32, alloc);
-        },
-        .ecdsa_secp256r1_sha256 => {
-            // Parse SPKI and use std.crypto ECDSA (P-256/SHA-256)
-            var spki = try parseEcdsaSpki(pubkey_spki_der, alloc);
-            defer spki.deinit();
-            if (!spki.curve_p256) return false;
-            const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
-            const signature = Ecdsa.Signature.fromDer(sig) catch return false;
-            const pubkey = Ecdsa.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
-            var sc_buf: [512]u8 = undefined;
-            const sc = tls13_build_context_and_hash(alg, context, transcript_hash, &sc_buf);
-            signature.verify(sc, pubkey) catch return false;
-            return true;
-        },
-        .ecdsa_secp384r1_sha384 => {
-            // Parse SPKI and use std.crypto ECDSA (P-384/SHA-384)
-            var spki = try parseEcdsaSpki(pubkey_spki_der, alloc);
-            defer spki.deinit();
-            if (spki.curve_p256) return false; // expect P-384
-            const Ecdsa384 = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, Sha384);
-            const signature = Ecdsa384.Signature.fromDer(sig) catch return false;
-            const pubkey = Ecdsa384.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
-            var sc_buf: [512]u8 = undefined;
-            const sc = tls13_build_context_and_hash(alg, context, transcript_hash, &sc_buf);
-            signature.verify(sc, pubkey) catch return false;
-            return true;
-        },
-    }
+    // QUAL-341: Table-driven dispatch over SigAlg. Bit-exact RFC 8446 §4.2.3
+    // behaviour preserved — each per-scheme verifier contains the same
+    // steps that previously lived in the inline switch arms.
+    const entry = schemeEntry(alg);
+    return entry.verify(pubkey_spki_der, sig, context, transcript_hash, alloc);
 }
 
 /// Sign a TLS 1.3 CertificateVerify for given algorithm using a DER private key blob (currently supports raw PKCS#8 EC for P-256 and Ed25519) and transcript hash.
 pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []const u8, transcript_hash: []const u8, alloc: std.mem.Allocator) ![]u8 {
-    switch (alg) {
-        .ed25519 => {
-            // Parse Ed25519 private key from PKCS#8
-            var seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
-            defer std.crypto.secureZero(u8, &seed);
-            // Use standard library Ed25519 - generate keypair from seed
-            var kp = try Ed25519.KeyPair.generateDeterministic(seed);
-            defer std.crypto.secureZero(u8, &kp.secret_key.bytes);
-            // Build TLS 1.3 signed content
-            var ts_buf: [512]u8 = undefined;
-            const to_sign = tls13_build_context_and_hash(alg, context, transcript_hash, &ts_buf);
-            // Sign the message
-            const sig = try kp.sign(to_sign, null);
-            // Return signature (Ed25519 signatures are always 64 bytes, no DER encoding)
-            const result = try alloc.alloc(u8, 64);
-            @memcpy(result, &sig.toBytes());
-            return result;
-        },
-        .ecdsa_secp256r1_sha256 => {
-            // Preferred: parse PKCS#8 -> ECPrivateKey -> scalar. Fallback to legacy pattern scan.
-            var sk: [32]u8 = undefined;
-            defer std.crypto.secureZero(u8, &sk);
-            traceSig("[SIG] Starting ECDSA P-256 signature, privkey_der len={d}\n", .{privkey_der.len});
-            if (parsePkcs8EcdsaP256PrivateKey(privkey_der, &sk)) |ok| {
-                _ = ok; // already written into sk
-                traceSigBytes("[SIG] Successfully parsed PKCS#8, scalar: ", &sk);
-            } else |err| switch (err) {
-                error.BadKey, error.Unsupported, error.Parse => {
-                    // Legacy heuristic fallback (scan for 0x04 0x20 <32-bytes>) used by early tests.
-                    if (privkey_der.len < 34) return error.BadKey;
-                    var idx: ?usize = null;
-                    var i: usize = 0;
-                    while (i + 34 <= privkey_der.len) : (i += 1) {
-                        if (privkey_der[i] == 0x04 and privkey_der[i + 1] == 0x20) {
-                            idx = i + 2;
-                            break;
-                        }
-                    }
-                    const off = idx orelse return error.BadKey;
-                    @memcpy(sk[0..], privkey_der[off .. off + 32]);
-                },
-            }
-            const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
-            // Build signing context content
-            var ts_buf: [512]u8 = undefined;
-            const to_sign = tls13_build_context_and_hash(alg, context, transcript_hash, &ts_buf);
-            traceSig("[SIG] Message to sign len={d}\n", .{to_sign.len});
-            const secret = try Ecdsa.SecretKey.fromBytes(sk);
-            const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret);
-            // Pass message then optional random noise (null => deterministic per RFC6979)
-            const signature = try key_pair.sign(to_sign, null);
-            traceSigBytes("[SIG] Generated signature r=", signature.r[0..8]);
-            traceSigBytes("[SIG] ..., s=", signature.s[0..8]);
+    // QUAL-341: Table-driven dispatch over SigAlg. Schemes without a
+    // signer (RSA-PSS, ECDSA P-384) surface error.Unsupported exactly as
+    // the prior inline switch's default arm did.
+    const entry = schemeEntry(alg);
+    const signer = entry.sign orelse return error.Unsupported;
+    return signer(privkey_der, context, transcript_hash, alloc);
+}
 
-            // Manually DER-encode (SEQUENCE { r INTEGER, s INTEGER }) per RFC 3279/5480
-            const r_full = signature.r; // [32]u8
-            const s_full = signature.s; // [32]u8
+// --- QUAL-341: Scheme-dispatch infrastructure ---------------------------------
+//
+// Each TLS 1.3 signature scheme is described by a SchemeEntry holding function
+// pointers for its verifier and (optionally) signer. verifyCertificateVerify
+// and signCertificateVerify look up the entry for the incoming `alg` and
+// dispatch; bit-exact behaviour with the pre-refactor inline switches is
+// preserved by lifting the original switch-arm bodies verbatim into the
+// verifyXxx / signXxx helpers below.
 
-            // Trim leading zeros but keep at least one byte
-            const r_trim = trimLeading(&r_full);
-            const s_trim = trimLeading(&s_full);
-            const r_need_pad: bool = (r_trim[0] & 0x80) != 0;
-            const s_need_pad: bool = (s_trim[0] & 0x80) != 0;
-            // Use @intFromBool to avoid comptime_int dependency on runtime control flow
-            const r_len: usize = r_trim.len + @intFromBool(r_need_pad);
-            const s_len: usize = s_trim.len + @intFromBool(s_need_pad);
-            const seq_len: usize = 2 + r_len + 2 + s_len; // INTEGER headers + values
-            if (seq_len + 2 >= 128) return error.Encode; // should never happen for P-256
-            var out = try alloc.alloc(u8, 2 + seq_len);
-            var o: usize = 0;
-            out[o] = 0x30;
-            o += 1; // SEQUENCE
-            out[o] = @intCast(seq_len);
-            o += 1;
-            out[o] = 0x02;
-            o += 1; // INTEGER r
-            out[o] = @intCast(r_len);
-            o += 1;
-            if (r_need_pad) {
-                out[o] = 0x00;
-                o += 1;
-            }
-            @memcpy(out[o .. o + r_trim.len], r_trim);
-            o += r_trim.len;
-            out[o] = 0x02;
-            o += 1; // INTEGER s
-            out[o] = @intCast(s_len);
-            o += 1;
-            if (s_need_pad) {
-                out[o] = 0x00;
-                o += 1;
-            }
-            @memcpy(out[o .. o + s_trim.len], s_trim);
-            o += s_trim.len;
-            // Security: Use explicit error handling instead of debug.assert
-            // (debug.assert is stripped in release builds, CWE-617)
-            if (o != out.len) return error.Encode;
-            return out;
-        },
-        else => return error.Unsupported,
+const VerifyFn = *const fn (
+    pubkey_spki_der: []const u8,
+    sig: []const u8,
+    context: []const u8,
+    transcript_hash: []const u8,
+    alloc: std.mem.Allocator,
+) anyerror!bool;
+
+const SignFn = *const fn (
+    privkey_der: []const u8,
+    context: []const u8,
+    transcript_hash: []const u8,
+    alloc: std.mem.Allocator,
+) anyerror![]u8;
+
+const SchemeEntry = struct {
+    alg: SigAlg,
+    verify: VerifyFn,
+    sign: ?SignFn,
+};
+
+const SCHEMES = [_]SchemeEntry{
+    .{ .alg = .ed25519, .verify = verifyEd25519, .sign = signEd25519 },
+    .{ .alg = .rsa_pss_sha256, .verify = verifyRsaPssSha256, .sign = null },
+    .{ .alg = .ecdsa_secp256r1_sha256, .verify = verifyEcdsaP256Sha256, .sign = signEcdsaP256Sha256 },
+    .{ .alg = .ecdsa_secp384r1_sha384, .verify = verifyEcdsaP384Sha384, .sign = null },
+};
+
+fn schemeEntry(alg: SigAlg) SchemeEntry {
+    // Small N=4 linear scan; the enum values are not guaranteed to be
+    // contiguous with the array order, so prefer an explicit lookup over
+    // @intFromEnum indexing.
+    for (SCHEMES) |entry| {
+        if (entry.alg == alg) return entry;
     }
+    // SigAlg is a closed enum; every variant is represented in SCHEMES.
+    unreachable;
+}
+
+// --- Per-scheme verifiers (bodies lifted verbatim from pre-refactor switch) ---
+
+fn verifyEd25519(
+    pubkey_spki_der: []const u8,
+    sig: []const u8,
+    context: []const u8,
+    transcript_hash: []const u8,
+    alloc: std.mem.Allocator,
+) anyerror!bool {
+    _ = alloc;
+    // Parse Ed25519 public key from SPKI
+    const pubkey_bytes = try parseEd25519Spki(pubkey_spki_der);
+    const pubkey = try Ed25519.PublicKey.fromBytes(pubkey_bytes);
+    // Build TLS 1.3 signed content
+    var sc_buf: [512]u8 = undefined;
+    const sc = tls13_build_context_and_hash(.ed25519, context, transcript_hash, &sc_buf);
+    // Verify Ed25519 signature
+    if (sig.len != 64) return false;
+    const signature = Ed25519.Signature.fromBytes(sig[0..64].*);
+    signature.verify(sc, pubkey) catch return false;
+    return true;
+}
+
+fn verifyRsaPssSha256(
+    pubkey_spki_der: []const u8,
+    sig: []const u8,
+    context: []const u8,
+    transcript_hash: []const u8,
+    alloc: std.mem.Allocator,
+) anyerror!bool {
+    // Build TLS 1.3 signed content: 64 spaces || context || 0x00 || transcript_hash
+    var sc_buf: [512]u8 = undefined;
+    const sc = tls13_build_context_and_hash(.rsa_pss_sha256, context, transcript_hash, &sc_buf);
+    return rsa_pss_verify_sha256(pubkey_spki_der, sc, sig, 32, alloc);
+}
+
+fn verifyEcdsaP256Sha256(
+    pubkey_spki_der: []const u8,
+    sig: []const u8,
+    context: []const u8,
+    transcript_hash: []const u8,
+    alloc: std.mem.Allocator,
+) anyerror!bool {
+    // Parse SPKI and use std.crypto ECDSA (P-256/SHA-256)
+    var spki = try parseEcdsaSpki(pubkey_spki_der, alloc);
+    defer spki.deinit();
+    if (!spki.curve_p256) return false;
+    const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
+    const signature = Ecdsa.Signature.fromDer(sig) catch return false;
+    const pubkey = Ecdsa.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
+    var sc_buf: [512]u8 = undefined;
+    const sc = tls13_build_context_and_hash(.ecdsa_secp256r1_sha256, context, transcript_hash, &sc_buf);
+    signature.verify(sc, pubkey) catch return false;
+    return true;
+}
+
+fn verifyEcdsaP384Sha384(
+    pubkey_spki_der: []const u8,
+    sig: []const u8,
+    context: []const u8,
+    transcript_hash: []const u8,
+    alloc: std.mem.Allocator,
+) anyerror!bool {
+    // Parse SPKI and use std.crypto ECDSA (P-384/SHA-384)
+    var spki = try parseEcdsaSpki(pubkey_spki_der, alloc);
+    defer spki.deinit();
+    if (spki.curve_p256) return false; // expect P-384
+    const Ecdsa384 = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, Sha384);
+    const signature = Ecdsa384.Signature.fromDer(sig) catch return false;
+    const pubkey = Ecdsa384.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
+    var sc_buf: [512]u8 = undefined;
+    const sc = tls13_build_context_and_hash(.ecdsa_secp384r1_sha384, context, transcript_hash, &sc_buf);
+    signature.verify(sc, pubkey) catch return false;
+    return true;
+}
+
+// --- Per-scheme signers (bodies lifted verbatim from pre-refactor switch) ----
+
+fn signEd25519(
+    privkey_der: []const u8,
+    context: []const u8,
+    transcript_hash: []const u8,
+    alloc: std.mem.Allocator,
+) anyerror![]u8 {
+    // Parse Ed25519 private key from PKCS#8
+    var seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
+    defer std.crypto.secureZero(u8, &seed);
+    // Use standard library Ed25519 - generate keypair from seed
+    var kp = try Ed25519.KeyPair.generateDeterministic(seed);
+    defer std.crypto.secureZero(u8, &kp.secret_key.bytes);
+    // Build TLS 1.3 signed content
+    var ts_buf: [512]u8 = undefined;
+    const to_sign = tls13_build_context_and_hash(.ed25519, context, transcript_hash, &ts_buf);
+    // Sign the message
+    const sig = try kp.sign(to_sign, null);
+    // Return signature (Ed25519 signatures are always 64 bytes, no DER encoding)
+    const result = try alloc.alloc(u8, 64);
+    @memcpy(result, &sig.toBytes());
+    return result;
+}
+
+fn signEcdsaP256Sha256(
+    privkey_der: []const u8,
+    context: []const u8,
+    transcript_hash: []const u8,
+    alloc: std.mem.Allocator,
+) anyerror![]u8 {
+    // Preferred: parse PKCS#8 -> ECPrivateKey -> scalar. Fallback to legacy pattern scan.
+    var sk: [32]u8 = undefined;
+    defer std.crypto.secureZero(u8, &sk);
+    traceSig("[SIG] Starting ECDSA P-256 signature, privkey_der len={d}\n", .{privkey_der.len});
+    if (parsePkcs8EcdsaP256PrivateKey(privkey_der, &sk)) |ok| {
+        _ = ok; // already written into sk
+        traceSigBytes("[SIG] Successfully parsed PKCS#8, scalar: ", &sk);
+    } else |err| switch (err) {
+        error.BadKey, error.Unsupported, error.Parse => {
+            // Legacy heuristic fallback (scan for 0x04 0x20 <32-bytes>) used by early tests.
+            if (privkey_der.len < 34) return error.BadKey;
+            var idx: ?usize = null;
+            var i: usize = 0;
+            while (i + 34 <= privkey_der.len) : (i += 1) {
+                if (privkey_der[i] == 0x04 and privkey_der[i + 1] == 0x20) {
+                    idx = i + 2;
+                    break;
+                }
+            }
+            const off = idx orelse return error.BadKey;
+            @memcpy(sk[0..], privkey_der[off .. off + 32]);
+        },
+    }
+    const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
+    // Build signing context content
+    var ts_buf: [512]u8 = undefined;
+    const to_sign = tls13_build_context_and_hash(.ecdsa_secp256r1_sha256, context, transcript_hash, &ts_buf);
+    traceSig("[SIG] Message to sign len={d}\n", .{to_sign.len});
+    const secret = try Ecdsa.SecretKey.fromBytes(sk);
+    const key_pair = try Ecdsa.KeyPair.fromSecretKey(secret);
+    // Pass message then optional random noise (null => deterministic per RFC6979)
+    const signature = try key_pair.sign(to_sign, null);
+    traceSigBytes("[SIG] Generated signature r=", signature.r[0..8]);
+    traceSigBytes("[SIG] ..., s=", signature.s[0..8]);
+
+    // Manually DER-encode (SEQUENCE { r INTEGER, s INTEGER }) per RFC 3279/5480
+    const r_full = signature.r; // [32]u8
+    const s_full = signature.s; // [32]u8
+
+    // Trim leading zeros but keep at least one byte
+    const r_trim = trimLeading(&r_full);
+    const s_trim = trimLeading(&s_full);
+    const r_need_pad: bool = (r_trim[0] & 0x80) != 0;
+    const s_need_pad: bool = (s_trim[0] & 0x80) != 0;
+    // Use @intFromBool to avoid comptime_int dependency on runtime control flow
+    const r_len: usize = r_trim.len + @intFromBool(r_need_pad);
+    const s_len: usize = s_trim.len + @intFromBool(s_need_pad);
+    const seq_len: usize = 2 + r_len + 2 + s_len; // INTEGER headers + values
+    if (seq_len + 2 >= 128) return error.Encode; // should never happen for P-256
+    var out = try alloc.alloc(u8, 2 + seq_len);
+    var o: usize = 0;
+    out[o] = 0x30;
+    o += 1; // SEQUENCE
+    out[o] = @intCast(seq_len);
+    o += 1;
+    out[o] = 0x02;
+    o += 1; // INTEGER r
+    out[o] = @intCast(r_len);
+    o += 1;
+    if (r_need_pad) {
+        out[o] = 0x00;
+        o += 1;
+    }
+    @memcpy(out[o .. o + r_trim.len], r_trim);
+    o += r_trim.len;
+    out[o] = 0x02;
+    o += 1; // INTEGER s
+    out[o] = @intCast(s_len);
+    o += 1;
+    if (s_need_pad) {
+        out[o] = 0x00;
+        o += 1;
+    }
+    @memcpy(out[o .. o + s_trim.len], s_trim);
+    o += s_trim.len;
+    // Security: Use explicit error handling instead of debug.assert
+    // (debug.assert is stripped in release builds, CWE-617)
+    if (o != out.len) return error.Encode;
+    return out;
 }
 
 fn trimLeading(x: []const u8) []const u8 {
