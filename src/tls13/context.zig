@@ -76,6 +76,8 @@ const cookie_mod = @import("messages/extensions/cookie.zig");
 const cipher_negotiation = @import("context/cipher_negotiation.zig");
 // QUAL-317: pure server-side ALPN selection helper.
 const alpn_selection = @import("context/alpn_selection.zig");
+// QUAL-317: pure ServerHello byte parsers (supported_versions, pre_shared_key).
+const server_hello_parsers = @import("context/server_hello_parsers.zig");
 
 // Note: ApiError and HandshakeError are now imported from types.zig (canonical source).
 // TrafficDirection, BidirSecrets, etc. remain defined here pending further extraction.
@@ -3011,140 +3013,13 @@ pub const Context = struct {
     }
 };
 
-/// Validate the supported_versions extension in a ServerHello extensions block.
-///
-/// RFC 8446 Section 4.2.1: The ServerHello MUST contain a supported_versions
-/// extension with the selected version set to 0x0304 (TLS 1.3).
-///
-/// This function is used by tests to validate the same logic implemented
-/// inline in Context.handleServerHello. It scans the extensions starting at
-/// the given offset within the body and checks:
-///   - The supported_versions extension (0x002B) is present
-///   - Its data is exactly 2 bytes (selected version)
-///   - The selected version is 0x0304 (TLS 1.3)
-///
-/// Returns the selected version if valid, or an error otherwise.
-fn validateServerHelloSupportedVersions(body: []const u8, ext_start: usize, exts_len: usize) HandshakeError!u16 {
-    var pos = ext_start;
-    const exts_end = ext_start + exts_len;
-    if (exts_end > body.len) return HandshakeError.UnexpectedMessage;
-
-    var found = false;
-    var version: u16 = 0;
-    while (pos + 4 <= exts_end) {
-        const etype = readU16(body[pos .. pos + 2]);
-        const elen: usize = readU16(body[pos + 2 .. pos + 4]);
-        pos += 4;
-        if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
-        if (etype == @intFromEnum(tls13_full.ExtensionType.supported_versions)) {
-            if (elen != 2) return HandshakeError.UnsupportedVersion;
-            version = readU16(body[pos .. pos + 2]);
-            if (version != 0x0304) return HandshakeError.UnsupportedVersion;
-            found = true;
-        }
-        pos += elen;
-    }
-    if (!found) return HandshakeError.UnsupportedVersion;
-    return version;
-}
-
-test "RFC 8446 §4.2.1: ServerHello supported_versions=0x0304 is accepted" {
-    // Build a minimal extensions block with supported_versions=0x0304 and key_share
-    var exts: [50]u8 = [_]u8{0} ** 50;
-    // supported_versions: type=0x002b, len=0x0002, value=0x0304
-    exts[0] = 0x00;
-    exts[1] = 0x2b;
-    exts[2] = 0x00;
-    exts[3] = 0x02;
-    exts[4] = 0x03;
-    exts[5] = 0x04;
-
-    const version = try validateServerHelloSupportedVersions(&exts, 0, 6);
-    try std.testing.expectEqual(@as(u16, 0x0304), version);
-}
-
-test "RFC 8446 §4.2.1: ServerHello missing supported_versions returns error" {
-    // Build extensions block with only key_share (0x0033), no supported_versions
-    var exts: [44]u8 = [_]u8{0} ** 44;
-    // key_share: type=0x0033, len=0x0024 (36 bytes), group=0x001d, klen=0x0020, key=32 zeros
-    exts[0] = 0x00;
-    exts[1] = 0x33;
-    exts[2] = 0x00;
-    exts[3] = 0x24;
-    exts[4] = 0x00;
-    exts[5] = 0x1d;
-    exts[6] = 0x00;
-    exts[7] = 0x20;
-    // key data is already zeroed
-
-    const result = validateServerHelloSupportedVersions(&exts, 0, 40);
-    try std.testing.expectError(HandshakeError.UnsupportedVersion, result);
-}
-
-test "RFC 8446 §4.2.1: ServerHello supported_versions with non-TLS-1.3 version returns error" {
-    // Build extensions block with supported_versions=0x0303 (TLS 1.2)
-    var exts: [6]u8 = [_]u8{0} ** 6;
-    exts[0] = 0x00;
-    exts[1] = 0x2b;
-    exts[2] = 0x00;
-    exts[3] = 0x02;
-    exts[4] = 0x03;
-    exts[5] = 0x03; // TLS 1.2
-
-    const result = validateServerHelloSupportedVersions(&exts, 0, 6);
-    try std.testing.expectError(HandshakeError.UnsupportedVersion, result);
-}
-
-test "RFC 8446 §4.2.1: ServerHello supported_versions with wrong length returns error" {
-    // Build extensions block with supported_versions with 3-byte data (invalid)
-    var exts: [7]u8 = [_]u8{0} ** 7;
-    exts[0] = 0x00;
-    exts[1] = 0x2b;
-    exts[2] = 0x00;
-    exts[3] = 0x03; // wrong length (should be 2)
-    exts[4] = 0x03;
-    exts[5] = 0x04;
-    exts[6] = 0x00;
-
-    const result = validateServerHelloSupportedVersions(&exts, 0, 7);
-    try std.testing.expectError(HandshakeError.UnsupportedVersion, result);
-}
-
 // ============================================================================
 // PSK Extension Round-Trip Tests (GAP-001/GAP-002)
 // ============================================================================
-
-/// Parse pre_shared_key extension from a ServerHello body.
-/// Returns the selected PSK identity index if found, null otherwise.
-/// This mirrors the parsing logic in handleServerHello for testability.
-fn parseServerHelloPskExtension(body: []const u8) !?u16 {
-    if (body.len < 2 + 32 + 1) return HandshakeError.UnexpectedMessage;
-    var pos: usize = 2 + 32; // skip legacy_version + random
-    if (pos >= body.len) return HandshakeError.UnexpectedMessage;
-    const sid_len: usize = body[pos];
-    pos += 1 + sid_len;
-    if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
-    pos += 2; // cipher_suite
-    pos += 1; // compression
-    if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
-    const exts_len: usize = readU16(body[pos .. pos + 2]);
-    pos += 2;
-    if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
-    const exts_end = pos + exts_len;
-    var selected_psk_index: ?u16 = null;
-    while (pos + 4 <= exts_end) {
-        const etype = readU16(body[pos .. pos + 2]);
-        const elen: usize = readU16(body[pos + 2 .. pos + 4]);
-        pos += 4;
-        if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
-        if (etype == @intFromEnum(tls13_full.ExtensionType.pre_shared_key)) {
-            if (elen != 2) return HandshakeError.UnexpectedMessage;
-            selected_psk_index = readU16(body[pos .. pos + 2]);
-        }
-        pos += elen;
-    }
-    return selected_psk_index;
-}
+//
+// QUAL-317: supported_versions / PSK pure-byte parsers moved to
+// src/tls13/context/server_hello_parsers.zig. The integration tests below
+// still live here because they exercise tls13_full.buildServerHello end-to-end.
 
 test "RFC 8446 §4.2.11: ServerHello with PSK extension round-trip" {
     // Build a ServerHello WITH PSK extension, then parse it back
@@ -3166,7 +3041,7 @@ test "RFC 8446 §4.2.11: ServerHello with PSK extension round-trip" {
     defer allocator.free(sh);
 
     // Parse and verify PSK extension is present with correct index
-    const psk_idx = try parseServerHelloPskExtension(sh);
+    const psk_idx = try server_hello_parsers.parsePskExtension(sh);
     try std.testing.expect(psk_idx != null);
     try std.testing.expectEqual(@as(u16, 0), psk_idx.?);
 }
@@ -3191,7 +3066,7 @@ test "RFC 8446 §4.2.11: ServerHello without PSK extension returns null" {
     defer allocator.free(sh);
 
     // Parse and verify PSK extension is NOT present
-    const psk_idx = try parseServerHelloPskExtension(sh);
+    const psk_idx = try server_hello_parsers.parsePskExtension(sh);
     try std.testing.expect(psk_idx == null);
 }
 
@@ -3242,7 +3117,7 @@ test "RFC 8446 §4.2.11: ServerHello PSK index non-zero round-trip" {
     );
     defer allocator.free(sh);
 
-    const psk_idx = try parseServerHelloPskExtension(sh);
+    const psk_idx = try server_hello_parsers.parsePskExtension(sh);
     try std.testing.expect(psk_idx != null);
     try std.testing.expectEqual(@as(u16, 5), psk_idx.?);
 }
