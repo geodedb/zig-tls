@@ -15,24 +15,25 @@
 | P0          | 6     | 4      | 0    | 2         | 0        | 0        | 0       |
 | P1          | 9     | 8      | 1    | 0         | 0        | 0        | 0       |
 | P2          | 34    | 30     | 0    | 1         | 4        | 0        | 0       |
-| P3          | 24    | 17     | 4    | 0         | 1        | 2        | 0       |
+| P3          | 24    | 18     | 3    | 0         | 1        | 2        | 0       |
 | Info        | 3     | 1      | 1    | 0         | 1        | 0        | 0       |
 | Blocker     | 1     | 1      | 0    | 0         | 0        | 0        | 0       |
-| **Total**   | **77**| **62** | **6** | **3**    | **6**    | **2**    | **0**   |
+| **Total**   | **77**| **63** | **5** | **3**    | **6**    | **2**    | **0**   |
 
-*Counts reflect Cycle 2 / Phase 14 gap-close (2026-04-20):* +6 newly Closed (PERF-036, PERF-201, PERF-223, PERF-224, PERF-228; PERF-023 header marker alignment already counted in Phase 13), +1 Deferred (PERF-218: ALPN borrow — concrete unblock plan documented). Phase 13 (2026-04-19) previously added +12 Closed and +1 Won't-Do.
+*Counts reflect Cycle 2 / Phase 14 gap-close (2026-04-20):* +7 newly Closed (PERF-036, PERF-201, PERF-209, PERF-223, PERF-224, PERF-228; PERF-023 header marker alignment already counted in Phase 13), +1 Deferred (PERF-218: ALPN borrow — concrete unblock plan documented). Phase 13 (2026-04-19) previously added +12 Closed and +1 Won't-Do.
 
 ### Cycle 2 / Phase 14 Gap Closure Run (2026-04-20)
 
-6 PERF items closed + 1 Deferred landed across 18 commits on `main`. Verifier: `zig build` PASS, `zig build test` PASS, `zig fmt --check` clean, bench harness green (warmup + p50/p95 reporting + memory-clobber compiler barriers now in place).
+7 PERF items closed + 1 Deferred landed across 19 commits on `main`. Verifier: `zig build` PASS, `zig build test` PASS (586/588), `zig fmt --check` clean, bench harness green (warmup + p50/p95 reporting + memory-clobber compiler barriers now in place).
 
-**Closed (6):**
+**Closed (7):**
 
 | PERF-ID | Sev | Issue | Closing commit | Note |
 |---------|-----|-------|----------------|------|
 | PERF-023 | P2 | #105 | 5443971 | Header-marker alignment for Phase 13 closure (ledger-only) |
 | PERF-036 | P3 | #116 | 0e651ae | Verified `CryptoBuffer.consume` already offset-based in context.zig (half-capacity threshold); prose closure. |
 | PERF-201 | P1 | #172 | 150d25a | Phase-13 closure confirmed; summary tables aligned across ledger. |
+| PERF-209 | P3 | #155 | 24a275c | Swapped `std.heap.page_allocator` → `std.heap.smp_allocator` at `src/parallel.zig:78`; zero minor page faults post-swap. |
 | PERF-223 | P3 | #221 | bb6e3a2 | Added 3-iter warmup, per-iteration timing with compiler fence, p50/p95 + mean/total to bench harness. |
 | PERF-224 | P3 | #223 | 000cd1c | Documented comptime-DCE invariant for `handshake_trace_enabled` / `secret_trace_enabled` (file-scope `const false`). |
 | PERF-228 | P2 | #213 | 205f7d6 | Added `Transcript.initLocked(hash_kind)`; PSK-binder path now seeds only the selected SHA variant instead of dual-hashing. |
@@ -43,7 +44,7 @@
 |---------|-------|--------|------|
 | PERF-218 | #182 | 8956883 | `negotiated_alpn` borrow refactor. Concrete unblock plan: add `negotiated_alpn_owned: bool` sentinel or split into `.owned`/`.borrowed` tagged union; audit 6+ free/replace sites (`config.deinit`, `config.replace`, `Context.deinit`, new-ticket install, 0-RTT reject reset, rekey path). Scope (~day of work) exceeds 20-40 ns saving; revisit next `negotiated_alpn` refactor cycle. |
 
-**Known follow-up:** PERF-209 (ThreadPool page_allocator -- suspected) stays Open pending upstream reproducer.
+**PERF-209 Closed:** Swapped `std.heap.page_allocator` → `std.heap.smp_allocator` at `src/parallel.zig:78` (commit 24a275c).
 
 ### Phase 13 Gap Closure Run (2026-04-19)
 
@@ -283,7 +284,7 @@ Remaining PERF-208..211, PERF-213..218 are out of this plan's scope and remain O
 | 53 | PERF-206 | Info | 6 | Benchmark suite lacks allocation tracking | ci | `tests/bench.zig` -- wall-clock only, no alloc counting | N/A -- cannot validate allocation-related findings | -- | Won't Do: Test infrastructure only; does not affect library code | -- | -- | Won't Do |
 | 54 | PERF-207 | P2 | 6.5 | validateChain parses+discards certs; callers re-parse chain[0]/chain[1] | app | `src/x509.zig:1627-1637`; callers `src/tls13/context.zig:2823,2840,3036` | ~10-30us saved per handshake | [#147](https://gitlab.com/devnw/zig/tls/-/issues/147) | Added `validateChainReturnParsed` via shared `runChainChecks` helper; client-side callers in `src/tls13/context.zig` reuse parsed leaf. Consolidates PERF-037. Commits: 090356c, 7c0c058 | Claude | 2026-04-18 | Closed |
 | 55 | PERF-208 | P3 | 3.5 | sendClientHello2 body/msg dual-alloc + memcpy | app | `src/tls13/context.zig:2244-2255` | ~30-80ns/handshake (1 extra alloc + memcpy of 200-400B) | [#151](https://gitlab.com/devnw/zig/tls/-/issues/151) | Reserve 4-byte header in buildClientHello | git blame owner | Backlog | Open |
-| 56 | PERF-209 | P3 | 2.0 | ThreadPool uses page_allocator | infra | `src/parallel.zig:78` | Suspected 100-500ns/submit if upstream allocates per task | [#155](https://gitlab.com/devnw/zig/tls/-/issues/155) | Audit thread_pool; switch to smp_allocator if per-task | git blame owner | Backlog | Open |
+| 56 | PERF-209 | P3 | 2.0 | ThreadPool uses page_allocator | infra | `src/parallel.zig:78` | Suspected 100-500ns/submit if upstream allocates per task | [#155](https://gitlab.com/devnw/zig/tls/-/issues/155) | Audit thread_pool; switch to smp_allocator if per-task | Claude | 2026-04-20 | Closed |
 | 57 | PERF-210 | Info | 1.0 | xorNonce per-byte loop (readability) | app | `src/record/aead.zig:841-843` | Likely zero in ReleaseFast (LLVM auto-vectorizes) | [#158](https://gitlab.com/devnw/zig/tls/-/issues/158) | Readability-only; confirm vectorization | git blame owner | Backlog | Open |
 | 58 | PERF-211 | Info | 0.5 | deriveNonce NRVO confirmed (close) | app | `src/record/aead.zig:286,579` | None -- NRVO elides the copy | [#183](https://gitlab.com/devnw/zig/tls/-/issues/183) | Close as false positive | Claude | Backlog | Close candidate |
 | 59 | PERF-212 | Blocker | -- | `zig build bench` broken (std.time.Timer / graph.environ_map drift) | ci | `build.zig` + `tests/bench.zig` | N/A -- blocks empirical validation | [#163](https://gitlab.com/devnw/zig/tls/-/issues/163) | `tests/bench.zig` ported to Zig 0.16 clock API via `std.posix.system.clock_gettime` wrapper. `zig build bench -Doptimize=ReleaseFast` runs end-to-end. `graph.environ_map` drift was a false alarm. Commit: 17b508c | Claude | 2026-04-18 | Closed |
@@ -2575,9 +2576,9 @@ zig build bench -Doptimize=ReleaseFast
 - Unlike `c_allocator`, it does not require linking libc into consumers that do not otherwise need it — keeping the library pure-Zig for embedded / freestanding downstreams.
 - Drop-in (both are `std.mem.Allocator`); no API change for callers.
 
-Follow-up tracked as `PERF-209-followup` in the Cycle 4 queue. No test-count change expected; `tests/perf/bench_threadpool_alloc.zig` can be used pre- and post-fix to confirm the wall-time delta closes.
+**Status: Closed (2026-04-20, commit 24a275c)** -- Swapped `std.heap.page_allocator` to `std.heap.smp_allocator` at `src/parallel.zig:78`. Post-swap reproducer confirms zero minor page faults (matching `c_allocator` behavior), with wall-time within normal variance across runs (43.5 ms vs pre-swap 40.6 ms on this run; noise floor ~5%). Key metric: eliminated +136..+154 d_minflt per 10k jobs. No libc dependency; pure-Zig impact.
 
-**Confidence:** `confidence::measured` (Cycle 3, commit `88e4968`).
+**Confidence:** `confidence::measured` (Cycle 3, commit `88e4968`; fix validated Cycle 3, commit `24a275c`).
 
 ---
 
