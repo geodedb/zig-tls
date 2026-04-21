@@ -31,6 +31,7 @@ const std = @import("std");
 const tls13_full = @import("tls13_full");
 const sct = @import("sct");
 const zero_rtt = @import("zero_rtt");
+const x509 = @import("x509");
 
 // Import types from modularized tls13 package
 const types = @import("types.zig");
@@ -310,23 +311,25 @@ pub const Config = struct {
     /// **Default:** null (no SNI extension; hostname validation skipped).
     server_name: ?[]const u8 = null,
 
-    /// Skip certificate validation for testing purposes.
-    /// **WARNING**: Setting this to true disables ALL certificate validation!
-    /// Only use for testing with self-signed certificates.
+    /// SEC-077: Certificate-validation mode. Defaults to full validation.
+    /// To use `.testing_only_i_know_what_i_am_doing`, the library must be
+    /// built with `-Dtls-insecure-testing=true`; otherwise a runtime panic
+    /// fires on any handshake that traverses cert validation.
     ///
     /// **Role:** Both (affects validation of peer's certificate).
     ///
-    /// When true:
+    /// When `.testing_only_i_know_what_i_am_doing`:
     /// - Certificate chain validation is skipped
     /// - Hostname/SNI validation is skipped
     /// - Expiry checks are skipped
     /// - EKU and KeyUsage checks are skipped
     ///
-    /// **Security:** This is a **DANGEROUS** option. In release builds,
-    /// `setAllowInsecure` will `@panic` to prevent accidental use.
+    /// **Security:** This is a **DANGEROUS** option. Production builds
+    /// (where `-Dtls-insecure-testing` is absent / false) will `@panic`
+    /// if this variant reaches chain validation, preventing accidental use.
     ///
-    /// **Default:** false (full validation required).
-    allow_insecure: bool = false,
+    /// **Default:** `.secure` (full validation required).
+    allow_insecure: x509.InsecureValidation = .secure,
 
     /// Server: request client certificate during handshake (RFC 8446 §4.3.2).
     /// When true, the server sends a CertificateRequest message after

@@ -144,8 +144,12 @@ fn captureOne(buf: *std.ArrayList(u8), gpa: std.mem.Allocator, input: []const u8
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Client role + allow_insecure + zero-length transport_parameters gives
+    // Client role + insecure sentinel + zero-length transport_parameters gives
     // a Context that passes `init()` without needing a real cert/key.
+    // SEC-077: sentinel value only; this harness never reaches cert validation,
+    // so the -Dtls-insecure-testing build gate never trips. If a future
+    // change drives processCrypto to Certificate handling, add a
+    // build_options.tls_insecure_testing guard at harness entry.
     const tp_bytes: []const u8 = &[_]u8{};
     const config = tls13.Config{
         .allocator = alloc,
@@ -154,7 +158,7 @@ fn captureOne(buf: *std.ArrayList(u8), gpa: std.mem.Allocator, input: []const u8
         .supported_groups = &.{tls13_full.NamedGroup.x25519},
         .supported_signature_schemes = &.{tls13_full.SignatureScheme.ed25519},
         .quic_transport_parameters = tp_bytes,
-        .allow_insecure = true,
+        .allow_insecure = .testing_only_i_know_what_i_am_doing,
     };
 
     var ctx = tls13.Context.init(config, .{}) catch |e| {

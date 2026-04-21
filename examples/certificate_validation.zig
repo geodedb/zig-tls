@@ -120,7 +120,7 @@ pub fn main() !void {
     // =========================================================================
     std.debug.print("5. Certificate Chain Validation Flow\n\n", .{});
 
-    std.debug.print("   validateChain(chain_der, now_unix, server_name, allow_insecure)\n\n", .{});
+    std.debug.print("   validateChain(chain_der, now_unix, server_name, insecure)\n\n", .{});
 
     std.debug.print("   Validation steps:\n", .{});
     std.debug.print("     1. Parse all certificates in chain\n", .{});
@@ -191,7 +191,7 @@ pub fn main() !void {
     std.debug.print("       &chain_der,\n", .{});
     std.debug.print("       now,\n", .{});
     std.debug.print("       \"example.com\",  // from SNI\n", .{});
-    std.debug.print("       false,            // allow_insecure = false in production!\n", .{});
+    std.debug.print("       .secure,          // InsecureValidation.secure = full validation\n", .{});
     std.debug.print("   ) catch |err| {{\n", .{});
     std.debug.print("       // Send appropriate TLS alert\n", .{});
     std.debug.print("       return sendAlert(.certificate_unknown);\n", .{});

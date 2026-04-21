@@ -7,8 +7,13 @@
 const std = @import("std");
 const counting = @import("counting_allocator");
 const x509 = @import("x509");
+// SEC-077: build-gated insecure sentinel.
+const build_options = @import("build_options");
 
 test "PERF-207: validateChainReturnParsed returns leaf without caller re-parse" {
+    // SEC-077: uses the insecure sentinel; skip unless the flag is set.
+    if (!build_options.tls_insecure_testing) return error.SkipZigTest;
+
     const base = std.testing.allocator;
 
     // Self-signed ed25519 leaf. Fixture is mirrored from tests/test_certs/
@@ -25,7 +30,7 @@ test "PERF-207: validateChainReturnParsed returns leaf without caller re-parse" 
         chain,
         now_unix,
         "", // empty server_name: skip hostname check
-        true, // allow_insecure: self-signed without trust store
+        .testing_only_i_know_what_i_am_doing, // self-signed w/o trust store
         x509.EkuPurpose.server_auth,
         null,
     );

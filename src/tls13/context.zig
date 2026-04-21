@@ -2506,10 +2506,12 @@ pub const Context = struct {
         // Get current time for certificate validity checking
         const now_unix = unixTimestamp();
 
-        // SEC-029: Require server_name for hostname validation unless allow_insecure.
-        // Without a server_name, any valid cert from any CA would be accepted (MITM risk).
-        if (self.config.server_name == null and !self.config.allow_insecure) {
-            traceHandshake("Client: ERROR - server_name is null and allow_insecure is false\\n", .{});
+        // SEC-029: Require server_name for hostname validation unless insecure
+        // mode is selected. Without a server_name, any valid cert from any CA
+        // would be accepted (MITM risk). SEC-077: the insecure path is also
+        // build-gated in x509.validateChainReturnParsed below.
+        if (self.config.server_name == null and self.config.allow_insecure == .secure) {
+            traceHandshake("Client: ERROR - server_name is null and insecure mode is not set\\n", .{});
             return HandshakeError.MissingServerName;
         }
 
@@ -2543,7 +2545,7 @@ pub const Context = struct {
         // RFC 8446 §4.4.3: Verify CertificateVerify signature
         // Both OCSP validation and signature verification need the parsed leaf cert,
         // so we consolidate into a single block to avoid redundant parsing.
-        if (!self.config.allow_insecure) {
+        if (self.config.allow_insecure == .secure) {
             // PERF-037/PERF-207: leaf_parsed is reused for OCSP validation and
             // CertificateVerify signature verification below.
             if (self.config.require_ocsp) {
@@ -2645,7 +2647,7 @@ pub const Context = struct {
 
             traceHandshake("Client: Certificate chain validated and CertificateVerify signature verified\\n", .{});
         } else {
-            traceHandshake("Client: Certificate validation skipped (allow_insecure=true)\\n", .{});
+            traceHandshake("Client: Certificate validation skipped (insecure testing mode)\\n", .{});
         }
     }
 
@@ -2696,7 +2698,7 @@ pub const Context = struct {
         const chain = self.peer_cert_chain orelse return HandshakeError.MissingCertificate;
         if (chain.len == 0) return HandshakeError.MissingCertificate;
 
-        if (!self.config.allow_insecure) {
+        if (self.config.allow_insecure == .secure) {
             // RFC 5280 §6: Validate client certificate chain
             // Skip hostname validation for client certs (no SNI to match against)
             const now_unix = unixTimestamp();
@@ -2708,7 +2710,7 @@ pub const Context = struct {
                 chain,
                 now_unix,
                 "", // No hostname validation for client certs
-                false, // Don't skip validation
+                .secure, // SEC-077: full validation for client auth path
                 .client_auth,
                 self.cached_trust_store,
             ) catch |err| {
@@ -2741,7 +2743,7 @@ pub const Context = struct {
 
             traceHandshake("Server: Client certificate validated and CertificateVerify verified\n", .{});
         } else {
-            traceHandshake("Server: Client certificate validation skipped (allow_insecure=true)\n", .{});
+            traceHandshake("Server: Client certificate validation skipped (insecure testing mode)\n", .{});
         }
     }
 
@@ -2994,7 +2996,7 @@ test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
         .supported_groups = &.{tls13_full.NamedGroup.x25519},
         .supported_signature_schemes = &.{tls13_full.SignatureScheme.ed25519},
         .quic_transport_parameters = tp_bytes,
-        .allow_insecure = true,
+        .allow_insecure = .testing_only_i_know_what_i_am_doing,
     };
     _ = &config;
 
@@ -3059,7 +3061,7 @@ test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
         .supported_groups = &.{tls13_full.NamedGroup.x25519},
         .supported_signature_schemes = &.{tls13_full.SignatureScheme.ed25519},
         .quic_transport_parameters = tp_bytes,
-        .allow_insecure = true,
+        .allow_insecure = .testing_only_i_know_what_i_am_doing,
     };
     _ = &config;
 
@@ -3105,7 +3107,7 @@ test "QUAL-099: HRR transcript manipulation preserves integrity" {
         .supported_groups = &.{tls13_full.NamedGroup.x25519},
         .supported_signature_schemes = &.{tls13_full.SignatureScheme.ed25519},
         .quic_transport_parameters = tp_bytes,
-        .allow_insecure = true,
+        .allow_insecure = .testing_only_i_know_what_i_am_doing,
     };
     _ = &config;
 
@@ -3170,7 +3172,7 @@ test "QUAL-346: installHandshakeTrafficPair rolls back send slot on recv failure
         .supported_groups = &.{tls13_full.NamedGroup.x25519},
         .supported_signature_schemes = &.{tls13_full.SignatureScheme.ed25519},
         .quic_transport_parameters = tp_bytes,
-        .allow_insecure = true,
+        .allow_insecure = .testing_only_i_know_what_i_am_doing,
     };
 
     var ctx = try Context.init(config, .{

@@ -17,6 +17,9 @@ const x509 = @import("x509");
 const asn1 = @import("asn1");
 const sigmod = @import("sig");
 const test_utils = @import("test_utils");
+// SEC-077: the insecure-bypass test skips itself when
+// -Dtls-insecure-testing=true is not set, so the panic gate doesn't fire.
+const build_options = @import("build_options");
 
 // ============================================================================
 // Helper Functions
@@ -559,7 +562,7 @@ test "validateChain - expired certificate rejection" {
             &chain,
             @intCast(now),
             "ed25519.example.com",
-            false, // allow_insecure
+            .secure, // SEC-077: full validation
             .server_auth,
         ),
     );
@@ -579,7 +582,7 @@ test "validateChain - missing trust store rejects chain" {
         &chain,
         @intCast(now),
         "",
-        false,
+        .secure,
         .server_auth,
     );
     try testing.expectError(error.UntrustedRoot, result);
@@ -610,13 +613,15 @@ test "validateChain - trust store accepts root" {
         &chain,
         @intCast(now),
         "",
-        false,
+        .secure,
         .server_auth,
     );
 }
 
-test "validateChain - allow_insecure bypass" {
-    // Test that allow_insecure=true skips all validation
+test "validateChain - insecure bypass" {
+    // SEC-077: Test that .testing_only_i_know_what_i_am_doing skips validation.
+    // Requires -Dtls-insecure-testing=true; otherwise the gate panics.
+    if (!build_options.tls_insecure_testing) return error.SkipZigTest;
     const cert_hex = "308201893082013ba003020102021420dfbb8852a7114369616dac435570bb72705c1c300506032b6570303a311c301a06035504030c13656432353531392e6578616d706c652e636f6d310d300b060355040a0c0454657374310b3009060355040613025553301e170d3235313130363134313331345a170d3335313130343134313331345a303a311c301a06035504030c13656432353531392e6578616d706c652e636f6d310d300b060355040a0c0454657374310b3009060355040613025553302a300506032b657003210031f99a615d25bf4303b30463f4cbfff4f0213b4c661a69b86cbbce52aa792db8a3533051301d0603551d0e04160414d5391a5fa777855dea8251fcbe4629a70e9e1987301f0603551d23041830168014d5391a5fa777855dea8251fcbe4629a70e9e1987300f0603551d130101ff040530030101ff300506032b6570034100770d719a2b5ed56616d398830e92af4f6fbeeedcdc4f03b74d9679bb90090f5583738eb147352de491ebfdc928f84af6e917c272b3e186f0d7f389daef08460a";
 
     var cert_der: [397]u8 = undefined;
@@ -625,13 +630,13 @@ test "validateChain - allow_insecure bypass" {
     const chain = [_][]const u8{&cert_der};
     const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
-    // Should succeed even with wrong name when allow_insecure=true
+    // Should succeed even with wrong name when the insecure sentinel is used.
     try x509.validateChain(
         testing.allocator,
         &chain,
         @intCast(now),
         "wrong.name.com", // Wrong name
-        true, // allow_insecure
+        .testing_only_i_know_what_i_am_doing, // SEC-077 (build-gated)
         .server_auth,
     );
 }
@@ -840,7 +845,7 @@ test "SEC-030: self-signed cert with wrong hostname is rejected" {
         &chain,
         @intCast(now),
         "wrong.example.com", // Wrong hostname
-        false,
+        .secure,
         .server_auth,
     );
     try testing.expectError(error.NameMismatch, result);
@@ -871,7 +876,7 @@ test "SEC-030: self-signed cert with correct hostname is accepted" {
         &chain,
         @intCast(now),
         "ed25519.example.com",
-        false,
+        .secure,
         .server_auth,
     );
 }
@@ -911,7 +916,7 @@ test "SEC-031: validateChain checks client_auth EKU when purpose is client_auth"
         &chain,
         @intCast(now),
         "", // No hostname for client certs
-        false,
+        .secure,
         .client_auth,
     );
 }

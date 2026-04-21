@@ -30,7 +30,7 @@ test "RFC 5280 §6: validateChain rejects empty chain" {
         empty_chain,
         1_700_000_000,
         "example.com",
-        false,
+        .secure,
         .server_auth,
     );
     if (result) |_| return error.UnexpectedSuccess else |_| {}
@@ -49,7 +49,7 @@ test "RFC 5280 §6: validateChain rejects excessive depth" {
         &blobs,
         1_700_000_000,
         "example.com",
-        false,
+        .secure,
         .server_auth,
     );
     // Contract: does not silently succeed.
@@ -69,7 +69,7 @@ test "RFC 5280 §6: validateChain rejects malformed intermediate" {
         chain,
         1_700_000_000,
         "example.com",
-        false,
+        .secure,
         .server_auth,
     );
     if (result) |_| return error.UnexpectedSuccess else |_| {}

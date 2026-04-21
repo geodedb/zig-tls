@@ -7,6 +7,21 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // SEC-077: Build gate for insecure cert-validation bypass.
+    // When false (default), any runtime use of
+    // x509.InsecureValidation.testing_only_i_know_what_i_am_doing panics.
+    // Must be explicitly set to true at build time to enable test-only
+    // validation bypass; NEVER set in a production build.
+    const tls_insecure_testing = b.option(
+        bool,
+        "tls-insecure-testing",
+        "Enable insecure test-only cert validation bypass (SEC-077; never use in production)",
+    ) orelse false;
+
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "tls_insecure_testing", tls_insecure_testing);
+    const build_options_mod = build_options.createModule();
+
     // thread-pool parallelism option
     const enable_tp = b.option(bool, "thread-pool", "Enable thread-pool-based parallelism") orelse true;
 
@@ -131,6 +146,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "asn1", .module = asn1_mod },
             .{ .name = "sig", .module = sig_mod },
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
 
@@ -231,6 +247,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "sig", .module = sig_mod },
                 .{ .name = "record", .module = record_mod },
                 .{ .name = "quic_tls", .module = key_schedule_mod },
+                // SEC-077: in-file tests consult the insecure-testing flag.
+                .{ .name = "build_options", .module = build_options_mod },
             },
         });
     } else null;
@@ -312,6 +330,7 @@ pub fn build(b: *std.Build) void {
             .source = "src/x509.zig",
             .imports = &.{
                 .{ .name = "asn1", .module = asn1_mod },
+                .{ .name = "build_options", .module = build_options_mod },
             },
         },
         .{
@@ -357,6 +376,14 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // SEC-077: sentinel-enum regression test.
+            .name = "sec077_allow_insecure_gate",
+            .source = "tests/security/sec077_allow_insecure_gate.zig",
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+            },
+        },
+        .{
             .name = "sec068_tp_dup_cid",
             .source = "tests/security/sec068_tp_dup_cid.zig",
             .imports = &.{
@@ -382,6 +409,8 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "counting_allocator", .module = counting_allocator_mod },
                 .{ .name = "x509", .module = x509_mod },
+                // SEC-077: skip-guard uses the insecure-testing build flag.
+                .{ .name = "build_options", .module = build_options_mod },
             },
         },
         .{
@@ -584,6 +613,9 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "asn1", .module = asn1_mod },
                 .{ .name = "sig", .module = sig_mod },
                 .{ .name = "test_utils", .module = test_utils_mod },
+                // SEC-077: tests consult the insecure-testing build flag
+                // so the insecure-bypass case can skip safely.
+                .{ .name = "build_options", .module = build_options_mod },
             },
         }),
     });
@@ -653,6 +685,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "sig", .module = sig_mod },
                 .{ .name = "tls13_full", .module = tls13_full_mod },
                 .{ .name = "quic_transport_params", .module = transport_params_mod },
+                // SEC-077: one handshake test uses the insecure sentinel.
+                .{ .name = "build_options", .module = build_options_mod },
             },
         }),
     });

@@ -167,6 +167,25 @@ test-release-small:
   needs:
     - build
 
+# SEC-077: Validate the insecure-testing build flag path.
+# The default test suite (above) runs with -Dtls-insecure-testing=false, which
+# exercises the runtime-gate code path but skips tests that actually use
+# InsecureValidation.testing_only_i_know_what_i_am_doing. This job runs the
+# complementary flag (=true) so the insecure-gated tests actually execute and
+# the sentinel enum paths get non-zero coverage on every MR.
+test-insecure-flag:
+  stage: test
+  image: debian:bookworm-slim
+  timeout: 30m
+  <<: *cache-zig
+  before_script:
+    - *install-zig
+  script:
+    - zig build test -Dtls-insecure-testing=true --summary all
+  needs:
+    - build
+  allow_failure: false
+
 # Interoperability / conformance tests.
 # Exercises the full `zig build test-conformance` target, which includes the
 # BoringSSL/OpenSSL conformance suite and the mTLS OpenSSL interop tests

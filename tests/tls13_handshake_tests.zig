@@ -17,6 +17,8 @@ const tls13_full = @import("tls13_full");
 const key_schedule = @import("quic_tls");
 const record = @import("record");
 const alert = @import("alert");
+// SEC-077: build-gate lookup for the insecure-validation sentinel.
+const build_options = @import("build_options");
 
 const test_psk = "test_psk";
 const test_ticket = "test_ticket";
@@ -380,9 +382,9 @@ test "SEC-029: client rejects null server_name for certificate validation" {
 }
 
 test "SEC-029: client with null server_name and allow_insecure succeeds init" {
-    // allow_insecure panics in release builds (SEC-005), so skip this test.
-    if (@import("builtin").mode != .Debug) return error.SkipZigTest;
-    // When allow_insecure is true, null server_name should not prevent
+    // SEC-077: The insecure sentinel is build-gated; skip unless the flag is set.
+    if (!build_options.tls_insecure_testing) return error.SkipZigTest;
+    // When insecure mode is on, null server_name should not prevent
     // handshake initiation (the check occurs during CertificateVerify).
     const client_callbacks = tls13.Callbacks{};
     const client_config = tls13.Config{
@@ -392,7 +394,7 @@ test "SEC-029: client with null server_name and allow_insecure succeeds init" {
         .supported_signature_schemes = &.{.ed25519},
         .quic_transport_parameters = &[_]u8{ 0x00, 0x01 },
         .server_name = null,
-        .allow_insecure = true,
+        .allow_insecure = .testing_only_i_know_what_i_am_doing,
     };
 
     var client_ctx = try tls13.Context.init(client_config, client_callbacks);

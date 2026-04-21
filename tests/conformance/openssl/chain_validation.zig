@@ -65,12 +65,13 @@ test "Chain validation: valid 2-cert chain (leaf + self-signed root)" {
     // in integration tests. These conformance tests focus on the validation
     // logic itself.
 
-    // Test that validateChain with allow_insecure=true skips validation
+    // SEC-077: validateChain with .secure enforces full validation; empty
+    // chain is always rejected regardless of the InsecureValidation variant.
     var chain = [_][]const u8{};
     const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
 
-    // Empty chain should be rejected even with allow_insecure
-    const result = x509.validateChain(testing.allocator, &chain, now, "", false, .server_auth);
+    // Empty chain is rejected regardless of InsecureValidation variant.
+    const result = x509.validateChain(testing.allocator, &chain, now, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 }
 
@@ -88,7 +89,7 @@ test "Chain validation: expired leaf certificate rejected" {
     // OpenSSL-generated certificates with controlled validity periods
 
     // Verify error handling is in place
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", false, .server_auth);
+    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 }
 
@@ -103,7 +104,7 @@ test "Chain validation: expired intermediate rejected" {
     // leaf and root are valid.
 
     // Placeholder for OpenSSL-generated chain test
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", false, .server_auth);
+    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 }
 
@@ -118,7 +119,7 @@ test "Chain validation: signature verification failure" {
     // its claimed issuer), validation must fail.
 
     // Test error path
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", false, .server_auth);
+    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 }
 
@@ -138,7 +139,7 @@ test "Chain validation: pathLenConstraint enforcement" {
     //   This violates pathLen=1 (2 subordinate CAs instead of 1)
 
     // Placeholder for constraint violation test
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", false, .server_auth);
+    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 }
 
@@ -274,7 +275,7 @@ test "Chain validation: intermediate without CA flag rejected" {
 
     // This is tested by validateChain's BasicConstraints enforcement
     // Placeholder for full chain test
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", false, .server_auth);
+    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 }
 
@@ -290,7 +291,7 @@ test "Chain validation: leaf digitalSignature key usage" {
 
     // This is enforced by validateChain's KeyUsage check
     // Placeholder for full test
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", false, .server_auth);
+    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 }
 
@@ -305,7 +306,7 @@ test "Chain validation: CA keyCertSign key usage" {
     // keyCertSign to be valid for signing other certificates.
 
     // Tested by validateChain's CA KeyUsage enforcement
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", false, .server_auth);
+    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 }
 
@@ -336,7 +337,7 @@ test "Chain validation: self-signed root CA acceptance" {
 
     // Placeholder - full test would use actual self-signed cert
     // For now, verify empty chain is rejected
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", false, .server_auth);
+    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 }
 
@@ -355,7 +356,7 @@ test "Chain validation: certificate order matters" {
     // Reversed or shuffled chains must be rejected.
 
     // Test that empty chain fails
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", false, .server_auth);
+    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 
     // Full test would generate 3 certs and verify:
@@ -378,7 +379,7 @@ test "Chain validation: EKU serverAuth required for TLS" {
 
     // This is enforced by validateChain's EKU check
     // Placeholder for full test with actual certificate
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", false, .server_auth);
+    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result);
 
     // Full test would verify:
@@ -398,7 +399,7 @@ test "Chain validation: error types defined" {
     // validation failures. We verify they exist by using them in expectError.
 
     // Test EmptyChain error
-    const result1 = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", false, .server_auth);
+    const result1 = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
     try testing.expectError(error.EmptyChain, result1);
 
     // Verify other error types compile (they're used throughout the tests)

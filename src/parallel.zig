@@ -52,6 +52,9 @@ const std = @import("std");
 const x509 = @import("x509");
 const sigmod = @import("sig");
 const ks = @import("quic_tls");
+// SEC-077: Used by in-file tests that need .testing_only_i_know_what_i_am_doing
+// to decide whether to skip based on the insecure-testing build flag.
+const build_options = @import("build_options");
 
 const tp = @import("thread_pool");
 
@@ -137,7 +140,8 @@ pub const CertValidateInput = struct {
     chain_der: []const []const u8,
     server_name: ?[]const u8,
     now_unix: i64,
-    allow_insecure: bool,
+    // SEC-077: Sentinel replaces raw bool. Insecure variant is build-gated.
+    allow_insecure: x509.InsecureValidation,
 };
 
 /// Result of certificate validation
@@ -726,16 +730,21 @@ fn deriveKeyMaterial(secret: [32]u8, level: EncryptionLevel) DerivedKeyMaterial 
 // ============================================================================
 
 test "parallel certificate validate - insecure bypass" {
+    // SEC-077: The insecure sentinel is gated by -Dtls-insecure-testing=true;
+    // skip this test in production-flag builds to avoid the runtime panic.
+    if (!build_options.tls_insecure_testing) return error.SkipZigTest;
+
     var inputs: [4]CertValidateInput = undefined;
     var results: [4]CertValidateResult = undefined;
 
-    // With allow_insecure=true, any non-empty chain passes (x509.validateChain returns immediately)
+    // With the insecure variant, any non-empty chain passes
+    // (x509.validateChain returns immediately).
     for (&inputs) |*input| {
         input.* = .{
             .chain_der = &[_][]const u8{"cert"},
             .server_name = "example.com",
             .now_unix = 0,
-            .allow_insecure = true,
+            .allow_insecure = .testing_only_i_know_what_i_am_doing,
         };
     }
 
@@ -750,13 +759,13 @@ test "parallel certificate validate - invalid DER rejected" {
     var inputs: [4]CertValidateInput = undefined;
     var results: [4]CertValidateResult = undefined;
 
-    // With allow_insecure=false, invalid DER data should be rejected by real validation
+    // With .secure (full validation), invalid DER data is rejected.
     for (&inputs) |*input| {
         input.* = .{
             .chain_der = &[_][]const u8{"cert"},
             .server_name = "example.com",
             .now_unix = 0,
-            .allow_insecure = false,
+            .allow_insecure = .secure,
         };
     }
 
@@ -800,7 +809,7 @@ test "parallel certificate validate - empty chain" {
             .chain_der = &[_][]const u8{}, // Empty chain
             .server_name = "example.com",
             .now_unix = 0,
-            .allow_insecure = false,
+            .allow_insecure = .secure,
         };
     }
 
@@ -813,6 +822,9 @@ test "parallel certificate validate - empty chain" {
 }
 
 test "parallel certificate validate - single item insecure" {
+    // SEC-077: gated on -Dtls-insecure-testing=true.
+    if (!build_options.tls_insecure_testing) return error.SkipZigTest;
+
     var inputs: [1]CertValidateInput = undefined;
     var results: [1]CertValidateResult = undefined;
 
@@ -820,7 +832,7 @@ test "parallel certificate validate - single item insecure" {
         .chain_der = &[_][]const u8{"cert"},
         .server_name = "example.com",
         .now_unix = 0,
-        .allow_insecure = true,
+        .allow_insecure = .testing_only_i_know_what_i_am_doing,
     };
 
     parallelCertificateValidate(std.testing.allocator, &inputs, &results);
@@ -835,7 +847,7 @@ test "parallel certificate validate - single item invalid DER" {
         .chain_der = &[_][]const u8{"cert"},
         .server_name = "example.com",
         .now_unix = 0,
-        .allow_insecure = false,
+        .allow_insecure = .secure,
     };
 
     parallelCertificateValidate(std.testing.allocator, &inputs, &results);

@@ -238,7 +238,8 @@ pub const HandshakeError = error{
     /// SEC-029: Client did not configure server_name (SNI) for hostname validation.
     /// Without a server_name, any valid certificate from any CA would be accepted,
     /// enabling man-in-the-middle attacks. Either set config.server_name or
-    /// set config.allow_insecure=true for test environments.
+    /// set config.allow_insecure = .testing_only_i_know_what_i_am_doing for
+    /// test environments (build with -Dtls-insecure-testing=true — SEC-077).
     MissingServerName,
 
     /// Internal state invariant violated. This indicates a programming error

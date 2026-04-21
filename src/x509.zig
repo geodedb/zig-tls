@@ -61,11 +61,13 @@
 //!
 //! ## Security Considerations
 //! - **Trust Store**: Root certificates must be validated via pluggable TrustStore
-//!   callback when `allow_insecure` is false
+//!   callback when `insecure == .secure`
 //! - **Name Validation**: Server name (SNI) must match SubjectAltName or CN
 //! - **Time Validation**: Certificates are rejected if expired or not yet valid
 //! - **Path Validation**: Full chain validation enforces CA constraints and path limits
-//! - **Insecure Mode**: `allow_insecure=true` bypasses ALL validation - testing only!
+//! - **Insecure Mode**: `InsecureValidation.testing_only_i_know_what_i_am_doing`
+//!   bypasses ALL validation (testing only; requires -Dtls-insecure-testing=true
+//!   build flag, panics otherwise — SEC-077)!
 //!
 //! ## Design Notes
 //! - Uses minimal ASN.1 decoder (asn1.zig) for DER parsing
@@ -84,7 +86,31 @@
 const std = @import("std");
 const asn1 = @import("asn1");
 const sigmod = @import("sig");
+const build_options = @import("build_options");
 const Ed25519 = std.crypto.sign.Ed25519;
+
+/// SEC-077: Replaces the raw `allow_insecure: bool` flag with a
+/// lexically-obvious sentinel. The `.testing_only_i_know_what_i_am_doing`
+/// variant is additionally gated by `-Dtls-insecure-testing=true`; at
+/// runtime it panics if the build flag is false. Accidental production
+/// misuse is therefore impossible.
+pub const InsecureValidation = enum {
+    /// Full chain validation (production default).
+    secure,
+    /// Skip all chain validation. MUST NOT be used in production.
+    /// Requires `-Dtls-insecure-testing=true` build flag; panics otherwise.
+    testing_only_i_know_what_i_am_doing,
+};
+
+/// SEC-077: Runtime guard — panic if `.testing_only_i_know_what_i_am_doing`
+/// is passed without `-Dtls-insecure-testing=true`. This makes misuse
+/// impossible to deploy: both explicit code intent AND an explicit build
+/// flag are required.
+fn enforceInsecureBuildGate(mode: InsecureValidation) void {
+    if (mode == .testing_only_i_know_what_i_am_doing and !build_options.tls_insecure_testing) {
+        @panic("SEC-077: InsecureValidation.testing_only_i_know_what_i_am_doing requires -Dtls-insecure-testing=true. This build is NOT authorized to bypass cert validation.");
+    }
+}
 
 /// Pluggable trust store for root certificate validation.
 ///
@@ -174,7 +200,8 @@ var g_trust_store_state: TrustStoreState = .{};
 ///
 /// ## Security Considerations
 /// Without a trust store, validateChain() will reject all chains unless
-/// `allow_insecure=true` is used. Always set a trust store in production.
+/// `InsecureValidation.testing_only_i_know_what_i_am_doing` is used (SEC-077).
+/// Always set a trust store in production.
 pub fn setTrustStore(ts: ?TrustStore) void {
     g_trust_store_state.set(ts);
 }
@@ -1589,7 +1616,9 @@ pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oi
 /// - `chain_der`: Array of DER-encoded certificates [leaf, intermediate(s), root]
 /// - `now_unix`: Current time as Unix timestamp for validity checking
 /// - `server_name`: Expected DNS hostname for server identity (SNI value)
-/// - `allow_insecure`: If true, ALL validation is bypassed (testing only!)
+/// - `insecure`: `.testing_only_i_know_what_i_am_doing` bypasses ALL validation
+///   (testing only; requires `-Dtls-insecure-testing=true`, panics otherwise).
+///   Default production value is `.secure`.
 ///
 /// ## Errors
 /// - `EmptyChain`: chain_der has no certificates
@@ -1622,11 +1651,13 @@ pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oi
 /// ## Trust Anchor Handling
 /// If a trust store is configured via setTrustStore(), the root certificate's
 /// SPKI is validated by the callback. Without a trust store:
-/// - If `allow_insecure=true`: Chain is accepted without root validation (INSECURE!)
-/// - If `allow_insecure=false`: Chain is rejected with UntrustedRoot
+/// - If `insecure == .testing_only_i_know_what_i_am_doing`: Chain is accepted
+///   without root validation (INSECURE! requires -Dtls-insecure-testing=true).
+/// - If `insecure == .secure`: Chain is rejected with UntrustedRoot
 ///
 /// ## Security Considerations
-/// - **NEVER use `allow_insecure=true` in production** - it disables ALL validation
+/// - **NEVER use `.testing_only_i_know_what_i_am_doing` in production** - it
+///   disables ALL validation (also gated by -Dtls-insecure-testing=true build flag)
 /// - Trust store callback MUST verify root SPKI against known trust anchors
 /// - Server name (SNI) MUST match to prevent man-in-the-middle attacks
 /// - Validity period MUST be checked to prevent using expired certificates
@@ -1682,9 +1713,9 @@ pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oi
 /// prefixed with no recursion beyond extension parsing), so the total work is
 /// O(chain_length * cert_size) which is bounded by max_chain_depth * max_cert_size.
 /// A timeout is unnecessary given these structural bounds.
-pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, allow_insecure: bool, eku_purpose: EkuPurpose) !void {
+pub fn validateChain(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, insecure: InsecureValidation, eku_purpose: EkuPurpose) !void {
     // PERF-016: Delegate to validateChainEx, reading the global trust store once.
-    return validateChainEx(alloc, chain_der, now_unix, server_name, allow_insecure, eku_purpose, null);
+    return validateChainEx(alloc, chain_der, now_unix, server_name, insecure, eku_purpose, null);
 }
 
 /// PERF-207: Chain validation pipeline extracted from validateChainEx.
@@ -1910,8 +1941,9 @@ fn runChainChecks(
 ///
 /// This allows callers that cache the trust store at init time (e.g., Context)
 /// to avoid RwLock contention on every handshake.
-pub fn validateChainEx(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, allow_insecure: bool, eku_purpose: EkuPurpose, trust_store_override: ?TrustStore) !void {
-    if (allow_insecure) return;
+pub fn validateChainEx(alloc: std.mem.Allocator, chain_der: []const []const u8, now_unix: i64, server_name: []const u8, insecure: InsecureValidation, eku_purpose: EkuPurpose, trust_store_override: ?TrustStore) !void {
+    enforceInsecureBuildGate(insecure);
+    if (insecure == .testing_only_i_know_what_i_am_doing) return;
     if (chain_der.len == 0) return error.EmptyChain;
 
     // SEC-024: Hard cap on certificate chain depth before parsing.
@@ -1945,17 +1977,20 @@ pub fn validateChainEx(alloc: std.mem.Allocator, chain_der: []const []const u8, 
 /// On success, the caller owns the returned `Certificate` and must call
 /// `deinit(alloc)` on it. On error, all internal parses are freed.
 ///
-/// When `allow_insecure=true`, validation is skipped BUT the leaf is still
-/// parsed and returned — callers still need it for CertificateVerify.
+/// When `insecure == .testing_only_i_know_what_i_am_doing`, validation is
+/// skipped BUT the leaf is still parsed and returned — callers still need it
+/// for CertificateVerify. Runtime panic if that variant is used without the
+/// `-Dtls-insecure-testing=true` build flag (SEC-077).
 pub fn validateChainReturnParsed(
     alloc: std.mem.Allocator,
     chain_der: []const []const u8,
     now_unix: i64,
     server_name: []const u8,
-    allow_insecure: bool,
+    insecure: InsecureValidation,
     eku_purpose: EkuPurpose,
     trust_store_override: ?TrustStore,
 ) !Certificate {
+    enforceInsecureBuildGate(insecure);
     if (chain_der.len == 0) return error.EmptyChain;
 
     // SEC-024: Hard cap on certificate chain depth before parsing.
@@ -1998,7 +2033,7 @@ pub fn validateChainReturnParsed(
         }
     }
 
-    if (!allow_insecure) {
+    if (insecure == .secure) {
         try runChainChecks(alloc, certs, chain_der, now_unix, server_name, eku_purpose, trust_store_override);
     }
 
