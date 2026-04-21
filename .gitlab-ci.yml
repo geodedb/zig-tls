@@ -167,6 +167,26 @@ test-release-small:
   needs:
     - build
 
+# Interoperability / conformance tests.
+# Exercises the full `zig build test-conformance` target, which includes the
+# BoringSSL/OpenSSL conformance suite and the mTLS OpenSSL interop tests
+# (tests/conformance/openssl/mtls_interop.zig). Requires libssl-dev and
+# pkg-config; install lives in before_script so a missing dev package fails
+# the job loudly rather than silently skipping.
+test-conformance:
+  stage: test
+  image: debian:bookworm-slim
+  timeout: 45m
+  <<: *cache-zig
+  before_script:
+    - apt-get update && apt-get install -y libssl-dev pkg-config
+    - *install-zig
+    - pkg-config --exists openssl && pkg-config --modversion openssl
+  script:
+    - zig build test-conformance --summary all
+  needs:
+    - build
+
 # Coverage-guided fuzz testing.
 # Runs with a 60-second timeout so the job always terminates.
 #
