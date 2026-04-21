@@ -732,20 +732,17 @@ fn parseExtExtKeyUsage(inner: []const u8) ?ExtKeyUsage {
     var server_auth = false;
     var client_auth = false;
     var ocsp_signing = false;
+    // SEC-076 followup: canonical full-slice OID equality. Prior suffix-match
+    // accepted prefix-attack encodings (same class as SEC-076 ocsp.zig/sig.zig
+    // fix, initially out of that stage's scope).
+    const id_kp_server_auth = [_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01 }; // 1.3.6.1.5.5.7.3.1
+    const id_kp_client_auth = [_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02 }; // 1.3.6.1.5.5.7.3.2 (SEC-031)
+    const id_kp_ocsp_signing = [_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x09 }; // 1.3.6.1.5.5.7.3.9
     while (true) {
         const oid2 = e2.readOID() catch break;
-        // id-kp-serverAuth = 1.3.6.1.5.5.7.3.1
-        if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01 })) {
-            server_auth = true;
-        }
-        // SEC-031: id-kp-clientAuth = 1.3.6.1.5.5.7.3.2
-        if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02 })) {
-            client_auth = true;
-        }
-        // id-kp-OCSPSigning = 1.3.6.1.5.5.7.3.9
-        if (oid2.len >= 8 and std.mem.eql(u8, oid2[oid2.len - 8 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x09 })) {
-            ocsp_signing = true;
-        }
+        if (asn1.oidEqual(oid2, &id_kp_server_auth)) server_auth = true;
+        if (asn1.oidEqual(oid2, &id_kp_client_auth)) client_auth = true;
+        if (asn1.oidEqual(oid2, &id_kp_ocsp_signing)) ocsp_signing = true;
     }
     return .{ .server_auth = server_auth, .client_auth = client_auth, .ocsp_signing = ocsp_signing };
 }
