@@ -60,6 +60,11 @@ pub const HandshakePhase = enum {
     /// RFC 8446 §4.6: Post-handshake messages (NewSessionTicket, KeyUpdate)
     /// are being exchanged on the Application encryption level.
     post_handshake,
+    /// GAP-0133/0134: peer fatal alert received OR local close_notify/fatal
+    /// alert sent. Terminal state: no more handshake or application progress
+    /// is expected; caller should drain remaining outbound bytes and close
+    /// the QUIC connection.
+    terminated,
 };
 
 /// Handshake completion flags (RFC 8446 §4.4.4).

@@ -69,6 +69,8 @@ const zero_rtt_mod = @import("zero_rtt");
 const entropy = @import("entropy");
 const logger = @import("quic_logger");
 const transport_params = @import("quic_transport_params");
+// GAP-0133/0134: Inbound alert dispatch + outbound close_notify/fatal alert API.
+const alert_mod = @import("alert");
 
 /// Zig 0.16 compat: unixTimestamp() was removed; use Io clock to get unix seconds.
 fn unixTimestamp() i64 {
@@ -294,6 +296,17 @@ pub const Callbacks = struct {
     /// Currently only leaf certificate used; full chain validation planned.
     /// null = Use Config.server_cert_der directly (no dynamic fetch).
     fetch_certificate_chain: ?*const fn (ctx: *Context) anyerror![]const u8 = null,
+
+    /// GAP-0133: Invoked when an inbound TLS alert is decoded. The Context
+    /// is terminal after a fatal alert. Callers SHOULD map fatal alerts to
+    /// QUIC CONNECTION_CLOSE(0x01xx) via `alert.toQuicCryptoError(desc)`.
+    ///
+    /// The callback receives the decoded `AlertDescription`; the level
+    /// (warning/fatal) is available via `ctx.flags.alert` and the terminal
+    /// phase transition (`ctx.phase == .terminated`) on fatal alerts.
+    ///
+    /// null = Not notified of alerts (default).
+    on_alert: ?*const fn (ctx: *Context, desc: alert_mod.AlertDescription) void = null,
 };
 
 /// Error type for TLS API operations (canonical definition in types.zig).
@@ -1908,6 +1921,103 @@ pub const Context = struct {
         var neg = try self.negotiateCipherAndKeys() orelse return; // HRR sent
         defer std.crypto.secureZero(u8, &neg.shared);
         try self.emitServerFlight(&neg);
+    }
+
+    // ========================================================================
+    // GAP-0133 / GAP-0134: TLS Alert Protocol (RFC 8446 §6, RFC 9001 §4.8)
+    // ========================================================================
+
+    /// GAP-0133: Decode a 2-byte inbound TLS alert, surface via callback,
+    /// terminate on fatal. Called by `deliverAlert` (see below); factored out
+    /// so tests + future transports can hook in without duplicating policy.
+    ///
+    /// RFC 8446 §6: Alert messages are 2 bytes — AlertLevel (1B) +
+    /// AlertDescription (1B). TLS 1.3 treats all alerts as fatal in practice
+    /// (§6.1) except `close_notify` (§6.1) and `user_canceled` (§6.1), which
+    /// may be sent as warning. Fatal alerts terminate the connection.
+    fn handleInboundAlert(self: *Context, level: EncryptionLevel, payload: []const u8) !void {
+        _ = level; // encryption level is observed but not used for dispatch
+        if (payload.len != 2) return HandshakeError.InvalidAlert;
+
+        const decoded = alert_mod.Alert.decode(.{ payload[0], payload[1] });
+        self.flags.alert = @intFromEnum(decoded.description);
+
+        if (self.callbacks.on_alert) |cb| {
+            cb(self, decoded.description);
+        }
+
+        if (decoded.level == .fatal) {
+            self.phase = .terminated;
+            return HandshakeError.PeerFatalAlert;
+        }
+    }
+
+    /// GAP-0133: Public entry point — QUIC transport invokes this when a
+    /// TLS alert content type is seen on the CRYPTO stream. Payload must be
+    /// exactly 2 bytes per RFC 8446 §6.
+    ///
+    /// Behavior:
+    /// - Decodes the alert via `alert.Alert.decode`.
+    /// - Populates `ctx.flags.alert` with the description numeric value.
+    /// - Invokes the `on_alert` callback if configured.
+    /// - On fatal alerts: transitions `ctx.phase = .terminated` and returns
+    ///   `HandshakeError.PeerFatalAlert`.
+    /// - On warning alerts: returns normally; caller decides whether to
+    ///   treat the warning as terminal.
+    ///
+    /// Errors:
+    /// - `HandshakeError.InvalidAlert`  — payload length != 2.
+    /// - `HandshakeError.PeerFatalAlert` — fatal alert was received.
+    pub fn deliverAlert(self: *Context, level: EncryptionLevel, payload: []const u8) !void {
+        return self.handleInboundAlert(level, payload);
+    }
+
+    /// GAP-0134: Send a warning-level `close_notify` alert per RFC 8446 §6.1
+    /// ("close_notify"). Writes a 2-byte payload to the Application-level
+    /// outbound stream. Caller retrieves bytes via the Application outbound
+    /// buffer and schedules them on the QUIC CRYPTO stream. The Context is
+    /// transitioned to `.terminated`; no further handshake/application
+    /// progress is accepted.
+    pub fn sendCloseNotify(self: *Context) !void {
+        const a = alert_mod.Alert{ .level = .warning, .description = .close_notify };
+        const payload = a.encode();
+        const app_level = @intFromEnum(EncryptionLevel.Application);
+        try self.streams.buffers[app_level].outbound.appendSlice(self.allocator, &payload);
+        self.phase = .terminated;
+    }
+
+    /// GAP-0134: Send a fatal alert per RFC 8446 §6. The alert is queued on
+    /// the highest currently-installed encryption level (Initial pre-
+    /// handshake; Handshake during negotiation; Application once keys are
+    /// up). Transitions the Context to `.terminated`.
+    ///
+    /// Callers typically follow with drain-and-emit on the QUIC CRYPTO
+    /// stream and a QUIC CONNECTION_CLOSE frame of type 0x1c (CRYPTO_ERROR)
+    /// carrying `alert.toQuicCryptoError(desc)` per RFC 9001 §4.8.
+    pub fn sendFatalAlert(self: *Context, desc: alert_mod.AlertDescription) !void {
+        const a = alert_mod.Alert{ .level = .fatal, .description = desc };
+        const payload = a.encode();
+        const level: EncryptionLevel = switch (self.phase) {
+            .initial => .Initial,
+            .negotiating, .keys_installed => .Handshake,
+            .application_ready, .post_handshake, .terminated => .Application,
+        };
+        try self.streams.buffers[@intFromEnum(level)].outbound.appendSlice(self.allocator, &payload);
+        self.phase = .terminated;
+    }
+
+    /// GAP-0134: Convenience wrapper — send fatal `internal_error` (RFC 8446
+    /// §6.2). Use when the library or caller encounters an unrecoverable
+    /// condition that is not covered by a more specific alert description.
+    pub fn sendInternalError(self: *Context) !void {
+        return self.sendFatalAlert(.internal_error);
+    }
+
+    /// GAP-0134: Convenience wrapper — send fatal `handshake_failure`
+    /// (RFC 8446 §6.2). Use when no mutually supported parameters can be
+    /// negotiated (cipher suites, signature algorithms, etc.).
+    pub fn sendHandshakeFailure(self: *Context) !void {
+        return self.sendFatalAlert(.handshake_failure);
     }
 
     /// Construct and queue a ClientHello with QUIC extensions when acting as the client.

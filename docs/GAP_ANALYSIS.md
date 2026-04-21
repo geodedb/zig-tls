@@ -1066,12 +1066,12 @@ All 11 remaining open issues from the third review have been implemented:
 - **Labels:** `gap`, `rfc::8446`, `type::feature`, `priority::medium`, `component::context`, `component::messages`
 - **Created:** 2026-04-21
 
-### GAP-0133: Inbound TLS alert dispatch not wired — fatal alerts silently dropped [OPEN]
+### GAP-0133: Inbound TLS alert dispatch not wired — fatal alerts silently dropped [CLOSED]
 
 - **Issue:** [#269](https://gitlab.com/devnw/zig/tls/-/work_items/269)
 - **Category:** Bug
 - **Severity:** High
-- **Status:** Open (2026-04-21)
+- **Status:** Closed 2026-04-21 — Context.deliverAlert + on_alert callback + sendCloseNotify/sendFatalAlert API added
 - **Requirement source:** RFC 8446 §6; RFC 9001 §4.8.
 - **Current state (evidence):**
   - `src/alert.zig:83-100` — `Alert.decode` and `toQuicCryptoError` defined but no production caller.
@@ -1084,12 +1084,12 @@ All 11 remaining open issues from the third review have been implemented:
 - **Labels:** `gap`, `rfc::8446`, `rfc::9001`, `priority::high`, `type::bug`, `severity::high`, `component::context`, `component::alert`
 - **Created:** 2026-04-21
 
-### GAP-0134: No public sendCloseNotify / graceful-close API on Context [OPEN]
+### GAP-0134: No public sendCloseNotify / graceful-close API on Context [CLOSED]
 
 - **Issue:** [#270](https://gitlab.com/devnw/zig/tls/-/work_items/270)
 - **Category:** Feature
 - **Severity:** High
-- **Status:** Open (2026-04-21)
+- **Status:** Closed 2026-04-21 — Context.deliverAlert + on_alert callback + sendCloseNotify/sendFatalAlert API added
 - **Requirement source:** RFC 8446 §6.1 (MUST send close_notify before closing write side); RFC 9001 §10.2.
 - **Current state (evidence):**
   - `src/alert.zig:12` — `close_notify = 0` constant defined.

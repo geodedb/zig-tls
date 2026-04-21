@@ -345,6 +345,63 @@ const alert = ztls.alert.fromHandshakeError(error.AlpnNegotiationFailed);
 // Returns .no_application_protocol
 ```
 
+## Alert protocol (GAP-0133, GAP-0134)
+
+### Inbound alerts
+
+The QUIC transport calls `Context.deliverAlert(level, payload)` when a TLS
+alert payload is seen on the CRYPTO stream. The 2-byte payload is decoded,
+`flags.alert` is populated with the `AlertDescription` numeric value, and
+the `on_alert` callback is invoked (if configured). Fatal alerts
+transition the Context to `.terminated` and return
+`HandshakeError.PeerFatalAlert`.
+
+```zig
+const callbacks = ztls.Callbacks{
+    .on_alert = &myAlertHandler,
+};
+
+fn myAlertHandler(ctx: *ztls.Context, desc: ztls.alert.AlertDescription) void {
+    std.log.warn("peer alert: {}", .{desc});
+    _ = ctx;
+}
+
+// In QUIC CRYPTO-frame dispatch when content_type == alert:
+ctx.deliverAlert(level, two_byte_payload) catch |e| switch (e) {
+    error.PeerFatalAlert => closeQuicConnection(
+        ztls.alert.toQuicCryptoError(@as(
+            ztls.alert.AlertDescription,
+            @enumFromInt(ctx.flags.alert.?),
+        )),
+    ),
+    error.InvalidAlert => closeQuicConnection(0x010A), // unexpected_message
+    else => return e,
+};
+```
+
+### Outbound alerts
+
+- `Context.sendCloseNotify()` — RFC 8446 §6.1 orderly shutdown. Emits a
+  warning `close_notify` on the Application outbound stream.
+- `Context.sendFatalAlert(desc)` — emit a fatal alert on the current
+  encryption level (Initial/Handshake/Application, selected by `ctx.phase`).
+  Convenience wrappers: `sendInternalError()`, `sendHandshakeFailure()`.
+
+After any alert send, the Context is `.terminated`; the caller MUST drain
+outbound bytes and emit them on the QUIC CRYPTO stream, then close the
+QUIC connection. Map fatal alerts to QUIC CONNECTION_CLOSE(0x01xx) via
+`alert.toQuicCryptoError(desc)` per RFC 9001 §4.8.
+
+```zig
+// Orderly shutdown (peer finished app-data exchange):
+try ctx.sendCloseNotify();
+// drain Application outbound, emit on QUIC CRYPTO, then QUIC CONNECTION_CLOSE.
+
+// Fatal error path (e.g., no cipher in common):
+try ctx.sendHandshakeFailure();
+// drain outbound on current level, CONNECTION_CLOSE with code 0x0128.
+```
+
 ## Signature Module
 
 Signature verification for CertificateVerify (RFC 8446 Section 4.4.3).

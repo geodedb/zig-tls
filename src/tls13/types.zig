@@ -245,4 +245,10 @@ pub const HandshakeError = error{
     /// Internal state invariant violated. This indicates a programming error
     /// where an expected value was not set before being used.
     InternalError,
+
+    /// GAP-0133: inbound fatal alert terminated the connection.
+    PeerFatalAlert,
+
+    /// GAP-0133: inbound alert payload was not exactly 2 bytes.
+    InvalidAlert,
 };
