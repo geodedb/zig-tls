@@ -244,6 +244,25 @@ fuzz:
   needs:
     - build
 
+# SEC-074 regression guard: block re-introduction of raw
+# `std.os.linux.getrandom` in src/. The cross-platform, fail-closed wrapper
+# lives at src/entropy.zig (`fillRandom` -> `io().randomSecure` with a
+# TLS-specific panic on `error.EntropyUnavailable`). Any future call site
+# that reaches for the Linux syscall directly bypasses the SEC-074 fix and
+# the SEC-081 portability fix simultaneously — fail the pipeline.
+no-raw-getrandom:
+  stage: test
+  image: debian:bookworm-slim
+  timeout: 5m
+  script:
+    - |
+      if grep -R 'std\.os\.linux\.getrandom' src/ | grep -v '^\s*//' | grep -v '^\s*!'; then
+        echo "SEC-074 regression: raw std.os.linux.getrandom in src/. Use src/entropy.zig fillRandom instead."
+        exit 1
+      fi
+      echo "SEC-074 guard OK — no raw getrandom in src/"
+  allow_failure: false
+
 # QUAL-339: ClientHello error-trace oracle regression gate.
 # Re-runs the capture harness against HEAD and fails if the regenerated
 # golden file diverges from the committed one. Byte-identical output is

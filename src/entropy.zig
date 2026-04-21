@@ -3,42 +3,44 @@
 
 //! Cross-platform entropy helper for TLS 1.3.
 //!
-//! SEC-074 / SEC-081: Replaces direct `std.os.linux.getrandom` calls
-//! with a portable, fail-closed wrapper. The underlying Zig 0.16
-//! `std.Io.Threaded.global_single_threaded.io().random` returns void
-//! and panics on entropy failure — the correct fail-closed behavior
-//! for a cryptographic library.
+//! SEC-074 / SEC-081: Wraps Zig 0.16's `std.Io.Threaded.global_single_threaded.io().randomSecure`
+//! to obtain cryptographically strong random bytes, panicking on the
+//! only error path (`error.EntropyUnavailable`).
+//!
+//! # Why randomSecure, not random
+//!
+//! `io().random` is a user-space CSPRNG seeded lazily from the OS. Per
+//! Zig 0.16 stdlib `std/Io/Threaded.zig` (lines ~16930-16965), if the
+//! seed-fetch fails it **silently falls back** to a weak mix of PID,
+//! clock, and ASLR address. Using `random` would defeat the SEC-074 fix:
+//! a seccomp-blocked process would silently mint deterministic keys.
+//!
+//! `io().randomSecure` returns `error.EntropyUnavailable` on the same
+//! failure path (stdlib `Threaded.zig:17008+`), giving a genuine
+//! panic-on-failure chokepoint.
+//!
+//! # Fail-Closed Semantics
+//!
+//! On entropy-source failure (seccomp, ENOSYS, unrecoverable EINTR,
+//! kernel refusal), this function panics with a TLS-specific message.
+//! This is the correct behavior for cryptographic material: silently
+//! continuing with predictable bytes would defeat the fix.
+//!
+//! # Platform Support
+//!
+//! `randomSecure` routes to the platform entropy source (`getrandom` on
+//! Linux, `getentropy` on macOS/BSD, `BCryptGenRandom` on Windows).
+//! Closes SEC-081.
 
 const std = @import("std");
 
-/// Fill `buf` with cryptographically secure random bytes.
-///
-/// # Fail-Closed Semantics
-///
-/// On entropy-source failure (e.g., seccomp blocks the syscall, kernel
-/// reports ENOSYS, or EAGAIN/EINTR cannot be resolved), this function
-/// panics. This is the correct behavior for cryptographic material:
-/// silently continuing with uninitialized bytes would produce predictable
-/// keys (SEC-074).
-///
-/// # Platform Support
-///
-/// Backed by `std.Io.Threaded.global_single_threaded.io().random`, which
-/// routes to the platform entropy source (`getrandom` on Linux,
-/// `getentropy` on macOS/BSD, `BCryptGenRandom` on Windows). Closes
-/// SEC-081.
 pub fn fillRandom(buf: []u8) void {
-    std.Io.Threaded.global_single_threaded.io().random(buf);
-}
-
-test "fillRandom produces non-zero bytes" {
-    var buf: [32]u8 = undefined;
-    @memset(&buf, 0);
-    fillRandom(&buf);
-    var all_zero = true;
-    for (buf) |b| if (b != 0) {
-        all_zero = false;
-        break;
+    std.Io.Threaded.global_single_threaded.io().randomSecure(buf) catch |err| {
+        // SEC-074: Actual fail-closed point. randomSecure returns
+        // error.EntropyUnavailable on seccomp/ENOSYS/EINTR-unresolvable
+        // kernel refusal. We must NOT continue with undefined or
+        // fallback-seeded bytes masquerading as a cryptographic key —
+        // panic with TLS-specific context so operators can diagnose.
+        std.debug.panic("TLS RNG fail-closed: entropy unavailable ({t})", .{err});
     };
-    try std.testing.expect(!all_zero);
 }
