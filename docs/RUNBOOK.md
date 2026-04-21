@@ -119,6 +119,21 @@ The benchmark suite (`zig build bench -Doptimize=ReleaseFast`) includes:
 
 See `tests/bench.zig` for the full catalog.
 
+## 0-RTT deployment (SEC-065)
+
+Multi-server and load-balanced deployments MUST configure
+`Config.persistent_anti_replay_store` with a backend that provides
+atomic check-and-add semantics. In-memory replay protection alone is
+insufficient because:
+
+- Load balancers route the replayed ClientHello to a different server.
+- The in-memory window has no memory across restarts.
+
+Reference implementations sketched in `src/zero_rtt.zig` doc comments
+(Redis example). The library treats backend errors fail-closed: on any
+backend failure 0-RTT is rejected and the handshake falls back to
+1-RTT.
+
 ## References
 
 - Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md)

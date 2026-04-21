@@ -408,6 +408,14 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // SEC-065/085: persistent cross-connection anti-replay regression.
+            .name = "sec065_persistent_anti_replay",
+            .source = "tests/security/sec065_persistent_anti_replay.zig",
+            .imports = &.{
+                .{ .name = "zero_rtt", .module = zero_rtt_mod },
+            },
+        },
+        .{
             .name = "counting_allocator",
             .source = "src/testing/counting_allocator.zig",
             .imports = &.{},

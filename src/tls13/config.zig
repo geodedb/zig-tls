@@ -179,6 +179,23 @@ pub const Config = struct {
     /// Default: 16KB max_early_data_size
     zero_rtt_limits: zero_rtt.ZeroRttLimits = .{},
 
+    /// SEC-065/085: Optional persistent cross-connection anti-replay store.
+    ///
+    /// When non-null, the server checks every inbound 0-RTT ClientHello
+    /// random against this backend before accepting early data. A backend
+    /// error (BackendUnavailable / BackendError) is treated fail-closed —
+    /// the 0-RTT attempt is rejected and the handshake falls back to 1-RTT.
+    ///
+    /// When null, 0-RTT replay protection is limited to the per-Context
+    /// in-memory `AntiReplayWindow` (default 64 entries), which does NOT
+    /// defend against cross-connection replay or server restart. Single-
+    /// server deployments may accept this trade-off; multi-server / load-
+    /// balanced deployments MUST configure a persistent backend.
+    ///
+    /// See `src/zero_rtt.zig:PersistentAntiReplayStore` for the interface
+    /// and an example Redis implementation in the doc comments.
+    persistent_anti_replay_store: ?zero_rtt.PersistentAntiReplayStore = null,
+
     /// DER-encoded server certificate (leaf) for authentication.
     /// RFC 8446 §4.4.2: Certificate message contains certificate_list.
     ///

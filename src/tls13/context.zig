@@ -1853,13 +1853,29 @@ pub const Context = struct {
         if (neg.ch_view.early_data and self.config.enable_early_data and neg.early_secret.slice().len > 0) {
             const client_random = neg.ch_view.random;
             var accept_early = true;
-            if (self.anti_replay) |ar| {
-                ar.add(client_random) catch |err| {
-                    traceHandshake("Server: 0-RTT anti-replay detected ({}), rejecting early data\\n", .{err});
-                    accept_early = false;
+
+            // SEC-065/085: Cross-connection anti-replay via configured persistent
+            // store. Must run BEFORE the per-Context in-memory window so that
+            // cross-server replay attempts are rejected even when the local
+            // window has not observed them. Backend errors are fail-closed —
+            // 0-RTT is rejected and the handshake falls back to 1-RTT.
+            if (self.config.persistent_anti_replay_store) |store| {
+                const added = store.checkAndAdd(client_random) catch |err| blk: {
+                    traceHandshake("Server: 0-RTT persistent anti-replay store error ({s}); falling back to 1-RTT\n", .{@errorName(err)});
+                    break :blk false;
                 };
-            } else {
-                accept_early = false;
+                if (!added) accept_early = false;
+            }
+
+            if (accept_early) {
+                if (self.anti_replay) |ar| {
+                    ar.add(client_random) catch |err| {
+                        traceHandshake("Server: 0-RTT anti-replay detected ({}), rejecting early data\\n", .{err});
+                        accept_early = false;
+                    };
+                } else {
+                    accept_early = false;
+                }
             }
             if (accept_early) {
                 const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(self.hash_kind, &neg.early_secret, ch_only_hash.slice());
