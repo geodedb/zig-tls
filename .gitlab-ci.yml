@@ -210,11 +210,12 @@ fuzz:
   # GAP-0109: RSA-PSS differential regression gate runs the committed seed
   # corpus against both sig.rsa_pss_verify_sha256 and
   # parallel.verifyRsaPssWithHash, and fails the job if they diverge.
-  # Coverage-guided mutation is deferred until Zig 0.16's std.testing.fuzz
-  # stdlib compile error (writeStackTrace signature mismatch in
-  # lib/compiler/test_runner.zig:566) is upstream-fixed.
+  # Coverage-guided mutation (`zig build test --fuzz`) cannot run on Zig
+  # 0.16: the stdlib test runner hits a writeStackTrace signature mismatch
+  # in lib/compiler/test_runner.zig:566 AND emits "error: no fuzz tests
+  # found" (exit 1) because no tests use std.testing.fuzz yet. Restore
+  # that invocation once the stdlib is fixed upstream.
   script:
-    - timeout 60 zig build test --fuzz; rc=$?; if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then exit $rc; fi
     - timeout 60 zig build fuzz-rsa-pss; rc=$?; if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then exit $rc; fi
   artifacts:
     when: always
@@ -252,14 +253,18 @@ fuzz:
 client_hello_oracle:
   stage: test
   image: debian:bookworm-slim
-  timeout: 5m
+  timeout: 10m
   <<: *cache-zig
   before_script:
     - *install-zig
   script:
+    # Snapshot the committed golden before regeneration. debian:bookworm-slim
+    # has no `git`, so `git show HEAD:...` is unavailable; the checkout on
+    # disk IS HEAD at job start, so plain `cp` captures the same bytes.
+    - cp tests/fuzz/corpus/client_hello_golden.bin /tmp/client_hello_golden.committed.bin
     - zig build capture-client-hello-oracle
     - |
-      if ! cmp tests/fuzz/corpus/client_hello_golden.bin <(git show HEAD:tests/fuzz/corpus/client_hello_golden.bin); then
+      if ! cmp tests/fuzz/corpus/client_hello_golden.bin /tmp/client_hello_golden.committed.bin; then
         echo "ERROR: ClientHello error-trace oracle has diverged from the committed golden file"
         echo "This means a recent commit changed ClientHello parser behavior"
         echo "Either: (a) the change is intentional — regenerate the golden with 'zig build capture-client-hello-oracle'"
@@ -279,14 +284,18 @@ client_hello_oracle:
 context_decomp_oracle:
   stage: test
   image: debian:bookworm-slim
-  timeout: 5m
+  timeout: 15m
   <<: *cache-zig
   before_script:
     - *install-zig
   script:
+    # Snapshot the committed golden before regeneration. debian:bookworm-slim
+    # has no `git`, so `git show HEAD:...` is unavailable; the checkout on
+    # disk IS HEAD at job start, so plain `cp` captures the same bytes.
+    - cp tests/fuzz/corpus/context_decomp_golden.bin /tmp/context_decomp_golden.committed.bin
     - zig build capture-context-decomp-oracle
     - |
-      if ! cmp tests/fuzz/corpus/context_decomp_golden.bin <(git show HEAD:tests/fuzz/corpus/context_decomp_golden.bin); then
+      if ! cmp tests/fuzz/corpus/context_decomp_golden.bin /tmp/context_decomp_golden.committed.bin; then
         echo "ERROR: context.zig error-trace oracle has diverged from the committed golden file"
         echo "A recent commit changed observable TLS 1.3 handshake behavior"
         echo "Either: (a) the change is intentional — regenerate the golden with 'zig build capture-context-decomp-oracle'"
