@@ -66,6 +66,7 @@ const tls13_full = @import("tls13_full");
 const ocsp = @import("ocsp");
 const sct = @import("sct");
 const zero_rtt_mod = @import("zero_rtt");
+const entropy = @import("entropy");
 const logger = @import("quic_logger");
 const transport_params = @import("quic_transport_params");
 
@@ -1489,7 +1490,8 @@ pub const Context = struct {
         // SEC-050: Zero stack-local private key on all exit paths (error or success).
         // After copying to self.client_priv, this stack copy is no longer needed.
         defer std.crypto.secureZero(u8, &priv);
-        _ = std.os.linux.getrandom(&priv, priv.len, 0);
+        // SEC-074: fail-closed entropy (replaces unchecked getrandom).
+        entropy.fillRandom(&priv);
         // SEC-037: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
         // Zig's X25519 internally clamps during DH computation, but we clamp here
         // too to ensure the stored private key bytes are canonical.
@@ -1540,7 +1542,8 @@ pub const Context = struct {
 
         // Generate new random secret (32 bytes for HMAC-SHA256)
         var secret: [32]u8 = undefined;
-        _ = std.os.linux.getrandom(&secret, secret.len, 0);
+        // SEC-074: fail-closed entropy (replaces unchecked getrandom).
+        entropy.fillRandom(&secret);
         self.server_secret_generated = secret;
         // SAFETY: Just assigned on the line above; server_secret_generated is guaranteed non-null.
         return &self.server_secret_generated.?;
@@ -1683,11 +1686,13 @@ pub const Context = struct {
         if (ch_view.key_share.key.len != 32) return HandshakeError.UnsupportedKeyShareGroup;
 
         var server_random: [32]u8 = undefined;
-        _ = std.os.linux.getrandom(&server_random, server_random.len, 0);
+        // SEC-074: fail-closed entropy (replaces unchecked getrandom).
+        entropy.fillRandom(&server_random);
 
         var server_priv: [32]u8 = undefined;
         defer std.crypto.secureZero(u8, &server_priv);
-        _ = std.os.linux.getrandom(&server_priv, server_priv.len, 0);
+        // SEC-074: fail-closed entropy (replaces unchecked getrandom).
+        entropy.fillRandom(&server_priv);
         // SEC-048: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
         // Zig's X25519 internally clamps during DH computation, but we clamp here
         // too for consistency with sendClientHello2() and to ensure the stored
@@ -1918,7 +1923,8 @@ pub const Context = struct {
         // SEC-050: Zero stack-local private key on all exit paths (error or success).
         // After copying to self.client_priv, this stack copy is no longer needed.
         defer std.crypto.secureZero(u8, &priv);
-        _ = std.os.linux.getrandom(&priv, priv.len, 0);
+        // SEC-074: fail-closed entropy (replaces unchecked getrandom).
+        entropy.fillRandom(&priv);
         // SEC-040: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
         // Zig's X25519 internally clamps during DH computation, but we clamp here
         // too for consistency with sendClientHello2() and to ensure the stored
@@ -1931,7 +1937,8 @@ pub const Context = struct {
         self.client_pub = client_pubkey;
 
         var rnd: [32]u8 = undefined;
-        _ = std.os.linux.getrandom(&rnd, rnd.len, 0);
+        // SEC-074: fail-closed entropy (replaces unchecked getrandom).
+        entropy.fillRandom(&rnd);
         self.client_random = rnd; // Save for potential HRR handling
 
         // Determine PSK parameters
@@ -2864,7 +2871,8 @@ test "RFC 8446 §4.2.11: ServerHello with PSK extension round-trip" {
     // Build a ServerHello WITH PSK extension, then parse it back
     const allocator = std.testing.allocator;
     var server_random: [32]u8 = undefined;
-    _ = std.os.linux.getrandom(&server_random, server_random.len, 0);
+    // SEC-074: fail-closed entropy (replaces unchecked getrandom).
+    entropy.fillRandom(&server_random);
     const key_data = &[_]u8{0x42} ** 32;
 
     const sh = try tls13_full.buildServerHello(
@@ -2889,7 +2897,8 @@ test "RFC 8446 §4.2.11: ServerHello without PSK extension returns null" {
     // Build a ServerHello WITHOUT PSK extension, then parse it back
     const allocator = std.testing.allocator;
     var server_random: [32]u8 = undefined;
-    _ = std.os.linux.getrandom(&server_random, server_random.len, 0);
+    // SEC-074: fail-closed entropy (replaces unchecked getrandom).
+    entropy.fillRandom(&server_random);
     const key_data = &[_]u8{0x42} ** 32;
 
     const sh = try tls13_full.buildServerHello(
@@ -2941,7 +2950,8 @@ test "RFC 8446 §4.2.11: ServerHello PSK index non-zero round-trip" {
     // Verify PSK index 5 round-trips correctly through build+parse
     const allocator = std.testing.allocator;
     var server_random: [32]u8 = undefined;
-    _ = std.os.linux.getrandom(&server_random, server_random.len, 0);
+    // SEC-074: fail-closed entropy (replaces unchecked getrandom).
+    entropy.fillRandom(&server_random);
     const key_data = &[_]u8{0x42} ** 32;
 
     const sh = try tls13_full.buildServerHello(
