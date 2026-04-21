@@ -393,6 +393,14 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // SEC-075: RFC 5280 §4.2 critical-unknown-extension reject.
+            .name = "sec075_unknown_critical_ext",
+            .source = "tests/security/sec075_unknown_critical_ext.zig",
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+            },
+        },
+        .{
             .name = "sec068_tp_dup_cid",
             .source = "tests/security/sec068_tp_dup_cid.zig",
             .imports = &.{

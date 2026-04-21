@@ -1125,22 +1125,72 @@ fn parseExtensionsBlock(alloc: std.mem.Allocator, ti: *asn1.Decoder) !ParsedExte
             const ext = exd.readSequence() catch break;
             var one = asn1.Decoder.init(ext);
             const oid = one.readOID() catch continue;
-            const critical_or_val = one.readTLV() catch continue;
-            var val = critical_or_val.val;
-            if (one.readTLV() catch null) |v2| val = v2.val;
-            const inner = unwrapExtnValueToBytes(val);
 
+            // SEC-075: Parse optional critical BOOLEAN (DEFAULT FALSE).
+            // RFC 5280 §4.1: Extension ::= SEQUENCE {
+            //   extnID OBJECT IDENTIFIER,
+            //   critical BOOLEAN DEFAULT FALSE,
+            //   extnValue OCTET STRING
+            // }
+            var critical: bool = false;
+            const tlv1 = one.readTLV() catch continue;
+
+            // If tlv1 is BOOLEAN (tag 0x01), read critical then extnValue.
+            // Otherwise tlv1 IS extnValue; critical defaults to FALSE.
+            var ext_val_raw: []const u8 = undefined;
+            if (tlv1.tag == 0x01) {
+                if (tlv1.val.len != 1) return error.InvalidExtensionCritical;
+                critical = switch (tlv1.val[0]) {
+                    0x00 => false,
+                    0xFF => true,
+                    else => return error.InvalidExtensionCritical, // DER requires 0x00 or 0xFF
+                };
+                const tlv2 = one.readTLV() catch return error.InvalidExtensionValue;
+                ext_val_raw = tlv2.val;
+            } else {
+                ext_val_raw = tlv1.val;
+            }
+
+            const inner = unwrapExtnValueToBytes(ext_val_raw);
+
+            var handled = false;
             if (oid.len >= 3 and oid[0] == 0x55 and oid[1] == 0x1d) {
                 switch (oid[2]) {
-                    0x11 => out.san = try parseExtSan(alloc, inner), // subjectAltName
-                    0x13 => out.basic = parseExtBasicConstraints(inner), // basicConstraints
-                    0x0f => out.ku = parseExtKeyUsage(inner), // keyUsage
-                    0x25 => out.eku = parseExtExtKeyUsage(inner), // extKeyUsage
-                    0x1e => out.name_constraints = try parseExtNameConstraints(alloc, inner), // nameConstraints
-                    0x21 => out.policy_mappings = try parseExtPolicyMappings(alloc, inner), // policyMappings
-                    0x24 => out.policy_constraints = parseExtPolicyConstraints(inner), // policyConstraints
+                    0x11 => {
+                        out.san = try parseExtSan(alloc, inner);
+                        handled = true;
+                    },
+                    0x13 => {
+                        out.basic = parseExtBasicConstraints(inner);
+                        handled = true;
+                    },
+                    0x0f => {
+                        out.ku = parseExtKeyUsage(inner);
+                        handled = true;
+                    },
+                    0x25 => {
+                        out.eku = parseExtExtKeyUsage(inner);
+                        handled = true;
+                    },
+                    0x1e => {
+                        out.name_constraints = try parseExtNameConstraints(alloc, inner);
+                        handled = true;
+                    },
+                    0x21 => {
+                        out.policy_mappings = try parseExtPolicyMappings(alloc, inner);
+                        handled = true;
+                    },
+                    0x24 => {
+                        out.policy_constraints = parseExtPolicyConstraints(inner);
+                        handled = true;
+                    },
                     else => {},
                 }
+            }
+
+            // SEC-075: RFC 5280 §4.2 MUST reject critical unknown extensions.
+            if (critical and !handled) {
+                return error.UnknownCriticalExtension;
             }
         }
     }
