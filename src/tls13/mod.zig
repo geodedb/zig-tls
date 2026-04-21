@@ -184,6 +184,9 @@ pub const deriveFinishedVerifyData = finished.deriveFinishedVerifyData;
 
 const messages = @import("messages.zig");
 
+/// Cookie extension helpers (RFC 8446 §4.2.2).
+pub const cookie_mod = @import("messages/extensions/cookie.zig");
+
 /// Handshake message types.
 pub const HsType = messages.HsType;
 

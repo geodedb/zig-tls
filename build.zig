@@ -192,7 +192,7 @@ pub fn build(b: *std.Build) void {
     // Main handshake state machine and context
     // Modularized in Phase 1: src/tls13/
     const tls13_mod = b.addModule("tls13", .{
-        .root_source_file = b.path("src/tls13.zig"),
+        .root_source_file = b.path("src/tls13/mod.zig"),
         .target = target,
         .imports = &.{
             .{ .name = "quic_tls", .module = key_schedule_mod },
@@ -403,7 +403,7 @@ pub fn build(b: *std.Build) void {
     // TLS13 tests with full dependencies
     const tls13_test = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tls13.zig"),
+            .root_source_file = b.path("src/tls13/mod.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
