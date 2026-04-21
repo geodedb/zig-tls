@@ -11,20 +11,23 @@
 | Severity | Open | Partial | Closed | By Design | Deferred | Won't Do | Total |
 |----------|------|---------|--------|-----------|----------|----------|-------|
 | Critical | 0    | 0       | 2      | 0         | 0        | 0        | 2     |
-| High     | 3    | 0       | 19     | 0         | 0        | 0        | 22    |
-| Medium   | 11   | 0       | 41     | 1         | 0        | 1        | 54    |
-| Low      | 10   | 0       | 35     | 2         | 0        | 3        | 50    |
-| **Total**| **24** | **0** | **97** | **3**   | **0**    | **4**    | **128**|
+| High     | 5    | 0       | 19     | 0         | 0        | 0        | 24    |
+| Medium   | 12   | 0       | 42     | 1         | 0        | 1        | 56    |
+| Low      | 14   | 0       | 35     | 2         | 0        | 3        | 54    |
+| **Total**| **31** | **0** | **98** | **3**   | **0**    | **4**    | **136**|
 
+*Counts reflect Cycle 7 / Phase 20 quality-issue-tracker sync (2026-04-21):* +2 High Open (QUAL-357, QUAL-358); QUAL-345 Medium Open → Closed (superseded by QUAL-357, net Medium Open +2 from QUAL-359/QUAL-360 - 1 from QUAL-345 supersede = +1 net, total +2 after other refresh); +4 Low Open (QUAL-361..364); QUAL-365/366/367 refuted at scoring time → recorded as `resolution::metric-error` / `resolution::false-positive`, not counted as Open; QUAL-368 Info-only, not counted.
 *Counts reflect Cycle 6 / Phase 19 gap-close (2026-04-20):* -1 High Open (+1 Closed: QUAL-346), -1 Medium Open (+1 Closed: QUAL-356), -5 Low Open (+5 Closed: QUAL-104, 348, 349, 352, 353). QUAL-347 remained Won't-Do; counts unchanged on that axis.
 
-### Top 5 Risks (post Phase 19 / Cycle 6)
+### Top 5 Risks (post Phase 20 / Cycle 7)
 
-1. ~~**QUAL-346** (High, PS 48)~~ -- **Closed Cycle 6 / Phase 19 (commit 8c7ced3)**: atomic handshake traffic-pair install with `errdefer` rollback landed; symmetric client + server paths now rollback-safe.
-2. **QUAL-351** (Medium, PS 48) -- `handleServerHello` hardcodes X25519 group check while `Config.supported_groups` claims agility. Correctness/interop bug. Deferred — feature work.
-3. **QUAL-345** (Medium, PS 48) -- `handleCertificateVerify` mixes 4 security-critical operations in one 164L function -- blocks per-path security audit. Deferred to Wave 4 refactor.
-4. **QUAL-344** (Medium, PS 48) -- Client-side message handlers remain inlined in `context.zig` (3055 LOC); mirror QUAL-317 pattern to extract. Deferred to Wave 4 refactor.
+1. **QUAL-357** (High, PS 100) -- `handleCertificateVerify` (`src/tls13/context.zig:2480-2643`, 163 LOC) mixes cert chain + OCSP + SCT + CV-signature validation. Security-critical; per-path audit blocked. [#271](https://gitlab.com/devnw/zig/tls/-/work_items/271). **Supersedes QUAL-345.**
+2. **QUAL-358** (High, PS 100) -- `tls13` module dual-entry (`src/tls13.zig` shim + `src/tls13/mod.zig` canonical); `build.zig:194` points at shim. Collapse to one root; `git rm src/tls13.zig`. [#272](https://gitlab.com/devnw/zig/tls/-/work_items/272). Cross-ref PERF-237.
+3. **QUAL-351** (Medium, PS 48) -- `handleServerHello` hardcodes X25519 group check while `Config.supported_groups` claims agility. Correctness/interop bug. Deferred — feature work.
+4. **QUAL-344** (Medium, PS 48) -- Client-side message handlers remain inlined in `context.zig` (3206 LOC post-decomp); mirror QUAL-317 pattern to extract. Deferred to Wave 4 refactor.
 5. **QUAL-350** (Medium, PS 48) -- `handleHandshakeMessage` 152L dispatcher with inline QUIC-TP parsing (dup with canonical parser). Deferred to Wave 4 refactor.
+
+(Previous Top-5 entries: ~~QUAL-346~~ closed Phase 19; ~~QUAL-345~~ superseded by QUAL-357 Phase 20.)
 
 ### Cycle 5 / Phase 17 Phase-4 Audit Filings (2026-04-20, QUAL-344..356)
 
@@ -34,7 +37,7 @@
 |---------|-------|----------|----|----------|---------|--------|
 | QUAL-346 | [#238](https://gitlab.com/devnw/zig/tls/-/work_items/238) | High | 48 | maintainability | Missing errdefer for partial traffic-secret install (`context.zig:2094-2096` + symmetric server path) | **Closed** (Cycle 6 / Phase 19, commit 8c7ced3) |
 | QUAL-344 | [#236](https://gitlab.com/devnw/zig/tls/-/work_items/236) | Medium | 48 | maintainability | Extract client-side handlers (handleServerHello 130L, handleCertificateVerify 164L, handleEncryptedExtensions, startClientHandshake 115L) into `context/client_handlers.zig` mirroring QUAL-317 | Open (deferred to Wave 4) |
-| QUAL-345 | [#237](https://gitlab.com/devnw/zig/tls/-/work_items/237) | Medium | 48 | maintainability | Split `handleCertificateVerify` (`context.zig:2404`) into 4 sub-functions (validateCertChain / validateOcsp / validateSct / verifyCvSig) | Open (deferred to Wave 4) |
+| QUAL-345 | [#237](https://gitlab.com/devnw/zig/tls/-/work_items/237) | Medium | 48 | maintainability | Split `handleCertificateVerify` (`context.zig:2404`) into 4 sub-functions (validateCertChain / validateOcsp / validateSct / verifyCvSig) | **Closed** (2026-04-21, **superseded by QUAL-357** [#271](https://gitlab.com/devnw/zig/tls/-/work_items/271)) |
 | QUAL-350 | [#244](https://gitlab.com/devnw/zig/tls/-/work_items/244) | Medium | 48 | maintainability | `handleHandshakeMessage` dispatcher 152L with inline TP parsing (`context.zig:999`) | Open (deferred to Wave 4) |
 | QUAL-351 | [#245](https://gitlab.com/devnw/zig/tls/-/work_items/245) | Medium | 48 | api-contract | `handleServerHello` hardcodes X25519-only check (`context.zig:2039`) contradicting `supported_groups` config | Open (deferred — feature work) |
 | QUAL-348 | [#240](https://gitlab.com/devnw/zig/tls/-/work_items/240) | Low | 40 | docs | `Context` struct + `HandshakePhase` enum undocumented (`context.zig:487`) -- onboarding blocker | **Closed** (Cycle 6 / Phase 19, commit 21d6c77) |
@@ -3270,7 +3273,7 @@ The following items were investigated during Phase 3 deep review and confirmed a
 | QUAL-116 | Evaluate and split 8 source files over 800 lines (post-QUAL-317 refresh; issue #242) | L | Open |
 | QUAL-117 | Decompose 14 functions over 100 lines (parseCert 396 lines) | L | Open |
 | QUAL-317 | Decompose context.zig monolith into subsystems (session_resumption, cert_orchestrator, hrr_state) | L | Closed (2026-04-20, 7f3b48e) |
-| QUAL-319 | Engine quarantine: deprecation-gate or move legacy engine.zig under internal/ | M | Open |
+| ~~QUAL-319~~ | Engine quarantine: deprecation-gate or move legacy engine.zig under internal/ | M | Closed (2026-04-19, 4ae8ac7 — engine.zig deleted outright) |
 | QUAL-096 | Extract shared ClientHelloBuilder for all 3 call sites | L | Closed |
 | QUAL-069 | Split context.zig into sub-modules | L | Closed (Subsumed 2026-04-20 by QUAL-317) |
 
@@ -3302,7 +3305,7 @@ Thirty-three new findings captured from Phase 3 deep review and filed to GitLab 
 | QUAL-316 | Medium | 60 | maintainability | Trace-flag boilerplate duplicated in 7+ modules | 7 modules | [#164](https://gitlab.com/devnw/zig/tls/-/work_items/164) |
 | QUAL-317 | High | 100 | maintainability | context.zig monolith (3549 LOC, 32 methods) -- highest leverage | `src/tls13/context.zig` | [#150](https://gitlab.com/devnw/zig/tls/-/work_items/150) |
 | QUAL-318 | Medium | 32 | maintainability | Byte-order helpers forked 3 ways | `sct.zig:31`, `messages/helpers.zig:40,62,81`, `byteorder.zig:43` | [#192](https://gitlab.com/devnw/zig/tls/-/work_items/192) |
-| QUAL-319 | High | 64 | architecture | engine.zig (2236 LOC LEGACY) still public -- quarantine or gate | `tls13.zig:96`, `tls13/mod.zig:254` | [#166](https://gitlab.com/devnw/zig/tls/-/work_items/166) |
+| ~~QUAL-319~~ | ~~High~~ | ~~64~~ | architecture | engine.zig (2236 LOC LEGACY) still public -- quarantine or gate | `tls13.zig:96`, `tls13/mod.zig:254` | [#166](https://gitlab.com/devnw/zig/tls/-/work_items/166) — **Closed 2026-04-19, 4ae8ac7** |
 | QUAL-320 | Low | 12 | api-contract | Ungated std.debug.print inside trace blocks | `context.zig:1008-1010,1271,1388-1390`, `sig.zig:568-602` | [#193](https://gitlab.com/devnw/zig/tls/-/work_items/193) |
 | QUAL-321 | Medium | 36 | api-contract | Wholesale re-export from lib.zig -- curate public facade | `src/lib.zig:270-539` | [#194](https://gitlab.com/devnw/zig/tls/-/work_items/194) |
 | QUAL-322 | Medium | 32 | tests | Dual orphan test drivers (run_tests.sh vs build.zig) | repo-root | [#175](https://gitlab.com/devnw/zig/tls/-/work_items/175) |
@@ -3323,7 +3326,7 @@ Thirty-three new findings captured from Phase 3 deep review and filed to GitLab 
 1. **QUAL-317** (context monolith) -- PriorityScore 100. Strategic. Effort L.
 2. **QUAL-316** (trace boilerplate) -- PriorityScore 60. Effort M.
 3. **QUAL-301 + QUAL-323** (duplicate types, one logical issue) -- PriorityScore 64 each. Effort S (joint).
-4. **QUAL-319** (engine quarantine) -- PriorityScore 64. Effort M.
+4. ~~**QUAL-319**~~ (engine quarantine) -- ~~PriorityScore 64. Effort M.~~ **Closed 2026-04-19 (4ae8ac7, engine.zig deleted).**
 5. **QUAL-310** (CI cache) -- PriorityScore 60. Effort S.
 6. **QUAL-305** (missing nix/ dir) -- PriorityScore 60. Effort S.
 7. **QUAL-322 + QUAL-308** (orphan test driver) -- PriorityScore 32 + 48. Effort S (joint).
@@ -3373,7 +3376,7 @@ Ten new findings filed to GitLab in Phase 12. Scoring rubric: `PriorityScore = I
 
 ### Phase 12 Cross-References
 
-- **Engine deletion (QUAL-319) cascading impact.** If QUAL-319 closes (engine.zig deletion / quarantine), it would resolve or partially resolve:
+- **Engine deletion (~~QUAL-319~~ — Closed 2026-04-19, 4ae8ac7) cascading impact.** QUAL-319 closed (engine.zig deleted outright); it resolved or partially resolved:
   - **QUAL-335** (KeyMaterial duplication) -- partial: `parallel.zig` copy would still need consolidation with `key_schedule.zig`, but engine-side crypto callers disappear.
   - **QUAL-337** (CipherSuite dup) -- partial: engine's reliance on `record/aead.zig:CipherSuite` is a sizable consumer; removing engine reduces motivation to keep the split.
   - **QUAL-304** (10-level nesting in engine.zig EncryptedExtensions handler) -- resolved: the nested code lives entirely in the legacy engine path.
@@ -3387,4 +3390,61 @@ Ten new findings filed to GitLab in Phase 12. Scoring rubric: `PriorityScore = I
 2. **QUAL-337** (Score 36) -- CipherSuite enum canonicalization is security-interop-adjacent.
 3. **QUAL-338, QUAL-339, QUAL-340** (Score 36 each) -- Coordinated refactor of the three long-function hotspots.
 4. **QUAL-343** (Score 24) -- Shim deletion; removes indirection + aligns with deletion-over-patching instinct.
-5. **QUAL-335, QUAL-336** (Score 24 each) -- Should land with or after the QUAL-319 engine decision.
+5. **QUAL-335, QUAL-336** (Score 24 each) -- Should land with or after the ~~QUAL-319~~ engine decision (Closed 2026-04-19, 4ae8ac7).
+
+---
+
+## Cycle 7 / Phase 20 Filings (2026-04-21, QUAL-357..QUAL-368)
+
+Eight new actionable issues filed from Phase 3 quality-reviewer output, plus three refutations and one Info-only annotation. QUAL-345 closed as superseded by QUAL-357.
+
+### Phase 20 Findings Table
+
+| QUAL-ID | Issue | Severity | PS | Category | Finding | File:Line | Status |
+|---------|-------|----------|----|----------|---------|-----------|--------|
+| QUAL-357 | [#271](https://gitlab.com/devnw/zig/tls/-/work_items/271) | **High** | **100** | maintainability / security | Split `handleCertificateVerify` into 4 per-concern validators (chain, OCSP, SCT, CV-sig) | `src/tls13/context.zig:2480-2643` (163 LOC) | Open (supersedes QUAL-345) |
+| QUAL-358 | [#272](https://gitlab.com/devnw/zig/tls/-/work_items/272) | **High** | **100** | cleanup | Remove `tls13` module dual-entry — collapse `src/tls13.zig` shim (239 LOC) onto `src/tls13/mod.zig` (247 LOC); `git rm src/tls13.zig`; repoint `build.zig:194`; add `cookie_mod` re-export | `build.zig:194`, `src/tls13.zig`, `src/tls13/mod.zig` | Open; cross-ref PERF-237 |
+| QUAL-359 | [#275](https://gitlab.com/devnw/zig/tls/-/work_items/275) | Medium | 64 | maintainability | Extract state types (`CryptoBuffer`, `HandshakeFlags`, `TranscriptSet`) from context.zig into `context/state.zig` | `src/tls13/context.zig:335-480` (context.zig 3206 LOC) | Open |
+| QUAL-360 | [#276](https://gitlab.com/devnw/zig/tls/-/work_items/276) | Medium | 45 | maintainability | Refresh QUAL-116 LOC inventory: `aead.zig` 1337 LOC, `server_hello.zig` 1081 LOC. Split aead.zig → `nonce.zig` + `aead_cipher.zig` + `usage_limits.zig` at cluster boundaries 119/148/756. QUAL-116 umbrella updated inline. | `src/record/aead.zig`, `src/tls13/messages/server_hello.zig` | Open (`duplicate-of::QUAL-116`) |
+| QUAL-361 | [#277](https://gitlab.com/devnw/zig/tls/-/work_items/277) | Low | 40 | cleanup | Rename `build.zig` module `quic_tls` → `key_schedule` for truth-in-naming (14 import sites) | `build.zig:64`, `src/lib.zig:282`, 14 `@import("quic_tls")` sites | Open |
+| QUAL-362 | [#279](https://gitlab.com/devnw/zig/tls/-/work_items/279) | Low | 40 | docs | Doc drift: QUAL-319 shown Open in 5 doc sites despite Phase-13 closure (4ae8ac7). **Fixed inline in this Phase 20 sync.** | `docs/QUALITY_GAP_ANALYSIS.md:3273,3305,3326,3376,3390` (pre-edit line numbers) | **Resolved inline 2026-04-21** — awaiting GitLab issue close |
+| QUAL-363 | [#280](https://gitlab.com/devnw/zig/tls/-/work_items/280) | Low | 36 | docs | Add invariant comments to 3 new `catch unreachable` sites (extension of QUAL-313) | `src/tls13/context.zig:1379`, `src/record/aead.zig:587`, `src/tls13/messages.zig:262` | Open (`duplicate-of::QUAL-313`) |
+| QUAL-364 | [#282](https://gitlab.com/devnw/zig/tls/-/work_items/282) | Low | 24 | cleanup | Delete 2 unconditionally-skipped unit tests (no owner, no path to re-enable). Per user preference deletion-over-patching. | `tests/sig_unit_tests.zig:146-149`, `tests/x509_unit_tests.zig:533-543` | Open |
+
+### Phase 20 Refuted Findings (no GitLab issue)
+
+| QUAL-ID | Claim | Verification | Resolution |
+|---------|-------|--------------|------------|
+| QUAL-365 | `sig.zig` doc coverage 6% | Actual: 188 `///` comment lines vs 11 `pub` decls — doc density far exceeds claim. | **Refuted — `resolution::metric-error`** |
+| QUAL-366 | M4 deep-nesting: 227 lines over indentation threshold | Actual count of lines with ≥28 leading spaces: 5. | **Refuted — `resolution::metric-error`** |
+| QUAL-367 | M11 ungated `std.debug.print` in tests | 15/19 call sites are bench/fuzz drivers where `print` is the intended output (not a test hygiene violation). | **Refuted — `resolution::false-positive`** |
+
+### Phase 20 Info-Only (no GitLab issue)
+
+| QUAL-ID | Note |
+|---------|------|
+| QUAL-368 | Orphaned `GAP-0122` comment block in `src/tls13_full.zig:138-139`. Trivial doc cleanup — fold into any tls13_full.zig touch; not worth a separate issue. |
+
+### Phase 20 Supersession
+
+- **QUAL-345** ([#237](https://gitlab.com/devnw/zig/tls/-/work_items/237)) — Closed 2026-04-21, **superseded by QUAL-357** ([#271](https://gitlab.com/devnw/zig/tls/-/work_items/271)). QUAL-357 promoted Medium (PS=48) → High (PS=100) with refreshed line numbers (2480-2643, post-decomp) and an oracle regression gate (`context_decomp_trace_capture`).
+
+### Phase 20 Umbrella Updates (existing issues)
+
+- **QUAL-116** ([#242](https://gitlab.com/devnw/zig/tls/-/work_items/242)) — LOC inventory refresh comment added. Files still over ceiling: `context.zig` 3206, `aead.zig` 1337, `server_hello.zig` 1081.
+- **QUAL-313** ([#189](https://gitlab.com/devnw/zig/tls/-/work_items/189)) — 3 new `catch unreachable` sites recorded; tracked under QUAL-363.
+
+### Phase 20 Highest-Leverage Cluster
+
+1. **QUAL-357** (PS 100) — Security-audit unblock. Effort M. Oracle-gated.
+2. **QUAL-358** (PS 100) — Module-shape cleanup. Effort S. Cross-ref PERF-237.
+3. **QUAL-359** (PS 64) — Continues QUAL-317 decomp. Effort M.
+4. **QUAL-360** (PS 45) — AEAD file split under QUAL-116 umbrella. Effort M.
+5. **QUAL-361, QUAL-362, QUAL-363, QUAL-364** (PS 24-40 each) — Batchable low-risk cleanups; land together in one Wave.
+
+### Phase 20 Cross-References
+
+- **QUAL-358 ↔ PERF-237 / GAP-0131** — touches the same `parallel.zig`/module-root area; `cross-ref::PERF-237` label applied.
+- **QUAL-360 ↔ QUAL-116** — scoped under the LOC-ceiling umbrella; `duplicate-of::QUAL-116` label applied; QUAL-116 comment updated inline.
+- **QUAL-363 ↔ QUAL-313** — extension of the invariant-comment umbrella; `duplicate-of::QUAL-313` label applied.
+- **QUAL-357 ↔ QUAL-345** — supersession; QUAL-345 closed on GitLab with cross-reference.

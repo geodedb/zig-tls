@@ -1,10 +1,57 @@
 # Security Gap Analysis
 
-> **Last updated:** 2026-04-20 (Cycle 6 / Phase 19 — closed SEC-066, SEC-067, SEC-068, SEC-069, SEC-070, SEC-071, SEC-072, SEC-073 (8 items). SEC-065 remains open / deferred — confidential 0-RTT Config API mini-epic.)
+> **Last updated:** 2026-04-21 (Cycle 7 / Phase 20 — 11 new SEC findings from Phase 3 audit: SEC-074..SEC-084 + SEC-085 carry-forward marker for SEC-065. 5 confidential issues filed.)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Cycle 6 / Phase 19 execution of the Phase 14 audit. **Posture: 0 Critical / 1 High open / 0 Medium open / 0 Low open / 0 Info open.** All Medium/Low/Info findings from Phase 14 closed with code + regression tests; only SEC-065 (confidential 0-RTT persistent anti-replay wiring) remains open, pending the `Config.persistent_anti_replay_store` API mini-epic. Phase 13 history retained below.
+> **Review phase:** Cycle 7 / Phase 20 (Phase 3 security-reviewer sync). **Posture: 0 Critical / 5 High open / 3 Medium open / 2 Low open / 1 Info open.** 11 new findings filed this cycle (SEC-074..SEC-084); SEC-065 remains the 5th High, carried forward as the audit-cycle marker SEC-085 with expanded Phase-3 scope (see issue #249 Phase 3 comment). Phase 14 / Phase 19 history retained below.
 >
-> **Phase 19 banner:** SEC-065 (0-RTT cross-connection replay bypass) remains the single HIGH gap. All other Phase 14 findings have landed fixes on `main`. The SEC-066 duplicate-extension EnumSet guard (159d17b), SEC-067 mutex (f3dced5), and SEC-068 duplicate-CID guard (b24bf0a) collectively eliminate the pre-auth DoS / RFC-violation vectors surfaced by Phase 14. No Critical. No secrets leaked. No RCE.
+> **Phase 20 banner:** Phase 3 re-audit surfaced a cluster of cert-chain and RNG integrity gaps. Highest risk: **SEC-074** (RNG return value discarded -> potential uninitialized key material under seccomp / EINTR; 9 sites in `src/tls13/context.zig`). Three cert-parser gaps (SEC-075 unknown critical ext silently accepted, SEC-076 OID suffix-match bypass — SEC-069 regression class in ocsp.zig + sig.zig, SEC-077 `allow_insecure` trust-bypass flag on public API). Medium tier extends SEC-066/068 duplicate-extension defenses to ServerHello/EncryptedExtensions (SEC-078), QUIC preferred_address TP (SEC-080), and X.509 extensions (SEC-079, confidential due to dual-SAN impersonation class). All new confidential issues filed under `confidentiality` + `confidence::confirmed`; public issues are regressions of already-disclosed classes (SEC-066, 068, 069). No RCE. No leaked secrets. No Critical-severity finding.
+
+## Cycle 7 / Phase 20 Findings (2026-04-21)
+
+`/codepros:audit` Phase 3 security-reviewer sync. 11 new SEC items filed (5 confidential, 6 public), plus carry-forward comment on SEC-065 (#249) under audit-cycle marker SEC-085.
+
+**New findings (11) + carry-forward (1):**
+
+| SEC-ID | Risk | Severity | Issue | Confidential | Confidence | File:Line | Description | Status |
+|--------|------|----------|-------|--------------|------------|-----------|-------------|--------|
+| SEC-065 / SEC-085 | **64** | High | [#249](https://gitlab.com/devnw/zig/tls/-/issues/249) | yes | confirmed | `src/zero_rtt.zig:459` + `src/tls13/context.zig:550,1781` | 0-RTT persistent anti-replay unwired; Phase 3 adds default window size (64) insufficient for QUIC QPS, no fail-closed when store unset. CWE-294 / OWASP A07. | **Open** (carry-forward) |
+| SEC-074 | **20** | High | [#291](https://gitlab.com/devnw/zig/tls/-/issues/291) | yes | confirmed | `src/tls13/context.zig:1492,1543,1686,1690,1921,1934,+3 test` | RNG return value discarded (9 sites); seccomp/EINTR -> uninitialized ECDHE private / HRR cookie HMAC key / server_random. CWE-338/908. | **Open** |
+| SEC-075 | **16** | High | [#292](https://gitlab.com/devnw/zig/tls/-/issues/292) | yes | confirmed | `src/x509.zig:1097-1118` | Unknown critical extension silently accepted (RFC 5280 §4.2 MUST violation). CWE-295. | **Open** |
+| SEC-076 | **15** | High | [#293](https://gitlab.com/devnw/zig/tls/-/issues/293) | yes | confirmed | `src/ocsp.zig:72,76,80,84,147` + `src/sig.zig:288,293,297,316,914,917` | OID suffix-match bypass — SEC-069 regression class across 11 sites. CWE-345. | **Open** |
+| SEC-077 | **15** | High | [#294](https://gitlab.com/devnw/zig/tls/-/issues/294) | yes | confirmed | `src/x509.zig:1685,1687,1913-1914,1950-1955,2001` | `allow_insecure: bool` on public `validateChainEx` short-circuits all chain validation; no compile-time guard. CWE-295/693. | **Open** |
+| SEC-078 | **12** | Medium | [#296](https://gitlab.com/devnw/zig/tls/-/issues/296) | no | confirmed | `src/tls13/context.zig:2081-2110` + `src/tls13/messages/encrypted_extensions.zig:215-251` + `src/tls13/context/server_hello_parsers.zig:30-86` | ServerHello + EncryptedExtensions lack duplicate-extension detection (SEC-066 regression class). CWE-693. | **Open** |
+| SEC-079 | **12** | Medium | [#295](https://gitlab.com/devnw/zig/tls/-/issues/295) | yes | confirmed | `src/x509.zig:1108-1114` | X.509 duplicate extension accepted — last-wins + slice leak. Dual-SAN impersonation class. CWE-295/401. | **Open** |
+| SEC-080 | **9** | Medium | [#297](https://gitlab.com/devnw/zig/tls/-/issues/297) | no | confirmed | `src/quic_transport_params.zig:677-680` | QUIC preferred_address TP accepts duplicate + leaks connection_id (SEC-068 regression class). CWE-401/693. | **Open** |
+| SEC-081 | **9** | Medium | [#298](https://gitlab.com/devnw/zig/tls/-/issues/298) | no | confirmed | `src/tls13/context.zig` (9 sites) | getrandom hardwired to `std.os.linux` — portability + correctness. Subsumed by SEC-074 fix. | **Open** |
+| SEC-082 | **6** | Low | [#299](https://gitlab.com/devnw/zig/tls/-/issues/299) | no | confirmed | `src/tls13/context/key_update.zig:118-129` | KeyUpdate count unbounded (RFC 8446 §5.5 SHOULD). Same as GAP-0135. CWE-400. | **Open** |
+| SEC-083 | **6** | Low | [#300](https://gitlab.com/devnw/zig/tls/-/issues/300) | no | confirmed | `tests/fuzz/corpus/` | Fuzz corpora missing for 7 attacker-reachable parsers (ServerHello, EE, Certificate, CertificateVerify, OCSP, SCT, X.509). Test-gap. | **Open** |
+| SEC-084 | **3** | Info | [#301](https://gitlab.com/devnw/zig/tls/-/issues/301) | no | confirmed | `tests/sig_unit_tests.zig:146-149` + `tests/x509_unit_tests.zig:533-543` | 2 unit tests skipped unconditionally mask security-relevant coverage. Duplicate-frame of QUAL-364. | **Open** |
+
+**Confidentiality policy note:** confidential issues describe class-level evidence only in this public doc; full exploit details live in the GitLab confidential issues.
+
+### Phase 20 top risks
+
+1. **SEC-065 / SEC-085 Risk 64 (High, confidential)** — 0-RTT cross-connection replay; Phase 3 widens scope (window sizing, fail-closed).
+2. **SEC-074 Risk 20 (High, confidential)** — RNG return discarded; uninitialized key material under seccomp/EINTR.
+3. **SEC-075 Risk 16 (High, confidential)** — unknown critical X.509 extension accepted; RFC 5280 MUST violation.
+4. **SEC-076 Risk 15 (High, confidential)** — OID suffix-match bypass across 11 sites in ocsp.zig + sig.zig (SEC-069 regression class).
+5. **SEC-077 Risk 15 (High, confidential)** — `allow_insecure` trust-bypass flag on public API.
+
+### Phase 20 roadmap
+
+- **Quick wins (< 1 day)**: SEC-074 (9 sites -> `std.crypto.random.bytes`); SEC-076 (11 sites -> canonical OID equality, mirrors SEC-069 helper); SEC-080 (extend SEC-068 bitset to preferred_address); SEC-082 (counter on Context); SEC-084 (unskip 2 tests).
+- **Medium (1-5 days)**: SEC-075 (critical-boolean parse + unknown-OID rejection + test cert); SEC-078 (extend SEC-066 helper to ServerHello + EE); SEC-079 (extension-seen bitset in `parseExtensionsBlock`); SEC-081 (cross-platform RNG, likely subsumed by SEC-074); SEC-083 (7 fuzz harnesses + corpus seeds + CI wiring).
+- **Strategic (> 5 days)**: SEC-077 (public API signature change — either build-flag gating or sentinel type; coordinate with downstream callers); SEC-065/SEC-085 (Config API mini-epic — still deferred, unchanged scope except Phase 3 widens to include window sizing + fail-closed default).
+
+### Areas audited clean in Phase 20
+
+- **Constant-time compare primitives**: all secret-derived comparisons use `std.crypto.timing_safe.*` (HMAC tags, MAC checks, PSK binders, Finished values).
+- **AEAD sequence + usage limits**: `AeadLimitExceeded` fires on both record-count and data-volume thresholds; no oracle-distinguishable error branches observed (same-shape alert regardless of which invariant tripped).
+- **PKCS#1 v1.5 rejection**: RFC 8446 §4.2.3 enforced — RSASSA-PKCS1-v1_5 signature algorithms rejected on incoming CertificateVerify (only RSASSA-PSS accepted). Legacy_rsa_* sigalg codepoints rejected as unsigned.
+- **Path-length constraint enforcement**: `src/x509.zig:1737-1747` computes depth from trust-anchor downward and enforces per-issuer `pathLenConstraint` correctly against the cumulative `basicConstraints` limit.
+- **Supply chain**: only `thread_pool` dependency in `build.zig.zon`; pinned by SHA + multihash. `.gitlab-ci.yml` uses SHA-pinned component imports (closed SEC-061 posture maintained). Zig tarball SHA-256 verified by CI.
+
+---
 
 ## Phase 14 Findings (2026-04-20)
 

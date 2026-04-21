@@ -1,6 +1,6 @@
 # GAP Analysis
 
-> **Last updated:** 2026-04-20 (Cycle 6 / Phase 19 gap-closure — 17 QUAL/SEC/PERF items closed + 1 QUAL Won't-Do across other ledgers; NO GAP-* items touched this cycle. See `docs/QUALITY_GAP_ANALYSIS.md`, `docs/SECURITY_GAP_ANALYSIS.md`, and `docs/PERF_GAP_ANALYSIS.md` Cycle 6 / Phase 19 sections for detail. Cycle 6 / Phase 18 sync preceded: QUAL-069/QUAL-073/QUAL-091 closed as subsumed by engine.zig deletion + QUAL-317 decomposition; QUAL-116 filed as [#242](https://gitlab.com/devnw/zig/tls/-/work_items/242); QUAL-315 promoted Deferred → Open.)
+> **Last updated:** 2026-04-21 (Cycle 7 / Phase 20 gap-detector sync — 5 substantive GAPs filed (GAP-0131..GAP-0135), 1 wishlist GAP-0136, 1 ledger-only GAP-0137; two stale Open ledger rows (Row 63 GAP-0097, Row 65 GAP-0098) superseded by GAP-0131 / GAP-0137 after evidence drift audit. GitLab issues: [#267](https://gitlab.com/devnw/zig/tls/-/work_items/267) GAP-0131, [#268](https://gitlab.com/devnw/zig/tls/-/work_items/268) GAP-0132, [#269](https://gitlab.com/devnw/zig/tls/-/work_items/269) GAP-0133, [#270](https://gitlab.com/devnw/zig/tls/-/work_items/270) GAP-0134, [#273](https://gitlab.com/devnw/zig/tls/-/work_items/273) GAP-0135, [#274](https://gitlab.com/devnw/zig/tls/-/work_items/274) GAP-0136.) Previous: 2026-04-20 (Cycle 6 / Phase 19 gap-closure — 17 QUAL/SEC/PERF items closed + 1 QUAL Won't-Do across other ledgers; NO GAP-* items touched that cycle. See `docs/QUALITY_GAP_ANALYSIS.md`, `docs/SECURITY_GAP_ANALYSIS.md`, and `docs/PERF_GAP_ANALYSIS.md` Cycle 6 / Phase 19 sections for detail. Cycle 6 / Phase 18 sync preceded: QUAL-069/QUAL-073/QUAL-091 closed as subsumed by engine.zig deletion + QUAL-317 decomposition; QUAL-116 filed as [#242](https://gitlab.com/devnw/zig/tls/-/work_items/242); QUAL-315 promoted Deferred → Open.)
 > **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 >
@@ -15,13 +15,17 @@
 
 ## Summary
 
-| Severity | Original | Closed | Won't Do | Open |
-|----------|----------|--------|----------|------|
-| Critical | 8        | 8      | 0        | 0    |
-| High     | 22       | 24     | 0        | 1    |
-| Medium   | 48       | 47     | 1        | 2    |
-| Low      | 52       | 50     | 6        | 1    |
-| **Total**| **130**  | **121**| **7**    | **4** |
+| Severity | Original | Closed | Won't Do | Superseded | Open |
+|----------|----------|--------|----------|------------|------|
+| Critical | 8        | 8      | 0        | 0          | 0    |
+| High     | 24       | 24     | 0        | 0          | 3    |
+| Medium   | 51       | 47     | 1        | 1          | 5    |
+| Low      | 54       | 50     | 6        | 1          | 2    |
+| **Total**| **137**  | **121**| **7**    | **2**      | **10** |
+
+### Cycle 7 / Phase 20 Net Delta
+
++6 new GitLab issues (GAP-0131..GAP-0136) + 1 ledger-only GAP-0137. Row 63 (parallel.zig framing) superseded → GAP-0131. Row 65 (unused symbols) superseded → GAP-0137 (with current evidence after cookie.zig deletion and varint.zig line shift). GAP-0097 & GAP-0098 now marked Superseded (not Open).
 
 ### Implementation Status
 
@@ -535,9 +539,9 @@ All 11 remaining open issues from the third review have been implemented:
 | 60 | Low | 4 | 3 skipped tests indicate incomplete test coverage (2 require stdlib features not yet available) | tests/ | -- | tests/sig_unit_tests.zig:151, tests/x509_unit_tests.zig:539, tests/openssl_conformance.zig:450 | [#134](https://gitlab.com/devnw/zig/tls/-/issues/134) | Won't Do: 2 skipped tests require stdlib features not yet available | -- | -- | Won't Do |
 | 61 | Low | 4 | 7 closable GitLab issues remained open despite code implemented (#4,#14,#15,#19,#71,#83,#89) | GitLab tracker | -- | Issues #4,#14,#15,#19,#71,#83,#89 | [#135](https://gitlab.com/devnw/zig/tls/-/issues/135) | All 7 issues closed with evidence comments | Claude | 2026-03-24 | Closed |
 | 62 | High | 40 | PSK conformance test compile error -- duplicate `const Secret = ks.Secret;` blocks 14 tests | tests/conformance/boringssl/psk_handshake.zig | -- | psk_handshake.zig:80,87 | -- | Removed duplicate at line 87; 14 PSK tests unblocked (449 conformance tests passing) | Claude | 2026-03-25 | Closed |
-| 63 | Medium | 12 | parallel module (1,016 lines) built but never imported by any runtime code path | src/parallel.zig, build.zig | CWE-561 | parallel.zig (entire file), build.zig:227 | TBD | Wire into lib.zig public API, mark experimental, or remove | TBD | TBD | Open |
+| 63 | Medium | 12 | parallel module (997 lines) unused by handshake/record paths — superseded by GAP-0131 (re-export present at lib.zig:414; real gap is no production consumer) | src/parallel.zig, src/lib.zig | CWE-561 | parallel.zig (997 LOC), src/lib.zig:414,550-556 | [#267](https://gitlab.com/devnw/zig/tls/-/work_items/267) | Deletion candidate per user operating rule; see GAP-0131 | TBD | TBD | Superseded → GAP-0131 |
 | 64 | Low | 4 | README test count stale -- claims 853 tests, actual count is 1000 | README.md | -- | README.md:81,85-88,97 | -- | Updated README test counts (853->1000), Zig version (0.14.0+->0.15.1) | Claude | 2026-03-25 | Closed |
-| 65 | Low | 4 | 7 unused public symbols across 5 files | Multiple | CWE-561 | key_schedule.zig:619/197, parallel.zig:96, tls13_full.zig:138, varint.zig:207, cookie.zig:84, quic_transport_params.zig:111-113 | TBD | Remove or document as public API | TBD | TBD | Open |
+| 65 | Low | 4 | 7 unused public symbols — superseded by GAP-0137 after evidence drift (cookie.zig deleted; varint.zig:207 out of range after file shrank to 205 LOC) | Multiple | CWE-561 | See GAP-0137 refreshed evidence | N/A (ledger-only) | Refresh evidence + close or re-file | TBD | TBD | Superseded → GAP-0137 |
 | 66 | Low | 4 | 19 GitLab issues remain open despite documented resolution | GitLab tracker | -- | Issues #74,#104,#109-#111,#118-#122,#125-#133 | -- | Won't Do: Issue tracker maintenance separate from code quality | -- | -- | Won't Do |
 
 ---
@@ -1024,6 +1028,132 @@ All 11 remaining open issues from the third review have been implemented:
 - **Requirement source:** Post-engine-deletion doc hygiene (follow-up to GAP-0125 / QUAL-330).
 - **Resolution:** 2026-04-19 -- Removed residual `engine.zig` prose reference left behind after Phase 13 engine deletion; updated module map to reflect Context as sole driver. Commit: 301729d.
 - **Acceptance criteria:** `grep engine.zig docs/ARCHITECTURE.md` returns no stale references.
+
+### GAP-0131: Parallel TLS helpers unused by handshake/record paths — candidate for deletion [OPEN]
+
+- **Issue:** [#267](https://gitlab.com/devnw/zig/tls/-/work_items/267)
+- **Category:** Tech Debt
+- **Severity:** Medium
+- **Status:** Open (2026-04-21) — supersedes GAP-0097
+- **Requirement source:** Per-user operating rule *delete-over-patch*; cross-ref PERF-237 (perf review F1).
+- **Current state (evidence):**
+  - `src/parallel.zig` — 997 LOC, zero handshake/record call sites.
+  - `src/lib.zig:414` — `pub const parallel = @import("parallel");` (disproves stale "never imported" framing).
+  - `src/lib.zig:550-556` — smoke test only exercises `getPool` / `deinitPool`.
+  - `tests/fuzz/rsa_pss_verify.zig:37` — sole non-trivial consumer.
+- **Why this is a gap:** 997 LOC of code with undocumented global state (QUAL-325), `@panic` on init (QUAL-314), triple-copy RSA-PSS (QUAL-303), and unvalidated perf thresholds (PERF-235) is maintained with zero production consumer.
+- **Impact/Risk:** Maintenance burden; global `ThreadPool` hazards; contradicts library simplicity objective.
+- **Recommended fix:** Delete `src/parallel.zig`, its re-export, `build.zig:227` wiring, and migrate the fuzz consumer to `sig.rsaPssVerifyGeneric`.
+- **Acceptance criteria:** `src/parallel.zig` removed; `zig build test` green; cascaded issues (#180, #190, #195, #200, #248, #263) closed with cross-reference to deletion commit.
+- **Labels:** `gap`, `type::tech-debt`, `priority::medium`, `component::parallel`, `supersedes::GAP-0097`, `cross-ref::PERF-237`
+- **Created:** 2026-04-21
+
+### GAP-0132: Server NewSessionTicket build path and on_session_ticket callback missing [OPEN]
+
+- **Issue:** [#268](https://gitlab.com/devnw/zig/tls/-/work_items/268)
+- **Category:** Feature
+- **Severity:** Medium
+- **Status:** Open (2026-04-21)
+- **Requirement source:** RFC 8446 §4.6.1; `src/lib.zig:450` doc block advertises a callback that does not exist; `tests/rfc8446/section_4_6_1_new_session_ticket.zig:14-19` stub.
+- **Current state (evidence):**
+  - `src/tls13/context.zig:1189-1202` — inbound NST handling is `logger.debugPrint(...)` only.
+  - `src/tls13/messages.zig` — no `buildNewSessionTicket` helper.
+  - `src/lib.zig:450` — documents a non-existent `on_session_ticket` callback.
+- **Why this is a gap:** Session resumption (0-RTT / PSK) cannot be driven server-side; client applications cannot persist received tickets. Doc contradicts code.
+- **Impact/Risk:** Resumption unsupported; breaks API promise.
+- **Recommended fix:** Add `buildNewSessionTicket` in messages.zig, wire server issuance, add `on_session_ticket` callback on `Callbacks`, invoke from context.zig:1189-1202, add RFC-driven tests.
+- **Acceptance criteria:** Server emits valid NST wire frame; client delivers ticket via callback; ≥3 RFC-driven tests; doc-matches-code; #115 closed as subsumed.
+- **Labels:** `gap`, `rfc::8446`, `type::feature`, `priority::medium`, `component::context`, `component::messages`
+- **Created:** 2026-04-21
+
+### GAP-0133: Inbound TLS alert dispatch not wired — fatal alerts silently dropped [OPEN]
+
+- **Issue:** [#269](https://gitlab.com/devnw/zig/tls/-/work_items/269)
+- **Category:** Bug
+- **Severity:** High
+- **Status:** Open (2026-04-21)
+- **Requirement source:** RFC 8446 §6; RFC 9001 §4.8.
+- **Current state (evidence):**
+  - `src/alert.zig:83-100` — `Alert.decode` and `toQuicCryptoError` defined but no production caller.
+  - `src/tls13/context.zig:389` — `alert: ?u8 = null` field in HandshakeFlags never populated.
+  - `grep -r 'parseAlert|handleAlert|onAlert' src/tls13/` → 0 matches.
+- **Why this is a gap:** Fatal peer alerts are discarded; Context stays in healthy state while the data channel is broken.
+- **Impact/Risk:** CWE-754; interop & debugging failures surface as generic errors; QUIC stack cannot produce the required CRYPTO_ERROR with the mapped code.
+- **Recommended fix:** Add `handleAlert` on Context, dispatch alert records from the record layer into it, transition Context into error state, invoke `on_alert` callback, extend `AlertError` error set.
+- **Acceptance criteria:** Inbound fatal alert surfaces as typed error; `on_alert` callback fires; QUIC integration produces `0x0100 + alert_code`; unit tests cover each §6.2 description.
+- **Labels:** `gap`, `rfc::8446`, `rfc::9001`, `priority::high`, `type::bug`, `severity::high`, `component::context`, `component::alert`
+- **Created:** 2026-04-21
+
+### GAP-0134: No public sendCloseNotify / graceful-close API on Context [OPEN]
+
+- **Issue:** [#270](https://gitlab.com/devnw/zig/tls/-/work_items/270)
+- **Category:** Feature
+- **Severity:** High
+- **Status:** Open (2026-04-21)
+- **Requirement source:** RFC 8446 §6.1 (MUST send close_notify before closing write side); RFC 9001 §10.2.
+- **Current state (evidence):**
+  - `src/alert.zig:12` — `close_notify = 0` constant defined.
+  - `src/lib.zig:526` — public doc mentions close_notify but points to no API.
+  - `grep -r 'sendCloseNotify|user_shutdown|graceful_close' src/` → 0 matches.
+- **Why this is a gap:** Consumers cannot signal orderly write-side close; exposes truncation-attack surface.
+- **Impact/Risk:** Interop failures with strict peers; RFC §6.1 non-compliance; QUIC stack cannot emit required pre-CLOSE CRYPTO frame.
+- **Recommended fix:** Add `Context.sendCloseNotify` and `Context.sendFatalAlert`; optional `Context.shutdown` convenience; integration test against OpenSSL/BoringSSL.
+- **Acceptance criteria:** Public APIs present; encoded records accepted by reference stacks; Context transitions to terminal state; tests for warning + fatal paths; lib.zig examples updated.
+- **Labels:** `gap`, `rfc::8446`, `rfc::9001`, `priority::high`, `type::feature`, `component::context`, `component::alert`
+- **Created:** 2026-04-21
+
+### GAP-0135: rotatePeerSecret has no per-connection budget — unbounded inbound KeyUpdate accepted [OPEN]
+
+- **Issue:** [#273](https://gitlab.com/devnw/zig/tls/-/work_items/273)
+- **Category:** Security
+- **Severity:** Medium
+- **Status:** Open (2026-04-21) — cross-ref SEC-082 (same finding in security ledger)
+- **Requirement source:** RFC 8446 §4.6.3; RFC 9001 §6; CWE-400.
+- **Current state (evidence):**
+  - `src/tls13/context/key_update.zig:99-106` — `rotatePeerSecret` chains HKDF without bookkeeping.
+  - `src/tls13/context/key_update.zig:118-129` — `shouldTriggerKeyUpdate` is outbound-only; no inbound analog.
+  - No `peer_key_updates_seen` counter on `Context`.
+- **Why this is a gap:** Malicious peer can force unbounded HKDF derivations by rapid KeyUpdate injection.
+- **Impact/Risk:** CPU-amplification DoS; no audit trail; interacts with SEC-067 (#256) TOCTOU.
+- **Recommended fix:** Counter on Context; configurable `max_peer_key_updates_per_window` on Config; error + connection termination on budget exhaustion; warn at 50%.
+- **Acceptance criteria:** Counter + budget plumbed; test injects N+1 KeyUpdates and asserts Nth ok / (N+1)th errors; RFC coverage matrix updated.
+- **Labels:** `gap`, `rfc::8446`, `type::security`, `priority::medium`, `component::key-update`, `cwe::400`, `cross-ref::SEC-082`
+- **Created:** 2026-04-21
+
+### GAP-0136: Retry integrity (RFC 9001 §5.5) — document scope decision [OPEN / WISHLIST]
+
+- **Issue:** [#274](https://gitlab.com/devnw/zig/tls/-/work_items/274)
+- **Category:** Feature
+- **Severity:** Low (Wishlist)
+- **Status:** Open (2026-04-21) — `status::wishlist`
+- **Requirement source:** RFC 9001 §5.5; `tests/rfc9001/section_5_5_retry_integrity.zig:17-20`; `docs/RFC_COVERAGE.md:53`.
+- **Current state (evidence):**
+  - `tests/rfc9001/section_5_5_retry_integrity.zig:17-20` — stub with "not implemented" comment.
+  - No `retry_integrity` / `retry_aead` helper in `src/`.
+- **Why this is a gap:** Scope ambiguity — Retry tag derivation uses TLS primitives (AEAD_AES_128_GCM + fixed key) but is typically the transport layer's responsibility.
+- **Impact/Risk:** Users expecting complete RFC 9001 coverage may be surprised; downstream QUIC transport must implement externally.
+- **Recommended fix:** Either (A) implement `src/record/retry.zig` with compute/verify helpers + test, or (B) formally mark out-of-scope in RFC_COVERAGE.md and ARCHITECTURE.md.
+- **Acceptance criteria:** Either impl+test lands OR both docs explicitly mark out-of-scope with rationale. Either closes this issue.
+- **Labels:** `gap`, `rfc::9001`, `type::feature`, `priority::low`, `status::wishlist`, `component::record`
+- **Created:** 2026-04-21
+
+### GAP-0137: Unused-symbols inventory evidence drift — ledger-only refresh [OPEN]
+
+- **Issue:** N/A (ledger-only; supersedes GAP-0098 Row 65)
+- **Category:** Docs / Hygiene
+- **Severity:** Low
+- **Status:** Open (2026-04-21) — supersedes GAP-0098/Row 65
+- **Requirement source:** Self-audit of Phase 3 gap-detector inputs against current HEAD.
+- **Current state (evidence):**
+  - `src/cookie.zig` — file deleted; prior evidence line `cookie.zig:84` no longer resolvable.
+  - `src/varint.zig` — file is 205 LOC; prior evidence `varint.zig:207` is out of range (line shift, function likely moved or symbol removed).
+  - Row 65 of the stack-ranked table still cites the stale locations.
+- **Why this is a gap:** Ledger evidence must be reproducible. Stale line references erode trust in the audit trail.
+- **Impact/Risk:** None code-wise — this is pure doc hygiene. But downstream readers relying on the ledger for triage waste cycles chasing missing code.
+- **Recommended fix:** Re-run the unused-public-symbol sweep against current HEAD, refresh the list, and either close Row 65 (if the remaining symbols are intentional public API) or refile as a fresh targeted gap per symbol. No GitLab issue needed — this is ledger maintenance.
+- **Acceptance criteria:** Next gap-detector cycle produces a fresh evidence list; Row 65 either closed or replaced with current file:line pairs.
+- **Labels:** N/A (ledger-only)
+- **Created:** 2026-04-21
 
 ### GAP-0099: 19 GitLab issues remain open despite documented resolution [WON'T DO]
 
