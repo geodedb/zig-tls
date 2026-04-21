@@ -2609,9 +2609,12 @@ pub const Context = struct {
     }
 
     /// RFC 8446 §4.4.3: Parse CertificateVerify and perform full certificate validation.
-    /// This validates the entire certificate chain and verifies the signature over the transcript.
+    ///
+    /// QUAL-357: Orchestrator. Delegates per-concern validation to
+    /// `cert_handlers`. The prior body mixed cert-chain + OCSP + SCT +
+    /// CertificateVerify-sig in one 163-LOC function; each concern is now
+    /// independently auditable in `src/tls13/context/cert_handlers.zig`.
     fn handleCertificateVerify(self: *Context, body: []const u8) !void {
-        // Parse CertificateVerify message
         const parsed = try tls13_full.parseCertificateVerify(body);
 
         // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
@@ -2620,161 +2623,74 @@ pub const Context = struct {
             self.allocator.free(sig_copy);
             self.peer_cert_verify_sig = null;
         }
-        if (self.peer_cert_verify_sig) |old_sig| {
-            self.allocator.free(old_sig);
-        }
+        if (self.peer_cert_verify_sig) |old_sig| self.allocator.free(old_sig);
         self.peer_cert_verify_sig = sig_copy;
         self.peer_cert_verify_alg = parsed.algorithm;
 
-        // Validate certificate chain
         const chain = self.peer_cert_chain orelse return HandshakeError.MissingCertificate;
-
-        // Get current time for certificate validity checking
         const now_unix = unixTimestamp();
 
         // SEC-029: Require server_name for hostname validation unless insecure
         // mode is selected. Without a server_name, any valid cert from any CA
         // would be accepted (MITM risk). SEC-077: the insecure path is also
-        // build-gated in x509.validateChainReturnParsed below.
+        // build-gated in x509.validateChainReturnParsed.
         if (self.config.server_name == null and self.config.allow_insecure == .secure) {
             traceHandshake("Client: ERROR - server_name is null and insecure mode is not set\\n", .{});
             return HandshakeError.MissingServerName;
         }
-
-        // Get server name from SNI for hostname validation
         const server_name = if (self.config.server_name) |sni| sni else "";
 
-        // RFC 5280 §6: Perform full chain validation
-        // This includes:
-        // - Validity period checks
-        // - Hostname (SNI) verification
-        // - Extended Key Usage (id-kp-serverAuth)
-        // - Basic Constraints enforcement
-        // - Signature verification along the chain
-        // PERF-207: validate + parse leaf in one pass (avoids re-parsing chain[0]).
-        // PERF-016: Uses cached trust store to avoid RwLock contention.
-        var leaf_parsed = x509.validateChainReturnParsed(
+        // QUAL-357 step 1: chain validation + leaf parse (PERF-207: one pass).
+        var leaf_parsed = try cert_handlers.validateChainAndLeaf(
             self.allocator,
             chain,
             now_unix,
             server_name,
             self.config.allow_insecure,
-            .server_auth,
             self.cached_trust_store,
-        ) catch |err| {
-            traceHandshake("Client: Certificate chain validation failed: {}\\n", .{err});
-            return HandshakeError.CertificateValidationFailed;
-        };
+        );
         defer leaf_parsed.deinit(self.allocator);
 
-        // RFC 6960 + RFC 8446 §4.4.2.1: OCSP stapling validation
-        // RFC 8446 §4.4.3: Verify CertificateVerify signature
-        // Both OCSP validation and signature verification need the parsed leaf cert,
-        // so we consolidate into a single block to avoid redundant parsing.
-        if (self.config.allow_insecure == .secure) {
-            // PERF-037/PERF-207: leaf_parsed is reused for OCSP validation and
-            // CertificateVerify signature verification below.
-            if (self.config.require_ocsp) {
-                // OCSP is required - fail if not present
-                if (self.peer_ocsp_response == null) {
-                    traceHandshake("Client: ERROR - OCSP response required but not provided\\n", .{});
-                    return HandshakeError.MissingOcspResponse;
-                }
-            }
-
-            // Validate OCSP response if present
-            if (self.peer_ocsp_response) |ocsp_bytes| {
-                // Determine issuer info for OCSP validation
-                var issuer_parsed: x509.Certificate = undefined;
-                var has_issuer = false;
-                const issuer_info: ?ocsp.IssuerInfo = if (chain.len >= 2) blk: {
-                    issuer_parsed = try x509.parseCert(self.allocator, chain[1]);
-                    has_issuer = true;
-                    break :blk ocsp.IssuerInfo{ .cert = &issuer_parsed, .der = chain[1] };
-                } else null;
-                defer if (has_issuer) issuer_parsed.deinit(self.allocator);
-
-                // Validate the stapled OCSP response
-                ocsp.validateStapledResponse(
-                    self.allocator,
-                    ocsp_bytes,
-                    &leaf_parsed,
-                    chain[0],
-                    issuer_info,
-                    now_unix,
-                ) catch |err| {
-                    traceHandshake("Client: OCSP validation failed: {}\\n", .{err});
-                    return HandshakeError.OcspValidationFailed;
-                };
-
-                traceHandshake("Client: OCSP response validated successfully\\n", .{});
-            }
-
-            // RFC 6962 + RFC 8446 §4.4.2.1: Signed Certificate Timestamp (SCT) validation
-            if (self.config.require_scts) {
-                // SCT is required - fail if not present
-                if (self.peer_sct_list == null) {
-                    traceHandshake("Client: ERROR - SCT list required but not provided\\n", .{});
-                    return HandshakeError.MissingSctList;
-                }
-            }
-
-            // Validate and invoke callback for SCT list if present
-            if (self.peer_sct_list) |sct_bytes| {
-                const parsed_scts = sct.parseList(self.allocator, sct_bytes) catch |err| {
-                    traceHandshake("Client: Failed to parse SCT list: {}\\n", .{err});
-                    return HandshakeError.SctParsingFailed;
-                };
-                defer self.allocator.free(parsed_scts);
-
-                if (parsed_scts.len == 0 and self.config.require_scts) {
-                    traceHandshake("Client: ERROR - Empty SCT list when SCTs required\\n", .{});
-                    return HandshakeError.EmptySctList;
-                }
-
-                // Invoke user callback for additional validation if configured
-                if (self.config.on_sct_list) |callback| {
-                    callback(parsed_scts) catch |err| {
-                        traceHandshake("Client: SCT list callback rejected: {}\\n", .{err});
-                        return HandshakeError.SctCallbackRejected;
-                    };
-                }
-
-                traceHandshake("Client: SCT list validated ({} SCTs)\\n", .{parsed_scts.len});
-            }
-
-            // RFC 8446 §4.4.3: Verify CertificateVerify signature
-            // The signature is computed over the transcript hash up to (but not including) CertificateVerify
-            const transcript_hash = self.transcripts.handshake.finalize(self.hash_kind);
-
-            // RFC 8446 §4.2.3: Enforce signature algorithm policy (QUAL-317: via cert_handlers).
-            cert_handlers.validateSignatureAlgorithm(
-                parsed.algorithm,
-                self.config.supported_signature_schemes,
-            ) catch |err| {
-                traceHandshake("Client: CertificateVerify algorithm {} not in supported list\\n", .{parsed.algorithm});
-                return err;
-            };
-
-            // PERF-037: Reuse leaf_parsed from above instead of parsing chain[0] again.
-            // QUAL-317: context-string selection + sig.verify wrapped in cert_handlers.
-            cert_handlers.verifyCertVerifySignature(.{
-                .role = .server,
-                .leaf_spki = leaf_parsed.spki,
-                .signature = parsed.signature,
-                .signature_scheme = @intFromEnum(parsed.algorithm),
-                .transcript_hash = transcript_hash.slice(),
-            }, self.allocator) catch |err| {
-                if (err == HandshakeError.InvalidSignature) {
-                    traceHandshake("Client: CertificateVerify signature verification failed\\n", .{});
-                }
-                return err;
-            };
-
-            traceHandshake("Client: Certificate chain validated and CertificateVerify signature verified\\n", .{});
-        } else {
+        // SEC-077: In insecure testing mode, skip OCSP / SCT / CV-sig. The
+        // leaf was still parsed above so Context state remains coherent.
+        if (self.config.allow_insecure == .testing_only_i_know_what_i_am_doing) {
             traceHandshake("Client: Certificate validation skipped (insecure testing mode)\\n", .{});
+            return;
         }
+
+        // QUAL-357 step 2: OCSP stapled-response validation (RFC 6960 +
+        // RFC 8446 §4.4.2.1). PERF-037: reuses leaf_parsed from step 1.
+        try cert_handlers.validateOcspStaple(
+            self.allocator,
+            self.peer_ocsp_response,
+            &leaf_parsed,
+            chain,
+            now_unix,
+            self.config.require_ocsp,
+        );
+
+        // QUAL-357 step 3: SCT list validation (RFC 6962 + RFC 8446 §4.4.2.1).
+        try cert_handlers.validateSctList(
+            self.allocator,
+            self.peer_sct_list,
+            self.config.require_scts,
+            self.config.on_sct_list,
+        );
+
+        // QUAL-357 step 4: CertificateVerify signature (RFC 8446 §4.4.3).
+        // RFC 8446 §4.2.3: signature-algorithm policy check first.
+        // PERF-037: leaf_parsed reused instead of re-parsing chain[0].
+        const transcript_hash = self.transcripts.handshake.finalize(self.hash_kind);
+        try cert_handlers.validateSignatureAlgorithm(parsed.algorithm, self.config.supported_signature_schemes);
+        try cert_handlers.verifyCertVerifySignature(.{
+            .role = .server,
+            .leaf_spki = leaf_parsed.spki,
+            .signature = parsed.signature,
+            .signature_scheme = @intFromEnum(parsed.algorithm),
+            .transcript_hash = transcript_hash.slice(),
+        }, self.allocator);
+
+        traceHandshake("Client: Certificate chain + OCSP + SCT validated; CertificateVerify signature verified\\n", .{});
     }
 
     /// RFC 8446 §4.4.2: Parse and store client Certificate message (server-side mTLS).

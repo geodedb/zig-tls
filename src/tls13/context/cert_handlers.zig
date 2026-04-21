@@ -207,6 +207,110 @@ pub fn verifyCertVerifySignature(
     if (!verified) return HandshakeError.InvalidSignature;
 }
 
+/// QUAL-357: Wraps `x509.validateChainReturnParsed` and normalizes the error
+/// to `HandshakeError.CertificateValidationFailed` for consistency with the
+/// TLS alert dispatcher.
+///
+/// RFC 5280 §6: Perform full chain validation — validity period checks,
+/// hostname (SNI) verification, Extended Key Usage (server_auth), basic
+/// constraints, and signature verification along the chain.
+/// PERF-207: validate + parse leaf in one pass (avoids re-parsing chain[0]).
+/// PERF-016: Uses cached trust store to avoid RwLock contention.
+/// SEC-077: When `insecure == .testing_only_i_know_what_i_am_doing`, the
+/// underlying x509 call short-circuits chain validation but STILL returns a
+/// parsed leaf (needed for downstream CertificateVerify signature checks).
+pub fn validateChainAndLeaf(
+    alloc: std.mem.Allocator,
+    chain: [][]const u8,
+    now_unix: i64,
+    server_name: []const u8,
+    insecure: x509.InsecureValidation,
+    trust_store_override: ?x509.TrustStore,
+) !x509.Certificate {
+    return x509.validateChainReturnParsed(
+        alloc,
+        chain,
+        now_unix,
+        server_name,
+        insecure,
+        .server_auth,
+        trust_store_override,
+    ) catch return HandshakeError.CertificateValidationFailed;
+}
+
+/// QUAL-357: Validates an OCSP stapled response against the leaf certificate.
+///
+/// Behavior matrix:
+///   - `ocsp_bytes == null` + `require_ocsp == true`  → MissingOcspResponse
+///   - `ocsp_bytes == null` + `require_ocsp == false` → ok (no-op)
+///   - Validation failure (for non-null bytes)        → OcspValidationFailed
+///
+/// RFC 6960 + RFC 8446 §4.4.2.1: OCSP stapling validation. When a chain of
+/// length >= 2 is provided, the issuer cert is parsed and passed to the
+/// validator so the OCSP response's issuer key hash can be verified.
+pub fn validateOcspStaple(
+    alloc: std.mem.Allocator,
+    ocsp_bytes: ?[]const u8,
+    leaf_parsed: *x509.Certificate,
+    chain: [][]const u8,
+    now_unix: i64,
+    require_ocsp: bool,
+) !void {
+    if (ocsp_bytes == null) {
+        if (require_ocsp) return HandshakeError.MissingOcspResponse;
+        return;
+    }
+
+    var issuer_parsed: x509.Certificate = undefined;
+    var has_issuer = false;
+    const issuer_info: ?ocsp.IssuerInfo = if (chain.len >= 2) blk: {
+        issuer_parsed = try x509.parseCert(alloc, chain[1]);
+        has_issuer = true;
+        break :blk ocsp.IssuerInfo{ .cert = &issuer_parsed, .der = chain[1] };
+    } else null;
+    defer if (has_issuer) issuer_parsed.deinit(alloc);
+
+    ocsp.validateStapledResponse(
+        alloc,
+        ocsp_bytes.?,
+        leaf_parsed,
+        chain[0],
+        issuer_info,
+        now_unix,
+    ) catch return HandshakeError.OcspValidationFailed;
+}
+
+/// QUAL-357: Parses the SCT list and invokes the user callback (if any).
+///
+/// RFC 6962 + RFC 8446 §4.4.2.1: Signed Certificate Timestamp validation.
+///
+/// Behavior matrix:
+///   - `sct_bytes == null` + `require_scts == true`  → MissingSctList
+///   - `sct_bytes == null` + `require_scts == false` → ok (no-op)
+///   - Parse failure            → SctParsingFailed
+///   - Empty list + required    → EmptySctList
+///   - Callback rejects         → SctCallbackRejected
+pub fn validateSctList(
+    alloc: std.mem.Allocator,
+    sct_bytes: ?[]const u8,
+    require_scts: bool,
+    on_sct_list: ?*const fn ([]sct.SignedCertificateTimestamp) anyerror!void,
+) !void {
+    if (sct_bytes == null) {
+        if (require_scts) return HandshakeError.MissingSctList;
+        return;
+    }
+
+    const parsed_scts = sct.parseList(alloc, sct_bytes.?) catch return HandshakeError.SctParsingFailed;
+    defer alloc.free(parsed_scts);
+
+    if (parsed_scts.len == 0 and require_scts) return HandshakeError.EmptySctList;
+
+    if (on_sct_list) |cb| {
+        cb(parsed_scts) catch return HandshakeError.SctCallbackRejected;
+    }
+}
+
 // ------------------------------------------------------------
 // Tests
 // ------------------------------------------------------------

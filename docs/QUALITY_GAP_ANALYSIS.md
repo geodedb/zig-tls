@@ -11,23 +11,24 @@
 | Severity | Open | Partial | Closed | By Design | Deferred | Won't Do | Total |
 |----------|------|---------|--------|-----------|----------|----------|-------|
 | Critical | 0    | 0       | 2      | 0         | 0        | 0        | 2     |
-| High     | 5    | 0       | 19     | 0         | 0        | 0        | 24    |
+| High     | 4    | 0       | 20     | 0         | 0        | 0        | 24    |
 | Medium   | 12   | 0       | 42     | 1         | 0        | 1        | 56    |
 | Low      | 14   | 0       | 35     | 2         | 0        | 3        | 54    |
-| **Total**| **31** | **0** | **98** | **3**   | **0**    | **4**    | **136**|
+| **Total**| **30** | **0** | **99** | **3**   | **0**    | **4**    | **136**|
 
 *Counts reflect Cycle 7 / Phase 20 quality-issue-tracker sync (2026-04-21):* +2 High Open (QUAL-357, QUAL-358); QUAL-345 Medium Open → Closed (superseded by QUAL-357, net Medium Open +2 from QUAL-359/QUAL-360 - 1 from QUAL-345 supersede = +1 net, total +2 after other refresh); +4 Low Open (QUAL-361..364); QUAL-365/366/367 refuted at scoring time → recorded as `resolution::metric-error` / `resolution::false-positive`, not counted as Open; QUAL-368 Info-only, not counted.
+*Counts reflect Cycle 7 / Phase 21 audit-closure Stage 9 (2026-04-21):* -1 High Open (+1 Closed: QUAL-357 `handleCertificateVerify` split into 3 new per-concern validators + existing `verifyCertVerifySignature` in `src/tls13/context/cert_handlers.zig`; orchestrator body reduced from 163 LOC to ~78 LOC; oracle byte-identical).
 *Counts reflect Cycle 6 / Phase 19 gap-close (2026-04-20):* -1 High Open (+1 Closed: QUAL-346), -1 Medium Open (+1 Closed: QUAL-356), -5 Low Open (+5 Closed: QUAL-104, 348, 349, 352, 353). QUAL-347 remained Won't-Do; counts unchanged on that axis.
 
-### Top 5 Risks (post Phase 20 / Cycle 7)
+### Top 5 Risks (post Phase 21 / Cycle 7)
 
-1. **QUAL-357** (High, PS 100) -- `handleCertificateVerify` (`src/tls13/context.zig:2480-2643`, 163 LOC) mixes cert chain + OCSP + SCT + CV-signature validation. Security-critical; per-path audit blocked. [#271](https://gitlab.com/devnw/zig/tls/-/work_items/271). **Supersedes QUAL-345.**
-2. **QUAL-358** (High, PS 100) -- `tls13` module dual-entry (`src/tls13.zig` shim + `src/tls13/mod.zig` canonical); `build.zig:194` points at shim. Collapse to one root; `git rm src/tls13.zig`. [#272](https://gitlab.com/devnw/zig/tls/-/work_items/272). Cross-ref PERF-237.
-3. **QUAL-351** (Medium, PS 48) -- `handleServerHello` hardcodes X25519 group check while `Config.supported_groups` claims agility. Correctness/interop bug. Deferred — feature work.
-4. **QUAL-344** (Medium, PS 48) -- Client-side message handlers remain inlined in `context.zig` (3206 LOC post-decomp); mirror QUAL-317 pattern to extract. Deferred to Wave 4 refactor.
-5. **QUAL-350** (Medium, PS 48) -- `handleHandshakeMessage` 152L dispatcher with inline QUIC-TP parsing (dup with canonical parser). Deferred to Wave 4 refactor.
+1. **QUAL-358** (High, PS 100) -- `tls13` module dual-entry (`src/tls13.zig` shim + `src/tls13/mod.zig` canonical); `build.zig:194` points at shim. Collapse to one root; `git rm src/tls13.zig`. [#272](https://gitlab.com/devnw/zig/tls/-/work_items/272). Cross-ref PERF-237.
+2. **QUAL-351** (Medium, PS 48) -- `handleServerHello` hardcodes X25519 group check while `Config.supported_groups` claims agility. Correctness/interop bug. Deferred — feature work.
+3. **QUAL-344** (Medium, PS 48) -- Client-side message handlers remain inlined in `context.zig` (3206 LOC post-decomp); mirror QUAL-317 pattern to extract. Deferred to Wave 4 refactor.
+4. **QUAL-350** (Medium, PS 48) -- `handleHandshakeMessage` 152L dispatcher with inline QUIC-TP parsing (dup with canonical parser). Deferred to Wave 4 refactor.
+5. **QUAL-359** (Medium, PS 64) -- Extract state types (`CryptoBuffer`, `HandshakeFlags`, `TranscriptSet`) from context.zig into `context/state.zig`. [#275](https://gitlab.com/devnw/zig/tls/-/work_items/275).
 
-(Previous Top-5 entries: ~~QUAL-346~~ closed Phase 19; ~~QUAL-345~~ superseded by QUAL-357 Phase 20.)
+(Previous Top-5 entries: ~~QUAL-346~~ closed Phase 19; ~~QUAL-345~~ superseded by QUAL-357 Phase 20; ~~QUAL-357~~ closed Phase 21.)
 
 ### Cycle 5 / Phase 17 Phase-4 Audit Filings (2026-04-20, QUAL-344..356)
 
@@ -3402,7 +3403,7 @@ Eight new actionable issues filed from Phase 3 quality-reviewer output, plus thr
 
 | QUAL-ID | Issue | Severity | PS | Category | Finding | File:Line | Status |
 |---------|-------|----------|----|----------|---------|-----------|--------|
-| QUAL-357 | [#271](https://gitlab.com/devnw/zig/tls/-/work_items/271) | **High** | **100** | maintainability / security | Split `handleCertificateVerify` into 4 per-concern validators (chain, OCSP, SCT, CV-sig) | `src/tls13/context.zig:2480-2643` (163 LOC) | Open (supersedes QUAL-345) |
+| QUAL-357 | [#271](https://gitlab.com/devnw/zig/tls/-/work_items/271) | **High** | **100** | maintainability / security | Split `handleCertificateVerify` into 4 per-concern validators (chain, OCSP, SCT, CV-sig) | `src/tls13/context.zig:2480-2643` (163 LOC) | **Closed 2026-04-21** — orchestrator reduced from 163 LOC to ~78 LOC; 3 per-concern validators extracted to `cert_handlers.zig` (`verifyCertVerifySignature` already existed); oracle `context_decomp_trace_capture` passes byte-identically |
 | QUAL-358 | [#272](https://gitlab.com/devnw/zig/tls/-/work_items/272) | **High** | **100** | cleanup | Remove `tls13` module dual-entry — collapse `src/tls13.zig` shim (239 LOC) onto `src/tls13/mod.zig` (247 LOC); `git rm src/tls13.zig`; repoint `build.zig:194`; add `cookie_mod` re-export | `build.zig:194`, `src/tls13.zig`, `src/tls13/mod.zig` | Closed 2026-04-21 — shim removed, build.zig repointed at src/tls13/mod.zig |
 | QUAL-359 | [#275](https://gitlab.com/devnw/zig/tls/-/work_items/275) | Medium | 64 | maintainability | Extract state types (`CryptoBuffer`, `HandshakeFlags`, `TranscriptSet`) from context.zig into `context/state.zig` | `src/tls13/context.zig:335-480` (context.zig 3206 LOC) | Open |
 | QUAL-360 | [#276](https://gitlab.com/devnw/zig/tls/-/work_items/276) | Medium | 45 | maintainability | Refresh QUAL-116 LOC inventory: `aead.zig` 1337 LOC, `server_hello.zig` 1081 LOC. Split aead.zig → `nonce.zig` + `aead_cipher.zig` + `usage_limits.zig` at cluster boundaries 119/148/756. QUAL-116 umbrella updated inline. | `src/record/aead.zig`, `src/tls13/messages/server_hello.zig` | Open (`duplicate-of::QUAL-116`) |
@@ -3436,7 +3437,7 @@ Eight new actionable issues filed from Phase 3 quality-reviewer output, plus thr
 
 ### Phase 20 Highest-Leverage Cluster
 
-1. **QUAL-357** (PS 100) — Security-audit unblock. Effort M. Oracle-gated.
+1. ~~**QUAL-357**~~ (PS 100) — **Closed 2026-04-21** (Stage 9 / Phase 21). Security-audit unblock. Effort M. Oracle-gated — passed byte-identically.
 2. **QUAL-358** (PS 100) — Module-shape cleanup. Effort S. Cross-ref PERF-237.
 3. **QUAL-359** (PS 64) — Continues QUAL-317 decomp. Effort M.
 4. **QUAL-360** (PS 45) — AEAD file split under QUAL-116 umbrella. Effort M.
