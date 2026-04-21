@@ -284,18 +284,18 @@ pub fn parseEcdsaSpki(spki_der: []const u8, alloc: std.mem.Allocator) !EcdsaSpki
     const algo_seq = try s1.readSequence();
     var a1 = asn1.Decoder.init(algo_seq);
     const algo_oid = try a1.readOID();
-    // id-ecPublicKey: 1.2.840.10045.2.1
-    if (!(algo_oid.len >= 7 and algo_oid[0] == 0x2A and algo_oid[1] == 0x86)) return error.UnexpectedAlgorithm;
-    // Parameters: namedCurve OID
+    // SEC-076: canonical equality for algorithm and curve OIDs.
+    const id_ec_public_key = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01 }; // 1.2.840.10045.2.1
+    if (!asn1.oidEqual(algo_oid, &id_ec_public_key)) return error.UnexpectedAlgorithm;
+
     const curve_oid = try a1.readOID();
+    const secp256r1 = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07 }; // 1.2.840.10045.3.1.7
+    const secp384r1 = [_]u8{ 0x2B, 0x81, 0x04, 0x00, 0x22 }; // 1.3.132.0.34
     var is_p256 = false;
-    // secp256r1: 1.2.840.10045.3.1.7
-    if (curve_oid.len >= 8 and std.mem.eql(u8, curve_oid[curve_oid.len - 8 ..], &[_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07 })) {
+    if (asn1.oidEqual(curve_oid, &secp256r1)) {
         is_p256 = true;
-    } else {
-        // secp384r1: 1.3.132.0.34
-        if (!(curve_oid.len >= 5 and std.mem.eql(u8, curve_oid[curve_oid.len - 5 ..], &[_]u8{ 0x2B, 0x81, 0x04, 0x00, 0x22 })))
-            return error.UnsupportedCurve;
+    } else if (!asn1.oidEqual(curve_oid, &secp384r1)) {
+        return error.UnsupportedCurve;
     }
     // subjectPublicKey BIT STRING
     const bitstr = try s1.readBitString();
@@ -312,9 +312,9 @@ pub fn parseRsaSpki(spki_der: []const u8, alloc: std.mem.Allocator) !RsaSpki {
     const algo_seq = try s1.readSequence();
     var a1 = asn1.Decoder.init(algo_seq);
     const algo_oid = try a1.readOID();
-    // rsaEncryption: 1.2.840.113549.1.1.1
-    if (!(algo_oid.len >= 9 and std.mem.eql(u8, algo_oid[algo_oid.len - 9 ..], &[_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01 })))
-        return error.UnexpectedAlgorithm;
+    // SEC-076: canonical equality. rsaEncryption: 1.2.840.113549.1.1.1
+    const rsa_encryption = [_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01 };
+    if (!asn1.oidEqual(algo_oid, &rsa_encryption)) return error.UnexpectedAlgorithm;
     // Optional NULL params may follow; tolerate
     _ = a1.readTLV() catch null;
     const bitstr = try s1.readBitString();
@@ -911,10 +911,10 @@ fn parsePkcs8EcdsaP256PrivateKey(der: []const u8, out: *[32]u8) !void {
     if (i != alg_end) return error.Parse;
     // id-ecPublicKey 1.2.840.10045.2.1  -> DER: 06 07 2A 86 48 CE 3D 02 01
     const ec_pub_const = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01 };
-    if (!std.mem.eql(u8, oid_ec, &ec_pub_const)) return error.BadKey;
+    if (!asn1.oidEqual(oid_ec, &ec_pub_const)) return error.BadKey;
     // prime256v1 / secp256r1 1.2.840.10045.3.1.7 -> 06 08 2A 86 48 CE 3D 03 01 07
     const p256_const = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07 };
-    if (!std.mem.eql(u8, oid_curve, &p256_const)) return error.Unsupported; // not P-256
+    if (!asn1.oidEqual(oid_curve, &p256_const)) return error.Unsupported; // not P-256
 
     // privateKey OCTET STRING containing ECPrivateKey structure
     if (der[i] != 0x04) return error.Parse;
