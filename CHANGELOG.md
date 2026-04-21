@@ -7,9 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- RNG fail-closed via new `src/entropy.zig` helper using `std.Io.randomSecure` + panic on `error.EntropyUnavailable`; 9 `std.os.linux.getrandom` sites in `src/tls13/context.zig` migrated. Also eliminates the Linux-only `getrandom` hardwiring (SEC-074, SEC-081).
+- X.509 unknown critical extensions now rejected per RFC 5280 §4.2 — `parseExtensionsBlock` parses the BOOLEAN criticality flag and returns `error.UnknownCriticalExtension` on critical+unknown OIDs (SEC-075).
+- OID matching canonicalized across OCSP and ECDSA/RSA SPKI parsers — new `asn1.oidEqual` helper replaces 11 suffix-match sites that previously accepted prefix-attack encodings (SEC-076).
+- `x509.validateChainEx` / `validateChainReturnParsed` / `Config.allow_insecure` replaced raw `bool` with `x509.InsecureValidation` sentinel enum; the insecure variant requires `-Dtls-insecure-testing=true` build flag and panics otherwise (SEC-077).
+- `Config.persistent_anti_replay_store` wired into 0-RTT accept path with fail-closed semantics (backend errors fall back to 1-RTT). Closes cross-connection and cross-restart replay windows for multi-server deployments (SEC-065/085).
+
+### Added
+- `Context.deliverAlert(level, payload)` decodes inbound TLS alert bytes, populates `HandshakeFlags.alert`, invokes the new `Callbacks.on_alert` hook, and terminates on fatal alerts (GAP-0133).
+- `Context.sendCloseNotify()`, `Context.sendFatalAlert(desc)`, `sendInternalError()`, `sendHandshakeFailure()` write 2-byte alert payloads to the outbound stream at the current encryption level and transition the Context to `.terminated` (GAP-0134).
+- New `HandshakePhase.terminated` variant for post-alert lifecycle.
+- CI job `test-insecure-flag` exercises `zig build test -Dtls-insecure-testing=true` to cover both flag states.
+- CI job `no-raw-getrandom` regression guard greps `src/` for re-introduction of raw `std.os.linux.getrandom` (SEC-074 structural guard).
+
 ### Changed
+- `src/tls13.zig` 239-LOC compat shim removed; `build.zig` module `tls13` now roots at `src/tls13/mod.zig`. `cookie_mod` re-export ported to the canonical barrel (QUAL-358).
+- `handleCertificateVerify` decomposed from 163 LOC monolith into a ~50-LOC orchestrator plus 3 per-concern validators in `src/tls13/context/cert_handlers.zig` (`validateChainAndLeaf`, `validateOcspStaple`, `validateSctList`); semantic behavior unchanged (oracle test byte-identical) (QUAL-357).
 - Minimum supported Zig version raised to 0.16.0 (stdlib APIs used by the bench harness were removed after 0.15.x).
 - Removed the `flake.nix` / `flake.lock` Nix derivation (it referenced a `nix/quic.nix` that was never committed; consumers build via `zig build` directly).
+
+### Documented
+- ADR-0002 — ECDSA-P256 performance strategy. `nistz256` port deferred; FFI to libcrypto rejected as zero-deps violation; guidance-first approach for P-256 workloads. `docs/RUNBOOK.md` §Performance and `README.md` performance note updated to flag the P-256 2-3 ms range vs the <2 ms Ed25519/RSA-2048 SLO (PERF-229).
+- `docs/RUNBOOK.md` §0-RTT deployment (SEC-065): multi-server / load-balanced deployments MUST configure `Config.persistent_anti_replay_store`.
+- `docs/API.md` §Alert protocol: inbound dispatch and outbound API usage (GAP-0133/0134).
 
 ## [0.1.0] - 2026-01-24
 
