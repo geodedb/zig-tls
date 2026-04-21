@@ -37,6 +37,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // SEC-074 / SEC-081: Cross-platform fail-closed entropy helper.
+    // Wraps std.Io.Threaded.global_single_threaded.io().random so all
+    // TLS code paths use the same portable, panic-on-failure source.
+    const entropy_mod = b.addModule("entropy", .{
+        .root_source_file = b.path("src/entropy.zig"),
+        .target = target,
+    });
+
     // PERF-024: Test-only allocator wrapper that tracks allocation counts
     // and byte totals. Consumed by tests/perf/*.zig to assert allocation
     // regressions (PERF-201, PERF-207). Not for production use.
@@ -205,6 +213,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "quic_transport_params", .module = transport_params_mod },
             .{ .name = "ocsp", .module = ocsp_mod },
             .{ .name = "sct", .module = sct_mod },
+            .{ .name = "entropy", .module = entropy_mod },
         },
     });
 
@@ -341,6 +350,13 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            .name = "sec074_rng_fail_closed",
+            .source = "tests/security/sec074_rng_fail_closed.zig",
+            .imports = &.{
+                .{ .name = "entropy", .module = entropy_mod },
+            },
+        },
+        .{
             .name = "sec068_tp_dup_cid",
             .source = "tests/security/sec068_tp_dup_cid.zig",
             .imports = &.{
@@ -417,6 +433,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "quic_transport_params", .module = transport_params_mod },
                 .{ .name = "ocsp", .module = ocsp_mod },
                 .{ .name = "sct", .module = sct_mod },
+                .{ .name = "entropy", .module = entropy_mod },
             },
         }),
     });
