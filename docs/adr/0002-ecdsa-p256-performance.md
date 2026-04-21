@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 2026-04-21. Supersedes PERF-229 open P0.
+Proposed — 2026-04-21. Addresses PERF-229 (previously Open P0).
 
 ## Context
 
