@@ -1,10 +1,10 @@
 # Performance Gap Analysis
 
-> **Last updated:** 2026-04-20 (Cycle 6 / Phase 19 — closed PERF-230, PERF-231, PERF-234 (3 items: ThreadPool cap, snapshot locked_hash, processCrypto capacity). PERF-229 (P0, ECDSA-P256 stdlib) remains open pending ADR. Cycle 5 / Phase 17 originally filed PERF-229..PERF-236 (8 findings).)
+> **Last updated:** 2026-04-21 (Cycle 7 / Phase 20 — filed PERF-237..PERF-246 (10 new findings) against Phase 3 deep-review. Parallel.zig deletion verdict (PERF-237) cross-references GAP-0131 (#267). getrandom batching (PERF-238) cross-references SEC-074. PERF-229 (P0, ECDSA-P256 stdlib) confirmed Open pending ADR. PERF-210 demoted to Info (already filed `severity::info`; auto-vectorizes under ReleaseFast). Cycle 6 / Phase 19 previously closed PERF-230, PERF-231, PERF-234.)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 > **Target:** <2ms handshake, <100KB memory per connection
 > **Methodology:** Static code analysis, allocation pattern review, hot-path tracing
-> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3 + Phase 7 Perf-Reviewer Audit + Phase 8 Closure + Phase 9 Final Closure + Phase 10 Deep Review Validation + Phase 10 Closure + Phase 4 Tracking Re-audit (2026-04-18) + Phase 12 Perf-Issue-Tracker (2026-04-19) + Phase 13 Gap-Close (2026-04-19) + Cycle 2 / Phase 14 Gap-Close (2026-04-20) + Cycle 3 / Phase 15 Gap-Close (2026-04-20) + Cycle 6 / Phase 18 Gap-Sync (2026-04-20) + Cycle 5 / Phase 17 Perf-Issue-Tracker (2026-04-20)
+> **Reviewed by:** Phase 3 Performance Review + Phase 4 Issue Tracking + Phase 5 Deep Review + Phase 6 Gap Closure Round 3 + Phase 7 Perf-Reviewer Audit + Phase 8 Closure + Phase 9 Final Closure + Phase 10 Deep Review Validation + Phase 10 Closure + Phase 4 Tracking Re-audit (2026-04-18) + Phase 12 Perf-Issue-Tracker (2026-04-19) + Phase 13 Gap-Close (2026-04-19) + Cycle 2 / Phase 14 Gap-Close (2026-04-20) + Cycle 3 / Phase 15 Gap-Close (2026-04-20) + Cycle 6 / Phase 18 Gap-Sync (2026-04-20) + Cycle 5 / Phase 17 Perf-Issue-Tracker (2026-04-20) + Cycle 6 / Phase 19 Gap-Close (2026-04-20) + Cycle 7 / Phase 20 Perf-Issue-Tracker (2026-04-21)
 
 ---
 
@@ -13,14 +13,14 @@
 | PerfSeverity | Total | Closed | Open | Not Issue | Won't Do | Deferred | Blocker |
 |-------------|-------|--------|------|-----------|----------|----------|---------|
 | P0          | 7     | 4      | 1    | 2         | 0        | 0        | 0       |
-| P1          | 13    | 10     | 3    | 0         | 0        | 0        | 0       |
-| P2          | 37    | 31     | 2    | 1         | 4        | 0        | 0       |
-| P3          | 24    | 19     | 3    | 0         | 1        | 1        | 0       |
+| P1          | 14    | 10     | 4    | 0         | 0        | 0        | 0       |
+| P2          | 41    | 31     | 6    | 1         | 4        | 0        | 0       |
+| P3          | 29    | 19     | 8    | 0         | 1        | 1        | 0       |
 | Info        | 3     | 1      | 1    | 0         | 1        | 0        | 0       |
 | Blocker     | 1     | 1      | 0    | 0         | 0        | 0        | 0       |
-| **Total**   | **85**| **66** | **10**| **3**   | **6**    | **1**    | **0**   |
+| **Total**   | **95**| **66** | **20**| **3**   | **6**    | **1**    | **0**   |
 
-*Counts reflect Cycle 6 / Phase 19 gap-close (2026-04-20):* +3 newly Closed (PERF-230 P1 ThreadPool cap, PERF-231 P1 snapshot locked_hash, PERF-234 P2 processCrypto capacity). Cycle 5 / Phase 17 perf-issue-tracker previously filed PERF-229..PERF-236 (8 new items). Cycle 4 / Phase 16 closed PERF-218. Cycle 2 / Phase 14 closed 7 items. Phase 13 previously added +12 Closed and +1 Won't-Do.
+*Counts reflect Cycle 7 / Phase 20 perf-issue-tracker (2026-04-21):* +10 newly filed (PERF-237 P2 parallel.zig deletion, PERF-238 P1 getrandom batching, PERF-239 P2 lockHash pre-CH, PERF-240 P2 scratch arena, PERF-241 P3 buildFinished dupe, PERF-242 P3 AeadCipher.init memcpy, PERF-243 P3 compact @memcpy, PERF-244 P3 @branchHint, PERF-245 P2 Context sizeOf guard, PERF-246 P3 BoundedArray supported_groups). PERF-210 ledger state confirmed Info (auto-vectorized). Cycle 6 / Phase 19 previously closed PERF-230, PERF-231, PERF-234. Cycle 5 / Phase 17 previously filed PERF-229..PERF-236 (8 items). Cycle 4 / Phase 16 closed PERF-218. Cycle 2 / Phase 14 closed 7 items. Phase 13 previously added +12 Closed and +1 Won't-Do.
 
 ### Cycle 2 / Phase 14 Gap Closure Run (2026-04-20)
 
@@ -2916,7 +2916,7 @@ Phase 2 scan confirmed 4 existing-issue findings (PERF-216, PERF-213, PERF-208, 
 
 | PERF-ID | Sev | Issue | Reason |
 |---------|-----|-------|--------|
-| PERF-229 | P0 | [#243](https://gitlab.com/devnw/zig/tls/-/issues/243) | ECDSA-P256 stdlib ~10x slower than BoringSSL nistz256. Blocks <2ms handshake SLO on P-256 ecosystem. Requires ADR (nistz256 port vs FFI vs Ed25519-only guidance). |
+| PERF-229 | P0 | [#243](https://gitlab.com/devnw/zig/tls/-/issues/243) | **Status:** Open → Deferred per ADR-0002 (2026-04-21). See [`docs/adr/0002-ecdsa-p256-performance.md`](adr/0002-ecdsa-p256-performance.md). ECDSA-P256 stdlib ~10x slower than BoringSSL nistz256. Blocks <2ms handshake SLO on P-256 ecosystem. Guidance-first strategy adopted (option c); nistz256 port reserved as future opt-in build flag. |
 | PERF-232 | P1 | [#255](https://gitlab.com/devnw/zig/tls/-/issues/255) | Missing end-to-end handshake benchmark. Needs new bench harness `bench_full_handshake.zig`. |
 | PERF-233 | P1 | [#257](https://gitlab.com/devnw/zig/tls/-/issues/257) | ThreadPool cold-start spike — needs profiling + `parallel.warmPool()` design. |
 | PERF-235 | P2 | [#263](https://gitlab.com/devnw/zig/tls/-/issues/263) | `parallel*` thresholds unvalidated; needs crossover bench. |
@@ -2936,7 +2936,7 @@ Phase 3 perf-reviewer delivered 8 new findings. All filed on GitLab under PERF-2
 
 | Rank | PerfSeverity | PerfScore | Finding | Component | Evidence (file:line) | Issue | Fix Summary | Confidence | Owner | SLA | Status |
 |------|--------------|-----------|---------|-----------|----------------------|-------|-------------|-----------|-------|-----|--------|
-| 1 | P0 | 100 | PERF-229: ECDSA-P256 at 1.63ms via stdlib — ~10x slower than BoringSSL nistz256 asm; blocks <2ms handshake SLO | sig / parallel / x509 | `src/sig.zig:648,668,731`; `src/parallel.zig:350,364`; `src/x509.zig:1489,1498` | #243 | Scope ADR: (a) pure-Zig nistz256 port, (b) optional FFI to BoringSSL/OpenSSL, (c) guidance to prefer Ed25519 | confirmed | benji | Immediate | Open (2026-04-20) |
+| 1 | P0 | 100 | PERF-229: ECDSA-P256 at 1.63ms via stdlib — ~10x slower than BoringSSL nistz256 asm; blocks <2ms handshake SLO | sig / parallel / x509 | `src/sig.zig:648,668,731`; `src/parallel.zig:350,364`; `src/x509.zig:1489,1498` | #243 | Scope ADR: (a) pure-Zig nistz256 port, (b) optional FFI to BoringSSL/OpenSSL, (c) guidance to prefer Ed25519 | confirmed | benji | Immediate | Deferred (ADR-0002) — see [`docs/adr/0002-ecdsa-p256-performance.md`](adr/0002-ecdsa-p256-performance.md) (2026-04-21) |
 | 2 | P1 | 48 | PERF-230: ThreadPool worker count uncapped at cpu_count; cgroup-hostile and not Config-exposed | infra | `src/parallel.zig:78` | #247 | Add `parallel.Config.worker_count`; auto-detect cgroup v2 quota on Linux; default cap `min(getCpuCount(), 8)` | confirmed | benji | Within sprint | **Closed** (Cycle 6 / Phase 19, commit 821e929) |
 | 3 | P1 | 40 | PERF-231: Transcript.snapshot() ignores locked_hash; finalizes both SHA-256 + SHA-384 always | transcript | `src/tls13/transcript.zig:266-271` | #251 | Gate on `locked_hash`; finalize only the pinned hash variant — mirrors PERF-228 on the snapshot side | confirmed | benji | Within sprint | **Closed** (Cycle 6 / Phase 19, commit 5a048dc) |
 | 4 | P1 | 36 | PERF-232: Missing end-to-end handshake benchmark (`bench_full_handshake.zig`) | ci / bench | `tests/perf/` — file absent | #255 | New bench: in-memory client/server pair across Ed25519/P-256/P-384/RSA-PSS × {no-resumption, PSK, 0-RTT} × {chain=1,3}. Depends on PERF-223 harness primitives. | confirmed | benji | Within sprint | Open (2026-04-20) |
@@ -2992,3 +2992,138 @@ Phase 3 perf-reviewer delivered 8 new findings. All filed on GitLab under PERF-2
 - PERF-234: <https://gitlab.com/devnw/zig/tls/-/issues/260>
 - PERF-235: <https://gitlab.com/devnw/zig/tls/-/issues/263>
 - PERF-236: <https://gitlab.com/devnw/zig/tls/-/issues/265>
+
+---
+
+## Cycle 7 / Phase 20 Perf-Issue-Tracker Run (2026-04-21)
+
+Phase 3 deep-review delivered 10 new findings from scanning + review. All filed on GitLab under **PERF-237..PERF-246** with evidence, fix guidance, validation plans, and PerfScore. PERF-229 remains the only Open P0 (ECDSA-P256 stdlib bottleneck) — re-confirmed via GitLab comment on #243.
+
+**ID allocation:** PERF-236 was the prior high-water; new IDs start at PERF-237 and run contiguously through PERF-246.
+
+### Stack-ranked new findings (Phase 20)
+
+Sorted by PerfScore descending.
+
+| Rank | PerfSeverity | PerfScore | Finding | Component | Evidence (file:line) | Issue | Fix Summary | Confidence | Owner | SLA | Status |
+|------|--------------|-----------|---------|-----------|----------------------|-------|-------------|-----------|-------|-----|--------|
+| 1 | P2 | 75 | PERF-237: Delete src/parallel.zig — dead feature, 997 LOC, zero production callers | app | `src/parallel.zig` (entire file); `src/lib.zig:412-414,550-556`; `build.zig:217,1199`; `tests/fuzz/rsa_pss_verify.zig:37,100-114`; `tests/perf/bench_threadpool_alloc.zig` | [#278](https://gitlab.com/devnw/zig/tls/-/issues/278) | `git rm src/parallel.zig`; relocate `verifyRsaPssWithHash` to `src/sig.zig`; strip build+lib wiring. -997 LOC, -1 mutex, -1 @panic, 0 perf regression | confirmed | benji | Next quarter | Open (2026-04-21) |
+| 2 | P1 | 64 | PERF-238: Batch getrandom into single 160B fetch per handshake | app / security | `src/tls13/context.zig:1492,1543,1686,1690,1921,1934` | [#281](https://gitlab.com/devnw/zig/tls/-/issues/281) | Add `src/entropy.zig` Reservoir; fill on first take; propagate short-read errors (also fixes SEC-074). 1.5-2.5 us saved per handshake | confirmed | benji | Within sprint | Open (2026-04-21) |
+| 3 | P3 | 50 | PERF-241: Delete buildFinished — unnecessary allocator.dupe of verify_data | tls13 / messages | `src/tls13/messages/finished.zig:93-98` | [#285](https://gitlab.com/devnw/zig/tls/-/issues/285) | Audit callers (all test-only post-PERF-013); delete function. -1 alloc + -1 free per handshake (if any production path remains) | confirmed | benji | Backlog | Open (2026-04-21) |
+| 4 | P2 | 48 | PERF-239: Server-side — call Transcript.lockHash before feeding ClientHello | tls13 / transcript | `src/tls13/transcript.zig:176-185`; `src/tls13/context.zig` (CH receipt) | [#283](https://gitlab.com/devnw/zig/tls/-/issues/283) | Select cipher-suite from client list + server preference first; then `lockHash(selected)`; then update transcript. ~2-4 us/handshake saved server-side | suspected | benji | Next quarter | Open (2026-04-21) |
+| 5 | P2 | 48 | PERF-240: Use scratch arena for per-extension ArrayList builders | tls13 / messages | `src/tls13/messages/{client_hello,client_hello_handlers,server_hello,certificate_request,encrypted_extensions,certificate,certificate_verify}.zig`; `src/tls13/context/hello_retry.zig` | [#284](https://gitlab.com/devnw/zig/tls/-/issues/284) | Add Context-owned `std.heap.ArenaAllocator`; reset between messages; migrate 8 builder files. -6..-10 allocs per CH build, -3..-8 us | confirmed | benji | Next quarter | Open (2026-04-21) |
+| 6 | P2 | 36 | PERF-245: Add @sizeOf(Context) comptime assertion + bench_conn_rss for <100 KB/conn SLO | tls13 / bench | `src/tls13/context.zig` (new comptime block); `tests/perf/bench_conn_rss.zig` (new) | [#286](https://gitlab.com/devnw/zig/tls/-/issues/286) | `comptime { if (@sizeOf(Context) > budget) @compileError(...); }` + runtime bench measuring RSS/conn via `getrusage`. Complements PERF-012 | confirmed | benji | Next quarter | Open (2026-04-21) |
+| 7 | P3 | 24 | PERF-242: Avoid redundant @memcpy in AeadCipher.init union-variant assignment | record | `src/record/aead.zig:208-223` | [#287](https://gitlab.com/devnw/zig/tls/-/issues/287) | Inspect `-femit-asm`; if not elided, rewrite as direct struct-literal init; if elided, close Won't-Do (LLVM-elided). 50-200 ns (suspected) | suspected | benji | Backlog | Open (2026-04-21) |
+| 8 | P3 | 24 | PERF-243: Replace copyForwards with @memcpy in CryptoBuffer.compact (non-overlap proven) | tls13 / handshake_state | `src/tls13/handshake_state.zig:159-170` | [#288](https://gitlab.com/devnw/zig/tls/-/issues/288) | Swap to `@memcpy(dst, src)` (non-overlap follows from offset >= len/2 guard from PERF-036); enables SIMD. ~5-200 ns | confirmed | benji | Backlog | Open (2026-04-21) |
+| 9 | P3 | 24 | PERF-244: Add @branchHint(.cold) on AEAD error-return paths | record | `src/record/aead.zig:273-280,413-417` + ~10 other error sites | [#289](https://gitlab.com/devnw/zig/tls/-/issues/289) | Insert `@branchHint(.cold);` at each error branch head; improves I-cache density on hot path. ~1-3% throughput on AEAD bulk | suspected | benji | Backlog | Open (2026-04-21) |
+| 10 | P3 | 18 | PERF-246: Replace supported_groups heap ArrayList with std.BoundedArray(NamedGroup, 8) | tls13 / messages | `src/tls13/messages/client_hello.zig` | [#290](https://gitlab.com/devnw/zig/tls/-/issues/290) | Swap to `std.BoundedArray(NamedGroup, 8)`; cap=8 covers known groups. -1 alloc + -1 free per CH (~100-300 ns). Subsumed by PERF-240 if arena lands first | suspected | benji | Backlog | Open (2026-04-21) |
+
+### PERF-229 (P0, Deferred per ADR-0002) — re-confirmation
+
+**Status:** Open → Deferred per ADR-0002 (2026-04-21). See [`docs/adr/0002-ecdsa-p256-performance.md`](adr/0002-ecdsa-p256-performance.md).
+
+PERF-229 was the only P0 in the ledger. Deep-review confirmed P0 classification: ECDSA-P256 via Zig stdlib is ~10x slower than BoringSSL nistz256 asm, which makes the <2ms handshake SLO architecturally unreachable on the P-256 ecosystem.
+
+**ADR-0002 decision (2026-04-21):** Adopt option (c) — guide users to Ed25519 / RSA-2048 — as the short-term path. Option (a) (pure-Zig nistz256 port) is reserved as a future opt-in module gated behind `-Dnistz256=true`. Option (b) (FFI to libcrypto) was rejected to preserve the zero-deps invariant.
+
+**Options considered:**
+
+- **(a)** Pure-Zig nistz256 port (multi-week, zero FFI surface, reviewable) — reserved as future opt-in.
+- **(b)** Optional FFI shim to libcrypto (lower engineering cost, new FFI dependency) — rejected (zero-deps violation).
+- **(c)** Repo guidance steering defaults to Ed25519 or RSA-2048 (doc-only; leaves P-256 on the slow path for interop-only use) — **adopted**.
+
+GitLab #243 re-confirmed via [note_3271984044](https://gitlab.com/devnw/zig/tls/-/issues/243#note_3271984044) (2026-04-21). Closure action: ADR-0002 + `README.md#Performance note` landed 2026-04-21.
+
+### Parallel.zig verdict (PERF-237 ↔ GAP-0131)
+
+**Verdict:** Delete `src/parallel.zig`. The entire 997-LOC module is unreachable from the handshake or record code paths. User memory ("prefer deletion over patching broken features") applies cleanly: this is a feature broken-since-inception with no maintainer and no production consumer. A minimal patch to fix individual threads of perf debt inside it (page-fault allocator, worker cap, cold-start latency, threshold validation) returns far less value than a single `git rm`.
+
+**Evidence supporting deletion:**
+
+1. **No handshake call site** — `rg -n 'parallel\.' src/tls13/ src/record/` returns zero hits on any production path.
+2. **No record-layer call site** — same search in `src/record/` returns zero hits.
+3. **Sole real consumer** — `tests/fuzz/rsa_pss_verify.zig` uses `verifyRsaPssWithHash` as a parity harness. The helper itself is a thin wrapper over `sig.verifyRsaPssWithHash`; relocate inside `src/sig.zig` so fuzz can still reach it without the parallel module.
+4. **Reproducer-only consumer** — `tests/perf/bench_threadpool_alloc.zig` exists only to exercise the allocator swap that closed PERF-209. Once `parallel.zig` is gone, the bench is moot and should be deleted with it.
+5. **Re-exports only** — `src/lib.zig:412-414,550-556` exposes the module publicly but no internal caller consumes those exports.
+
+**Cross-reference chain:**
+
+| Ref | Direction | Meaning |
+|-----|-----------|---------|
+| PERF-237 → GAP-0131 | perf framing → gap framing | same underlying issue; `label:cross-ref::GAP-0131` on #278 |
+| GAP-0131 → PERF-237 | gap framing → perf framing | already set via `label:cross-ref::PERF-237` on #267 |
+| PERF-237 ↔ PERF-209 | deletion subsumes closure | PERF-209 closed (commit 24a275c) by allocator swap; deletion removes the file entirely |
+| PERF-237 ↔ PERF-230 | deletion subsumes closure | PERF-230 closed (commit 821e929) by worker cap; cap moot after deletion |
+| PERF-237 ↔ PERF-233 | deletion resolves | thread-pool cold-start vanishes |
+| PERF-237 ↔ PERF-235 | deletion resolves | parallel* thresholds moot |
+| PERF-237 ↔ Scanning F2/F6/F15 | deletion resolves | `getPool` mutex, ignored `getrandom` return (see PERF-238 for correctness fix), thread-pool cap — all auto-resolved |
+
+**Net impact after deletion:** -997 LOC; -1 process-global mutex; -1 cold `@panic` path in `getPool()`; -1 `smp_allocator` init cost; -0 production runtime regression (zero handshake/record call sites). Expected to let PERF-230, PERF-233, PERF-235, F2, F6, F15 all close as "subsumed" the same day the deletion lands.
+
+### Demoted / auto-resolved in ledger (no GitLab action)
+
+- **F2 (`getPool` mutex)** — mitigated by existing atomic fast-path; auto-closes with PERF-237 deletion (the file disappears). Ledger-only note.
+- **F6 (ignored `getrandom` return)** — folded into **PERF-238** (`cross-ref::SEC-074`). Correctness fix is part of the batching refactor. Closed as duplicate at ledger level.
+- **F15 (thread-pool cap)** — auto-resolved by PERF-237 deletion. Ledger-only note.
+- **PERF-210 (xorNonce per-byte loop)** — confirmed Info status on GitLab issue [#158](https://gitlab.com/devnw/zig/tls/-/issues/158) (already `severity::info`). Demoted in ledger prose — LLVM auto-vectorizes in ReleaseFast; kept for historical reference and as a sample "readability-only" finding.
+
+### Phase 20 findings by area
+
+- **app** (tls13 / context / transcript / handshake_state / messages): PERF-238, PERF-239, PERF-240, PERF-241, PERF-243, PERF-245, PERF-246
+- **app** (deletion): PERF-237
+- **record** (aead): PERF-242, PERF-244
+- **cross-cutting** (security / rng): PERF-238 (SEC-074 cross-ref)
+- **cross-cutting** (tech debt / deletion): PERF-237 (GAP-0131 cross-ref)
+
+### Phase 20 roadmap
+
+- **Quick wins (< 1 day):**
+  - PERF-243 `@memcpy` swap in `CryptoBuffer.compact` (confirmed, single-file)
+  - PERF-244 `@branchHint(.cold)` pass over `src/record/aead.zig`
+  - PERF-241 delete `buildFinished` (audit callers + remove)
+  - PERF-242 `-femit-asm` inspection of `AeadCipher.init` (may close Won't-Do)
+  - PERF-210 prose demotion — **done** this cycle
+- **Medium (1-5 days):**
+  - PERF-237 delete `src/parallel.zig` + relocate `verifyRsaPssWithHash` to `src/sig.zig` + remove build wiring + delete reproducer bench
+  - PERF-238 `src/entropy.zig` Reservoir + 6 call-site migrations (also closes SEC-074)
+  - PERF-239 server-side `lockHash` hoisted pre-CH ingest (with transcript-byte assertion tests)
+  - PERF-240 scratch arena for 8 message builders (requires careful boundary-reset contract)
+  - PERF-245 `@sizeOf(Context)` comptime assertion + `bench_conn_rss.zig`
+  - PERF-246 `BoundedArray(NamedGroup, 8)` for `supported_groups` (likely subsumed by PERF-240)
+- **Strategic (> 5 days):**
+  - **PERF-229** remains the headline item — ADR for nistz256 port vs FFI vs guidance. Implementation is weeks of work regardless of option chosen.
+
+### Phase 20 top 5 risks
+
+1. **PERF-229** (PerfScore 100, P0) — still the dominant risk; <2ms SLO gated on this. **Open, ADR-blocked.**
+2. **PERF-238** (PerfScore 64, P1, confirmed) — also fixes SEC-074 (ignored `getrandom` return). High-leverage: one refactor, two findings closed.
+3. **PERF-237** (PerfScore 75, P2, confirmed) — -997 LOC, subsumes PERF-230/233/235 + F2/F6/F15 once landed. Highest single-commit cleanup leverage in the tracker.
+4. **PERF-240** (PerfScore 48, P2, confirmed) — touches 8 builder files but pays per-handshake alloc reduction; riskiest refactor in the batch (scratch-reset boundaries).
+5. **PERF-245** (PerfScore 36, P2, confirmed) — regression guard that prevents silent Context-size growth; foundational for long-term <100 KB/conn SLO tracking.
+
+### Phase 20 unknowns / blockers
+
+- **PERF-239 magnitude suspected** — needs `tests/perf/bench_server_ch_receipt.zig` (doesn't exist yet) to confirm the 2-4 us estimate. Worth writing the bench even if we close PERF-239 itself, because it unblocks future server-side hot-path work.
+- **PERF-242 may auto-close Won't-Do** — depends on LLVM elision under ReleaseFast. Confirm via `-femit-asm` before committing time.
+- **PERF-244 magnitude suspected** — expected 1-3% AEAD throughput uplift is a tail-latency smoothing effect, not a cycle win; confirm with `perf stat -e branch-misses`.
+- **PERF-246 may be fully subsumed by PERF-240** — if the scratch arena lands first, the `BoundedArray` swap is moot. Track as cross-ref; close as Won't-Do (subsumed) if PERF-240 ships first.
+- **PERF-237 deletion timing** — holds until PERF-238 lands (the `verifyRsaPssWithHash` relocation is cleaner if the entropy refactor isn't simultaneously moving src/tls13/context.zig).
+
+### Phase 20 issue URLs
+
+- PERF-237: <https://gitlab.com/devnw/zig/tls/-/issues/278>
+- PERF-238: <https://gitlab.com/devnw/zig/tls/-/issues/281>
+- PERF-239: <https://gitlab.com/devnw/zig/tls/-/issues/283>
+- PERF-240: <https://gitlab.com/devnw/zig/tls/-/issues/284>
+- PERF-241: <https://gitlab.com/devnw/zig/tls/-/issues/285>
+- PERF-242: <https://gitlab.com/devnw/zig/tls/-/issues/287>
+- PERF-243: <https://gitlab.com/devnw/zig/tls/-/issues/288>
+- PERF-244: <https://gitlab.com/devnw/zig/tls/-/issues/289>
+- PERF-245: <https://gitlab.com/devnw/zig/tls/-/issues/286>
+- PERF-246: <https://gitlab.com/devnw/zig/tls/-/issues/290>
+- PERF-229 (re-confirmation): <https://gitlab.com/devnw/zig/tls/-/issues/243#note_3271984044>
+- GAP-0131 (cross-ref for PERF-237): <https://gitlab.com/devnw/zig/tls/-/issues/267>
+
+### Phase 20 created-date footer
+
+All 10 issues filed on **2026-04-21** (Cycle 7 / Phase 20). IDs #278, #281, #283, #284, #285, #286, #287, #288, #289, #290 (non-contiguous GitLab IIDs due to interleaved SEC/QUAL filings in the same repo; contiguous PERF-NNN ledger IDs).

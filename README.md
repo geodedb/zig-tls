@@ -10,6 +10,14 @@ A **TLS 1.3** implementation for QUIC written in Zig, strictly adhering to RFC 8
 | Zig Version | 0.16.0 |
 | Platforms | Linux, macOS, Windows |
 
+### Performance note
+
+The <2 ms handshake target is validated on Ed25519 and RSA-2048
+certificate configurations. secp256r1 (P-256) workloads currently
+run 2–3 ms per handshake due to an upstream Zig stdlib limitation
+(PERF-229). See [ADR-0002](docs/adr/0002-ecdsa-p256-performance.md)
+for the full decision record.
+
 ## Features
 
 ✅ **RFC Compliant** - Implements TLS 1.3 (RFC 8446) and QUIC-TLS (RFC 9001)

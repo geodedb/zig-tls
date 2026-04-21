@@ -52,6 +52,7 @@ rejected.
 
 ## Index
 
-| ADR  | Title                      | Status   |
-|------|----------------------------|----------|
-| 0001 | Engine module deprecation  | Accepted |
+| ADR  | Title                                                               | Status                |
+|------|---------------------------------------------------------------------|-----------------------|
+| 0001 | Engine module deprecation                                           | Accepted              |
+| 0002 | [ECDSA-P256 performance strategy](./0002-ecdsa-p256-performance.md) | Proposed (2026-04-21) |
