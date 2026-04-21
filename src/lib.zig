@@ -181,7 +181,7 @@
 //! Run module tests directly with `zig test`:
 //! ```bash
 //! # Test individual modules
-//! zig test src/tls13.zig
+//! zig test src/tls13/mod.zig
 //! zig test src/key_schedule.zig
 //! zig test src/record.zig
 //!

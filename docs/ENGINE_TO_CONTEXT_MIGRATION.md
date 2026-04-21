@@ -25,7 +25,7 @@ This guide covers how to migrate from Engine to Context.
 | `Engine.handshakeComplete()` | `Context.handshakeComplete()` | Same semantics |
 | `Engine.setServerName(name)` | `config.server_name = name` | Set at construction via Config |
 | `Engine.setServerCertificate(cert, key, alg)` | `config.server_cert_der = cert; config.server_key_der = key` | Algorithm inferred from key type |
-| `Engine.setAllowInsecure(true)` | `config.allow_insecure = true` | Same behavior; panics in release |
+| `Engine.setAllowInsecure(true)` | `config.allow_insecure = .testing_only_i_know_what_i_am_doing` | SEC-077: sentinel enum; requires `-Dtls-insecure-testing=true` build flag or runtime panic |
 | `Engine.setTransportParameters(tp)` | `config.quic_transport_parameters = tp` | Or call `Context.setTransportParameters()` |
 | `engine.peer_tp` (direct field access) | `Callbacks.on_handshake_metadata` | Peer transport params delivered via callback |
 | `engine.alpn` (direct field access) | `Callbacks.on_handshake_metadata` | Negotiated ALPN delivered via callback |
@@ -53,7 +53,7 @@ const config = Config{
     .allocator = allocator,
     .role = .Client,
     .server_name = "example.com",
-    .allow_insecure = true,  // Debug only!
+    .allow_insecure = .testing_only_i_know_what_i_am_doing,  // SEC-077: build with -Dtls-insecure-testing=true
 };
 var ctx = try Context.init(config, callbacks);
 ```

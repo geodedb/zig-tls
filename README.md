@@ -108,7 +108,7 @@ Build Summary: All steps succeeded; 1000 tests passed ✅
 ```text
 src/
 ├── lib.zig               # Main library entry point
-├── tls13.zig             # TLS 1.3 handshake state machine
+├── tls13/                # TLS 1.3 handshake state machine (modularized)
 ├── tls13_full.zig        # Full TLS 1.3 message parsing
 ├── key_schedule.zig      # HKDF-based key derivation
 ├── record.zig            # Record layer & AEAD operations
@@ -116,6 +116,7 @@ src/
 ├── sig.zig               # Signature verification
 ├── asn1.zig              # ASN.1 DER decoder
 ├── alert.zig             # TLS alert protocol
+├── entropy.zig           # Fail-closed RNG helper (SEC-074)
 ├── zero_rtt.zig          # 0-RTT support
 └── quic_*.zig            # QUIC integration interfaces
 

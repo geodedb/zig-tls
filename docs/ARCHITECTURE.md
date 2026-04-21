@@ -7,8 +7,7 @@ This document describes the architecture of the ztls TLS 1.3 library.
 ```text
 src/
 ├── lib.zig                 # Main library entry point and re-exports
-├── tls13.zig               # TLS 1.3 backward-compatibility layer
-├── tls13/                  # Modularized TLS 1.3 implementation
+├── tls13/                  # Modularized TLS 1.3 implementation (canonical root)
 │   ├── mod.zig             # Module aggregation
 │   ├── config.zig          # Config struct
 │   ├── context.zig         # Context + Callbacks (main driver)
@@ -36,6 +35,7 @@ src/
 ├── sig.zig                 # Signature verification
 ├── asn1.zig                # ASN.1 DER decoder
 ├── alert.zig               # TLS alert protocol
+├── entropy.zig             # Fail-closed RNG helper (SEC-074)
 ├── zero_rtt.zig            # 0-RTT anti-replay support (shipped)
 ├── ocsp.zig                # OCSP stapling
 ├── sct.zig                 # Signed Certificate Timestamps
