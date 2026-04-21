@@ -2,9 +2,14 @@
 # GitLab CI/CD Pipeline for tls
 # SPDX-License-Identifier: Apache-2.0
 
+# Require BOTH `company` and `linux` tags to exclude the macOS Lab runner
+# (which has `company` but not `linux`, is a shell executor ignoring
+# `image:`, and has no apt-get / GNU sha256sum). The Debian-based
+# install-zig template + bookworm-slim images require a Linux runner.
 default:
   tags:
     - company
+    - linux
 
 include:
   # SEC-061: Components pinned to commit SHAs (not tags) so an upstream
