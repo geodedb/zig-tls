@@ -115,7 +115,8 @@ test "mTLS interop: CertificateRequest wire format contains signature_algorithms
 
 test "mTLS interop: CertificateVerify Ed25519 signature verified by OpenSSL" {
     const alloc = testing.allocator;
-    const key_pair = std.crypto.sign.Ed25519.KeyPair.generate();
+    const seed: [32]u8 = [_]u8{0x42} ** 32;
+    const key_pair = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
 
     var transcript_hash: [32]u8 = undefined;
     @memset(&transcript_hash, 0xAB);
@@ -161,7 +162,8 @@ test "mTLS interop: CertificateVerify Ed25519 signature verified by OpenSSL" {
 // ============================================================================
 
 test "mTLS interop: client CertificateVerify context string validated by OpenSSL" {
-    const key_pair = std.crypto.sign.Ed25519.KeyPair.generate();
+    const seed: [32]u8 = [_]u8{0x5A} ** 32;
+    const key_pair = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
 
     var transcript_hash: [32]u8 = undefined;
     @memset(&transcript_hash, 0xCD);
@@ -198,7 +200,8 @@ test "mTLS interop: client CertificateVerify context string validated by OpenSSL
 // ============================================================================
 
 test "mTLS interop: server vs client CertificateVerify context strings differ" {
-    const key_pair = std.crypto.sign.Ed25519.KeyPair.generate();
+    const seed: [32]u8 = [_]u8{0x7E} ** 32;
+    const key_pair = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
     var transcript_hash: [32]u8 = undefined;
     @memset(&transcript_hash, 0xEF);
 
