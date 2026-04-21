@@ -410,12 +410,13 @@ test "validateStapledResponse - malformed ASN.1 rejection" {
     );
 }
 
-test "hashAlgFromOid - OID suffix matching" {
-    // Test that OID matching works with longer OIDs (suffix matching)
-    const long_sha256_oid = [_]u8{ 0x00, 0x00 } ++ // Extra prefix
+test "hashAlgFromOid - SEC-076 rejects prefix-attack encodings" {
+    // SEC-076: prior suffix-match accepted [prefix] ++ canonical_suffix as
+    // the canonical OID (prefix-attack bypass). Canonical DER OIDs are
+    // unique (RFC 5280 §4.1.1.2) and must be matched in full.
+    const long_sha256_oid = [_]u8{ 0x00, 0x00 } ++
         [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01 };
-    const alg = try ocsp.hashAlgFromOid(&long_sha256_oid);
-    try testing.expectEqual(ocsp.HashAlg.sha256, alg);
+    try testing.expectError(error.UnsupportedHashAlgorithm, ocsp.hashAlgFromOid(&long_sha256_oid));
 }
 
 test "normalizeInteger - all zeros except last" {

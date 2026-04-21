@@ -231,6 +231,18 @@ pub fn tagNumber(b: u8) u8 {
     return b & 0x1f;
 }
 
+/// SEC-076: Canonical full-slice OID equality.
+///
+/// DER encoding of an OID is unique (RFC 5280 §4.1.1.2). Prior code
+/// used a suffix-match pattern that accepted any prefix — an
+/// attacker-crafted `[0xFF] ++ canonical_suffix` was recognized as
+/// the canonical OID. This helper performs a full-slice byte
+/// equality check. SEC-069 uses it in x509.zig; SEC-076 migrates
+/// ocsp.zig and sig.zig.
+pub fn oidEqual(oid: []const u8, canonical: []const u8) bool {
+    return std.mem.eql(u8, oid, canonical);
+}
+
 /// Streaming DER decoder for sequential TLV parsing.
 ///
 /// Provides a stateful decoder over a DER-encoded byte buffer. The decoder

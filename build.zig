@@ -384,6 +384,15 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // SEC-076: canonical OID equality regression test.
+            .name = "sec076_oid_canonical_match",
+            .source = "tests/security/sec076_oid_canonical_match.zig",
+            .imports = &.{
+                .{ .name = "asn1", .module = asn1_mod },
+                .{ .name = "ocsp", .module = ocsp_mod },
+            },
+        },
+        .{
             .name = "sec068_tp_dup_cid",
             .source = "tests/security/sec068_tp_dup_cid.zig",
             .imports = &.{

@@ -69,22 +69,17 @@ pub const IssuerInfo = struct {
 };
 
 pub fn hashAlgFromOid(oid: []const u8) OcspError!HashAlg {
-    if (oid.len >= 5 and std.mem.eql(u8, oid[oid.len - 5 ..], &[_]u8{ 0x2B, 0x0E, 0x03, 0x02, 0x1A })) {
-        // 1.3.14.3.2.26 - sha1
-        return .sha1;
-    }
-    if (oid.len >= 9 and std.mem.eql(u8, oid[oid.len - 9 ..], &[_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01 })) {
-        // 2.16.840.1.101.3.4.2.1 - sha256
-        return .sha256;
-    }
-    if (oid.len >= 9 and std.mem.eql(u8, oid[oid.len - 9 ..], &[_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02 })) {
-        // 2.16.840.1.101.3.4.2.2 - sha384
-        return .sha384;
-    }
-    if (oid.len >= 9 and std.mem.eql(u8, oid[oid.len - 9 ..], &[_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03 })) {
-        // 2.16.840.1.101.3.4.2.3 - sha512
-        return .sha512;
-    }
+    // SEC-076: canonical equality. Prior suffix-match accepted prefix-
+    // attack encodings. Canonical DER OIDs are unique (RFC 5280 §4.1.1.2).
+    const sha1 = [_]u8{ 0x2B, 0x0E, 0x03, 0x02, 0x1A };
+    const sha256 = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01 };
+    const sha384 = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02 };
+    const sha512 = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03 };
+
+    if (asn1.oidEqual(oid, &sha1)) return .sha1;
+    if (asn1.oidEqual(oid, &sha256)) return .sha256;
+    if (asn1.oidEqual(oid, &sha384)) return .sha384;
+    if (asn1.oidEqual(oid, &sha512)) return .sha512;
     return OcspError.UnsupportedHashAlgorithm;
 }
 
@@ -144,7 +139,9 @@ pub fn normalizeInteger(bytes: []const u8) []const u8 {
 }
 
 pub fn ensureResponseTypeBasic(oid: []const u8) OcspError!void {
-    if (!(oid.len >= 9 and std.mem.eql(u8, oid[oid.len - 9 ..], &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x01 }))) {
+    // SEC-076: canonical equality.
+    const id_pkix_ocsp_basic = [_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x01 };
+    if (!asn1.oidEqual(oid, &id_pkix_ocsp_basic)) {
         return OcspError.UnsupportedResponseType;
     }
 }
