@@ -67,6 +67,7 @@ const ocsp = @import("ocsp");
 const sct = @import("sct");
 const zero_rtt_mod = @import("zero_rtt");
 const entropy = @import("entropy");
+const build_options = @import("build_options");
 const logger = @import("quic_logger");
 const transport_params = @import("quic_transport_params");
 // GAP-0133/0134: Inbound alert dispatch + outbound close_notify/fatal alert API.
@@ -3020,8 +3021,9 @@ test "RFC 8446 §4.2.11: ServerHello PSK index non-zero round-trip" {
 // ============================================================================
 
 test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
-    // allow_insecure panics in release builds (SEC-005), so skip this test.
-    if (@import("builtin").mode != .Debug) return error.SkipZigTest;
+    // SEC-077: allow_insecure=.testing_only_i_know_what_i_am_doing panics
+    // unless the library was built with -Dtls-insecure-testing=true.
+    if (!build_options.tls_insecure_testing) return error.SkipZigTest;
     // Exercises the full HRR code path through the Context API:
     //   1. Client sends ClientHello1 (with x25519)
     //   2. Server sends HRR requesting x25519 (with cookie)
@@ -3088,8 +3090,9 @@ test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
 }
 
 test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
-    // allow_insecure panics in release builds (SEC-005), so skip this test.
-    if (@import("builtin").mode != .Debug) return error.SkipZigTest;
+    // SEC-077: allow_insecure=.testing_only_i_know_what_i_am_doing panics
+    // unless the library was built with -Dtls-insecure-testing=true.
+    if (!build_options.tls_insecure_testing) return error.SkipZigTest;
     // RFC 8446 §4.1.4: A client which receives a second HRR in the same
     // connection MUST abort the handshake with an "unexpected_message" alert.
     const allocator = std.testing.allocator;
@@ -3134,8 +3137,9 @@ test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
 }
 
 test "QUAL-099: HRR transcript manipulation preserves integrity" {
-    // allow_insecure panics in release builds (SEC-005), so skip this test.
-    if (@import("builtin").mode != .Debug) return error.SkipZigTest;
+    // SEC-077: allow_insecure=.testing_only_i_know_what_i_am_doing panics
+    // unless the library was built with -Dtls-insecure-testing=true.
+    if (!build_options.tls_insecure_testing) return error.SkipZigTest;
     // Verifies the transcript hash changes after HRR processing per
     // RFC 8446 §4.4.1 (message_hash construct).
     const allocator = std.testing.allocator;
@@ -3201,7 +3205,8 @@ fn qual346FailOnSecondInstall(
 }
 
 test "QUAL-346: installHandshakeTrafficPair rolls back send slot on recv failure" {
-    if (@import("builtin").mode != .Debug) return error.SkipZigTest;
+    // SEC-077: uses allow_insecure=.testing_only_i_know_what_i_am_doing.
+    if (!build_options.tls_insecure_testing) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     qual346_call_count = 0;

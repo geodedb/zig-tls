@@ -230,6 +230,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ocsp", .module = ocsp_mod },
             .{ .name = "sct", .module = sct_mod },
             .{ .name = "entropy", .module = entropy_mod },
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
 
@@ -488,6 +489,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "ocsp", .module = ocsp_mod },
                 .{ .name = "sct", .module = sct_mod },
                 .{ .name = "entropy", .module = entropy_mod },
+                .{ .name = "build_options", .module = build_options_mod },
             },
         }),
     });
