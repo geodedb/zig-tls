@@ -1470,6 +1470,10 @@ pub const Context = struct {
 
     fn appendOutbound(self: *Context, level: EncryptionLevel, msg: []const u8, update_transcript: bool) !void {
         var stream = self.streams.buffer(level);
+        // PERF-249: Pre-size before appending so an intermediate
+        // ArrayList realloc cannot fragment a flight that is being built
+        // up byte-by-byte across multiple handshake messages.
+        try stream.outbound.ensureUnusedCapacity(self.allocator, msg.len);
         try stream.outbound.appendSlice(self.allocator, msg);
         if (update_transcript) {
             self.transcripts.handshake.update(msg);
@@ -2150,6 +2154,8 @@ pub const Context = struct {
         const a = alert_mod.Alert{ .level = .warning, .description = .close_notify };
         const payload = a.encode();
         const app_level = @intFromEnum(EncryptionLevel.Application);
+        // PERF-249: pre-size outbound for the 2-byte alert payload.
+        try self.streams.buffers[app_level].outbound.ensureUnusedCapacity(self.allocator, payload.len);
         try self.streams.buffers[app_level].outbound.appendSlice(self.allocator, &payload);
         self.phase = .terminated;
     }
@@ -2170,6 +2176,8 @@ pub const Context = struct {
             .negotiating, .keys_installed => .Handshake,
             .application_ready, .post_handshake, .terminated => .Application,
         };
+        // PERF-249: pre-size outbound for the 2-byte alert payload.
+        try self.streams.buffers[@intFromEnum(level)].outbound.ensureUnusedCapacity(self.allocator, payload.len);
         try self.streams.buffers[@intFromEnum(level)].outbound.appendSlice(self.allocator, &payload);
         self.phase = .terminated;
     }
@@ -2678,6 +2686,8 @@ pub const Context = struct {
         // transcript, so we append directly to outbound without touching
         // self.transcripts.
         var stream = self.streams.buffer(.Application);
+        // PERF-249: pre-size for the framed KeyUpdate payload.
+        try stream.outbound.ensureUnusedCapacity(self.allocator, result.wire_message.len);
         try stream.outbound.appendSlice(self.allocator, result.wire_message);
 
         traceHandshake("TLS: Sent KeyUpdate (request_update={})\n", .{request_peer_update});

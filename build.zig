@@ -489,6 +489,15 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "tls13", .module = tls13_mod },
             },
         },
+        .{
+            // PERF-249: outbound CryptoBuffer pre-sizing regression.
+            .name = "perf_outbound_allocs",
+            .source = "tests/perf/test_outbound_allocs.zig",
+            .imports = &.{
+                .{ .name = "counting_allocator", .module = counting_allocator_mod },
+                .{ .name = "tls13", .module = tls13_mod },
+            },
+        },
     };
 
     for (tests) |test_info| {
