@@ -321,10 +321,17 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     pos += cs_len;
 
     // Compression methods
+    // RFC 8446 §4.1.2: legacy_compression_methods MUST contain exactly one
+    // byte set to zero (the null compression method). Any other shape
+    // indicates a non-TLS-1.3 ClientHello or a tampered message and the
+    // server MUST abort with `illegal_parameter`. SEC-088 surfaces this as
+    // a typed `error.IllegalCompressionMethods` so the alert layer can map
+    // it deterministically without reaching the cipher-suite negotiation.
     if (pos >= data.len) return error.TooShort;
     const comp_len = data[pos];
     pos += 1;
     if (pos + comp_len > data.len) return error.TooShort;
+    if (comp_len != 1 or data[pos] != 0x00) return error.IllegalCompressionMethods;
     ch.compression_methods = data[pos .. pos + comp_len];
     pos += comp_len;
 

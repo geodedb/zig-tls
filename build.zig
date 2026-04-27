@@ -370,6 +370,14 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // SEC-088: legacy_compression_methods enforcement (RFC 8446 §4.1.2).
+            .name = "sec088_clienthello_compression",
+            .source = "tests/security/sec088_clienthello_compression.zig",
+            .imports = &.{
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
+        .{
             .name = "sec074_rng_fail_closed",
             .source = "tests/security/sec074_rng_fail_closed.zig",
             .imports = &.{

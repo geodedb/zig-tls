@@ -2275,6 +2275,10 @@ pub const Context = struct {
         // skip the unused algorithm.
         self.transcripts.handshake.lockHash(self.hash_kind);
         pos += 2; // cipher_suite
+        // RFC 8446 §4.1.3: ServerHello.legacy_compression_method MUST be 0x00.
+        // Reject any other value with `illegal_parameter` (mapped from
+        // UnexpectedMessage upstream until GAP-0138 lands).
+        if (body[pos] != 0x00) return HandshakeError.UnexpectedMessage;
         pos += 1; // compression
         if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
         const exts_len: usize = readU16(body[pos .. pos + 2]);
