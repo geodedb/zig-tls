@@ -1711,7 +1711,17 @@ pub const Context = struct {
 
         // RFC 8446 §4.1.4: Check if client's key_share group is supported
         if (ch_view.key_share.group != .x25519) {
-            if (self.hrr_sent) return HandshakeError.UnsupportedKeyShareGroup;
+            if (self.hrr_sent) {
+                // QUIC-INTEROP-HRR diagnostic: client ignored our HRR and
+                // re-offered a non-X25519 group. Surface the raw codepoint
+                // so interop logs can distinguish "client retried with the
+                // wrong group" from "no second ClientHello arrived".
+                logger.err(
+                    "[TLS-HRR] post-HRR ClientHello#2 still offers non-X25519 key_share (raw_group_code=0x{x:0>4}, group={s})",
+                    .{ ch_view.key_share.raw_group_code, @tagName(ch_view.key_share.group) },
+                );
+                return HandshakeError.UnsupportedKeyShareGroup;
+            }
             try self.sendHelloRetryRequest(ch_view, .x25519);
             return null; // HRR sent; stop flight
         }
@@ -1724,9 +1734,25 @@ pub const Context = struct {
         // captured at HRR emit time. A missing, malformed, stale, or
         // forged cookie aborts the handshake (handshake_failure /
         // illegal_parameter on the wire).
+        //
+        // QUIC-INTEROP-HRR (2026-04-27): each failure branch surfaces a
+        // `logger.err` so interop logs distinguish "cookie mismatch" from
+        // "handshake just timed out" without rebuilding for a debug pass.
         if (self.hrr_sent) {
-            const ch1_hash = self.ch1_transcript_hash orelse return HandshakeError.InvalidCookie;
-            const cookie_bytes = ch_view.cookie orelse return HandshakeError.InvalidCookie;
+            const ch1_hash = self.ch1_transcript_hash orelse {
+                logger.err(
+                    "[TLS-HRR] post-HRR cookie verify failed: server lost CH1 transcript hash before CH2 arrived",
+                    .{},
+                );
+                return HandshakeError.InvalidCookie;
+            };
+            const cookie_bytes = ch_view.cookie orelse {
+                logger.err(
+                    "[TLS-HRR] post-HRR cookie verify failed: ClientHello#2 missing cookie extension (RFC 8446 §4.2.2)",
+                    .{},
+                );
+                return HandshakeError.InvalidCookie;
+            };
             const server_secret = try self.ensureServerSecret();
             const max_age_seconds: i64 = 10; // RFC 8446 §4.2.2 typical
             const ok = cookie_mod.verifyCookie(
@@ -1736,7 +1762,13 @@ pub const Context = struct {
                 ch1_hash.slice(),
                 max_age_seconds,
             );
-            if (!ok) return HandshakeError.InvalidCookie;
+            if (!ok) {
+                logger.err(
+                    "[TLS-HRR] post-HRR cookie verify failed: HMAC mismatch or stale cookie (cookie_len={d}, ch1_hash_len={d}, max_age_s={d})",
+                    .{ cookie_bytes.len, ch1_hash.slice().len, max_age_seconds },
+                );
+                return HandshakeError.InvalidCookie;
+            }
         }
 
         var server_random: [32]u8 = undefined;

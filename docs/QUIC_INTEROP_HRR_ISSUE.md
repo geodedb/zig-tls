@@ -284,3 +284,114 @@ runs in milliseconds and doesn't need docker/ns3.
 - TLS package conformance tests (per **Suggested test additions**) for
   HRR-on-secp256r1 and HRR-on-PQ-hybrid pass.
 - No regression in existing X25519 conformance and interop tests.
+
+---
+
+## 2026-04-27 follow-up — verification after parent fix + cookie/sentinel pass
+
+After bumping zig-quic to tls `e1d6a5d` (covers `4d2d69e` parent fix +
+`db073a3` cookie/sentinel follow-ups + `e1d6a5d` GAP-tracker update), the
+interop matrix has shifted but is **not fully green**:
+
+| Client  | Pre-bump signature                                | Post-bump signature                          | Result   |
+|---------|---------------------------------------------------|----------------------------------------------|----------|
+| ngtcp2  | clean handshake                                   | clean handshake                              | PASS     |
+| mvfst  | `sendHandshakePackets failed: NoHandshakeKeys` + timeout | `accepted connection` then handshake timeout (no NoHandshakeKeys error) | **PARTIAL** |
+| quic-go | `sendHandshakePackets failed: NoHandshakeKeys` + timeout | identical — still `NoHandshakeKeys` + timeout | FAIL     |
+
+What this tells us about each remaining failure:
+
+- **mvfst (improved, not green).** The `NoHandshakeKeys` log is gone,
+  meaning either (a) HRR no longer fires for mvfst's first ClientHello, or
+  (b) HRR fires and the post-HRR ServerHello + Handshake flight reaches
+  the wire — but the handshake still doesn't complete from the server's
+  point of view (`server: handshake timeout`). Plausible causes:
+  - The new cookie wire format (SEC-087) is encoded correctly server-side
+    but mvfst's TLS stack rejects the Handshake flight downstream
+    (signature scheme mismatch? transport-params mismatch?).
+  - Server emits Handshake-level CRYPTO but the QUIC layer's
+    `pushCrypto` / `pollCrypto(.Handshake)` round trip drops it.
+- **quic-go (unchanged failure shape).** Suggests the TLS-side fixes did
+  not change the server's behaviour on quic-go's first ClientHello at all.
+  Two possibilities:
+  - quic-go's first key_share is already X25519 — then the
+    `NoHandshakeKeys` we observed pre-fix was *not* HRR-driven and the
+    TLS fix is irrelevant. The error has a different upstream cause.
+  - quic-go's key_share parses to a group that the new
+    `parseKeyShare` (`messages/client_hello_handlers.zig:217-281`)
+    classifies as "no entry recorded" rather than "first non-X25519
+    sentinel". Worth printing the parsed `key_share.raw_group_code` and
+    `key_share.group` for the failing handshake to see exactly which
+    branch fired.
+
+### What zig-quic verified
+
+```bash
+# Control: passes pre and post bump
+INTEROP_SKIP_EXTRAS=1 SKIP_BUILD=1 INTEROP_IMPLS=ngtcp2 \
+  INTEROP_TESTCASES=handshake bash scripts/interop_full.sh full
+# → both directions PASS
+
+# mvfst: behavioural change, not yet green
+INTEROP_SKIP_EXTRAS=1 SKIP_BUILD=1 INTEROP_IMPLS=mvfst \
+  INTEROP_TESTCASES=handshake bash scripts/interop_full.sh full
+# → zig-server <-> mvfst-client: NoHandshakeKeys gone, handshake timeout
+
+# quic-go: unchanged
+SKIP_BUILD=1 INTEROP_IMPLS=quic-go INTEROP_TESTCASES=handshake \
+  bash scripts/interop_full.sh basic
+# → zig-server <-> quic-go-client: NoHandshakeKeys + handshake timeout
+```
+
+### Suggested next steps in the TLS package
+
+1. **Capture the actual ClientHello bytes** that quic-go and mvfst send.
+   The simplest way is to add a one-shot `logger.err` dump in
+   `parseKeyShare` (or its caller) that emits `key_share.raw_group_code`,
+   `key_share.group`, and the offered `supported_groups` extension. Run
+   the interop matrix once with that logging enabled. The output will
+   distinguish between "client offered X25519" (TLS fix is unrelated) and
+   "client offered group X, parser classified as Y".
+2. **Add a stand-alone TLS-only repro** in
+   `tests/conformance/server/`: feed the captured quic-go / mvfst
+   ClientHello bytes to a Context with a real X25519-only config and
+   assert one of (HRR queued, HRR queued+CH2-cookie-verifies+secrets
+   installed, parse error). That isolates the bug to the TLS layer
+   without needing docker / quic-go runtime.
+3. **Verify cookie wire-format on the wire** for mvfst. SEC-087 fixed the
+   inner-prefix encoding; if mvfst's ClientHello #2 cookie matches our
+   server's HMAC over `(client_random, ch1_transcript_hash, selected_group)`
+   the verifyCookie path should succeed. If we're returning
+   `HandshakeError.InvalidCookie`, surface it via `logger.err` so the
+   interop log distinguishes "cookie mismatch" from "handshake just timed
+   out".
+
+   **Status:** landed in `src/tls13/context.zig:1714-1771`. Each of the
+   three failure branches now emits a tagged `logger.err`:
+
+   - `[TLS-HRR] post-HRR ClientHello#2 still offers non-X25519 key_share
+     (raw_group_code=0xNNNN, group=…)` — client ignored HRR and re-offered
+     a wrong group on CH2 (post-HRR `UnsupportedKeyShareGroup`).
+   - `[TLS-HRR] post-HRR cookie verify failed: server lost CH1 transcript
+     hash before CH2 arrived` — internal state inconsistency
+     (`ch1_transcript_hash == null` on the second pass).
+   - `[TLS-HRR] post-HRR cookie verify failed: ClientHello#2 missing
+     cookie extension (RFC 8446 §4.2.2)` — CH2 omitted the cookie.
+   - `[TLS-HRR] post-HRR cookie verify failed: HMAC mismatch or stale
+     cookie (cookie_len=N, ch1_hash_len=M, max_age_s=10)` — cookie was
+     present but its HMAC didn't validate.
+
+   Existing regression tests
+   `tests/context_hrr_server_tests.zig` ("CH2 with a forged cookie is
+   rejected", "CH2 without a cookie ext is rejected") continue to assert
+   `HandshakeError.InvalidCookie` and now exercise the logged paths.
+
+   What this gives the next interop run: when mvfst (or quic-go, if it
+   ever takes the HRR path) hangs at the handshake-timeout stage, the
+   server stderr will say *which* of the four post-HRR failure modes
+   actually fired — instead of looking like a silent QUIC timeout.
+
+Steps 1 (one-shot `parseKeyShare` dump) and 2 (stand-alone TLS-only repro
+under `tests/conformance/server/`) are still open as recommended next
+investigation steps and are deliberately not landed in this commit; they
+require a captured ClientHello byte sequence from the failing interop run.
