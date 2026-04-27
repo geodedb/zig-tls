@@ -360,6 +360,27 @@ pub const Config = struct {
     /// Default: false (no client certificate requested)
     request_client_cert: bool = false,
 
+    /// GAP-0139 / RFC 8446 §4.6.2: Post-handshake client authentication.
+    ///
+    /// When `true` (and `role == .Client`), the endpoint signals via the
+    /// `post_handshake_auth` extension (0x0031) in ClientHello that it is
+    /// willing to accept a server-issued CertificateRequest at the
+    /// Application encryption level after the handshake has completed.
+    ///
+    /// When `false` (the default), a CertificateRequest received at the
+    /// Application level is rejected with `HandshakeError.UnexpectedMessage`
+    /// (alert `unexpected_message` per RFC 8446 §6.2 once GAP-0138 lands).
+    ///
+    /// **Role:** Client only. Servers must rely on per-handshake state to
+    /// decide whether to send a post-handshake CertificateRequest.
+    ///
+    /// **Note:** RFC 9001 §4.4 forbids post-handshake client authentication
+    /// for QUIC; QUIC stacks should keep this `false`.
+    ///
+    /// **Default:** false (post-handshake auth disabled; CertReq accepted
+    /// only on the Handshake encryption level during the initial handshake).
+    post_handshake_auth: bool = false,
+
     /// DER-encoded client certificate for mutual TLS authentication.
     /// Sent in the Certificate message when the server requests client auth.
     /// Must be valid X.509v3 certificate.

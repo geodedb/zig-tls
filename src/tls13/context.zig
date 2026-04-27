@@ -1140,6 +1140,36 @@ pub const Context = struct {
                 // RFC 8446 §4.3.2: CertificateRequest only valid for client role during initial handshake
                 if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
 
+                // GAP-0139: encryption-level + handshake-phase gate.
+                //
+                // RFC 8446 §4.3.2 places CertificateRequest after ServerHello
+                // / EncryptedExtensions, so during the initial handshake it
+                // arrives at the Handshake encryption level. RFC 8446 §4.6.2
+                // permits a server to issue a post-handshake CertificateRequest
+                // at the Application encryption level, but only if the
+                // `post_handshake_auth` extension was negotiated. We surface
+                // both invariants as `HandshakeError.UnexpectedMessage`
+                // (mapped to the `unexpected_message` alert by the GAP-0138
+                // alert layer).
+                switch (level) {
+                    .Initial => return HandshakeError.UnexpectedMessage,
+                    .Handshake => {
+                        // Initial-handshake path: only valid before the local
+                        // Finished has been verified.
+                        if (self.phase == .application_ready or self.phase == .post_handshake) {
+                            return HandshakeError.UnexpectedMessage;
+                        }
+                    },
+                    .Application => {
+                        if (!self.config.post_handshake_auth) {
+                            return HandshakeError.UnexpectedMessage;
+                        }
+                        if (self.phase != .application_ready and self.phase != .post_handshake) {
+                            return HandshakeError.UnexpectedMessage;
+                        }
+                    },
+                }
+
                 // Parse CertificateRequest to extract context and signature algorithms
                 const cr_parsed = try tls13_full.parseCertificateRequest(self.allocator, parsed.body);
                 defer self.allocator.free(cr_parsed.signature_algorithms);

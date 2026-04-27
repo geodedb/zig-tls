@@ -1137,6 +1137,41 @@ All 11 remaining open issues from the third review have been implemented:
 - **Labels:** `gap`, `rfc::9001`, `type::feature`, `priority::low`, `status::wishlist`, `component::record`
 - **Created:** 2026-04-21
 
+### GAP-0138: Handshake errors do not queue fatal alerts [OPEN]
+
+- **Issue:** [#302](https://gitlab.com/devnw/zig/tls/-/issues/302)
+- **Category:** Protocol Conformance / Alert Layer
+- **Severity:** High
+- **Status:** Open (2026-04-27)
+- **Requirement source:** RFC 8446 §6.2 ("Whenever an implementation encounters a fatal error condition, it SHOULD send an appropriate alert prior to closing the connection.")
+- **Current state (evidence):**
+  - `src/tls13/context.zig:1108-1240` — the `handleHandshakeMessage` switch returns typed `HandshakeError.X` values without first queuing a fatal alert on the outbound CryptoBuffer.
+  - The peer therefore sees a TCP/QUIC reset (or just silence) instead of an alert payload that explains *why* the handshake failed.
+- **Why this is a gap:** Without an alert, the peer cannot map the local error to RFC 8446 §6.2 codes (e.g. `decode_error`, `bad_record_mac`, `unexpected_message`, `illegal_parameter`, `handshake_failure`, `missing_extension`). Causes interop drift and confounds debugging.
+- **Impact/Risk:** Protocol conformance, observability. No direct security impact, but RFC 8446 §6.2 is a SHOULD-level interop requirement.
+- **Recommended fix:** Add a private `failAlert(self, level, desc, err)` helper that queues a fatal alert via existing `sendFatalAlert` / `sendInternalError` / `sendHandshakeFailure` helpers and returns the typed error. Migrate the ~20-30 `return HandshakeError.X` sites in `handleHandshakeMessage` and the inner handlers (`handleServerHello`, `handleEncryptedExtensions`, `handleCertificate*`, `handleCertificateVerify*`, `handlePeerFinished`).
+- **Acceptance criteria:** New regression `tests/security/gap0138_handshake_alert_emit.zig` asserts that for each error category the outbound CryptoBuffer contains the expected 2-byte alert payload AND `Context.phase == .terminated`.
+- **Labels:** `category::protocol`, `severity::high`, `cwe::693`
+- **Created:** 2026-04-27
+
+### GAP-0139: CertificateRequest level + post-handshake-auth gate missing [OPEN]
+
+- **Issue:** [#303](https://gitlab.com/devnw/zig/tls/-/issues/303)
+- **Category:** Protocol Conformance
+- **Severity:** Medium
+- **Status:** Open (2026-04-27) — fix landing same cycle
+- **Requirement source:** RFC 8446 §4.3.2 (CertificateRequest in initial handshake) + §4.6.2 (post-handshake CertificateRequest gated by `post_handshake_auth` extension).
+- **Current state (evidence):** `src/tls13/context.zig:1139-1174` accepted CertificateRequest at any encryption level without distinguishing initial-handshake vs post-handshake paths. No `Config.post_handshake_auth` toggle existed.
+- **Why this is a gap:** A peer could replay a stale CertificateRequest payload at the Application encryption level even when post-handshake auth was never negotiated, causing the client to dupe a fresh `client_cert_request_context` and drive a spurious CertificateVerify computation.
+- **Impact/Risk:** Mostly DoS / unintended-cert-request behavior; not a direct authentication bypass because the actual cert and signature still have to verify on the server side. CWE-290 (improper authentication) — adjacent class.
+- **Recommended fix:** Introduce `Config.post_handshake_auth: bool = false` and a `switch (level)` gate in the `certificate_request` arm of `handleHandshakeMessage`:
+  - `Initial` -> reject.
+  - `Handshake` -> accept only if `phase` is pre-`application_ready`.
+  - `Application` -> accept only if `post_handshake_auth == true` AND handshake has reached `.application_ready`/`.post_handshake`.
+- **Acceptance criteria:** `tests/security/gap0139_certreq_level_gate.zig` (4 cases: Initial reject, Handshake accept, Application without flag reject, Application with flag accept) green.
+- **Labels:** `category::protocol`, `severity::medium`, `cwe::290`
+- **Created:** 2026-04-27
+
 ### GAP-0137: Unused-symbols inventory evidence drift — ledger-only refresh [OPEN]
 
 - **Issue:** N/A (ledger-only; supersedes GAP-0098 Row 65)
