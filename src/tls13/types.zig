@@ -259,4 +259,12 @@ pub const HandshakeError = error{
     /// CH2, malformed, stale beyond max-age, or HMAC-mismatched. Maps
     /// to TLS alert `illegal_parameter` (RFC 8446 §6.2).
     InvalidCookie,
+
+    /// SEC-092 (subsumes SEC-078): A peer sent two extensions of the same
+    /// type in the same extension block. RFC 8446 §4.2: "There MUST NOT be
+    /// more than one extension of the same type in a given extension
+    /// block." Maps to TLS alert `decode_error` (or `illegal_parameter`
+    /// per implementation choice; ClientHello path returns the bare
+    /// `error.DecodeError` to align with SEC-066's existing alert mapping).
+    DuplicateExtension,
 };

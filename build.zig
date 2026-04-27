@@ -378,6 +378,14 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // SEC-092: EncryptedExtensions duplicate-extension rejection.
+            .name = "sec092_ee_dup_ext",
+            .source = "tests/security/sec092_ee_dup_ext.zig",
+            .imports = &.{
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
+        .{
             .name = "sec074_rng_fail_closed",
             .source = "tests/security/sec074_rng_fail_closed.zig",
             .imports = &.{

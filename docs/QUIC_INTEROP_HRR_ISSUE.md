@@ -395,3 +395,100 @@ Steps 1 (one-shot `parseKeyShare` dump) and 2 (stand-alone TLS-only repro
 under `tests/conformance/server/`) are still open as recommended next
 investigation steps and are deliberately not landed in this commit; they
 require a captured ClientHello byte sequence from the failing interop run.
+
+---
+
+## 2026-04-27 verification — tls bump to `307b100` (zig-quic commit `c749107`)
+
+After bumping the zig-quic `build.zig.zon` to tls `307b10031217164024c6bf652547c9df455f7a61`
+and re-running the interop suite, **the new `[TLS-HRR]` post-HRR
+diagnostics did NOT fire for either failing client**. That is a strong
+signal in itself: it rules out *all four* of the post-HRR cookie-verify
+failure modes for both mvfst and quic-go.
+
+### Test results (zig-quic commit `c749107`, tls dep `307b100`)
+
+```text
+zig (server) <-> ngtcp2  (client) — handshake — PASS  (control)
+ngtcp2  (server) <-> zig (client) — handshake — PASS  (control)
+zig (server) <-> mvfst   (client) — handshake — FAIL: server: accepted connection -> handshake timeout
+                                                       (no NoHandshakeKeys, no [TLS-HRR] line)
+mvfst   (server) <-> zig (client) — handshake — PASS
+zig (server) <-> quic-go (client) — handshake — FAIL: ERROR processInitial: sendHandshakePackets failed: NoHandshakeKeys
+                                                       -> handshake timeout
+                                                       (no [TLS-HRR] line)
+quic-go (server) <-> zig (client) — handshake — PASS
+```
+
+Stripped to one observation per client:
+
+| Client  | NoHandshakeKeys log  | `[TLS-HRR]` log | Diagnosis                                                                 |
+|---------|----------------------|-----------------|---------------------------------------------------------------------------|
+| ngtcp2  | no                   | no              | clean — X25519 first; HRR never fires; everything passes.                  |
+| mvfst  | **no** (vs pre-fix)  | **no**          | HRR-emit path is fine. CH2 never reaches `negotiateCipherAndKeys`.        |
+| quic-go | **yes** (unchanged)  | **no**          | HRR may not even fire on CH1. `NoHandshakeKeys` has a different upstream cause. |
+
+### What this tells us
+
+The cookie-verify code path is **fully bypassed** in the failing interop
+runs. None of the four failure modes (non-X25519 CH2, lost
+ch1_transcript_hash, missing cookie ext, HMAC mismatch) is the active
+fault for either client. This means:
+
+1. **mvfst** — CH2 never reaches the TLS Context's
+   `handleHandshakeMessage(.client_hello)` path on the second pass.
+   `[TLS-HRR]` would necessarily have fired on at least *one* of the
+   four branches if CH2 had reached `negotiateCipherAndKeys`, even on
+   the success path the lack of a log just means we returned without
+   error — but the `server: handshake timeout` outcome means we never
+   completed the handshake at all. The fault is between
+   `pushCrypto(.Initial, …)` and `negotiateCipherAndKeys` — most likely
+   in the QUIC layer's CRYPTO-frame reassembly or in the TLS layer's
+   `parseHandshakeOne` / `handleHandshakeMessage` ClientHello gate.
+2. **quic-go** — `NoHandshakeKeys` fires once, on what looks like CH1
+   processing, *not* on a post-HRR retry. Combined with the absence of
+   any `[TLS-HRR]` line, this strongly suggests **HRR is not firing at
+   all** on quic-go's first ClientHello, but the server still fails to
+   install Handshake-level keys. Two candidates:
+
+   - quic-go's first ClientHello already carries an X25519 key_share, so
+     `negotiateCipherAndKeys` proceeds past the HRR gate, but a
+     downstream check (signature scheme negotiation? PSK selection?
+     transport-params validation?) fails silently and the function
+     returns without installing secrets.
+   - quic-go's CH1 has *no* X25519 key_share but the new
+     `parseKeyShare` (`messages/client_hello_handlers.zig:217-281`)
+     classifies the offered group in a way that leaves
+     `ch.key_share = null`, which then trips `ClientHelloInfo.parse`'s
+     `MissingKeyShare` and `handleInitialCrypto` errors silently before
+     ever reaching `afterHandshakeMessage` → `driveServerHandshakeFlight`.
+
+Both candidates are testable by capturing the actual CH1 byte sequence
+quic-go sends (Step 1 above). Neither is reachable through the cookie-
+verify diagnostics that 307b100 added — those only catch *post-HRR*
+faults, and quic-go's failure is plausibly *pre-HRR*.
+
+### Suggested next step (revised)
+
+Given the two new data points, the highest-leverage instrumentation is
+upstream of the cookie verifier — at the boundary between QUIC CRYPTO
+delivery and TLS message parsing. Concretely, one of:
+
+- One-shot `logger.err` at the top of `parseKeyShare` printing the raw
+  ClientHello bytes (or just the key_share extension bytes) for the
+  first 2 ClientHellos seen after Context init. This isolates whether
+  CH2 is even reaching the TLS layer for mvfst, and reveals the actual
+  key_share group quic-go offers in CH1.
+- One-shot `logger.err` at every early-return path in
+  `negotiateCipherAndKeys` (NoCipherSuite, NoSignatureScheme,
+  MissingKeyShare-via-`ClientHelloInfo.parse`) so a quic-go-style
+  silent failure surfaces in the interop log instead of looking like a
+  generic `NoHandshakeKeys`.
+- Capture the failing CH1 bytes from a `tcpdump -i any port 443` run
+  during the interop test, decode them with `openssl s_client -msg`
+  or `boringssl bssl client`, and turn the bytes into a stand-alone
+  `tests/conformance/server/{quic_go_ch1,mvfst_ch2}.zig` repro.
+
+The cookie-verify logging in `307b100` remains valuable as a contract
+check — it just doesn't apply to the failure modes the current interop
+run hits.

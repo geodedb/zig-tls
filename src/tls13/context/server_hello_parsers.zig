@@ -15,6 +15,7 @@ const types = @import("../types.zig");
 
 const HandshakeError = types.HandshakeError;
 const readU16 = tls13_full.readU16;
+const ExtensionType = tls13_full.ExtensionType;
 
 /// Validate the supported_versions extension in a ServerHello extensions block.
 ///
@@ -29,6 +30,10 @@ const readU16 = tls13_full.readU16;
 ///   - The selected version is 0x0304 (TLS 1.3)
 ///
 /// Returns the selected version if valid, or an error otherwise.
+///
+/// SEC-092 (subsumes SEC-078): The walk also enforces RFC 8446 §4.2 — every
+/// extension type may appear at most once in a given block. A duplicate
+/// type returns `HandshakeError.DuplicateExtension`.
 pub fn validateSupportedVersions(body: []const u8, ext_start: usize, exts_len: usize) HandshakeError!u16 {
     var pos = ext_start;
     const exts_end = ext_start + exts_len;
@@ -36,11 +41,16 @@ pub fn validateSupportedVersions(body: []const u8, ext_start: usize, exts_len: u
 
     var found = false;
     var version: u16 = 0;
+    var seen = std.EnumSet(tls13_full.ExtensionType).initEmpty();
     while (pos + 4 <= exts_end) {
         const etype = readU16(body[pos .. pos + 2]);
         const elen: usize = readU16(body[pos + 2 .. pos + 4]);
         pos += 4;
         if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
+        if (std.enums.fromInt(tls13_full.ExtensionType, etype)) |etag| {
+            if (seen.contains(etag)) return HandshakeError.DuplicateExtension;
+            seen.insert(etag);
+        }
         if (etype == @intFromEnum(tls13_full.ExtensionType.supported_versions)) {
             if (elen != 2) return HandshakeError.UnsupportedVersion;
             version = readU16(body[pos .. pos + 2]);
@@ -56,6 +66,9 @@ pub fn validateSupportedVersions(body: []const u8, ext_start: usize, exts_len: u
 /// Parse pre_shared_key extension from a ServerHello body.
 /// Returns the selected PSK identity index if found, null otherwise.
 /// This mirrors the parsing logic in handleServerHello for testability.
+///
+/// SEC-092 (subsumes SEC-078): walk now rejects duplicate extension types
+/// per RFC 8446 §4.2 with `HandshakeError.DuplicateExtension`.
 pub fn parsePskExtension(body: []const u8) !?u16 {
     if (body.len < 2 + 32 + 1) return HandshakeError.UnexpectedMessage;
     var pos: usize = 2 + 32; // skip legacy_version + random
@@ -71,11 +84,16 @@ pub fn parsePskExtension(body: []const u8) !?u16 {
     if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
     const exts_end = pos + exts_len;
     var selected_psk_index: ?u16 = null;
+    var seen = std.EnumSet(tls13_full.ExtensionType).initEmpty();
     while (pos + 4 <= exts_end) {
         const etype = readU16(body[pos .. pos + 2]);
         const elen: usize = readU16(body[pos + 2 .. pos + 4]);
         pos += 4;
         if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
+        if (std.enums.fromInt(tls13_full.ExtensionType, etype)) |etag| {
+            if (seen.contains(etag)) return HandshakeError.DuplicateExtension;
+            seen.insert(etag);
+        }
         if (etype == @intFromEnum(tls13_full.ExtensionType.pre_shared_key)) {
             if (elen != 2) return HandshakeError.UnexpectedMessage;
             selected_psk_index = readU16(body[pos .. pos + 2]);
@@ -232,4 +250,45 @@ test "validateSupportedVersions: trailing truncated ext after valid supported_ve
     exts[7] = 0x33; // next ext type (truncated — no length)
     const version = try validateSupportedVersions(&exts, 0, 8);
     try std.testing.expectEqual(@as(u16, 0x0304), version);
+}
+
+// ---- SEC-092: ServerHello duplicate-extension regressions ----
+
+test "SEC-092: validateSupportedVersions rejects duplicate supported_versions" {
+    // Two adjacent supported_versions extensions of the same type.
+    const exts = [_]u8{
+        0x00, 0x2b, 0x00, 0x02, 0x03, 0x04, // #1
+        0x00, 0x2b, 0x00, 0x02, 0x03, 0x04, // #2
+    };
+    const result = validateSupportedVersions(&exts, 0, exts.len);
+    try std.testing.expectError(HandshakeError.DuplicateExtension, result);
+}
+
+test "SEC-092: parsePskExtension rejects duplicate pre_shared_key" {
+    const exts = [_]u8{
+        0x00, 0x29, 0x00, 0x02, 0x00, 0x00, // pre_shared_key #1
+        0x00, 0x29, 0x00, 0x02, 0x00, 0x00, // pre_shared_key #2
+    };
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(std.testing.allocator);
+    try body.appendSlice(std.testing.allocator, &.{ 0x03, 0x03 }); // legacy_version
+    try body.appendNTimes(std.testing.allocator, 0xA5, 32); // random
+    try body.append(std.testing.allocator, 0); // session_id_len = 0
+    try body.appendSlice(std.testing.allocator, &.{ 0x13, 0x01 }); // cipher_suite
+    try body.append(std.testing.allocator, 0); // compression
+    try body.append(std.testing.allocator, @intCast(exts.len >> 8));
+    try body.append(std.testing.allocator, @intCast(exts.len & 0xff));
+    try body.appendSlice(std.testing.allocator, &exts);
+
+    try std.testing.expectError(HandshakeError.DuplicateExtension, parsePskExtension(body.items));
+}
+
+test "SEC-092: validateSupportedVersions accepts non-duplicate" {
+    // supported_versions followed by key_share (different types) — no dup.
+    const exts = [_]u8{
+        0x00, 0x2b, 0x00, 0x02, 0x03, 0x04,
+        0x00, 0x33, 0x00, 0x00, // key_share with empty payload
+    };
+    const v = try validateSupportedVersions(&exts, 0, exts.len);
+    try std.testing.expectEqual(@as(u16, 0x0304), v);
 }

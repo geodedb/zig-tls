@@ -36,6 +36,7 @@
 
 const std = @import("std");
 const helpers = @import("helpers.zig");
+const core_types = @import("core_types.zig");
 
 /// Build EncryptedExtensions message (RFC 8446 §4.3.1).
 ///
@@ -212,6 +213,12 @@ pub fn parseEncryptedExtensions(body: []const u8) !EncryptedExtensions {
     var offset: usize = 2;
     const ext_end = 2 + ext_len;
 
+    // SEC-092 (subsumes SEC-078): RFC 8446 §4.2 forbids duplicate extension
+    // types in the same block. Track known types via an EnumSet so a
+    // crafted EE message cannot leak a previously-stored extension pointer
+    // by overwriting it with a second copy.
+    var seen = std.EnumSet(core_types.ExtensionType).initEmpty();
+
     while (offset < ext_end) {
         // Need at least 4 bytes for type (2) and length (2)
         if (offset + 4 > ext_end) return error.MalformedExtensions;
@@ -224,6 +231,11 @@ pub fn parseEncryptedExtensions(body: []const u8) !EncryptedExtensions {
 
         const ext_data = body[offset .. offset + data_len];
         offset += data_len;
+
+        if (std.enums.fromInt(core_types.ExtensionType, ext_type)) |etag| {
+            if (seen.contains(etag)) return error.DuplicateExtension;
+            seen.insert(etag);
+        }
 
         switch (ext_type) {
             // ALPN (0x0010) - RFC 7301

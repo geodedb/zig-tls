@@ -2288,11 +2288,18 @@ pub const Context = struct {
         var server_pub: ?[32]u8 = null;
         var found_supported_versions = false;
         var server_selected_psk_index: ?u16 = null;
+        // SEC-092 (subsumes SEC-078): track extension types so duplicates are
+        // rejected per RFC 8446 §4.2.
+        var sh_seen = std.EnumSet(tls13_full.ExtensionType).initEmpty();
         while (pos + 4 <= exts_end) {
             const etype = readU16(body[pos .. pos + 2]);
             const elen: usize = readU16(body[pos + 2 .. pos + 4]);
             pos += 4;
             if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
+            if (std.enums.fromInt(tls13_full.ExtensionType, etype)) |etag| {
+                if (sh_seen.contains(etag)) return HandshakeError.DuplicateExtension;
+                sh_seen.insert(etag);
+            }
             if (etype == @intFromEnum(tls13_full.ExtensionType.supported_versions)) {
                 // RFC 8446 §4.2.1: In ServerHello, supported_versions contains
                 // the single selected version (2 bytes). Must be 0x0304 (TLS 1.3).
