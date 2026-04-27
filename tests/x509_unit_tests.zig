@@ -533,16 +533,45 @@ test "parseCert - certificate without SAN has null san field" {
 // Certificate Chain Validation Tests
 // ============================================================================
 
-test "validateChain - single self-signed certificate (SKIP - Ed25519 sig verification incomplete)" {
-    // TODO: Re-enable when Ed25519 certificate signature verification is fully working
-    return error.SkipZigTest;
+test "validateChain - single self-signed certificate" {
+    // QUAL-374 (subsumes QUAL-364, SEC-084): single self-signed Ed25519
+    // certificate is accepted when its SPKI is in the trust store. The
+    // fixture `tests/test_certs/ed25519_cert.der` is a self-signed
+    // Ed25519 cert (CN=ed25519.example.com) that runs from
+    // 2025-11-06 to 2035-11-04, so this test is non-flakey through 2035.
+    const root_der = @embedFile("test_certs/ed25519_cert.der");
 
-    // The rest of this test is commented out for now
-    // Test validation of a self-signed root certificate
-    // const root_hex = "...";
-    // var root_der: [397]u8 = undefined;
-    // hexToBytes(root_hex, &root_der);
-    // etc.
+    const root_cert = try x509.parseCert(testing.allocator, root_der);
+    defer root_cert.deinit(testing.allocator);
+
+    const TrustStore = struct {
+        var trusted_spki: []const u8 = &[_]u8{};
+        fn isTrusted(spki: []const u8) bool {
+            return std.mem.eql(u8, spki, trusted_spki);
+        }
+    };
+
+    TrustStore.trusted_spki = root_cert.spki;
+    x509.setTrustStore(.{ .isTrustedSpki = TrustStore.isTrusted });
+    defer x509.setTrustStore(null);
+
+    const chain = [_][]const u8{root_der};
+    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
+
+    // RFC 5280 §6: validate the chain end-to-end. For a single self-signed
+    // certificate, this exercises:
+    //   - Validity-period check (notBefore/notAfter)
+    //   - BasicConstraints (must have CA=true on the self-signed root)
+    //   - Trust-store match on the leaf SPKI
+    //   - Self-signature verification (Ed25519 over the TBS bytes)
+    try x509.validateChain(
+        testing.allocator,
+        &chain,
+        @intCast(now),
+        "ed25519.example.com",
+        .secure, // SEC-077: full validation
+        .server_auth,
+    );
 }
 
 test "validateChain - expired certificate rejection" {

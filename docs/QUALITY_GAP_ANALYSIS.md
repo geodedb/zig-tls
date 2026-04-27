@@ -3464,3 +3464,9 @@ Eight new actionable issues filed from Phase 3 quality-reviewer output, plus thr
   cookie-validation + cookie-wire-format security follow-ups; all three
   emerged from the QUIC-INTEROP-HRR triage's risk-notes (see
   `docs/QUIC_INTEROP_HRR_ISSUE.md`).
+
+## Cycle 8 / Phase 22 Filings (2026-04-27, QUAL-374) — Disabled-test cleanup
+
+| QUAL-ID | Severity | PS | Category | Finding | File:Line | Status |
+|---------|----------|----|----------|---------|-----------|--------|
+| QUAL-374 | Low | 14 | test-coverage | Two unit tests were unconditionally returning `error.SkipZigTest`, masking real verifier coverage: `parseRsaSpki - wrong OID rejection` and `validateChain - single self-signed certificate`. Subsumes prior duplicate filings QUAL-364 (#282) and SEC-084 (#301). | `tests/sig_unit_tests.zig:146-149` + `tests/x509_unit_tests.zig:533-543` | Closed 2026-04-27 — RSA SPKI test now constructs a SubjectPublicKeyInfo with `id-ecPublicKey` OID (1.2.840.10045.2.1) and asserts `parseRsaSpki` returns `error.UnexpectedAlgorithm`; X.509 test exercises end-to-end `validateChain` against the existing Ed25519 self-signed fixture (`tests/test_certs/ed25519_cert.der`, valid through 2035), covering validity period, BasicConstraints, trust-store match, and Ed25519 self-signature verification. |

@@ -143,9 +143,49 @@ test "parseRsaSpki - 2048-bit modulus" {
     try testing.expectEqual(@as(u64, 65537), parsed.exponent);
 }
 
-test "parseRsaSpki - wrong OID rejection (SKIP - test data issue)" {
-    // TODO: Fix test data to have correct length
-    return error.SkipZigTest;
+test "parseRsaSpki - wrong OID rejection" {
+    // QUAL-374 (subsumes QUAL-364, SEC-084): craft a SubjectPublicKeyInfo
+    // whose AlgorithmIdentifier OID is `id-ecPublicKey` (1.2.840.10045.2.1)
+    // instead of `rsaEncryption` (1.2.840.113549.1.1.1) and assert
+    // parseRsaSpki rejects with `error.UnexpectedAlgorithm`.
+    //
+    // Wire structure (DER):
+    //   SEQUENCE {
+    //     SEQUENCE {
+    //       OID id-ecPublicKey (1.2.840.10045.2.1) — 7 bytes encoding
+    //       OID prime256v1     (1.2.840.10045.3.1.7)
+    //     }
+    //     BIT STRING { 0x04 || 64-byte uncompressed P-256 point (zeros) }
+    //   }
+    //
+    // The exact key bytes do not matter — parseRsaSpki bails on OID mismatch
+    // before reaching the bit-string body.
+    const ec_spki = [_]u8{
+        // SEQUENCE outer, length 89 bytes
+        0x30, 0x59,
+        // SEQUENCE AlgorithmIdentifier, length 19 bytes
+        0x30, 0x13,
+        // OID id-ecPublicKey (1.2.840.10045.2.1)
+        0x06, 0x07,
+        0x2A, 0x86,
+        0x48, 0xCE,
+        0x3D, 0x02,
+        0x01,
+        // OID prime256v1 (1.2.840.10045.3.1.7)
+        0x06,
+        0x08, 0x2A,
+        0x86, 0x48,
+        0xCE, 0x3D,
+        0x03, 0x01,
+        0x07,
+        // BIT STRING (66 bytes: unused-bits 0 + 0x04 prefix + 64 bytes pubkey)
+        0x03,
+        0x42, 0x00,
+        0x04,
+    } ++ [_]u8{0} ** 64;
+
+    const result = sigmod.parseRsaSpki(&ec_spki, testing.allocator);
+    try testing.expectError(error.UnexpectedAlgorithm, result);
 }
 
 // ============================================================================
