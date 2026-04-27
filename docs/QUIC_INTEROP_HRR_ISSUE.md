@@ -492,3 +492,115 @@ delivery and TLS message parsing. Concretely, one of:
 The cookie-verify logging in `307b100` remains valuable as a contract
 check — it just doesn't apply to the failure modes the current interop
 run hits.
+
+---
+
+## 2026-04-27 follow-up — upstream `[TLS-HRR]` diagnostics landed
+
+The first two recommended instrumentation steps from the previous
+section are now wired into `src/tls13/context.zig`. The third step
+(captured `tcpdump` repro under `tests/conformance/server/`) remains
+open and requires a real interop run.
+
+### What landed
+
+1. **CH1/CH2 parse-state snapshot** (`dispatchHandshake.client_hello`,
+   `context.zig:1086-1209`).
+   - Wraps `state.setClientHello` so any RFC 8446 §4.2.x parse failure
+     emits a tagged line *before* `failAlert` re-raises:
+
+     ```text
+     [TLS-HRR] ClientHello parse failed at level=Initial: MissingKeyShare (body_len=NN, hrr_sent=false)
+     ```
+
+   - On parse success, dumps a one-line snapshot of the parsed CH so
+     interop logs distinguish "client offered X25519" from "client
+     offered group X classified as Y":
+
+     ```text
+     [TLS-HRR] ClientHello#1 parsed at level=Initial: key_share.group=secp256r1, raw_group_code=0x0017, key_len=65, cipher_suites=1, has_cookie=false
+     ```
+
+     The CH index is `1` for the first ClientHello and `2` for any
+     post-HRR ClientHello (read from `self.hrr_sent`). The
+     `raw_group_code` field is the original wire codepoint preserved by
+     `parseKeyShare` (QUAL-369), so PQ-hybrid `0x6399` and any other
+     unknown group surfaces verbatim.
+
+2. **`negotiateCipherAndKeys` early-return diagnostics**
+   (`context.zig:1812-1932`). Every silent early-return now carries a
+   `[TLS-HRR] negotiate <variant> (<reason>)` line:
+
+   - `NoCipherSuite (no_overlap)` — client suites and server suites do
+     not intersect (after the `ClientHelloInfo.parse` TLS 1.3 prefilter).
+   - `NoSignatureScheme (server_config_empty)` —
+     `Config.supported_signature_schemes` is empty.
+   - `NoSignatureScheme (peer_list_missing)` — ClientHello had no
+     `signature_algorithms` extension.
+   - `NoSignatureScheme (no_overlap)` — both sides have lists, no
+     intersection.
+   - `UnsupportedKeyShareGroup (x25519_short_key)` — client offered
+     `group=x25519` but the key_exchange field is not 32 bytes
+     (RFC 7748 §6.1).
+   - `UnexpectedMessage` for the impossible-by-design "negotiate
+     entered without a parsed ClientHello" case.
+
+3. **Test sink in `quic_logger`** (`src/quic_logger.zig`). The library's
+   logger is no-op by default in this repo; the embedding QUIC stack
+   replaces `log()` for production. Tests now opt in via
+   `setTestSink(...)` to capture emitted lines so the diagnostics can
+   be regression-tested without rebuilding for a debug pass. Production
+   behaviour is unchanged when the sink is null.
+
+4. **Regression coverage** —
+   `tests/security/quic_interop_hrr_diagnostics.zig` (9 tests). Each
+   test installs the sink, drives a synthetic ClientHello through the
+   server context, asserts the corresponding error variant, and asserts
+   that the expected `[TLS-HRR]` line landed. The tests fail without
+   the diagnostics and pass with them — proof that the wiring is
+   correct on every branch.
+
+### What zig-quic should see in the next interop run
+
+When mvfst hangs at the handshake-timeout stage, the server stderr will
+now show one of:
+
+- `[TLS-HRR] ClientHello#1 parsed ...` followed by HRR emission, then
+  silence — meaning CH2 *truly* never reaches the TLS layer (transport
+  bug between `pushCrypto(.Initial)` and the TLS Context's
+  `processCrypto`).
+- `[TLS-HRR] ClientHello#1 parsed ...` followed by
+  `[TLS-HRR] ClientHello#2 parsed ...` and then either a successful
+  flight or one of the four post-HRR cookie-verify errors from
+  `307b100`.
+
+When quic-go fails with `NoHandshakeKeys`, the server stderr will now
+show one of:
+
+- `[TLS-HRR] ClientHello#1 parsed at level=Initial: key_share.group=x25519, raw_group_code=0x001d, key_len=32, ...` —
+  X25519 already first; HRR never fires; the failure is downstream of
+  the X25519 gate. The `[TLS-HRR] negotiate ...` line that follows
+  pinpoints whether NoSignatureScheme, NoCipherSuite, or another
+  early-return is the actual cause.
+- `[TLS-HRR] ClientHello parse failed at level=Initial: MissingKeyShare ...` —
+  the new `parseKeyShare` "no recorded entry" path was hit (CH1 had
+  *zero* key_share entries the parser could record, including no
+  unsupported sentinel).
+- `[TLS-HRR] ClientHello#1 parsed ... raw_group_code=0xNNNN ...` for a
+  non-X25519 first key_share, followed by HRR emission — same shape as
+  the mvfst path.
+
+### Open follow-ups
+
+- **CH1 byte capture and stand-alone TLS repro.** Still requires a
+  `tcpdump -i any port 443` snapshot from a failing interop run to
+  decode quic-go's actual CH1 wire bytes. With the bytes in hand, a
+  test under `tests/conformance/server/quic_go_ch1.zig` would feed
+  them straight into `processCrypto(.Initial, ...)` and assert
+  whichever branch the diagnostic identified — closing the
+  reproduction loop without docker.
+- **Re-run interop matrix against this commit.** The expected outcome
+  is that the next failing run will name the actual fault in the
+  server stderr, replacing the silent `NoHandshakeKeys` /
+  `handshake timeout` shape with a tagged `[TLS-HRR]` line that points
+  at one specific branch.

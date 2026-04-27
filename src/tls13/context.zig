@@ -1146,8 +1146,48 @@ pub const Context = struct {
                     self.state.reset(self.allocator);
                 }
 
-                // Parse and store ClientHello for parameter negotiation
-                try self.state.setClientHello(self.allocator, parsed.body);
+                // Parse and store ClientHello for parameter negotiation.
+                //
+                // QUIC-INTEROP-HRR (2026-04-27): wrap setClientHello so any
+                // RFC 8446 §4.2.x parse failure (MissingKeyShare,
+                // NoCipherSuite, UnsupportedVersion, …) surfaces a tagged
+                // line in the interop log instead of bubbling up as a
+                // generic NoHandshakeKeys at the QUIC layer. Without this
+                // diagnostic the failing CH for quic-go / mvfst clients was
+                // indistinguishable from a transport-level CRYPTO drop. See
+                // docs/QUIC_INTEROP_HRR_ISSUE.md.
+                self.state.setClientHello(self.allocator, parsed.body) catch |err| {
+                    logger.err(
+                        "[TLS-HRR] ClientHello parse failed at level={s}: {s} (body_len={d}, hrr_sent={})",
+                        .{ @tagName(level), @errorName(err), parsed.body.len, self.hrr_sent },
+                    );
+                    return err;
+                };
+
+                // QUIC-INTEROP-HRR (2026-04-27): one-shot snapshot of the
+                // parsed CH state so interop logs distinguish "client
+                // offered X25519" from "client offered group X classified
+                // as Y". Includes the RAW codepoint (preserved by
+                // parseKeyShare/QUAL-369) so PQ-hybrid (0x6399) shows up
+                // verbatim. Logged at err level so it lands in the same
+                // stream as the existing HRR / cookie-verify diagnostics.
+                if (self.state.clientHello()) |ch_snap| {
+                    const ch_index: u8 = if (self.hrr_sent) 2 else 1;
+                    logger.err(
+                        "[TLS-HRR] ClientHello#{d} parsed at level={s}: " ++
+                            "key_share.group={s}, raw_group_code=0x{x:0>4}, " ++
+                            "key_len={d}, cipher_suites={d}, has_cookie={}",
+                        .{
+                            ch_index,
+                            @tagName(level),
+                            @tagName(ch_snap.key_share.group),
+                            ch_snap.key_share.raw_group_code,
+                            ch_snap.key_share.key.len,
+                            ch_snap.cipher_suites.len,
+                            ch_snap.cookie != null,
+                        },
+                    );
+                }
 
                 // Phase 36 FIX: Extract peer transport parameters from ClientHello
                 // RFC 9001 §8.2: quic_transport_parameters (0x0039) mandatory for QUIC
@@ -1770,11 +1810,37 @@ pub const Context = struct {
     /// QUAL-095 step 1: Negotiate cipher suite, key share, and PSK.
     /// Returns null when an HRR was sent (caller should return immediately).
     fn negotiateCipherAndKeys(self: *Context) !?ServerNegotiationResult {
-        const ch_view = self.state.clientHello() orelse return HandshakeError.UnexpectedMessage;
+        const ch_view = self.state.clientHello() orelse {
+            // QUIC-INTEROP-HRR (2026-04-27): negotiate entered without a
+            // parsed ClientHello — almost always a callsite bug, but
+            // surfacing it is cheap and disambiguates from cipher / sig /
+            // key_share failures below.
+            logger.err(
+                "[TLS-HRR] negotiate UnexpectedMessage: clientHello state slot empty (hrr_sent={})",
+                .{self.hrr_sent},
+            );
+            return HandshakeError.UnexpectedMessage;
+        };
         const cipher_suite = cipher_negotiation.chooseCipherSuite(
             ch_view.cipher_suites,
             self.config.supported_cipher_suites,
-        ) orelse return HandshakeError.NoCipherSuite;
+        ) orelse {
+            // QUIC-INTEROP-HRR (2026-04-27): no overlap between client's
+            // offered cipher suites and the server's configured set.
+            // ClientHelloInfo.parse pre-filters to TLS 1.3 entries
+            // (0x1301-0x1303) so a non-empty offered list with no overlap
+            // means the server config disagrees with the client's TLS 1.3
+            // suite set.
+            logger.err(
+                "[TLS-HRR] negotiate NoCipherSuite (no_overlap): client_offered={d} suites, server_supports={d} suites, hrr_sent={}",
+                .{
+                    ch_view.cipher_suites.len,
+                    self.config.supported_cipher_suites.len,
+                    self.hrr_sent,
+                },
+            );
+            return HandshakeError.NoCipherSuite;
+        };
         self.hash_kind = cipherSuiteHash(cipher_suite);
         self.negotiated_cipher_suite = cipher_suite;
         // PERF-004: Lock transcript to the negotiated hash for the server path.
@@ -1785,13 +1851,41 @@ pub const Context = struct {
         // Preserve original semantics exactly: reset to null on entry,
         // require a non-empty server list and a non-null peer list, then
         // assign on successful overlap.
-        if (self.config.supported_signature_schemes.len == 0) return HandshakeError.NoSignatureScheme;
-        const peer_sig_schemes = ch_view.signature_algorithms orelse return HandshakeError.NoSignatureScheme;
+        //
+        // QUIC-INTEROP-HRR (2026-04-27): tag each NoSignatureScheme
+        // sub-path so interop logs name the actual cause.
+        if (self.config.supported_signature_schemes.len == 0) {
+            logger.err(
+                "[TLS-HRR] negotiate NoSignatureScheme (server_config_empty): " ++
+                    "Config.supported_signature_schemes is empty (hrr_sent={})",
+                .{self.hrr_sent},
+            );
+            return HandshakeError.NoSignatureScheme;
+        }
+        const peer_sig_schemes = ch_view.signature_algorithms orelse {
+            logger.err(
+                "[TLS-HRR] negotiate NoSignatureScheme (peer_list_missing): " ++
+                    "ClientHello did not include signature_algorithms extension (hrr_sent={})",
+                .{self.hrr_sent},
+            );
+            return HandshakeError.NoSignatureScheme;
+        };
         self.negotiated_signature = null;
         self.negotiated_signature = cipher_negotiation.chooseSignatureScheme(
             peer_sig_schemes,
             self.config.supported_signature_schemes,
-        ) orelse return HandshakeError.NoSignatureScheme;
+        ) orelse {
+            logger.err(
+                "[TLS-HRR] negotiate NoSignatureScheme (no_overlap): " ++
+                    "client_offered={d} schemes, server_supports={d} schemes (hrr_sent={})",
+                .{
+                    peer_sig_schemes.len,
+                    self.config.supported_signature_schemes.len,
+                    self.hrr_sent,
+                },
+            );
+            return HandshakeError.NoSignatureScheme;
+        };
 
         // RFC 8446 §4.1.4: Check if client's key_share group is supported
         if (ch_view.key_share.group != .x25519) {
@@ -1810,7 +1904,21 @@ pub const Context = struct {
             return null; // HRR sent; stop flight
         }
 
-        if (ch_view.key_share.key.len != 32) return HandshakeError.UnsupportedKeyShareGroup;
+        if (ch_view.key_share.key.len != 32) {
+            // QUIC-INTEROP-HRR (2026-04-27): client offered group=x25519
+            // but the key_exchange field is the wrong length. RFC 7748
+            // §6.1: X25519 public keys are exactly 32 bytes.
+            logger.err(
+                "[TLS-HRR] negotiate UnsupportedKeyShareGroup (x25519_short_key): " ++
+                    "key_share.group=x25519 but key.len={d} (expected 32, raw_group_code=0x{x:0>4}, hrr_sent={})",
+                .{
+                    ch_view.key_share.key.len,
+                    ch_view.key_share.raw_group_code,
+                    self.hrr_sent,
+                },
+            );
+            return HandshakeError.UnsupportedKeyShareGroup;
+        }
 
         // SEC-086: post-HRR cookie verification (RFC 8446 §4.2.2). When
         // we sent HRR, the second ClientHello MUST echo the cookie we

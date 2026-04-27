@@ -391,6 +391,19 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // QUIC-INTEROP-HRR (2026-04-27): upstream diagnostics on the
+            // server's CH1/CH2 path. Asserts the new `[TLS-HRR]` log lines
+            // surface every silent early-return that was previously masked
+            // by the QUIC layer's generic NoHandshakeKeys.
+            .name = "quic_interop_hrr_diagnostics",
+            .source = "tests/security/quic_interop_hrr_diagnostics.zig",
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+                .{ .name = "quic_logger", .module = logger_mod },
+            },
+        },
+        .{
             .name = "sec074_rng_fail_closed",
             .source = "tests/security/sec074_rng_fail_closed.zig",
             .imports = &.{

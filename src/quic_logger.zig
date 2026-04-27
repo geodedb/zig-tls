@@ -122,6 +122,26 @@ pub const Level = enum {
     err,
 };
 
+/// Test-only log sink callback. Receives the level and the already-formatted
+/// message slice (valid only for the duration of the call). Tests register a
+/// sink to assert that diagnostic logs landed; production builds leave the
+/// sink null and `log()` remains a no-op.
+pub const TestSink = *const fn (level: Level, message: []const u8) void;
+
+/// Module-local sink slot. Null in all production builds; tests opt in with
+/// `setTestSink`. The single-slot design matches Zig's default
+/// single-threaded test runner (one sink per test binary at a time).
+var test_sink: ?TestSink = null;
+
+/// Register (or clear, by passing null) the test log sink. Test-only —
+/// production logging integration replaces `log()` itself per the module
+/// header. Always pair `setTestSink(sink)` with a deferred
+/// `setTestSink(null)` so a panicking test does not leak the sink into a
+/// later test.
+pub fn setTestSink(sink: ?TestSink) void {
+    test_sink = sink;
+}
+
 /// Log a message at the specified level.
 ///
 /// This is the core logging primitive. All level-specific functions (debug,
@@ -132,8 +152,10 @@ pub const Level = enum {
 /// - `format`: Format string (std.fmt compatible)
 /// - `args`: Format arguments
 ///
-/// **Placeholder**: Currently a no-op. Replace this function to integrate
-/// with your QUIC stack's logging system.
+/// **Placeholder**: Currently a no-op when no test sink is registered.
+/// Replace this function to integrate with your QUIC stack's logging
+/// system in production. Tests can opt in via `setTestSink` to capture
+/// emitted lines without touching the production code path.
 ///
 /// Example replacement for integration:
 /// ```zig
@@ -148,11 +170,12 @@ pub const Level = enum {
 /// }
 /// ```
 pub fn log(comptime level: Level, comptime format: []const u8, args: anytype) void {
-    _ = level;
-    _ = format;
-    _ = args;
-    // No-op placeholder to keep library dependency-free
-    // Compiles to nothing (zero runtime cost)
+    // Production fast path: when no test sink is registered the entire
+    // call collapses to a single null-compare branch.
+    const sink = test_sink orelse return;
+    var buf: [1024]u8 = undefined;
+    const formatted = std.fmt.bufPrint(&buf, format, args) catch return;
+    sink(level, formatted);
 }
 
 /// Log a debug-level message.
