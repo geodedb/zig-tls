@@ -395,6 +395,15 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // GAP-0138: handshake errors queue fatal alerts (RFC 8446 §6.2).
+            .name = "gap0138_handshake_alert_emit",
+            .source = "tests/security/gap0138_handshake_alert_emit.zig",
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
+        .{
             .name = "sec074_rng_fail_closed",
             .source = "tests/security/sec074_rng_fail_closed.zig",
             .imports = &.{

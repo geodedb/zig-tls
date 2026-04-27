@@ -1084,6 +1084,55 @@ pub const Context = struct {
     /// RFC 8446 §4: Validate and process handshake message based on type and role.
     /// Enforces message sequencing and role-based authorization.
     fn handleHandshakeMessage(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage, raw: []const u8) !void {
+        // GAP-0138: any HandshakeError surfaced from below queues a fatal
+        // alert mapped via alert.fromHandshakeError before the error
+        // propagates back to the caller. ApiError values (e.g.
+        // OutOfMemory) and successful returns pass through unchanged.
+        return self.dispatchHandshake(level, parsed, raw) catch |err| switch (err) {
+            // The HandshakeError variants — queue an alert then re-raise.
+            error.UnexpectedMessage,
+            error.DuplicateClientHello,
+            error.UnsupportedVersion,
+            error.MissingKeyShare,
+            error.UnsupportedKeyShareGroup,
+            error.NoCipherSuite,
+            error.MissingTransportParameters,
+            error.AlpnNegotiationFailed,
+            error.NoSignatureScheme,
+            error.FinishedVerifyFailed,
+            error.DowngradeAttempt,
+            error.PostHandshakeAuthUnsupported,
+            error.EmptyCertificateChain,
+            error.MissingCertificate,
+            error.CertificateValidationFailed,
+            error.MissingOcspResponse,
+            error.OcspValidationFailed,
+            error.MissingSctList,
+            error.SctParsingFailed,
+            error.EmptySctList,
+            error.SctCallbackRejected,
+            error.InvalidSignature,
+            error.UnsupportedSignatureAlgorithm,
+            error.DecryptError,
+            error.CryptoError,
+            error.MissingPskKeyExchangeModes,
+            error.PskDheKeModeRequired,
+            error.MissingResumptionTicket,
+            error.UnexpectedPskExtension,
+            error.PskIndexOutOfRange,
+            error.InvalidTransportParameters,
+            error.MissingServerName,
+            error.InternalError,
+            error.InvalidCookie,
+            error.DuplicateExtension,
+            => return self.failAlert(err),
+            // PeerFatalAlert / InvalidAlert are alert-layer events that
+            // already manage phase + alert queuing; pass through.
+            else => return err,
+        };
+    }
+
+    fn dispatchHandshake(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage, raw: []const u8) !void {
         switch (parsed.typ) {
             .client_hello => {
                 // RFC 8446 §4.1.2: ClientHello only valid for server role
@@ -2137,6 +2186,26 @@ pub const Context = struct {
     /// negotiated (cipher suites, signature algorithms, etc.).
     pub fn sendHandshakeFailure(self: *Context) !void {
         return self.sendFatalAlert(.handshake_failure);
+    }
+
+    /// GAP-0138: Queue a fatal alert mapped from a handshake-layer error
+    /// and return that error to the caller.
+    ///
+    /// Convenience used by handshake handlers to satisfy RFC 8446 §6.2 —
+    /// "Whenever an implementation encounters a fatal error condition, it
+    /// SHOULD send an appropriate alert prior to closing the connection."
+    /// The mapping is delegated to `alert.fromHandshakeError` so it stays
+    /// in sync with the RFC §6.2 alert codes.
+    ///
+    /// On success the outbound CryptoBuffer for the appropriate level
+    /// contains the 2-byte alert payload, and `self.phase` is set to
+    /// `.terminated`. The original `err` is then returned. Allocation
+    /// failures during alert queuing are swallowed; the QUIC transport
+    /// observes the abort via `self.phase == .terminated`.
+    fn failAlert(self: *Context, err: anyerror) anyerror {
+        const desc = alert_mod.fromHandshakeError(err);
+        self.sendFatalAlert(desc) catch {};
+        return err;
     }
 
     /// Construct and queue a ClientHello with QUIC extensions when acting as the client.
