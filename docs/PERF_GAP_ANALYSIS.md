@@ -3127,3 +3127,10 @@ GitLab #243 re-confirmed via [note_3271984044](https://gitlab.com/devnw/zig/tls/
 ### Phase 20 created-date footer
 
 All 10 issues filed on **2026-04-21** (Cycle 7 / Phase 20). IDs #278, #281, #283, #284, #285, #286, #287, #288, #289, #290 (non-contiguous GitLab IIDs due to interleaved SEC/QUAL filings in the same repo; contiguous PERF-NNN ledger IDs).
+
+## Cycle 8 / Phase 22 Filings (2026-04-27, PERF-249 + PERF-255)
+
+| Rank | Priority | PerfScore | Item | Component | File:Line | Issue | Hot path? | Confidence | Owner | Schedule | Status |
+|------|----------|-----------|------|-----------|-----------|-------|-----------|------------|-------|----------|--------|
+| n/a | P1 | 36 | PERF-249: outbound `CryptoBuffer.appendSlice` lacks `ensureUnusedCapacity` for alert + framed-message paths | tls13 / context | `src/tls13/context.zig` outbound `appendOutbound` / `appendOutboundFramed` / `sendFatalAlert` | [#315](https://gitlab.com/devnw/zig/tls/-/issues/315) | yes — every outbound flight | confirmed | benji | Phase 22 (this cycle) | Closed 2026-04-27 — pre-sized append paths plus regression test asserting ≤2 outbound reallocs per full client handshake. |
+| n/a | P1 | 32 | PERF-255: PSK-binder transcript freshly hashed `msg[0..truncated_len]` after the main transcript will hash the full `msg` again | tls13 / context, transcript | `src/tls13/context.zig:2186-2213` (now refactored), `src/tls13/transcript.zig` | [#320](https://gitlab.com/devnw/zig/tls/-/issues/320) | yes — every PSK ClientHello | confirmed | benji | Phase 22 (this cycle) | Closed 2026-04-27 — `Transcript.clone()` added; binder path now feeds the truncated prefix into the main transcript once, clones for the binder digest, and feeds the binder tail back. Regression test in `transcript.zig` confirms `clone()+update(rest)` matches `update(full)` on both SHA-256 and SHA-384. |

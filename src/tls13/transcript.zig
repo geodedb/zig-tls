@@ -168,6 +168,20 @@ pub const Transcript = struct {
         self.locked_hash = hash;
     }
 
+    /// PERF-255: Return a deep copy of the running hash state without
+    /// rehashing the previously-fed bytes.
+    ///
+    /// `std.crypto.hash.sha2.Sha256` and `Sha384` keep all state in fixed-
+    /// size struct fields (no allocations), so a value copy is sufficient
+    /// to fork the transcript at the current point. Callers that need to
+    /// branch off — e.g. the PSK-binder transcript that needs the same
+    /// truncated-CH prefix as the main handshake transcript — should
+    /// `clone()` and then `update(delta)` instead of seeding a fresh
+    /// `initLocked()` and re-feeding the full message.
+    pub fn clone(self: *const Transcript) Transcript {
+        return self.*;
+    }
+
     /// Update transcript with raw bytes (handshake messages).
     /// RFC 8446 §4.4.1: Messages MUST be included in order sent/received
     ///
@@ -807,4 +821,46 @@ test "PERF-231: snapshot populates only locked hash" {
     const snap_both = both.snapshot();
     try testing.expect(snap_both.sha256 != null);
     try testing.expect(snap_both.sha384 != null);
+}
+
+test "PERF-255: clone() + update(rest) yields the same digest as init + update(full)" {
+    const testing = std.testing;
+
+    // Build the same logical message in two ways and compare.
+    const part_a = "first half of clienthello, ";
+    const part_b = "binder tail goes here.";
+
+    // Reference: feed the full concatenation.
+    var ref = Transcript.initLocked(.sha256);
+    ref.update(part_a);
+    ref.update(part_b);
+    const ref_digest = ref.finalize(.sha256);
+
+    // Path under test: feed part_a, clone(), feed part_b on the clone.
+    var base = Transcript.initLocked(.sha256);
+    base.update(part_a);
+    var fork = base.clone();
+    fork.update(part_b);
+    const fork_digest = fork.finalize(.sha256);
+
+    try testing.expectEqualSlices(u8, ref_digest.slice(), fork_digest.slice());
+
+    // The clone must NOT mutate the parent. Continuing the parent past
+    // the clone point and finalizing should still produce ref_digest.
+    base.update(part_b);
+    const parent_digest = base.finalize(.sha256);
+    try testing.expectEqualSlices(u8, ref_digest.slice(), parent_digest.slice());
+
+    // Same property for SHA-384.
+    var ref2 = Transcript.initLocked(.sha384);
+    ref2.update(part_a);
+    ref2.update(part_b);
+    const ref2_digest = ref2.finalize(.sha384);
+
+    var base2 = Transcript.initLocked(.sha384);
+    base2.update(part_a);
+    var fork2 = base2.clone();
+    fork2.update(part_b);
+    const fork2_digest = fork2.finalize(.sha384);
+    try testing.expectEqualSlices(u8, ref2_digest.slice(), fork2_digest.slice());
 }

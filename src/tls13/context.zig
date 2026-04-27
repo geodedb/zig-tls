@@ -2282,7 +2282,22 @@ pub const Context = struct {
         // length + ClientHello body) in a single allocation.
         const msg = ch_result.body;
 
-        // Compute PSK binder if needed
+        // Compute PSK binder if needed.
+        //
+        // PERF-255: Pre-hash the truncated ClientHello prefix into the
+        // *main* handshake transcript and `clone()` it to derive the
+        // binder transcript hash. After the binder is computed and the
+        // tail bytes are patched into `msg`, we feed only the binder tail
+        // to the main transcript and skip `appendOutbound`'s automatic
+        // transcript update. Net effect: the truncated prefix is hashed
+        // once (on the main transcript) instead of twice (once on a
+        // freshly initialized binder transcript and once on the main
+        // transcript via `appendOutbound`).
+        //
+        // For the no-PSK path (the `else` branch below) the main
+        // transcript still gets the whole message via the
+        // `update_transcript=true` flag in the single `appendOutbound`
+        // call, and there is no extra hash work.
         if (ch_result.binder_offset) |msg_binder_offset| {
             const binder_len = ch_result.binder_len;
             if (binder_len == 0) return HandshakeError.CryptoError;
@@ -2297,13 +2312,18 @@ pub const Context = struct {
             // framed msg including the handshake header).
             const truncated_len = msg.len - ch_result.binders_tail_len;
 
-            // Hash truncated message (header is at msg[0..4]).
-            // PERF-228: use initLocked so only the selected SHA variant is
-            // fed by update(), avoiding the redundant dual-SHA work of
-            // `Transcript.init()` for this single-hash ephemeral computation.
-            var transcript = Transcript.initLocked(self.hash_kind);
-            transcript.update(msg[0..truncated_len]);
-            const transcript_hash = transcript.finalize(self.hash_kind);
+            // Lock the main transcript to the negotiated hash before
+            // mutating it. `lockHash` is idempotent. Without locking,
+            // both SHA variants would be fed and `clone().finalize()`
+            // could produce a digest from the unused tree.
+            self.transcripts.handshake.lockHash(self.hash_kind);
+
+            // Hash the truncated prefix into the main transcript exactly
+            // once, then clone to compute the binder hash without
+            // re-hashing.
+            self.transcripts.handshake.update(msg[0..truncated_len]);
+            var binder_view = self.transcripts.handshake.clone();
+            const transcript_hash = binder_view.finalize(self.hash_kind);
 
             const binder = finished_mod.deriveFinishedVerifyData(self.hash_kind, &binder_key, transcript_hash);
             // PERF-208: binder_offset is absolute into msg (buildClientHello
@@ -2320,10 +2340,15 @@ pub const Context = struct {
                 try self.installTrafficSecret(.Initial, .send, early_traffic_secret);
                 traceHandshake("Client: Installed 0-RTT early traffic secret for sending\\n", .{});
             }
-        }
 
-        // Send the complete framed message
-        try self.appendOutbound(.Initial, msg, true);
+            // Feed the (now binder-patched) tail to the main transcript
+            // and append the message without a second transcript update.
+            self.transcripts.handshake.update(msg[truncated_len..]);
+            try self.appendOutbound(.Initial, msg, false);
+        } else {
+            // No PSK; one transcript pass over the whole message.
+            try self.appendOutbound(.Initial, msg, true);
+        }
         self.transcripts.client_hello_hash = self.transcripts.handshake.snapshot();
         if (self.phase == .initial) self.phase = .negotiating;
     }
