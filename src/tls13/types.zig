@@ -267,4 +267,10 @@ pub const HandshakeError = error{
     /// per implementation choice; ClientHello path returns the bare
     /// `error.DecodeError` to align with SEC-066's existing alert mapping).
     DuplicateExtension,
+
+    /// SEC-088: ClientHello/ServerHello carried a `legacy_compression_methods`
+    /// field that violates RFC 8446 §4.1.2 / §4.1.3 (must be exactly one byte
+    /// equal to 0x00 on CH; must equal 0x00 on SH). Maps to TLS alert
+    /// `illegal_parameter` (RFC 8446 §6.2 via alert.fromHandshakeError).
+    IllegalCompressionMethods,
 };

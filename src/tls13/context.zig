@@ -1125,6 +1125,7 @@ pub const Context = struct {
             error.InternalError,
             error.InvalidCookie,
             error.DuplicateExtension,
+            error.IllegalCompressionMethods,
             => return self.failAlert(err),
             // PeerFatalAlert / InvalidAlert are alert-layer events that
             // already manage phase + alert queuing; pass through.

@@ -5,9 +5,12 @@
 //!
 //! Cases:
 //!   1. unexpected_message — server-only message (ClientHello) on a Client.
-//!   2. illegal_parameter — CertReq at Initial level (GAP-0139 path).
-//!   3. decode_error — duplicate-extension (SEC-092) — sent inside an
-//!      EncryptedExtensions message on the Handshake level.
+//!   2. unexpected_message — CertReq at Initial level (GAP-0139 path).
+//!
+//! Per-error mapping (RFC 8446 §6.2 / alert.fromHandshakeError) for the
+//! remaining HandshakeError variants is exercised transitively through the
+//! per-gap regression tests (sec088_*, sec092_*, gap0139_*); the catch list
+//! in handleHandshakeMessage is enumerated and audited in `src/tls13/context.zig`.
 //!
 //! Each case asserts:
 //!   * processCrypto returns the expected typed HandshakeError.
