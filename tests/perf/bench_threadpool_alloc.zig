@@ -137,7 +137,9 @@ pub fn main() !void {
     std.debug.print("# N_JOBS={d} payload={d}B\n", .{ N_JOBS, PAYLOAD_BYTES });
     std.debug.print("# {s:<16} {s:>14} {s:>10} {s:>10} {s:>14}\n", .{ "allocator", "wall_ns", "d_majflt", "d_minflt", "d_maxrss_KB" });
 
-    // page_allocator — the current production choice at src/parallel.zig:78
+    // page_allocator — kept as the historical baseline. PERF-237b
+    // removed src/parallel.zig in 0.2.0; this bench remains a useful
+    // standalone diagnostic of the upstream `thread_pool` package.
     {
         const r = try runVariant("page_allocator", std.heap.page_allocator, &payload, digests);
         std.debug.print("  {s:<16} {d:>14} {d:>10} {d:>10} {d:>14}\n", .{ r.label, r.wall_ns, r.d_majflt, r.d_minflt, r.d_maxrss_kb });

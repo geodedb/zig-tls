@@ -406,12 +406,12 @@ pub const zero_rtt = @import("zero_rtt");
 /// for compatibility with quic-go, quinn, msquic.
 pub const tls13_full = @import("tls13_full");
 
-/// Parallel TLS operations (requires `thread_pool`).
-///
-/// Provides thread-pool-backed batch operations:
-/// `parallelCertificateValidate`, `parallelSignatureVerify`,
-/// `parallelAeadSeal`, `parallelKeyDerive`, and pool lifecycle helpers.
-pub const parallel = @import("parallel");
+// PERF-237b: src/parallel.zig was removed in 0.2.0. The thread-pool-backed
+// batch operations (`parallelCertificateValidate`, `parallelSignatureVerify`,
+// `parallelAeadSeal`, `parallelKeyDerive`) and the global pool lifecycle
+// helpers no longer ship as part of the public API. Callers that needed
+// parallelism should drive batches with their own thread pool against the
+// per-op primitives in `sig` / `x509` / `record`. See CHANGELOG.md 0.2.0.
 
 // ============================================================================
 // Convenience Type Re-exports
@@ -547,11 +547,5 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-test "parallel re-export is reachable" {
-    // Smoke test: verify parallel.zig is reachable through the public
-    // ztls root module. Parallel TLS ops need real key material and
-    // certs which are impractical in a unit test, so we just assert the
-    // pool lifecycle entry points are exposed and `deinitPool()` is safe.
-    _ = @TypeOf(parallel.getPool);
-    parallel.deinitPool();
-}
+// PERF-237b (0.2.0): the previous "parallel re-export is reachable" smoke
+// test was removed alongside the deleted `src/parallel.zig`.

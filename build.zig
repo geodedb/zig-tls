@@ -235,27 +235,14 @@ pub fn build(b: *std.Build) void {
     });
 
     // ========================================================================
-    // Parallel Module - thread-pool-based parallelism
+    // Parallel Module
     // ========================================================================
-
-    const parallel_mod: ?*std.Build.Module = if (enable_tp) blk: {
-        break :blk b.addModule("parallel", .{
-            .root_source_file = b.path("src/parallel.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "x509", .module = x509_mod },
-                .{ .name = "sig", .module = sig_mod },
-                .{ .name = "record", .module = record_mod },
-                .{ .name = "quic_tls", .module = key_schedule_mod },
-                // SEC-077: in-file tests consult the insecure-testing flag.
-                .{ .name = "build_options", .module = build_options_mod },
-            },
-        });
-    } else null;
-    if (parallel_mod) |pm| {
-        if (tp_mod) |tm| pm.addImport("thread_pool", tm);
-    }
+    //
+    // PERF-237b: removed in 0.2.0. The thread-pool-backed batch operations
+    // (`parallelCertificateValidate`, `parallelSignatureVerify`, …) are no
+    // longer part of the public API surface; the underlying `thread_pool`
+    // dependency remains available for the `bench-threadpool` diagnostic
+    // step, but no library code consumes it.
 
     // ========================================================================
     // Public API Module - Main Entry Point
@@ -288,7 +275,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "sct", .module = sct_mod },
         },
     });
-    if (parallel_mod) |pm| zig_tls_mod.addImport("parallel", pm);
+    // PERF-237b: parallel module removed in 0.2.0; no addImport here.
 
     // ========================================================================
     // Unit Tests - Test each module independently
@@ -1334,18 +1321,17 @@ pub fn build(b: *std.Build) void {
     // GAP-0109: RSA-PSS Differential Fuzz Harness
     // ========================================================================
     //
-    // Drives both `sig.rsa_pss_verify_sha256` and
-    // `parallel.verifyRsaPssWithHash` with identical inputs and asserts
-    // byte-equivalent verdicts. Seed corpus lives under
-    // tests/fuzz/corpus/rsa_pss/ and is consumed via @embedFile.
+    // Drives `sig.rsa_pss_verify_sha256` (SHA-256 path) and
+    // `sig.rsaPssVerifyGeneric` (generic path) over the seed corpus.
+    // PERF-237b: was previously a differential harness against
+    // `parallel.verifyRsaPssWithHash`; that helper was removed in 0.2.0
+    // along with src/parallel.zig.
     //
     // Run seeds only:   zig build fuzz-rsa-pss
     // Run fuzz:         zig build fuzz-rsa-pss --fuzz
-    //
-    // Only registered when the `parallel` module is built (thread-pool on).
 
-    if (parallel_mod) |pm| {
-        const fuzz_rsa_pss_step = b.step("fuzz-rsa-pss", "Run RSA-PSS differential fuzz harness (GAP-0109)");
+    {
+        const fuzz_rsa_pss_step = b.step("fuzz-rsa-pss", "Run RSA-PSS verify harness (GAP-0109)");
         const fuzz_rsa_pss_test = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path("tests/fuzz/rsa_pss_verify.zig"),
@@ -1353,7 +1339,6 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .imports = &.{
                     .{ .name = "sig", .module = sig_mod },
-                    .{ .name = "parallel", .module = pm },
                 },
             }),
         });

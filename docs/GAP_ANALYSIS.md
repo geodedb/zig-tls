@@ -1029,12 +1029,12 @@ All 11 remaining open issues from the third review have been implemented:
 - **Resolution:** 2026-04-19 -- Removed residual `engine.zig` prose reference left behind after Phase 13 engine deletion; updated module map to reflect Context as sole driver. Commit: 301729d.
 - **Acceptance criteria:** `grep engine.zig docs/ARCHITECTURE.md` returns no stale references.
 
-### GAP-0131: Parallel TLS helpers unused by handshake/record paths — candidate for deletion [OPEN]
+### GAP-0131: Parallel TLS helpers unused by handshake/record paths — candidate for deletion [CLOSED]
 
 - **Issue:** [#267](https://gitlab.com/devnw/zig/tls/-/work_items/267)
 - **Category:** Tech Debt
 - **Severity:** Medium
-- **Status:** Open (2026-04-21) — supersedes GAP-0097
+- **Status:** Closed 2026-04-27 (Cycle 8 / Phase 22) — `src/parallel.zig` removed; `src/lib.zig` re-export and smoke test deleted; `build.zig` `parallel_mod` stripped; fuzz harness migrated to `sig.rsaPssVerifyGeneric`; version bumped to 0.2.0 with CHANGELOG migration notes (PERF-237b)
 - **Requirement source:** Per-user operating rule *delete-over-patch*; cross-ref PERF-237 (perf review F1).
 - **Current state (evidence):**
   - `src/parallel.zig` — 997 LOC, zero handshake/record call sites.

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-27
+
+### Removed (BREAKING)
+- `src/parallel.zig` and the `pub const parallel = @import("parallel")` re-export on the `ztls` root module are gone. The thread-pool-backed batch helpers (`parallelCertificateValidate`, `parallelSignatureVerify`, `parallelAeadSeal`, `parallelKeyDerive`, plus `getPool` / `deinitPool`) are no longer part of the public API. Callers that need parallelism should drive batches against the per-op primitives in `sig`, `x509`, and `record`. The upstream `thread_pool` package remains available; only the `parallel` wrapper is removed (PERF-237b, GAP-0131).
+- `tests/fuzz/rsa_pss_verify.zig` differential against `parallel.verifyRsaPssWithHash` is now a self-comparison against `sig.rsaPssVerifyGeneric`. Output is functionally equivalent (the prior wrapper delegated to the same generic helper) but the public hook is gone.
+- `build.zig` no longer registers the `parallel` module; the `bench-threadpool` step still works because it depends only on the upstream `thread_pool` package.
+
+### Migration
+- Replace `ztls.parallel.verifyRsaPssWithHash(Sha256, in, alloc)` with `ztls.sig.rsaPssVerifyGeneric(Sha256, spki, msg, sig, alloc)` (single-shot) or hand-roll a thread pool driver around the same call.
+- Replace `ztls.parallel.parallelCertificateValidate` with serial `ztls.x509.validateChain` calls or your own pool driver.
+- `getPool` / `deinitPool` callers should remove the calls; there is no global pool to free anymore.
+
+## [0.1.1] - 2026-04-27
+
 ### Security
 - RNG fail-closed via new `src/entropy.zig` helper using `std.Io.randomSecure` + panic on `error.EntropyUnavailable`; 9 `std.os.linux.getrandom` sites in `src/tls13/context.zig` migrated. Also eliminates the Linux-only `getrandom` hardwiring (SEC-074, SEC-081).
 - X.509 unknown critical extensions now rejected per RFC 5280 §4.2 — `parseExtensionsBlock` parses the BOOLEAN criticality flag and returns `error.UnknownCriticalExtension` on critical+unknown OIDs (SEC-075).
