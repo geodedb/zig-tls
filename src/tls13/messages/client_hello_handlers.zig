@@ -215,30 +215,65 @@ fn buildSignatureAlgorithms(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.
 // ============================================================================
 
 fn parseKeyShare(ctx: *ParseCtx, data: []const u8) anyerror!void {
-    if (data.len >= 2) {
-        const shares_len = helpers.readU16(data[0..2]);
-        if (2 + shares_len <= data.len) {
-            var ks_pos: usize = 2;
-            while (ks_pos + 4 <= 2 + shares_len) {
-                const group = helpers.readU16(data[ks_pos .. ks_pos + 2]);
-                const key_len = helpers.readU16(data[ks_pos + 2 .. ks_pos + 4]);
-                ks_pos += 4;
+    // RFC 8446 §4.1.4 / §4.2.8: the server MUST send HelloRetryRequest when
+    // it cannot find a mutually supported key_share group rather than
+    // failing the handshake. To make the HRR gate in
+    // `negotiateCipherAndKeys` reachable, the parser must surface what the
+    // client offered — even when it is not a group we natively support
+    // (e.g. NIST P-256, X25519+Kyber768 hybrid).
+    //
+    // Behavior:
+    //   1. Prefer X25519 when present (and 32-byte key) — server proceeds
+    //      directly without HRR.
+    //   2. Otherwise record the FIRST entry as a "client offered an
+    //      unsupported group" sentinel. The orchestrator then issues HRR.
+    //   3. When no entries are present, leave `key_share = null` so
+    //      `ClientHelloInfo.parse` raises MissingKeyShare per §4.2.8.
+    if (data.len < 2) return;
+    const shares_len = helpers.readU16(data[0..2]);
+    if (2 + shares_len > data.len) return;
 
-                if (ks_pos + key_len <= 2 + shares_len) {
-                    // We only support X25519
-                    if (group == 0x001d and key_len == 32) {
-                        ctx.ch.key_share = KeyShareEntry{
-                            .group = .x25519,
-                            .key_exchange = data[ks_pos .. ks_pos + key_len],
-                        };
-                        break;
-                    }
-                    ks_pos += key_len;
-                } else {
-                    break;
-                }
-            }
+    var ks_pos: usize = 2;
+    var first_unsupported: ?KeyShareEntry = null;
+
+    while (ks_pos + 4 <= 2 + shares_len) {
+        const group_raw = helpers.readU16(data[ks_pos .. ks_pos + 2]);
+        const key_len = helpers.readU16(data[ks_pos + 2 .. ks_pos + 4]);
+        ks_pos += 4;
+
+        if (ks_pos + key_len > 2 + shares_len) break;
+
+        // Preferred path: X25519 with the RFC 7748 §6.1 32-byte public key.
+        if (group_raw == 0x001d and key_len == 32) {
+            ctx.ch.key_share = KeyShareEntry{
+                .group = .x25519,
+                .key_exchange = data[ks_pos .. ks_pos + key_len],
+            };
+            return;
         }
+
+        // Record the first non-X25519 entry as an HRR-trigger sentinel.
+        // SEC-057: use `std.enums.fromInt` for known groups; for codepoints
+        // that are not in our NamedGroup enum (e.g. PQ-hybrid 0x6399),
+        // fall back to `.secp256r1` as a generic non-X25519 placeholder.
+        // The orchestrator at `negotiateCipherAndKeys` only inspects
+        // `group == .x25519`, so any non-X25519 sentinel is sufficient
+        // to trigger HRR. The `key_exchange` slice is retained so future
+        // diagnostics can surface the offered bytes.
+        if (first_unsupported == null) {
+            const group_known = std.enums.fromInt(core_types.NamedGroup, group_raw);
+            const group_for_orchestrator = group_known orelse core_types.NamedGroup.secp256r1;
+            first_unsupported = KeyShareEntry{
+                .group = group_for_orchestrator,
+                .key_exchange = data[ks_pos .. ks_pos + key_len],
+            };
+        }
+
+        ks_pos += key_len;
+    }
+
+    if (first_unsupported) |entry| {
+        ctx.ch.key_share = entry;
     }
 }
 

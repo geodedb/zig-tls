@@ -274,15 +274,20 @@ pub const ClientHelloInfo = struct {
             NoCipherSuite,
             UnsupportedVersion,
             MissingKeyShare,
-            UnsupportedKeyShareGroup,
         };
 
         if (parsed.cipher_suites.len == 0) return HandshakeError.NoCipherSuite;
         const versions_view = parsed.supported_versions orelse return HandshakeError.UnsupportedVersion;
         if (!supportsTls13Version(versions_view)) return HandshakeError.UnsupportedVersion;
 
+        // RFC 8446 §4.2.8: ClientHello MUST include a key_share extension.
+        // We deliberately do NOT reject non-X25519 groups here — that is the
+        // orchestrator's job (`negotiateCipherAndKeys`), which issues HRR
+        // per RFC 8446 §4.1.4 when the offered group is not mutually
+        // supported. The previous over-eager `key_share.group != .x25519`
+        // gate made the HRR path unreachable for quic-go / mvfst clients
+        // (see docs/QUIC_INTEROP_HRR_ISSUE.md).
         const key_share = parsed.key_share orelse return HandshakeError.MissingKeyShare;
-        if (key_share.group != .x25519) return HandshakeError.UnsupportedKeyShareGroup;
 
         // PERF-201: Own `raw` once and reslice views to it instead of duping every field.
         const raw_copy = try allocator.dupe(u8, body);

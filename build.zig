@@ -750,6 +750,24 @@ pub fn build(b: *std.Build) void {
     const run_context_hrr_test = b.addRunArtifact(context_hrr_test);
     test_step.dependOn(&run_context_hrr_test.step);
 
+    // QUIC-INTEROP-HRR: Server-side HRR conformance tests.
+    // RFC 8446 §4.1.4: server emits HRR when client offers a non-X25519
+    // key_share but supported_groups overlaps. Regression coverage for the
+    // QUIC interop break against quic-go / mvfst (docs/QUIC_INTEROP_HRR_ISSUE.md).
+    const context_hrr_server_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/context_hrr_server_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        }),
+    });
+    const run_context_hrr_server_test = b.addRunArtifact(context_hrr_server_test);
+    test_step.dependOn(&run_context_hrr_server_test.step);
+
     // ========================================================================
     // Conformance Tests - Interoperability with BoringSSL and OpenSSL
     // ========================================================================
