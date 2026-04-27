@@ -604,3 +604,244 @@ show one of:
   server stderr, replacing the silent `NoHandshakeKeys` /
   `handshake timeout` shape with a tagged `[TLS-HRR]` line that points
   at one specific branch.
+
+---
+
+## 2026-04-27 — tls bump to `3de2983` + TLS logger sink wired in zig-quic
+
+zig-quic commit `7ef8039` lands the bump to tls `3de2983`
+(tls 0.2.0; major change: `parallel` module removed, PERF-237b) and
+**wires a sink so tls-package diagnostic logs reach the QUIC stack's
+stderr at all** — without that wiring, the tls package's `quic_logger`
+collapses to a no-op in production builds and *every* `[TLS-HRR]` line
+is silently discarded, regardless of which branch fires.
+
+### Wiring (zig-quic side)
+
+```zig
+// build.zig
+const tls_quic_logger_mod = tls_dep.module("quic_logger");
+qns_endpoint.root_module.addImport("tls_quic_logger", tls_quic_logger_mod);
+
+// cmd/qns-endpoint.zig
+const tls_logger = @import("tls_quic_logger");
+
+fn tlsLoggerSink(level: tls_logger.Level, message: []const u8) void {
+    const level_str = switch (level) {
+        .debug => "DEBUG", .info => "INFO", .warn => "WARN", .err => "ERROR",
+    };
+    var buf: [2048]u8 = undefined;
+    const formatted = std.fmt.bufPrint(&buf, "[tls/{s}] {s}\n",
+        .{ level_str, message }) catch return;
+    _ = std.os.linux.write(2, formatted.ptr, formatted.len);
+}
+
+pub fn main(...) !void {
+    tls_logger.setTestSink(tlsLoggerSink); // first thing in main()
+    ...
+}
+```
+
+The sink works in isolation: a direct `docker run zig-quic:interop`
+shows `[tls/ERROR] ...` lines arriving on stderr exactly as expected
+(verified with a one-shot `tls_logger.err("[TLS-SINK-TEST] sink wired",
+.{})` sanity check that fired correctly).
+
+### Test matrix post-bump (zig-quic 7ef8039, tls 3de2983)
+
+```text
+zig (server) <-> ngtcp2  (client) — handshake — PASS  (control)
+ngtcp2  (server) <-> zig (client) — handshake — PASS  (control)
+zig (server) <-> mvfst   (client) — handshake — FAIL: server: handshake timeout
+                                                       (no [TLS-HRR] line surfaces in
+                                                        the captured docker output)
+mvfst   (server) <-> zig (client) — handshake — PASS
+zig (server) <-> quic-go (client) — handshake — FAIL: ERROR processInitial:
+                                                       sendHandshakePackets failed:
+                                                       NoHandshakeKeys
+                                                       (no [TLS-HRR] line surfaces)
+quic-go (server) <-> zig (client) — handshake — PASS
+```
+
+### A new observability gap
+
+`make interop-full` runs the docker containers via
+`docker compose up`. The compose log-capture path attaches *after* the
+container starts, so any stderr the binary emits before compose finishes
+attaching is dropped. Empirically:
+
+- `[qns]` log lines (from zig-quic's own `log()`, written via
+  `std.debug.print`) make it through, presumably because they fire
+  later in the lifecycle (after compose attach is established).
+- The `ERROR: processInitial: sendHandshakePackets failed:
+  NoHandshakeKeys` line makes it through for the same reason — it
+  fires during handshake processing, well after attach.
+- The `[tls/ERROR] [TLS-HRR] ...` lines that *would* fire during
+  handshake processing don't appear. Either:
+  1. They're printed but compose still drops them (less likely — the
+     above ERROR uses the same syscall path).
+  2. The TLS code path that emits them is not actually reached on the
+     failing interop runs (which would mean the [TLS-HRR] surface is
+     correctly defensive but the failure is upstream of all of them).
+
+### What this tells us about the remaining failures
+
+For **mvfst**, the *absence* of any `[TLS-HRR]` line — combined with the
+absence of `NoHandshakeKeys` — is consistent with one of these:
+
+1. mvfst's CH1 carries an X25519 key_share directly (no HRR), the
+   handshake reaches a state where `installHandshakeKeys` succeeds, but
+   the server's CRYPTO emission for ServerHello / Handshake is dropped
+   somewhere between the TLS outbound stream and the wire. None of the
+   `[TLS-HRR]` branches catch this — they're all in
+   `negotiateCipherAndKeys` and that path returned successfully.
+2. mvfst's CH1 carries a non-X25519 key_share, HRR fires successfully,
+   the server emits HRR, but mvfst's CH2 either never reaches the
+   server (transport-side) OR reaches it but `parseHandshakeOne`
+   silently returns "need more data" (CH2 fragmented across packets,
+   reassembly mis-tracking).
+
+For **quic-go**, the `NoHandshakeKeys` line is the same pre/post bump,
+and no `[TLS-HRR]` fires. That's consistent with:
+
+1. quic-go's CH1 has X25519 key_share. `negotiateCipherAndKeys`
+   succeeds. `installHandshakeKeys` succeeds. `hs_tx_keys` is
+   populated. But by the time zig-quic's
+   `sendHandshakePackets` runs, `conn.hs_tx_keys` is null again — i.e.
+   something in the QUIC layer is *clearing* the handshake keys
+   between TLS install and the QUIC sender's check. The TLS package
+   has no diagnostics on that path because it doesn't own it.
+
+Both failure modes point at the **QUIC<->TLS boundary** as the next
+investigation surface, not the TLS internals. The `[TLS-HRR]`
+diagnostics from `3de2983` are a hard precondition for ruling that
+out, but they don't *catch* the active fault on this matrix.
+
+### Suggested next step (revised again)
+
+The critical next instrument is on the QUIC side, not the TLS side:
+
+- Add a diagnostic in `sendHandshakePackets` (zig-quic
+  `src/quic/endpoint/handshake_integration.zig:953-1020`) that emits
+  the *full* state at the point of the `NoHandshakeKeys` check —
+  including: did the TLS context's `secrets.handshake.send.valid`
+  flip false-to-true at any point? Did `onSecretAvailable` fire? The
+  callback is in `src/quic/endpoint/handshake_integration.zig:108`
+  and stores into `conn.hs_server` / `conn.hs_client` before calling
+  `installHandshakeKeys`, which sets `conn.hs_tx_keys`. Logging the
+  state of all four fields at the failure point would distinguish
+  "secrets never derived" from "secrets derived then discarded".
+- For mvfst, check whether `processInitial` is being called repeatedly
+  for the same connection (re-entry on every retransmitted CH) and
+  whether `pushCrypto` is making forward progress on
+  `conn.crypto_rx_off_initial`.
+
+Both belong in zig-quic, not in tls. The `[TLS-HRR]` diagnostics
+landed by `3de2983` remain valuable as a *contract check* — they would
+have fired immediately if the TLS engine were the proximate cause.
+That they didn't fire is itself a signal.
+
+---
+
+## 2026-04-27 — TLS-side complement: `[TLS-HS]` success-path diagnostic
+
+The previous section closes with "the `[TLS-HRR]` diagnostics … would
+have fired immediately if the TLS engine were the proximate cause."
+That is true *only* for the failure branches inside
+`negotiateCipherAndKeys`. The TLS engine's **success path** — the
+moment `secrets.handshake.send.valid` flips false-to-true and
+`on_secret_available` is invoked — emits no log line at all. So a
+failing interop run with neither `[TLS-HRR]` nor `[TLS-HS]` lines is
+ambiguous between two states:
+
+1. TLS engine completed `installTrafficSecret(.Handshake, .send, …)`
+   successfully → QUIC layer's `NoHandshakeKeys` is genuinely
+   downstream of TLS, OR
+2. TLS engine never reached the install code path at all (silent
+   upstream failure mode that none of the existing `[TLS-HRR]`
+   branches catch) → the apparent `NoHandshakeKeys` is the correct
+   upstream symptom.
+
+To resolve that ambiguity from the TLS side, this commit adds a
+single tagged success-path line at the moment a traffic secret slot
+becomes valid AND its `on_secret_available` callback returns
+successfully (or is explicitly not registered):
+
+```text
+[tls/INFO] [TLS-HS] secret installed: role=Server, level=Handshake, dir=send, secret_len=32, on_secret_available=fired
+[tls/INFO] [TLS-HS] secret installed: role=Server, level=Handshake, dir=recv, secret_len=32, on_secret_available=fired
+```
+
+Format guarantees:
+
+- **Length-only.** The line records `secret_len`, never the secret
+  bytes themselves. `secret_trace_enabled` (debug-only) is the
+  separate, opt-in path for byte-level secret tracing.
+- **Fires after the callback.** When the `on_secret_available`
+  callback throws, the existing error propagation runs and *no*
+  `[TLS-HS]` line lands — so its presence is proof that both the
+  slot store *and* the boundary notification completed.
+- **Distinguishes "not_registered" from "fired".** A zig-quic build
+  that wires `setTestSink` but forgets `Callbacks.on_secret_available`
+  produces silently degraded interop logs that look identical to a
+  properly-wired stack; the explicit `not_registered` value catches
+  that misconfiguration in the log.
+
+Implementation: `src/tls13/context.zig:installTrafficSecret`, after
+the successful slot.store + callback. Tests:
+`tests/security/quic_interop_hrr_diagnostics.zig` covers all four
+states (handshake.send fired, handshake.recv fired, callback
+not_registered vs fired). The Initial- and Application-level installs
+also fire the same line shape, so the QUIC team can see all five
+secret-install events in handshake order.
+
+### What zig-quic should see in the next interop run
+
+For **mvfst** (currently: `accepted connection` then handshake
+timeout, no `[TLS-HRR]` line, no `NoHandshakeKeys`):
+
+- If `[TLS-HS] secret installed: ... level=Handshake, dir=send` fires →
+  TLS completed the install. The fault is between
+  `installTrafficSecret`'s callback and the QUIC layer's wire emission
+  (CRYPTO frame assembly, packetization, or pacing). The recommended
+  zig-quic-side diagnostic in `sendHandshakePackets` becomes the next
+  step.
+- If no `[TLS-HS] secret installed: ... dir=send` line fires → TLS
+  never reached the install. Combined with the absence of `[TLS-HRR]`
+  failure lines, this would point at a silent path inside
+  `processCrypto` (Initial-level CRYPTO assembly) or
+  `dispatchHandshake.client_hello` not currently covered by either
+  diagnostic surface.
+
+For **quic-go** (currently: `NoHandshakeKeys` + handshake timeout, no
+`[TLS-HRR]` line):
+
+- If `[TLS-HS] secret installed: ... level=Handshake, dir=send` fires
+  before the `NoHandshakeKeys` log → the TLS install completed and
+  notified zig-quic, but `conn.hs_tx_keys` was cleared (or never
+  wired) on the QUIC side between the callback and
+  `sendHandshakePackets`. Look at the callback's storage in
+  `src/quic/endpoint/handshake_integration.zig:108` and the
+  `sendHandshakePackets` path at lines 953-1020.
+- If no `[TLS-HS] secret installed` line fires → the install code is
+  unreachable on quic-go's CH1, even on the X25519 path. That would
+  point at `dispatchHandshake.client_hello` or `processCrypto` running
+  but bailing out before `installHandshakeTrafficPair` (e.g. PSK
+  selection raising `UnexpectedPskExtension`, or the
+  `handleInitialCrypto` chain returning before
+  `afterHandshakeMessage`).
+
+In both cases, the `[TLS-HS]` line *or its absence* names the side of
+the boundary that the next round of diagnostics should attach to. The
+QUIC-side state dump recommended in the previous section
+(`secrets.handshake.send.valid`, `conn.hs_server` / `hs_client` /
+`hs_tx_keys`) remains the natural complement on the zig-quic side.
+
+### Status
+
+- TLS-side observability for `installTrafficSecret` success: **closed
+  by this commit**.
+- QUIC-side observability for `sendHandshakePackets` failure point:
+  **still open**, tracked in zig-quic.
+- Stand-alone TLS-only repro from a captured CH1: **still open**,
+  blocked on a real interop tcpdump.

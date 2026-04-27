@@ -504,3 +504,202 @@ test "[TLS-HRR] HRR emission still fires diagnostic for non-X25519 CH1" {
     // proceeded into HRR emission (no error raised).
     try testing.expect(captureContains("raw_group_code=0x0017"));
 }
+
+// ============================================================================
+// Test 5: [TLS-HS] success-path install diagnostics
+// ============================================================================
+//
+// The existing `[TLS-HRR]` lines fire only on FAILURE branches inside
+// `negotiateCipherAndKeys`. When none of them surface in a failing interop
+// run, the absence is ambiguous — it could mean either:
+//
+//   (a) the TLS engine completed `installTrafficSecret(.Handshake, .send, …)`
+//       successfully, in which case the QUIC layer's `NoHandshakeKeys` is a
+//       downstream fault; OR
+//   (b) the TLS engine never reached the install code path at all (silent
+//       upstream failure), in which case the QUIC `NoHandshakeKeys` is the
+//       correct upstream symptom.
+//
+// The QUIC team cannot distinguish these from the `[TLS-HRR]` failure
+// surface alone. The 2026-04-27 finding in `docs/QUIC_INTEROP_HRR_ISSUE.md`
+// explicitly recommends instrumenting "did `secrets.handshake.send.valid`
+// flip false-to-true at any point? did `onSecretAvailable` fire?" — both
+// of which are TLS-owned events at the `installTrafficSecret` call site.
+//
+// These tests assert that a tagged `[TLS-HS]` line surfaces exactly once
+// per successful `installTrafficSecret` call, recording level, direction,
+// secret length, and whether the `on_secret_available` callback was wired.
+// Together with the existing `[TLS-HRR]` failure diagnostics, an interop
+// log can now unambiguously bracket the QUIC<->TLS boundary.
+
+test "[TLS-HS] handshake send secret install fires success-path diagnostic" {
+    // A direct X25519 ClientHello drives the orchestrator past the HRR gate
+    // and into `emitServerFlight`, which calls
+    // `installHandshakeTrafficPair(server_hs, client_hs)` BEFORE the cert
+    // emission step. Without server certs configured, `buildCertificateMsg`
+    // raises `MissingCertificate` AFTER the install completes — which is
+    // exactly the observability moment the QUIC team asked for. The
+    // post-install slot.valid check confirms the install actually happened;
+    // the `[TLS-HS]` capture confirms it was *observable*.
+    beginCapture();
+    defer endCapture();
+
+    var server_ctx = try makeServerCtx();
+    defer server_ctx.deinit();
+
+    var x25519_key: [32]u8 = undefined;
+    @memset(&x25519_key, 0x77);
+
+    const ch1 = try buildFramedClientHello(testing.allocator, .{
+        .group_code = 0x001d,
+        .key_bytes = &x25519_key,
+    });
+    defer testing.allocator.free(ch1);
+
+    // Same downstream-error catch shape as the existing HRR-server CH2 test:
+    // installHandshakeTrafficPair runs first; the cert/sig path errors after.
+    server_ctx.processCrypto(.Initial, ch1) catch |err| switch (err) {
+        error.MissingCertificate,
+        error.NoSignatureScheme,
+        error.UnexpectedMessage,
+        error.InternalError,
+        => {},
+        else => return err,
+    };
+
+    // The send slot must be valid AND the diagnostic line must have fired.
+    // Together they prove the install completed AND was observable.
+    const hs_send = server_ctx.secrets.slot(.Handshake, .send);
+    try testing.expect(hs_send.valid);
+    try testing.expect(captureContains("[TLS-HS] secret installed"));
+    try testing.expect(captureContains("level=Handshake"));
+    try testing.expect(captureContains("dir=send"));
+    try testing.expect(captureContains("role=Server"));
+}
+
+test "[TLS-HS] handshake recv secret install also fires diagnostic" {
+    // Companion to the send test. The QUIC layer's boundary check inspects
+    // BOTH directions (zig-quic conn.hs_server / conn.hs_client), so both
+    // install events must be observable from the TLS side. The atomic
+    // install in `installHandshakeTrafficPair` does send first then recv;
+    // the `[TLS-HS]` line must fire for recv even though the test ends with
+    // a downstream error from cert emission.
+    beginCapture();
+    defer endCapture();
+
+    var server_ctx = try makeServerCtx();
+    defer server_ctx.deinit();
+
+    var x25519_key: [32]u8 = undefined;
+    @memset(&x25519_key, 0x88);
+
+    const ch1 = try buildFramedClientHello(testing.allocator, .{
+        .group_code = 0x001d,
+        .key_bytes = &x25519_key,
+    });
+    defer testing.allocator.free(ch1);
+
+    server_ctx.processCrypto(.Initial, ch1) catch |err| switch (err) {
+        error.MissingCertificate,
+        error.NoSignatureScheme,
+        error.UnexpectedMessage,
+        error.InternalError,
+        => {},
+        else => return err,
+    };
+
+    try testing.expect(captureContains("dir=recv"));
+}
+
+test "[TLS-HS] secret install records on_secret_available callback state" {
+    // The diagnostic must distinguish "callback fired" (the embedding QUIC
+    // stack was notified that secrets are now usable) from "callback
+    // not_registered" (TLS installed the slot but no one is listening).
+    // Without this distinction, a zig-quic build that forgot to wire
+    // `setTestSink` and also forgot `Callbacks.on_secret_available` would
+    // produce silently degraded interop logs that look the same as a
+    // properly-wired stack.
+    //
+    // makeServerCtx() leaves `on_secret_available = null`, so the line must
+    // explicitly read `on_secret_available=not_registered`.
+    beginCapture();
+    defer endCapture();
+
+    var server_ctx = try makeServerCtx();
+    defer server_ctx.deinit();
+
+    var x25519_key: [32]u8 = undefined;
+    @memset(&x25519_key, 0x99);
+
+    const ch1 = try buildFramedClientHello(testing.allocator, .{
+        .group_code = 0x001d,
+        .key_bytes = &x25519_key,
+    });
+    defer testing.allocator.free(ch1);
+
+    server_ctx.processCrypto(.Initial, ch1) catch |err| switch (err) {
+        error.MissingCertificate,
+        error.NoSignatureScheme,
+        error.UnexpectedMessage,
+        error.InternalError,
+        => {},
+        else => return err,
+    };
+
+    try testing.expect(captureContains("on_secret_available=not_registered"));
+}
+
+test "[TLS-HS] secret install reports on_secret_available=fired when callback wired" {
+    // Counterpart to the not_registered test: when a callback IS registered,
+    // the diagnostic must read `on_secret_available=fired` so the QUIC team
+    // can see in the log that the boundary notification actually delivered.
+    // The callback below is a stub that simply records that it fired; the
+    // important assertion is the captured log line.
+    beginCapture();
+    defer endCapture();
+
+    const Stub = struct {
+        var fire_count: u32 = 0;
+        fn cb(ctx: *tls13.Context, level: tls13.EncryptionLevel, secret: []const u8) anyerror!void {
+            _ = ctx;
+            _ = level;
+            _ = secret;
+            fire_count += 1;
+        }
+    };
+    Stub.fire_count = 0;
+
+    var server_ctx = try tls13.Context.init(.{
+        .allocator = testing.allocator,
+        .role = .Server,
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .quic_transport_parameters = &[_]u8{},
+    }, .{ .on_secret_available = Stub.cb });
+    defer server_ctx.deinit();
+
+    var x25519_key: [32]u8 = undefined;
+    @memset(&x25519_key, 0xAA);
+
+    const ch1 = try buildFramedClientHello(testing.allocator, .{
+        .group_code = 0x001d,
+        .key_bytes = &x25519_key,
+    });
+    defer testing.allocator.free(ch1);
+
+    server_ctx.processCrypto(.Initial, ch1) catch |err| switch (err) {
+        error.MissingCertificate,
+        error.NoSignatureScheme,
+        error.UnexpectedMessage,
+        error.InternalError,
+        => {},
+        else => return err,
+    };
+
+    // The callback must have fired at least once for Handshake.send and
+    // .recv (both directions install handshake traffic secrets), and the
+    // log must record that the callback fired (not just that the slot
+    // store succeeded).
+    try testing.expect(Stub.fire_count >= 2);
+    try testing.expect(captureContains("on_secret_available=fired"));
+}

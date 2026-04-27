@@ -971,9 +971,28 @@ pub const Context = struct {
 
         var slot = self.secrets.slot(level, dir);
         slot.store(level, self.hash_kind, secret);
-        if (self.callbacks.on_secret_available) |cb| {
+        const cb_state: []const u8 = if (self.callbacks.on_secret_available) |cb| blk: {
             try cb(self, level, secret.slice());
-        }
+            break :blk "fired";
+        } else "not_registered";
+
+        // QUIC-INTEROP-HRR (2026-04-27 boundary observability): emit a
+        // success-path line at the moment a traffic secret slot becomes
+        // valid AND the embedding QUIC stack has been notified (or
+        // explicitly is not listening). The existing `[TLS-HRR]` lines
+        // cover only the failure branches inside `negotiateCipherAndKeys`,
+        // so their absence in an interop log is ambiguous between
+        // "TLS engine completed install" and "TLS engine never reached
+        // install". This line resolves that ambiguity: its presence
+        // proves both `slot.valid` flipped true AND
+        // `on_secret_available` returned without error (or was
+        // not_registered). Length-only — never logs the secret bytes.
+        // See `docs/QUIC_INTEROP_HRR_ISSUE.md` (2026-04-27 entries).
+        const role_str: []const u8 = if (self.config.role == .Server) "Server" else "Client";
+        logger.info(
+            "[TLS-HS] secret installed: role={s}, level={s}, dir={s}, secret_len={d}, on_secret_available={s}",
+            .{ role_str, @tagName(level), @tagName(dir), secret.slice().len, cb_state },
+        );
     }
 
     /// QUAL-346: Install both handshake traffic secrets atomically.
