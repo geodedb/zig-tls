@@ -273,4 +273,20 @@ pub const HandshakeError = error{
     /// equal to 0x00 on CH; must equal 0x00 on SH). Maps to TLS alert
     /// `illegal_parameter` (RFC 8446 §6.2 via alert.fromHandshakeError).
     IllegalCompressionMethods,
+
+    /// SEC-099: ClientHello.cipher_suites_length was odd. RFC 8446 §4.1.2
+    /// declares `CipherSuite cipher_suites<2..2^16-2>;` and each `CipherSuite`
+    /// is exactly two bytes, so the length MUST be a multiple of two. An odd
+    /// length combined with a tail-aligned record would cause an out-of-bounds
+    /// read in the cipher-suite loop (PoC-confirmed pre-auth panic). Maps to
+    /// TLS alert `illegal_parameter` so the handshake terminates without a
+    /// crash.
+    IllegalCipherSuites,
+
+    /// SEC-098: pre_shared_key extension carried mismatched cardinalities for
+    /// `identities` and `binders`. RFC 8446 §4.2.11 mandates `len(identities)
+    /// == len(binders)`; downstream PSK selection indexes binders by the
+    /// chosen identity index and would otherwise read out of bounds (CWE-345
+    /// → potential OOB array access). Maps to TLS alert `illegal_parameter`.
+    PskBinderMismatch,
 };

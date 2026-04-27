@@ -73,3 +73,26 @@ Sections marked `[ ]` or `[p]` are planned for the RFC test coverage
 epic (see GAP-0119 / GAP-0120 / GAP-0121). Each gap should add one
 test file under `tests/rfc<NNNN>/section_<clause>_<topic>.zig` and be
 registered in `build.zig`.
+
+## Open hardening cross-refs (Phase 4 / 2026-04-27)
+
+These rows are marked `[x]` for impl/test on the matrix but have an
+open hardening sub-finding tracked in `docs/GAP_ANALYSIS.md`:
+
+- **RFC 8446 §4.4.2 (Certificate)** — GAP-0143 (#339): per-entry
+  duplicate-extension gate missing on `status_request` / `signed_certificate_timestamp`
+  parser at `src/tls13/messages/certificate.zig:217-243`. Twin of
+  SEC-092 (closed). Cross-ref::SEC-094.
+- **RFC 8446 §4.2 (HRR extensions)** — GAP-0144 (#336):
+  duplicate-extension gate missing on `parseHelloRetryRequest`
+  cookie / key_share loop at `src/tls13/context/hello_retry.zig:84-142`.
+  Cross-ref::SEC-093.
+
+Open scope-decision items for `[ ]` rows:
+
+- **RFC 9001 §5.4 (Header protection)** — GAP-0142 (#342): formal
+  scope decision missing. Either implement HP wire-application or
+  mark out-of-scope in this matrix and `docs/ARCHITECTURE.md` per the
+  rationale already in `tests/rfc9001/section_5_4_header_protection.zig:5-15`.
+- **RFC 9001 §5.5 (Retry integrity)** — GAP-0136 (#274): same shape;
+  wishlist.

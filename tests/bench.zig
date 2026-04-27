@@ -59,6 +59,36 @@ inline fn perfFence() void {
     asm volatile ("" ::: .{ .memory = true });
 }
 
+/// PERF-258: collected benchmark results — populated by `benchmarkFn` and
+/// either rendered to stdout (default) or serialized to JSON / compared
+/// against a committed baseline by `main`. The static array avoids any
+/// allocator dependency in the hot path; 64 slots is comfortably above
+/// every current bench (~25) plus the PERF-256 size sweep.
+const BenchSample = struct {
+    name: []const u8,
+    iterations: u32,
+    sampled: usize,
+    elapsed_ns: u64,
+    mean_ns: u64,
+    p50_ns: u64,
+    p95_ns: u64,
+    /// Optional throughput in GB/s (PERF-256). Only the AEAD size-sweep
+    /// benches set this; nullable to keep the schema uniform.
+    throughput_gbps: ?f64 = null,
+    /// Optional payload size in bytes (PERF-256). Set alongside
+    /// `throughput_gbps` for AEAD size-sweep benches.
+    payload_bytes: ?usize = null,
+};
+
+var bench_samples: [64]BenchSample = undefined;
+var bench_sample_count: usize = 0;
+
+fn recordSample(s: BenchSample) void {
+    if (bench_sample_count >= bench_samples.len) return;
+    bench_samples[bench_sample_count] = s;
+    bench_sample_count += 1;
+}
+
 /// PERF-223: Per-iteration timer-based benchmark runner with warmup, memory
 /// fences, and p50/p95 reporting.
 ///
@@ -124,6 +154,41 @@ fn benchmarkFn(comptime name: []const u8, comptime iterations: u32, func: anytyp
         "[bench] {s}: {d} iters (warmup {d}, sampled {d}), {d}ns total, mean {d}ns/op, p50 {d}ns, p95 {d}ns\n",
         .{ name, iterations, warmup_iters, recorded, elapsed_ns, per_op_ns, p50, p95 },
     );
+
+    recordSample(.{
+        .name = name,
+        .iterations = iterations,
+        .sampled = recorded,
+        .elapsed_ns = elapsed_ns,
+        .mean_ns = per_op_ns,
+        .p50_ns = p50,
+        .p95_ns = p95,
+    });
+}
+
+/// PERF-258 / PERF-256: like `benchmarkFn` but tags the sample with the
+/// payload size and computes derived GB/s throughput. Used by the AEAD
+/// size-sweep benchmarks introduced for PERF-256.
+fn benchmarkThroughputFn(
+    comptime name: []const u8,
+    comptime iterations: u32,
+    payload_bytes: usize,
+    func: anytype,
+) void {
+    const before = bench_sample_count;
+    benchmarkFn(name, iterations, func);
+    if (bench_sample_count <= before) return;
+    var s = &bench_samples[bench_sample_count - 1];
+    s.payload_bytes = payload_bytes;
+    if (s.mean_ns > 0) {
+        const bytes_per_sec = @as(f64, @floatFromInt(payload_bytes)) /
+            (@as(f64, @floatFromInt(s.mean_ns)) / 1_000_000_000.0);
+        s.throughput_gbps = bytes_per_sec / 1_000_000_000.0;
+        std.debug.print(
+            "[bench]   ({s}: {d} bytes/op, {d:.3} GB/s)\n",
+            .{ name, payload_bytes, s.throughput_gbps.? },
+        );
+    }
 }
 
 /// Benchmark: HKDF-Extract + HKDF-Expand-Label (key derivation hot path).
@@ -480,10 +545,203 @@ fn benchNameConstraintsDepth10() void {
     benchNameConstraintsDepth(std.heap.page_allocator, 10);
 }
 
-pub fn main() void {
-    std.debug.print("=== TLS 1.3 Performance Benchmarks ===\n", .{});
-    std.debug.print("Build mode: {s}\n\n", .{@tagName(@import("builtin").mode)});
+// ============================================================================
+// PERF-256: AEAD throughput size-sweep benchmarks.
+//
+// Measures AEAD seal/open at realistic record sizes {128, 1024, 4096, 16384}
+// for AES-128-GCM and ChaCha20-Poly1305. The 16 KB measurement is the SLO
+// gate (AES-128-GCM ≥ 3 GB/s with `-Dcpu=native`).
+// ============================================================================
 
+fn aeadSealAes(comptime size: usize) fn () void {
+    return struct {
+        fn run() void {
+            const key = [_]u8{0x01} ** 16;
+            const iv = [_]u8{0x02} ** 12;
+            var cipher = record.AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null) catch return;
+            var plaintext = [_]u8{0x03} ** size;
+            var out: [size + 16]u8 = undefined;
+            const aad = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x90 };
+            cipher.sealBuf(&out, 0, &aad, &plaintext) catch return;
+            std.mem.doNotOptimizeAway(&out);
+        }
+    }.run;
+}
+
+fn aeadOpenAes(comptime size: usize) fn () void {
+    return struct {
+        fn run() void {
+            const key = [_]u8{0x01} ** 16;
+            const iv = [_]u8{0x02} ** 12;
+            var seal_cipher = record.AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null) catch return;
+            var plaintext = [_]u8{0x03} ** size;
+            var ciphertext: [size + 16]u8 = undefined;
+            const aad = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x90 };
+            seal_cipher.sealBuf(&ciphertext, 0, &aad, &plaintext) catch return;
+            var open_cipher = record.AeadCipher.init(.TLS_AES_128_GCM_SHA256, &key, &iv, null) catch return;
+            var decrypted: [size]u8 = undefined;
+            open_cipher.openBuf(&decrypted, 0, &aad, &ciphertext) catch return;
+            std.mem.doNotOptimizeAway(&decrypted);
+        }
+    }.run;
+}
+
+fn aeadSealChacha(comptime size: usize) fn () void {
+    return struct {
+        fn run() void {
+            const key = [_]u8{0x01} ** 32;
+            const iv = [_]u8{0x02} ** 12;
+            var cipher = record.AeadCipher.init(.TLS_CHACHA20_POLY1305_SHA256, &key, &iv, null) catch return;
+            var plaintext = [_]u8{0x03} ** size;
+            var out: [size + 16]u8 = undefined;
+            const aad = [_]u8{ 0x17, 0x03, 0x03, 0x00, 0x90 };
+            cipher.sealBuf(&out, 0, &aad, &plaintext) catch return;
+            std.mem.doNotOptimizeAway(&out);
+        }
+    }.run;
+}
+
+// ============================================================================
+// PERF-258: JSON emission, baseline comparison, and CLI argument handling.
+// ============================================================================
+
+const tolerance_pct: f64 = 0.10;
+
+const BaselineEntry = struct {
+    name: []const u8,
+    mean_ns: u64,
+};
+
+fn appendFmt(out: *std.ArrayList(u8), gpa: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
+    const tmp = try std.fmt.allocPrint(gpa, fmt, args);
+    defer gpa.free(tmp);
+    try out.appendSlice(gpa, tmp);
+}
+
+fn renderJsonResults(gpa: std.mem.Allocator) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, "{\n");
+    try out.appendSlice(gpa, "  \"version\": \"1\",\n");
+    try appendFmt(&out, gpa, "  \"build_mode\": \"{s}\",\n", .{@tagName(@import("builtin").mode)});
+    try out.appendSlice(gpa, "  \"tolerance_pct\": 0.10,\n");
+    try out.appendSlice(gpa, "  \"results\": [\n");
+    var i: usize = 0;
+    while (i < bench_sample_count) : (i += 1) {
+        const s = bench_samples[i];
+        try out.appendSlice(gpa, "    {\n");
+        try appendFmt(&out, gpa, "      \"name\": \"{s}\",\n", .{s.name});
+        try appendFmt(&out, gpa, "      \"iterations\": {d},\n", .{s.iterations});
+        try appendFmt(&out, gpa, "      \"sampled\": {d},\n", .{s.sampled});
+        try appendFmt(&out, gpa, "      \"elapsed_ns\": {d},\n", .{s.elapsed_ns});
+        try appendFmt(&out, gpa, "      \"mean_ns\": {d},\n", .{s.mean_ns});
+        try appendFmt(&out, gpa, "      \"p50_ns\": {d},\n", .{s.p50_ns});
+        try appendFmt(&out, gpa, "      \"p95_ns\": {d}", .{s.p95_ns});
+        if (s.throughput_gbps) |gb| {
+            try appendFmt(&out, gpa, ",\n      \"throughput_gbps\": {d:.6}", .{gb});
+        }
+        if (s.payload_bytes) |pb| {
+            try appendFmt(&out, gpa, ",\n      \"payload_bytes\": {d}", .{pb});
+        }
+        try out.appendSlice(gpa, "\n    }");
+        if (i + 1 < bench_sample_count) try out.appendSlice(gpa, ",");
+        try out.appendSlice(gpa, "\n");
+    }
+    try out.appendSlice(gpa, "  ]\n}\n");
+    return try out.toOwnedSlice(gpa);
+}
+
+/// Minimal scanner that extracts (name, mean_ns) pairs from a baseline JSON
+/// produced by `writeJsonResults`. Keeps the bench self-contained — no
+/// `std.json` dependency, and no allocator beyond a fixed scratch arena.
+fn parseBaseline(alloc: std.mem.Allocator, content: []const u8, out: []BaselineEntry) !usize {
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (pos < content.len) {
+        const name_marker = "\"name\":";
+        const name_start = std.mem.indexOfPos(u8, content, pos, name_marker) orelse break;
+        const q1 = std.mem.indexOfScalarPos(u8, content, name_start + name_marker.len, '"') orelse break;
+        const q2 = std.mem.indexOfScalarPos(u8, content, q1 + 1, '"') orelse break;
+        const name_slice = content[q1 + 1 .. q2];
+
+        const mean_marker = "\"mean_ns\":";
+        const mean_start = std.mem.indexOfPos(u8, content, q2, mean_marker) orelse break;
+        var num_pos = mean_start + mean_marker.len;
+        while (num_pos < content.len and (content[num_pos] == ' ' or content[num_pos] == '\t')) : (num_pos += 1) {}
+        var num_end = num_pos;
+        while (num_end < content.len and content[num_end] >= '0' and content[num_end] <= '9') : (num_end += 1) {}
+        if (num_end == num_pos) break;
+        const mean_ns = try std.fmt.parseInt(u64, content[num_pos..num_end], 10);
+
+        if (count >= out.len) return count;
+        out[count] = .{
+            .name = try alloc.dupe(u8, name_slice),
+            .mean_ns = mean_ns,
+        };
+        count += 1;
+        pos = num_end;
+    }
+    return count;
+}
+
+/// Compare current `bench_samples` against the baseline at `path`. Returns
+/// `true` iff every paired sample is within `tolerance_pct` of its baseline
+/// mean. Emits a per-row report on stdout regardless. Names that exist only
+/// in the baseline are flagged as missing; samples without a matching
+/// baseline entry are flagged as unknown but do not fail the gate.
+fn compareAgainstBaseline(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !bool {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const buf = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1 * 1024 * 1024));
+
+    var entries: [64]BaselineEntry = undefined;
+    const n = try parseBaseline(alloc, buf, &entries);
+
+    std.debug.print("\n=== Baseline comparison (tolerance ±{d:.0}%) vs {s} ===\n", .{ tolerance_pct * 100, path });
+
+    var ok = true;
+    var matched = [_]bool{false} ** 64;
+    for (bench_samples[0..bench_sample_count]) |s| {
+        var found_idx: ?usize = null;
+        var j: usize = 0;
+        while (j < n) : (j += 1) {
+            if (std.mem.eql(u8, entries[j].name, s.name)) {
+                found_idx = j;
+                break;
+            }
+        }
+        if (found_idx) |idx| {
+            matched[idx] = true;
+            const baseline_mean = entries[idx].mean_ns;
+            if (baseline_mean == 0) continue;
+            const ratio = @as(f64, @floatFromInt(s.mean_ns)) / @as(f64, @floatFromInt(baseline_mean));
+            const delta_pct = (ratio - 1.0) * 100.0;
+            const status: []const u8 = if (ratio > 1.0 + tolerance_pct)
+                "REGRESSION"
+            else if (ratio < 1.0 - tolerance_pct)
+                "IMPROVED"
+            else
+                "OK";
+            std.debug.print("  {s:<48} {s:<10} mean={d}ns baseline={d}ns Δ={d:.2}%\n", .{ s.name, status, s.mean_ns, baseline_mean, delta_pct });
+            if (ratio > 1.0 + tolerance_pct) ok = false;
+        } else {
+            std.debug.print("  {s:<48} UNKNOWN    mean={d}ns (no baseline entry)\n", .{ s.name, s.mean_ns });
+        }
+    }
+    var k: usize = 0;
+    while (k < n) : (k += 1) {
+        if (!matched[k]) {
+            std.debug.print("  {s:<48} MISSING    (baseline entry, no current sample)\n", .{entries[k].name});
+            ok = false;
+        }
+    }
+    std.debug.print("=== {s} ===\n", .{if (ok) "Within tolerance" else "Regression detected"});
+    return ok;
+}
+
+fn runAllBenches() void {
     // Existing benchmarks (PERF-011)
     benchmarkFn("key_derivation (HKDF-Extract+Expand)", 10_000, benchKeyDerivation);
     benchmarkFn("transcript_hash (SHA-256 update+finalize)", 10_000, benchTranscriptHash);
@@ -510,6 +768,78 @@ pub fn main() void {
     // PERF-213 / PERF-221 / PERF-222: Deep-chain NameConstraints accumulation.
     benchmarkFn("name_constraints_accumulate (chain depth 5)", 1_000, benchNameConstraintsDepth5);
     benchmarkFn("name_constraints_accumulate (chain depth 10)", 1_000, benchNameConstraintsDepth10);
+
+    // PERF-256: AEAD throughput size sweep.
+    benchmarkThroughputFn("aead_seal_aes128 (1024B)", 5_000, 1024, aeadSealAes(1024));
+    benchmarkThroughputFn("aead_seal_aes128 (4096B)", 2_000, 4096, aeadSealAes(4096));
+    benchmarkThroughputFn("aead_seal_aes128 (16384B)", 1_000, 16384, aeadSealAes(16384));
+    benchmarkThroughputFn("aead_open_aes128 (1024B)", 5_000, 1024, aeadOpenAes(1024));
+    benchmarkThroughputFn("aead_open_aes128 (4096B)", 2_000, 4096, aeadOpenAes(4096));
+    benchmarkThroughputFn("aead_open_aes128 (16384B)", 1_000, 16384, aeadOpenAes(16384));
+    benchmarkThroughputFn("aead_seal_chacha20 (1024B)", 5_000, 1024, aeadSealChacha(1024));
+    benchmarkThroughputFn("aead_seal_chacha20 (16384B)", 1_000, 16384, aeadSealChacha(16384));
+}
+
+pub fn main(init: std.process.Init) !void {
+    std.debug.print("=== TLS 1.3 Performance Benchmarks ===\n", .{});
+    std.debug.print("Build mode: {s}\n\n", .{@tagName(@import("builtin").mode)});
+
+    const gpa = init.gpa;
+    const io = init.io;
+
+    // PERF-258: parse CLI args. The bench is normally launched by
+    // `zig build bench`; arguments are forwarded through the `b.args`
+    // hook (`-Dargs="..."`) or by direct execution.
+    var emit_json: ?[]const u8 = null;
+    var check_baseline: ?[]const u8 = null;
+    {
+        var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, gpa);
+        defer it.deinit();
+        _ = it.next(); // skip program name
+        while (it.next()) |a| {
+            if (std.mem.eql(u8, a, "--emit-json")) {
+                const next = it.next() orelse {
+                    std.debug.print("--emit-json requires a path argument\n", .{});
+                    std.process.exit(2);
+                };
+                emit_json = try gpa.dupe(u8, next);
+            } else if (std.mem.eql(u8, a, "--check-baseline")) {
+                const next = it.next() orelse {
+                    std.debug.print("--check-baseline requires a path argument\n", .{});
+                    std.process.exit(2);
+                };
+                check_baseline = try gpa.dupe(u8, next);
+            } else if (std.mem.eql(u8, a, "--help")) {
+                std.debug.print(
+                    \\Usage: bench [--emit-json PATH] [--check-baseline PATH]
+                    \\
+                    \\PERF-258: Optional JSON output and baseline regression detection.
+                    \\Default behavior (no flags) prints human-readable bench rows.
+                    \\
+                , .{});
+                std.process.exit(0);
+            }
+        }
+    }
+    defer if (emit_json) |p| gpa.free(p);
+    defer if (check_baseline) |p| gpa.free(p);
+
+    runAllBenches();
+
+    if (emit_json) |path| {
+        const blob = try renderJsonResults(gpa);
+        defer gpa.free(blob);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = blob });
+        std.debug.print("\n[bench] wrote JSON results to {s}\n", .{path});
+    }
+
+    if (check_baseline) |path| {
+        const ok = compareAgainstBaseline(io, gpa, path) catch |err| {
+            std.debug.print("[bench] failed to compare baseline at {s}: {any}\n", .{ path, err });
+            std.process.exit(2);
+        };
+        if (!ok) std.process.exit(1);
+    }
 
     std.debug.print("\n=== Benchmark Complete ===\n", .{});
 }

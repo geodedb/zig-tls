@@ -106,11 +106,24 @@ pub fn parseHelloRetryRequest(body: []const u8) !HrrParsed {
     var cookie: ?[]const u8 = null;
     var selected_group: ?tls13_full.NamedGroup = null;
 
+    // GAP-0144 / SEC-104 (cross-ref): RFC 8446 §4.2 forbids more than one
+    // extension of the same type in a given block. Without this gate, a
+    // second `cookie` extension overwrites the previously-stored borrow at
+    // the assignment below — letting an off-path peer steer the CH2 echo.
+    // Same parse-class as SEC-066 (ClientHello), SEC-092 (EE/SH), and
+    // SEC-079 (X.509). Pattern mirrors `encrypted_extensions.zig:220`.
+    var seen = std.EnumSet(tls13_full.ExtensionType).initEmpty();
+
     while (pos + 4 <= exts_end) {
         const etype = readU16(body[pos .. pos + 2]);
         const elen: usize = readU16(body[pos + 2 .. pos + 4]);
         pos += 4;
         if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
+
+        if (std.enums.fromInt(tls13_full.ExtensionType, etype)) |etag| {
+            if (seen.contains(etag)) return HandshakeError.DuplicateExtension;
+            seen.insert(etag);
+        }
 
         // RFC 8446 §4.2.2: cookie extension. The ext_data carries a
         // `Cookie` struct: `opaque cookie<1..2^16-1>` — i.e. a 2-byte

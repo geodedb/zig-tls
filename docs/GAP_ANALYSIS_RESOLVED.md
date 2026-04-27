@@ -5,6 +5,53 @@
 
 ---
 
+## Cycle 9 / Phase 4 Gap Closure (2026-04-27)
+
+Phase 4 gap-issue-tracker sync. No code commits this cycle — moves are
+status-only (the underlying code resolutions had already landed in
+prior cycles; this sync moves the ledger to reflect that). Two GAP-*
+items move to RESOLVED:
+
+### GAP-0106: zig build bench broken locally [RESOLVED]
+
+- **Issue:** [#142](https://gitlab.com/devnw/zig/tls/-/issues/142) (closed)
+- **Category:** CI-CD
+- **Severity:** Low
+- **Resolution:** Bench harness rebuilt for Zig 0.16. `zig build bench`
+  produces 13 named rows. The CI-exercise criterion is delegated to
+  PERF-236 (#265).
+- **Evidence:**
+  - `tests/bench.zig:25-37` — `nowMonotonicNs` via `clock_gettime`
+    (replacing the removed `std.time.Timer` 0.15.x API).
+  - `tests/bench.zig:51-60` — `perfFence` replacing the removed `@fence`
+    builtin.
+  - GitLab #142 closed prior to this sync; ledger now aligned.
+- **Cross-ref:** PERF-236 (#265) — "CI exercises bench" tracking.
+- **Resolved date:** 2026-04-27
+
+### GAP-0110: 10-level nesting in EE handler [RESOLVED]
+
+- **Issue:** [#146](https://gitlab.com/devnw/zig/tls/-/issues/146) (closed)
+- **Category:** Code Quality / Readability
+- **Severity:** Medium
+- **Resolution:** Engine deletion (commit `4ae8ac7`) subsumed the
+  original 10-level demux site. The current EncryptedExtensions handler
+  uses a flat per-extension dispatcher with `std.EnumSet` tracking and
+  depth ≤ 3 — well under the original ≤ 3 acceptance bar.
+- **Evidence:**
+  - Original site: `src/tls13/engine.zig:815-848` (gone via commit
+    `4ae8ac7`).
+  - Current handler: `src/tls13/messages/encrypted_extensions.zig`
+    (266 LOC) with flat per-ext dispatch via
+    `std.EnumSet(core_types.ExtensionType).initEmpty()` at `:220`.
+  - Max nesting in current EE handler: 3 levels (validated via reading
+    the file).
+- **Cross-ref:** SEC-092 (closed) for the dup-ext gating that landed
+  alongside the demux flattening.
+- **Resolved date:** 2026-04-27
+
+---
+
 ## Cycle 8 / Phase 22 Gap Closure (2026-04-27)
 
 Execution of the Phase 22 plan (10 gap items in implementation order). All

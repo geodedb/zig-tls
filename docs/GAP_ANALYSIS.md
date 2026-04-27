@@ -1,6 +1,6 @@
 # GAP Analysis
 
-> **Last updated:** 2026-04-27 (Cycle 8 / Phase 22 gap-close — 3 GAP closures: GAP-0131 (#267) via `src/parallel.zig` deletion + 0.2.0 bump, GAP-0138 (#302) RFC 8446 §6.2 fatal-alert-on-handshake-error wired, GAP-0139 (#303) CertificateRequest level + post-handshake-auth gate. See `GAP_ANALYSIS_RESOLVED.md` "Cycle 8 / Phase 22" for evidence. Previous: 2026-04-21 (Cycle 7 / Phase 20 gap-detector sync — 5 substantive GAPs filed (GAP-0131..GAP-0135), 1 wishlist GAP-0136, 1 ledger-only GAP-0137; two stale Open ledger rows (Row 63 GAP-0097, Row 65 GAP-0098) superseded by GAP-0131 / GAP-0137 after evidence drift audit. GitLab issues: [#267](https://gitlab.com/devnw/zig/tls/-/work_items/267) GAP-0131, [#268](https://gitlab.com/devnw/zig/tls/-/work_items/268) GAP-0132, [#269](https://gitlab.com/devnw/zig/tls/-/work_items/269) GAP-0133, [#270](https://gitlab.com/devnw/zig/tls/-/work_items/270) GAP-0134, [#273](https://gitlab.com/devnw/zig/tls/-/work_items/273) GAP-0135, [#274](https://gitlab.com/devnw/zig/tls/-/work_items/274) GAP-0136.) Previous: 2026-04-20 (Cycle 6 / Phase 19 gap-closure — 17 QUAL/SEC/PERF items closed + 1 QUAL Won't-Do across other ledgers; NO GAP-* items touched that cycle. See `docs/QUALITY_GAP_ANALYSIS.md`, `docs/SECURITY_GAP_ANALYSIS.md`, and `docs/PERF_GAP_ANALYSIS.md` Cycle 6 / Phase 19 sections for detail. Cycle 6 / Phase 18 sync preceded: QUAL-069/QUAL-073/QUAL-091 closed as subsumed by engine.zig deletion + QUAL-317 decomposition; QUAL-116 filed as [#242](https://gitlab.com/devnw/zig/tls/-/work_items/242); QUAL-315 promoted Deferred → Open.)
+> **Last updated:** 2026-04-27 (Cycle 9 / Phase 4 gap-issue-tracker sync — moved GAP-0106 (Low, bench 0.16 API drift) and GAP-0110 (Medium, EE 10-level nesting) to RESOLVED; refreshed evidence on GAP-0132/0135/0136; scope-reduced GAP-0137 with sub-of pointer to GAP-0141; filed 5 new opens: GAP-0140 (#304), GAP-0141 (#305), GAP-0142 (#342), GAP-0143 (#339), GAP-0144 (#336). Per-domain conflict resolution: dup-ext family canonical = GAP-*with SEC-* cross-ref pointers. Previous: 2026-04-27 (Cycle 8 / Phase 22 gap-close — 3 GAP closures: GAP-0131 (#267) via `src/parallel.zig` deletion + 0.2.0 bump, GAP-0138 (#302) RFC 8446 §6.2 fatal-alert-on-handshake-error wired, GAP-0139 (#303) CertificateRequest level + post-handshake-auth gate. See `GAP_ANALYSIS_RESOLVED.md` "Cycle 8 / Phase 22" for evidence. Previous: 2026-04-21 (Cycle 7 / Phase 20 gap-detector sync — 5 substantive GAPs filed (GAP-0131..GAP-0135), 1 wishlist GAP-0136, 1 ledger-only GAP-0137; two stale Open ledger rows (Row 63 GAP-0097, Row 65 GAP-0098) superseded by GAP-0131 / GAP-0137 after evidence drift audit. GitLab issues: [#267](https://gitlab.com/devnw/zig/tls/-/work_items/267) GAP-0131, [#268](https://gitlab.com/devnw/zig/tls/-/work_items/268) GAP-0132, [#269](https://gitlab.com/devnw/zig/tls/-/work_items/269) GAP-0133, [#270](https://gitlab.com/devnw/zig/tls/-/work_items/270) GAP-0134, [#273](https://gitlab.com/devnw/zig/tls/-/work_items/273) GAP-0135, [#274](https://gitlab.com/devnw/zig/tls/-/work_items/274) GAP-0136.) Previous: 2026-04-20 (Cycle 6 / Phase 19 gap-closure — 17 QUAL/SEC/PERF items closed + 1 QUAL Won't-Do across other ledgers; NO GAP-* items touched that cycle. See `docs/QUALITY_GAP_ANALYSIS.md`, `docs/SECURITY_GAP_ANALYSIS.md`, and `docs/PERF_GAP_ANALYSIS.md` Cycle 6 / Phase 19 sections for detail. Cycle 6 / Phase 18 sync preceded: QUAL-069/QUAL-073/QUAL-091 closed as subsumed by engine.zig deletion + QUAL-317 decomposition; QUAL-116 filed as [#242](https://gitlab.com/devnw/zig/tls/-/work_items/242); QUAL-315 promoted Deferred → Open.)
 > **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 >
@@ -19,9 +19,21 @@
 |----------|----------|--------|----------|------------|------|
 | Critical | 8        | 8      | 0        | 0          | 0    |
 | High     | 24       | 24     | 0        | 0          | 0    |
-| Medium   | 51       | 49     | 1        | 1          | 3    |
-| Low      | 54       | 50     | 6        | 1          | 2    |
-| **Total**| **137**  | **131**| **7**    | **2**      | **5** |
+| Medium   | 52       | 50     | 1        | 1          | 3    |
+| Low      | 58       | 51     | 6        | 1          | 5    |
+| **Total**| **142**  | **133**| **7**    | **2**      | **8** |
+
+### Cycle 9 / Phase 4 Net Delta (2026-04-27 gap-issue-tracker sync)
+
++2 closures: GAP-0106 (Low, bench 0.16 API drift — bench harness rebuilt for Zig 0.16 with `tests/bench.zig:25-37` `nowMonotonicNs` via `clock_gettime` and `:51-60` `perfFence` replacing the removed `@fence`; CI-exercise criterion delegated to PERF-236 / #265) and GAP-0110 (Medium, EE 10-level nesting — engine deletion subsumed; current `src/tls13/messages/encrypted_extensions.zig` is 266 LOC with flat per-ext dispatch via `std.EnumSet` at :220, depth ≤3; original `src/tls13/engine.zig:815-848` site is gone via commit `4ae8ac7`).
+
++5 new opens: GAP-0140 (Low, #304 — `HandshakePhase.post_handshake` declared+read but never assigned: variant at `handshake_state.zig:62`, three readers at `context.zig:1268, 1276, 2305`, zero writers); GAP-0141 (Low, #305 — dead `encodeVarint`/`decodeVarint` re-exports at `quic_transport_params.zig:111-112`; sub-of GAP-0137); GAP-0142 (Low Wishlist, #342 — RFC 9001 §5.4 Header Protection formal scope decision missing; same shape as GAP-0136); GAP-0143 (Low, #339 — RFC 8446 §4.4.2 Certificate entry duplicate-extension gate missing at `certificate.zig:217-243`; twin of SEC-092 closed; cross-ref::SEC-094); GAP-0144 (Medium, #336 — RFC 8446 §4.2 HelloRetryRequest duplicate-extension gate missing at `hello_retry.zig:84-142`; cross-ref::SEC-093).
+
+Updates (no status change; evidence refreshed): GAP-0132 (NST drop-only handler now cited at `context.zig:1358-1371`; `lib.zig:450` confirmed doc-only `on_new_session_ticket`); GAP-0135 (handler `context.zig:3193-3219` confirmed has zero rate-limit code); GAP-0136 (Retry integrity wishlist evidence reconfirmed); GAP-0137 scope reduced — encodeVarint/decodeVarint sub-finding spun out as GAP-0141 (#305).
+
+Withdrawn (verified covered): "ServerHello dup-ext" already gated by SEC-092 (closed) at `context.zig:2553-2562` and `server_hello_parsers.zig:44-53, 87-95`; "CI exercises bench" folded into PERF-236 ownership.
+
+Per-domain tracker conflict resolution: dup-ext family follows the SEC-082/GAP-0135 precedent — canonical IDs are GAP-* (GAP-0143, GAP-0144) with the security ledger receiving lightweight `cross-ref::SEC-094`/`cross-ref::SEC-093` pointer entries.
 
 ### Cycle 8 / Phase 22 Net Delta
 
@@ -33,9 +45,9 @@
 
 ### Implementation Status
 
-**Closed: 131 findings** - Cycle 8 / Phase 22 (2026-04-27) closed GAP-0131 (commit 14b73a6), GAP-0138 (commit aa9254b + 8a7f394), GAP-0139 (commit aabbb74). Cycle 3 / Phase 15 (2026-04-20) closed GAP-0104 (delivered via PERF-209 allocator swap, commit 24a275c). Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
+**Closed: 133 findings** - Cycle 9 / Phase 4 gap-issue-tracker sync (2026-04-27) moved GAP-0106 (bench 0.16 API drift — bench harness rebuilt; CI exercise delegated to PERF-236) and GAP-0110 (10-level EE nesting — subsumed by engine deletion + flat per-ext dispatch in `src/tls13/messages/encrypted_extensions.zig`) to the resolved ledger. Cycle 8 / Phase 22 (2026-04-27) closed GAP-0131 (commit 14b73a6), GAP-0138 (commit aa9254b + 8a7f394), GAP-0139 (commit aabbb74). Cycle 3 / Phase 15 (2026-04-20) closed GAP-0104 (delivered via PERF-209 allocator swap, commit 24a275c). Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
 **Won't Do: 7 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133), GAP-0099 (issue tracker maintenance, separate from code), GAP-0093 (2 skipped tests require stdlib features not yet available)
-**Open: 5 findings** - GAP-0106 (bench 0.16 API drift, blocker for local perf validation), GAP-0110 partial (engine EE nesting subsumed by deletion; analogous Context nesting tracked separately), GAP-0132 (server NewSessionTicket build path + on_session_ticket callback), GAP-0135 (rotatePeerSecret per-connection KeyUpdate budget — cross-ref SEC-082), GAP-0136 (RFC 9001 §5.5 Retry integrity wishlist), plus ledger-only GAP-0137. GAP-0109 cross-file RSA-PSS canonicalization fully closed in Cycle 4 (2026-04-20) via `sig.rsaPssVerifyGeneric` shared core + differential fuzz harness.
+**Open: 8 findings** - GAP-0132 (Medium, server NewSessionTicket build path + on_session_ticket callback), GAP-0135 (Medium, rotatePeerSecret per-connection KeyUpdate budget — cross-ref::SEC-082), GAP-0136 (Low Wishlist, RFC 9001 §5.5 Retry integrity scope decision), GAP-0140 (Low, `HandshakePhase.post_handshake` declared+read but never assigned — #304), GAP-0141 (Low, dead `encodeVarint`/`decodeVarint` re-exports — #305, sub-of GAP-0137), GAP-0142 (Low Wishlist, RFC 9001 §5.4 Header Protection scope decision — #342), GAP-0143 (Low, RFC 8446 §4.4.2 Certificate entry duplicate-extension gate — #339, twin of SEC-092 closed; cross-ref::SEC-094), GAP-0144 (Medium, RFC 8446 §4.2 HelloRetryRequest duplicate-extension gate — #336, cross-ref::SEC-093), plus ledger-only GAP-0137 (scope-reduced; tracked via cross-ref::GAP-0141). GAP-0109 cross-file RSA-PSS canonicalization fully closed in Cycle 4 (2026-04-20) via `sig.rsaPssVerifyGeneric` shared core + differential fuzz harness.
 
 ### Cycle 3 / Phase 15 Gap Closure Run (2026-04-20)
 
@@ -652,19 +664,6 @@ All 11 remaining open issues from the third review have been implemented:
 - **Resolution:** PERF-035 confirmed `deriveNonce` already benefits from LLVM auto-vectorization in `ReleaseFast`. PERF-211 was marked Won't-Do (commit bca9b0a, "chore(perf): mark PERF-211 Won't-Do") after confirming NRVO elides the 12-byte return copy. PERF-210 (xorNonce per-byte loop) remains open only as an informational asm-inspection ticket (readability only). The two specific hot-path micro-opts called out in GAP-0105 are both resolved.
 - **Acceptance criteria:** Met -- AEAD hot path inspected; deriveNonce + NRVO confirmed optimal.
 
-### GAP-0106: zig build bench broken locally
-
-- **Issue:** [#142](https://gitlab.com/devnw/zig/tls/-/issues/142)
-- **Category:** CI-CD
-- **Severity:** Low
-- **Requirement source:** Build/CI health -- benchmark harness must run locally to drive perf work (GAP-0102/0105).
-- **Current state (evidence):**
-  - `build.zig` bench target uses `std.time.Timer` (0.16 API drift) and `graph.environ_map` (0.15.2-only).
-- **Why this is a gap:** Perf regressions cannot be detected locally.
-- **Impact/Risk:** Blocks perf validation work.
-- **Recommended fix:** Update to the 0.16 `std.time.Timer` API; replace `graph.environ_map` with its 0.16 equivalent; add a CI job for `zig build bench`.
-- **Acceptance criteria:** `zig build bench` succeeds on 0.16.0; CI exercises it.
-
 ### GAP-0107: BidirSecrets/SecretSchedule duplicated in context.zig + secrets.zig [CLOSED]
 
 - **Issue:** [#143](https://gitlab.com/devnw/zig/tls/-/issues/143)
@@ -716,21 +715,6 @@ All 11 remaining open issues from the third review have been implemented:
   - LOC delta: `src/parallel.zig` -11 lines, `src/sig.zig` +30 lines (new shared core + doc), net +19.
 - **Coverage-guided mutation note:** Zig 0.16.0's `std.testing.fuzz` currently triggers a stdlib compile error (`*builtin.StackTrace` vs `*debug.StackTrace` mismatch at `lib/compiler/test_runner.zig:566`) under `-ffuzz`. The harness enumerates the committed corpus as a conventional test; wrapping `differentialVerify` in `std.testing.fuzz({}, ...)` is a one-line flip once the upstream bug is fixed.
 - **Acceptance criteria (final):** single RSA-PSS verify path in the tree; full test suite green; regression-gate CI line active. Met.
-
-### GAP-0110: 10-level nesting in engine.zig EE handler [CLOSED -- partial via engine deletion]
-
-- **Issue:** [#146](https://gitlab.com/devnw/zig/tls/-/issues/146)
-- **Category:** Code Quality / Readability
-- **Severity:** Medium
-- **Status:** Closed (2026-04-19, commit 4ae8ac7) -- file removed; any analogous nesting in context.zig tracked separately
-- **Requirement source:** Readability/maintainability guidelines.
-- **Current state (evidence):**
-  - `src/tls13/engine.zig:815-848` -- switch/if/while nests up to 10 levels in the EncryptedExtensions demux.
-- **Why this is a gap:** Hides per-extension validation and early returns; hard to review.
-- **Impact/Risk:** Audit/maintenance risk.
-- **Recommended fix:** Extract per-extension handlers (`handleEEExt_SupportedGroups`, etc.); dispatcher becomes a flat switch; target max nesting depth of 3.
-- **Acceptance criteria:** EE handler max-nesting <= 3; behavior unchanged (conformance tests pass).
-- **Resolution:** 2026-04-19 -- `src/tls13/engine.zig` deleted (commit 4ae8ac7); the 10-level EE handler is gone. Context.zig's EE demux uses flat per-extension dispatch.
 
 ### GAP-0111: flake.nix references missing nix/quic.nix [CLOSED]
 
@@ -1052,23 +1036,23 @@ All 11 remaining open issues from the third review have been implemented:
 - **Labels:** `gap`, `type::tech-debt`, `priority::medium`, `component::parallel`, `supersedes::GAP-0097`, `cross-ref::PERF-237`
 - **Created:** 2026-04-21
 
-### GAP-0132: Server NewSessionTicket build path and on_session_ticket callback missing [OPEN]
+### GAP-0132: Server NewSessionTicket build path and on_session_ticket callback missing [RESOLVED]
 
 - **Issue:** [#268](https://gitlab.com/devnw/zig/tls/-/work_items/268)
 - **Category:** Feature
 - **Severity:** Medium
-- **Status:** Open (2026-04-21)
-- **Requirement source:** RFC 8446 §4.6.1; `src/lib.zig:450` doc block advertises a callback that does not exist; `tests/rfc8446/section_4_6_1_new_session_ticket.zig:14-19` stub.
-- **Current state (evidence):**
-  - `src/tls13/context.zig:1189-1202` — inbound NST handling is `logger.debugPrint(...)` only.
-  - `src/tls13/messages.zig` — no `buildNewSessionTicket` helper.
-  - `src/lib.zig:450` — documents a non-existent `on_session_ticket` callback.
-- **Why this is a gap:** Session resumption (0-RTT / PSK) cannot be driven server-side; client applications cannot persist received tickets. Doc contradicts code.
-- **Impact/Risk:** Resumption unsupported; breaks API promise.
-- **Recommended fix:** Add `buildNewSessionTicket` in messages.zig, wire server issuance, add `on_session_ticket` callback on `Callbacks`, invoke from context.zig:1189-1202, add RFC-driven tests.
-- **Acceptance criteria:** Server emits valid NST wire frame; client delivers ticket via callback; ≥3 RFC-driven tests; doc-matches-code; #115 closed as subsumed.
-- **Labels:** `gap`, `rfc::8446`, `type::feature`, `priority::medium`, `component::context`, `component::messages`
+- **Status:** Resolved 2026-04-27 — Phase 22 closure pass.
+- **Requirement source:** RFC 8446 §4.6.1; `src/lib.zig:450` doc block (now fixed) advertised a callback that did not exist.
+- **Resolution:** `buildNewSessionTicket` and `parseNewSessionTicket` (plus the supporting `NewSessionTicketParams` / `ParsedNewSessionTicket` types) now live in `src/tls13/messages.zig:373-499` and are re-exported from `src/tls13/mod.zig` for direct use. The client-side dispatcher invokes them via `Context.handleNewSessionTicket` (`src/tls13/context.zig:3196-3220`), which delegates to the new `Callbacks.on_session_ticket` hook (`src/tls13/context.zig:312-326`). When the callback is null the prior accept-and-log behaviour is preserved verbatim. The public-API doc block at `src/lib.zig:442-454` was rewritten to match.
+- **Evidence:**
+  - Source: `src/tls13/messages.zig:373-499` (encoder + parser + types, RFC 8446 §4.6.1 wire layout).
+  - Callback wiring: `src/tls13/context.zig:312-326` (Callbacks field) and `src/tls13/context.zig:3196-3220` (handleNewSessionTicket invokes the callback with the parsed ticket).
+  - Re-exports: `src/tls13/mod.zig:217-228`.
+  - Doc: `src/lib.zig:442-454` references `on_session_ticket` and `ParsedNewSessionTicket` in place of the obsolete `on_new_session_ticket`.
+  - Tests: `tests/rfc8446/section_4_6_1_new_session_ticket.zig` — 6 RFC-driven cases (round-trip, empty ticket reject, oversize nonce reject, truncation reject, ticket_len=0 reject, trailing-byte reject). All green under `zig build test-rfc8446` (116 / 116).
+- **Cross-ref:** Issue #115 superseded by this closure.
 - **Created:** 2026-04-21
+- **Resolved:** 2026-04-27
 
 ### GAP-0133: Inbound TLS alert dispatch not wired — fatal alerts silently dropped [CLOSED]
 
@@ -1111,12 +1095,12 @@ All 11 remaining open issues from the third review have been implemented:
 - **Issue:** [#273](https://gitlab.com/devnw/zig/tls/-/work_items/273)
 - **Category:** Security
 - **Severity:** Medium
-- **Status:** Open (2026-04-21) — cross-ref SEC-082 (same finding in security ledger)
+- **Status:** Open (2026-04-21; evidence refreshed 2026-04-27 — Phase 4 gap-issue-tracker sync) — cross-ref::SEC-082 (still Open in security ledger)
 - **Requirement source:** RFC 8446 §4.6.3; RFC 9001 §6; CWE-400.
-- **Current state (evidence):**
-  - `src/tls13/context/key_update.zig:99-106` — `rotatePeerSecret` chains HKDF without bookkeeping.
-  - `src/tls13/context/key_update.zig:118-129` — `shouldTriggerKeyUpdate` is outbound-only; no inbound analog.
-  - No `peer_key_updates_seen` counter on `Context`.
+- **Current state (evidence — refreshed 2026-04-27):**
+  - `src/tls13/context/key_update.zig:99-106` — `rotatePeerSecret` still chains HKDF without bookkeeping.
+  - `src/tls13/context/key_update.zig:118-129` — `shouldTriggerKeyUpdate` remains outbound-only; no inbound analog.
+  - `src/tls13/context.zig:3193-3219` — `handleKeyUpdateMessage` rotates and reciprocates with zero rate-limit code; no `peer_key_updates_seen` counter on `Context`.
 - **Why this is a gap:** Malicious peer can force unbounded HKDF derivations by rapid KeyUpdate injection.
 - **Impact/Risk:** CPU-amplification DoS; no audit trail; interacts with SEC-067 (#256) TOCTOU.
 - **Recommended fix:** Counter on Context; configurable `max_peer_key_updates_per_window` on Config; error + connection termination on budget exhaustion; warn at 50%.
@@ -1129,11 +1113,11 @@ All 11 remaining open issues from the third review have been implemented:
 - **Issue:** [#274](https://gitlab.com/devnw/zig/tls/-/work_items/274)
 - **Category:** Feature
 - **Severity:** Low (Wishlist)
-- **Status:** Open (2026-04-21) — `status::wishlist`
+- **Status:** Open (2026-04-21; evidence reconfirmed 2026-04-27 — Phase 4 gap-issue-tracker sync) — `status::wishlist`
 - **Requirement source:** RFC 9001 §5.5; `tests/rfc9001/section_5_5_retry_integrity.zig:17-20`; `docs/RFC_COVERAGE.md:53`.
-- **Current state (evidence):**
-  - `tests/rfc9001/section_5_5_retry_integrity.zig:17-20` — stub with "not implemented" comment.
-  - No `retry_integrity` / `retry_aead` helper in `src/`.
+- **Current state (evidence — reconfirmed 2026-04-27):**
+  - `tests/rfc9001/section_5_5_retry_integrity.zig:17-20` — stub with "not implemented" comment still in place.
+  - `grep -rn 'retry_aead\|retry_integrity\|computeRetryTag' src/` → 0 matches; no helper in `src/`.
 - **Why this is a gap:** Scope ambiguity — Retry tag derivation uses TLS primitives (AEAD_AES_128_GCM + fixed key) but is typically the transport layer's responsibility.
 - **Impact/Risk:** Users expecting complete RFC 9001 coverage may be surprised; downstream QUIC transport must implement externally.
 - **Recommended fix:** Either (A) implement `src/record/retry.zig` with compute/verify helpers + test, or (B) formally mark out-of-scope in RFC_COVERAGE.md and ARCHITECTURE.md.
@@ -1176,22 +1160,120 @@ All 11 remaining open issues from the third review have been implemented:
 - **Labels:** `category::protocol`, `severity::medium`, `cwe::290`
 - **Created:** 2026-04-27
 
-### GAP-0137: Unused-symbols inventory evidence drift — ledger-only refresh [OPEN]
+### GAP-0144: HelloRetryRequest duplicate-extension gate missing (RFC 8446 §4.2) [RESOLVED]
+
+- **Issue:** [#336](https://gitlab.com/devnw/zig/tls/-/work_items/336)
+- **Category:** Security
+- **Severity:** Medium
+- **Risk Score:** 36 (CWE-345 / CWE-693)
+- **Status:** Resolved 2026-04-27 — Phase 22 closure pass.
+- **Requirement source:** RFC 8446 §4.2 ("There MUST NOT be more than one extension of the same type in a given extension block."). Twin of SEC-092 (closed) on EE/SH paths and SEC-086 (recently closed cookie verification) on the cookie value semantics.
+- **Resolution:** `parseHelloRetryRequest` (`src/tls13/context/hello_retry.zig:84-150`) now keeps a `std.EnumSet(tls13_full.ExtensionType)` of seen types and returns `HandshakeError.DuplicateExtension` on the second occurrence — mirrors the SEC-092 EE/SH pattern at `src/tls13/messages/encrypted_extensions.zig:220-238`. The hello_retry parser is re-exported from `src/tls13/mod.zig` so direct regression tests can call it.
+- **Evidence:**
+  - Source change: `src/tls13/context/hello_retry.zig:106-117` (EnumSet instantiation + dup check inside the inner extension loop, ahead of the cookie/key_share dispatch).
+  - Re-export: `src/tls13/mod.zig:217-228` (`parseHelloRetryRequest`, `HrrParsed`).
+  - Regression suite: `tests/security/gap0144_hrr_dup_ext.zig` — 3 cases (dup cookie, dup key_share, distinct cookie+key_share positive control). All green under `zig build test`.
+- **Cross-ref:** SEC-104 (security ledger pointer entry, also closed in this sweep).
+- **Created:** 2026-04-27
+- **Resolved:** 2026-04-27
+
+### GAP-0143: Certificate entry duplicate-extension gate missing (RFC 8446 §4.4.2) [OPEN]
+
+- **Issue:** [#339](https://gitlab.com/devnw/zig/tls/-/work_items/339)
+- **Category:** Security
+- **Severity:** Low
+- **Risk Score:** 16 (CWE-345 — Insufficient Verification of Data Authenticity)
+- **Status:** Open (2026-04-27)
+- **Requirement source:** RFC 8446 §4.4.2 — Certificate entry extensions inherit the §4.2 "no duplicates" rule. Twin of SEC-092 (closed) on EE/SH paths.
+- **Current state (evidence):**
+  - `src/tls13/messages/certificate.zig:217-243` — per-cert entry extension loop dispatches `0x0005` (status_request) and `0x0012` (signed_certificate_timestamp) directly into the entry's `ocsp_response` / `sct_list` slots.
+  - `grep 'EnumSet\|seen\|DuplicateExtension' src/tls13/messages/certificate.zig` → 0 hits.
+  - Effect: a duplicate `status_request` (or `signed_certificate_timestamp`) on a single Certificate entry overwrites the first occurrence (last-wins) instead of being rejected.
+- **Why this is a gap:** RFC 8446 §4.4.2 inherits §4.2's "no duplicates" rule. Last-wins violates that and also weakens the OCSP-stapling / SCT integrity story (a benign cert chain author cannot rely on the first response being honored).
+- **Impact/Risk:** Low — staple/SCT integrity is still ultimately verified upstream, but the parser swallow is a hardening regression.
+- **Recommended fix:** Introduce `var entry_seen = std.EnumSet(ExtensionType).initEmpty();` at the top of the inner per-entry loop in `parseCertificateMessage`; reject on duplicate with `error.DuplicateExtension`.
+- **Acceptance criteria:** Parser rejects duplicate `status_request` and duplicate `signed_certificate_timestamp` per Certificate entry; corpus regression test under `tests/security/`; SEC-094 pointer entry tracks the cross-link.
+- **Labels:** `gap`, `rfc::8446`, `severity::low`, `priority::low`, `type::security`, `cwe::345`
+- **Cross-ref:** SEC-094 (security ledger pointer); twin of SEC-092 (closed)
+- **Created:** 2026-04-27
+
+### GAP-0142: RFC 9001 §5.4 Header Protection — formal scope decision missing [OPEN / WISHLIST]
+
+- **Issue:** [#342](https://gitlab.com/devnw/zig/tls/-/work_items/342)
+- **Category:** Docs
+- **Severity:** Low
+- **Risk Score:** 4
+- **Status:** Open (2026-04-27) — `status::wishlist`
+- **Requirement source:** RFC 9001 §5.4; `docs/RFC_COVERAGE.md:52` (`[ ]` Impl with no rationale); `tests/rfc9001/section_5_4_header_protection.zig:5-15` (file-header rationale only — TLS-crypto vs QUIC-transport boundary).
+- **Current state (evidence):**
+  - `docs/RFC_COVERAGE.md:52` — `[ ]` Impl flag with no rationale row.
+  - `src/key_schedule.zig:725-744` — only the HP key derivation (`deriveKeyIvHp` / `deriveKeyIvHpV2`) is implemented; no wire-application code.
+  - `grep -rn 'applyHeaderProtection\|unprotectHeader' src/` → 0 hits (the test stub itself names these as gated APIs).
+  - `tests/rfc9001/section_5_4_header_protection.zig:5-15` — explicit out-of-scope rationale: "Header protection is NOT implemented in this crate — the project scope is the TLS 1.3 key-schedule layer that feeds a separate QUIC implementation".
+- **Why this is a gap:** Same shape as GAP-0136 (Retry integrity, §5.5) — a §5.4 row that is `[ ]` with no formally-recorded scope decision, despite the in-file comment already stating the boundary. The matrix and ARCHITECTURE.md should make this explicit.
+- **Impact/Risk:** Docs/scope clarity; downstream readers are surprised. No security impact.
+- **Recommended fix:** Either (A) implement HP wire-application (`record/header_protection.zig`) + tests, or (B) add an explicit out-of-scope row to `docs/RFC_COVERAGE.md` and a corresponding subsystem-boundary note to `docs/ARCHITECTURE.md` (HP belongs to the QUIC layer per the file-header comment in `tests/rfc9001/section_5_4_header_protection.zig:5-15`).
+- **Acceptance criteria:** Either impl+test lands OR both docs explicitly mark §5.4 out-of-scope with rationale. Either closes this issue.
+- **Labels:** `gap`, `rfc::9001`, `severity::low`, `priority::low`, `type::docs`, `status::wishlist`
+- **Created:** 2026-04-27
+
+### GAP-0140: HandshakePhase.post_handshake declared and read but never assigned [OPEN]
+
+- **Issue:** [#304](https://gitlab.com/devnw/zig/tls/-/work_items/304)
+- **Category:** Bug
+- **Severity:** Low
+- **Risk Score:** 4
+- **Status:** Open (2026-04-27)
+- **Requirement source:** Internal state-machine consistency: declared-and-read-but-never-written is an invariant violation. Cross-ref QUAL-303 (dead-code policy).
+- **Current state (evidence):**
+  - `src/tls13/handshake_state.zig:62` — `pub const HandshakePhase = enum { ..., post_handshake };` (variant declared).
+  - `src/tls13/context.zig:1268`, `:1276`, `:2305` — three readers branching on `.post_handshake`.
+  - `grep -rn '= \.post_handshake' src/ tests/` → 0 hits (zero writers).
+- **Why this is a gap:** `post_handshake` is unreachable as a phase value; the readers are dead code or rely on a transition that has never been wired.
+- **Impact/Risk:** Low — invariant defect, not a wire-observable correctness defect. Risks future confusion or subtle logic divergence.
+- **Recommended fix:** Decide either (A) wire the assignment when transitioning to post-handshake auth state (e.g. inside `handleFinishedPostActions`), OR (B) delete the variant + the three readers.
+- **Acceptance criteria:** Either: variant deleted + readers cleaned up, OR: at least one assignment of `phase = .post_handshake` exists in `src/` and is reachable.
+- **Labels:** `gap`, `severity::low`, `priority::low`, `type::bug`, `component::handshake-state`, `confidence::confirmed`
+- **Cross-ref:** QUAL-303; GAP-0139 (post-handshake-auth gate hardening)
+- **Created:** 2026-04-27
+
+### GAP-0141: Dead `encodeVarint`/`decodeVarint` re-exports in src/quic_transport_params.zig [OPEN]
+
+- **Issue:** [#305](https://gitlab.com/devnw/zig/tls/-/work_items/305)
+- **Category:** Code Quality (CWE-561)
+- **Severity:** Low
+- **Risk Score:** 4
+- **Status:** Open (2026-04-27)
+- **Requirement source:** Code-hygiene; sub-of GAP-0137 (unused-symbols inventory evidence drift).
+- **Current state (evidence):**
+  - `src/quic_transport_params.zig:111-112` — `pub const encodeVarint = varint.encode;` / `pub const decodeVarint = varint.decode;`.
+  - `grep -rn 'encodeVarint\|decodeVarint' src/ tests/` → ONLY the two definition lines, 0 callers.
+  - Note: `varint.encode` / `varint.decode` themselves are used; only the re-export façade is dead.
+- **Why this is a gap:** Dead public re-exports inflate the API surface and erode trust in the audit trail.
+- **Impact/Risk:** Low — pure hygiene. No code-correctness or security impact.
+- **Recommended fix:** Delete lines 111-112 of `src/quic_transport_params.zig` (preferred per delete-over-patch). Alternative: add a docstring + `docs/API.md` entry justifying the public-API re-export façade.
+- **Acceptance criteria:** Re-exports deleted (or formally documented as public API); `grep` confirms zero impact; `zig build test` green.
+- **Labels:** `gap`, `severity::low`, `priority::low`, `type::code-quality`, `cwe::561`, `component::quic-transport-params`, `confidence::confirmed`
+- **Sub-of:** GAP-0137
+- **Created:** 2026-04-27
+
+### GAP-0137: Unused-symbols inventory evidence drift — ledger-only refresh [OPEN — scope reduced]
 
 - **Issue:** N/A (ledger-only; supersedes GAP-0098 Row 65)
 - **Category:** Docs / Hygiene
 - **Severity:** Low
-- **Status:** Open (2026-04-21) — supersedes GAP-0098/Row 65
+- **Status:** Open (2026-04-21; **scope reduced** 2026-04-27 — Phase 4 gap-issue-tracker sync) — supersedes GAP-0098/Row 65
 - **Requirement source:** Self-audit of Phase 3 gap-detector inputs against current HEAD.
-- **Current state (evidence):**
-  - `src/cookie.zig` — file deleted; prior evidence line `cookie.zig:84` no longer resolvable.
-  - `src/varint.zig` — file is 205 LOC; prior evidence `varint.zig:207` is out of range (line shift, function likely moved or symbol removed).
-  - Row 65 of the stack-ranked table still cites the stale locations.
+- **Current state (evidence — refreshed 2026-04-27):**
+  - `src/cookie.zig` — already deleted; the prior `cookie.zig:84` evidence is invalidated.
+  - `src/varint.zig` — file is 205 LOC; the original `varint.zig:207` (`encodeWithLen`) finding has been resolved upstream — see in-file marker `src/varint.zig:203` ("GAP-0122: encodeWithLen removed — no callers").
+  - The remaining sub-finding is the `encodeVarint`/`decodeVarint` re-export drift in `src/quic_transport_params.zig:111-112` — spun out as **GAP-0141** (#305) with evidence: `grep -rn 'encodeVarint\|decodeVarint' src/ tests/` returns ONLY the two definition lines, 0 callers.
 - **Why this is a gap:** Ledger evidence must be reproducible. Stale line references erode trust in the audit trail.
 - **Impact/Risk:** None code-wise — this is pure doc hygiene. But downstream readers relying on the ledger for triage waste cycles chasing missing code.
-- **Recommended fix:** Re-run the unused-public-symbol sweep against current HEAD, refresh the list, and either close Row 65 (if the remaining symbols are intentional public API) or refile as a fresh targeted gap per symbol. No GitLab issue needed — this is ledger maintenance.
-- **Acceptance criteria:** Next gap-detector cycle produces a fresh evidence list; Row 65 either closed or replaced with current file:line pairs.
+- **Recommended fix:** Track the residual surface as **cross-ref::GAP-0141** (#305). When GAP-0141 closes (re-export deleted or formally documented), close GAP-0137 as fully resolved. No additional GitLab issue needed at the GAP-0137 level — this remains ledger maintenance.
+- **Acceptance criteria:** GAP-0141 resolves; row 65 closes alongside it. Until then, GAP-0137 stays Open as the meta tracker.
 - **Labels:** N/A (ledger-only)
+- **Cross-ref:** GAP-0141 (#305)
 - **Created:** 2026-04-21
 
 ### GAP-0099: 19 GitLab issues remain open despite documented resolution [WON'T DO]

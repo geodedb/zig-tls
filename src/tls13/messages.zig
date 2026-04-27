@@ -363,6 +363,138 @@ pub fn parseKeyUpdate(body: []const u8) !KeyUpdateRequest {
 }
 
 // ============================================================================
+// GAP-0132: NewSessionTicket (RFC 8446 §4.6.1)
+//
+// Wire layout (RFC 8446 §4.6.1):
+//   struct {
+//       uint32 ticket_lifetime;
+//       uint32 ticket_age_add;
+//       opaque ticket_nonce<0..255>;
+//       opaque ticket<1..2^16-1>;
+//       Extension extensions<0..2^16-2>;
+//   } NewSessionTicket;
+//
+// The build path is server-side; the parse path is client-side. The client
+// dispatches the parsed ticket to `Callbacks.on_session_ticket` so the
+// application layer can persist it for resumption.
+// ============================================================================
+
+/// Parameters for `buildNewSessionTicket`. The opaque `ticket` blob is
+/// server-defined (typically an encrypted state envelope keyed off the
+/// session-ticket master key); this module only handles the wire format.
+pub const NewSessionTicketParams = struct {
+    /// Lifetime hint in seconds (RFC 8446 §4.6.1: MUST NOT exceed 7 days).
+    /// Callers are expected to enforce the upper bound; the encoder honours
+    /// any 32-bit value the server chooses.
+    ticket_lifetime: u32,
+    /// Per-ticket random offset added to the obfuscated ticket age in
+    /// resumption ClientHellos (RFC 8446 §4.2.11.1).
+    ticket_age_add: u32,
+    /// `opaque ticket_nonce<0..255>` — distinguishes tickets issued from
+    /// the same resumption_master_secret (RFC 8446 §4.6.1).
+    ticket_nonce: []const u8,
+    /// `opaque ticket<1..2^16-1>` — the server-defined ticket blob.
+    ticket: []const u8,
+    /// Pre-encoded extensions block (raw ext_type+ext_len+ext_data
+    /// concatenation, NO outer u16 length prefix). Defaults to empty.
+    extensions: []const u8 = &[_]u8{},
+};
+
+/// Parsed NewSessionTicket wire fields. All slices borrow from the input
+/// `body`; the parse is zero-allocation.
+pub const ParsedNewSessionTicket = struct {
+    ticket_lifetime: u32,
+    ticket_age_add: u32,
+    ticket_nonce: []const u8,
+    ticket: []const u8,
+    /// Raw bytes of the `Extension` list (no outer length prefix, suitable
+    /// for re-encoding or for further parsing by extension-aware callers).
+    extensions: []const u8,
+};
+
+/// Build a NewSessionTicket message body (RFC 8446 §4.6.1). Returns an
+/// allocator-owned slice containing only the body bytes — wrap with
+/// `encodeHandshake(.new_session_ticket, body)` to add the 4-byte
+/// handshake header.
+pub fn buildNewSessionTicket(alloc: std.mem.Allocator, params: NewSessionTicketParams) ![]u8 {
+    if (params.ticket_nonce.len > 255) return error.TicketNonceTooLong;
+    if (params.ticket.len < 1) return error.InvalidTicketLength;
+    if (params.ticket.len > std.math.maxInt(u16)) return error.InvalidTicketLength;
+    if (params.extensions.len > std.math.maxInt(u16) - 1) return error.ExtensionsTooLong;
+
+    const total: usize = 4 + 4 + 1 + params.ticket_nonce.len + 2 + params.ticket.len + 2 + params.extensions.len;
+    var buf = try alloc.alloc(u8, total);
+    errdefer alloc.free(buf);
+
+    var pos: usize = 0;
+    std.mem.writeInt(u32, buf[pos..][0..4], params.ticket_lifetime, .big);
+    pos += 4;
+    std.mem.writeInt(u32, buf[pos..][0..4], params.ticket_age_add, .big);
+    pos += 4;
+    buf[pos] = @intCast(params.ticket_nonce.len);
+    pos += 1;
+    @memcpy(buf[pos..][0..params.ticket_nonce.len], params.ticket_nonce);
+    pos += params.ticket_nonce.len;
+    std.mem.writeInt(u16, buf[pos..][0..2], @intCast(params.ticket.len), .big);
+    pos += 2;
+    @memcpy(buf[pos..][0..params.ticket.len], params.ticket);
+    pos += params.ticket.len;
+    std.mem.writeInt(u16, buf[pos..][0..2], @intCast(params.extensions.len), .big);
+    pos += 2;
+    @memcpy(buf[pos..][0..params.extensions.len], params.extensions);
+    pos += params.extensions.len;
+    std.debug.assert(pos == total);
+
+    return buf;
+}
+
+/// Parse a NewSessionTicket body (RFC 8446 §4.6.1). All returned slices
+/// borrow from `body`; ownership stays with the caller.
+pub fn parseNewSessionTicket(body: []const u8) !ParsedNewSessionTicket {
+    // Minimum *header* size: 4 (lifetime) + 4 (age_add) + 1 (nonce_len) +
+    // 2 (ticket_len) + 2 (ext_len) = 13. The per-field bounds checks
+    // below catch every undersize variable-length payload after that.
+    if (body.len < 13) return error.TooShort;
+
+    var pos: usize = 0;
+    const ticket_lifetime = std.mem.readInt(u32, body[pos..][0..4], .big);
+    pos += 4;
+    const ticket_age_add = std.mem.readInt(u32, body[pos..][0..4], .big);
+    pos += 4;
+
+    const nonce_len: usize = body[pos];
+    pos += 1;
+    if (pos + nonce_len > body.len) return error.TooShort;
+    const ticket_nonce = body[pos .. pos + nonce_len];
+    pos += nonce_len;
+
+    if (pos + 2 > body.len) return error.TooShort;
+    const ticket_len: usize = std.mem.readInt(u16, body[pos..][0..2], .big);
+    pos += 2;
+    if (ticket_len == 0) return error.InvalidTicketLength;
+    if (pos + ticket_len > body.len) return error.TooShort;
+    const ticket = body[pos .. pos + ticket_len];
+    pos += ticket_len;
+
+    if (pos + 2 > body.len) return error.TooShort;
+    const ext_len: usize = std.mem.readInt(u16, body[pos..][0..2], .big);
+    pos += 2;
+    if (pos + ext_len > body.len) return error.TooShort;
+    const extensions = body[pos .. pos + ext_len];
+    pos += ext_len;
+
+    if (pos != body.len) return error.TrailingBytes;
+
+    return .{
+        .ticket_lifetime = ticket_lifetime,
+        .ticket_age_add = ticket_age_add,
+        .ticket_nonce = ticket_nonce,
+        .ticket = ticket,
+        .extensions = extensions,
+    };
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

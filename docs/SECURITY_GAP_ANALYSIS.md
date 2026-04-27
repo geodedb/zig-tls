@@ -1,8 +1,8 @@
 # Security Gap Analysis
 
-> **Last updated:** 2026-04-27 (Cycle 8 / Phase 22 — QUIC-INTEROP-HRR follow-ups: SEC-086 cookie validation wired; SEC-087 RFC 8446 §4.2.2 cookie wire format fixed. Phase 22 gap-close also Closed SEC-088 (legacy_compression_methods enforcement, #323) and SEC-092 (EE/SH duplicate-extension rejection, subsumes SEC-078 #296). All filed and Closed in this cycle.)
+> **Last updated:** 2026-04-27 (Cycle 8 / Phase 22 — security-issue-tracker follow-up sweep, then Phase 22 closure pass closing SEC-099. New findings filed: SEC-098 PSK identities/binders cardinality (Medium), **SEC-099 cipher_suites parity — PoC-PANIC-CONFIRMED, Confidential** (Medium, **CLOSED in same cycle**), SEC-100 PSK unbounded count (Low), SEC-101 parseExtSan stack truncation drift (Low), SEC-102 cookie cap 65535 vs ~40 (Info). SEC-079 + SEC-NEW-E and SEC-080 + SEC-NEW-B rolled in as bundled MRs. Cross-ref rows added for GAP-0143 (Cert-entry dup-ext, Low) and GAP-0144 (HRR dup-ext, Medium) — canonical = GAP-* per the SEC-082/GAP-0135 precedent.)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
-> **Review phase:** Cycle 8 / Phase 22 (Phase 22 gap-close sweep). **Posture (post Phase 22): 0 Critical / 0 High open / 2 Medium open (SEC-079 confidential X.509 dup-ext, SEC-080 QUIC preferred_address TP) / 2 Low open (SEC-082 KeyUpdate budget — cross-ref GAP-0135, SEC-083 fuzz corpora) / 0 Info open.** Phase 22 closures: SEC-088 (#323) legacy_compression_methods enforcement, SEC-092 (subsumes SEC-078 #296) EE/SH duplicate-extension rejection, SEC-084 (#301) subsumed by QUAL-374 with disabled tests rewritten. Cycle 7 / Phase 20 prior: 11 new findings filed (SEC-074..SEC-084); SEC-065 / SEC-085 closed 2026-04-21 (Config.persistent_anti_replay_store wired with fail-closed semantics). Phase 14 / Phase 19 history retained below. SEC-077 closed 2026-04-21 (InsecureValidation sentinel + -Dtls-insecure-testing gate). SEC-076 closed 2026-04-21 (asn1.oidEqual helper + 11 sites migrated in ocsp.zig and sig.zig). SEC-075 closed 2026-04-21 (BOOLEAN parsing + RFC 5280 §4.2 reject of unknown critical extensions).
+> **Review phase:** Cycle 8 / Phase 22 (post-sweep). **Posture: 0 Critical / 0 High open / 0 Medium open / 5 Low open (SEC-082 KeyUpdate budget — cross-ref GAP-0135, SEC-083 fuzz corpora, SEC-100 PSK unbounded, SEC-101 SAN truncation drift, GAP-0143 Cert-entry dup-ext cross-ref) + 0 Medium cross-ref / 1 Info open (SEC-102 cookie cap).** Phase 22 closures (this cycle): **SEC-099 (#340) cipher_suites parity** — `IllegalCipherSuites` typed error + alert mapping; regression at `tests/security/sec099_cipher_suites_parity.zig` (4 cases, formerly the `sec094_*_poc.zig` PoC). **SEC-079 (#295, confidential) + SEC-NEW-E** — bundled X.509 dup-extension gate in `parseExtensionsBlock` (`src/x509.zig:1090-1230`) with seen-OID rejection; the dup-pre-allocation rejection moots the errdefer-overwrite leak. Three in-file regressions cover dup-SAN, dup-NameConstraints (errdefer guard), and a distinct-extension positive control. **SEC-080 (#297) + SEC-NEW-B** — bundled QUIC preferred_address / stateless_reset_token dup gates and PreferredAddress.decode port-zero validation; the pre-decode dup gate eliminates the inner `connection_id` over-allocation (SEC-NEW-B CWE-401 corollary). Four in-file regressions: dup-token, dup-preferred-address with leak guard, all-zero address+port reject, and a `validateClientRole` invariant pin. **SEC-098 (#334) PSK identities/binders cardinality** — `parsePreSharedKey` now rejects mismatched cardinality with the new typed `error.PskBinderMismatch` (RFC 8446 §4.2.11), routed through the GAP-0138 alert path. Regression at `tests/security/sec098_psk_cardinality.zig` (3 cases). Phase 22 closures (prior): SEC-088 (#323) legacy_compression_methods enforcement, SEC-092 (subsumes SEC-078 #296) EE/SH duplicate-extension rejection, SEC-084 (#301) subsumed by QUAL-374 with disabled tests rewritten. Cycle 7 / Phase 20 prior: 11 new findings filed (SEC-074..SEC-084); SEC-065 / SEC-085 closed 2026-04-21 (Config.persistent_anti_replay_store wired with fail-closed semantics). Phase 14 / Phase 19 history retained below. SEC-077 closed 2026-04-21 (InsecureValidation sentinel + -Dtls-insecure-testing gate). SEC-076 closed 2026-04-21 (asn1.oidEqual helper + 11 sites migrated in ocsp.zig and sig.zig). SEC-075 closed 2026-04-21 (BOOLEAN parsing + RFC 5280 §4.2 reject of unknown critical extensions).
 >
 > **Phase 20 banner:** Phase 3 re-audit surfaced a cluster of cert-chain and RNG integrity gaps. Highest risk: **SEC-074** (RNG return value discarded -> potential uninitialized key material under seccomp / EINTR; 9 sites in `src/tls13/context.zig`). Three cert-parser gaps (SEC-075 unknown critical ext silently accepted, SEC-076 OID suffix-match bypass — SEC-069 regression class in ocsp.zig + sig.zig, SEC-077 `allow_insecure` trust-bypass flag on public API). Medium tier extends SEC-066/068 duplicate-extension defenses to ServerHello/EncryptedExtensions (SEC-078), QUIC preferred_address TP (SEC-080), and X.509 extensions (SEC-079, confidential due to dual-SAN impersonation class). All new confidential issues filed under `confidentiality` + `confidence::confirmed`; public issues are regressions of already-disclosed classes (SEC-066, 068, 069). No RCE. No leaked secrets. No Critical-severity finding.
 
@@ -33,6 +33,123 @@ became reachable after the parent fix made the HRR path live.
 
 ---
 
+## Cycle 8 / Phase 22 Follow-up Sweep (2026-04-27) — security-issue-tracker
+
+`/codepros:audit` Phase 4 security-issue-tracker phase. Five new SEC items
+filed (1 confidential — SEC-099 PoC-confirmed pre-auth panic). SEC-079 and
+SEC-080 issue bodies updated with bundled sub-findings (NEW-E errdefer chain;
+NEW-B stateless_reset_token + preferred_address inner connection_id +
+port-zero validation). Two cross-ref pointer rows added for GAP-0143 / GAP-0144
+following the existing SEC-082/GAP-0135 row pattern.
+
+**ID renumbering note:** A prior security-reviewer pass filed SEC-088, SEC-089,
+SEC-091, SEC-092, SEC-093, SEC-094, SEC-097 to GitLab issues #323-#328. To
+avoid ID collision, this sweep renumbered the audit-prompt placeholders
+SEC-093/094/095/096/097 → **SEC-098/099/100/101/102**. The cross-ref rows use
+**SEC-103/104** as ledger-only entries (no GitLab issues).
+
+**New findings (5) + 2 cross-ref pointer rows + 2 bundled rollups:**
+
+| SEC-ID | Risk | Severity | Issue | Confidential | Confidence | File:Line | Description | Status |
+|--------|------|----------|-------|--------------|------------|-----------|-------------|--------|
+| SEC-098 | **36** | Medium | [#334](https://gitlab.com/devnw/zig/tls/-/issues/334) | no | confirmed | `src/tls13/messages/client_hello_handlers.zig:438-491` | PSK identities/binders cardinality not validated. RFC 8446 §4.2.11 mandates equal-length lists; parser stores both independently. Downstream PSK selection can index OOB. CWE-345. | **Closed** 2026-04-27 (Phase 22 sweep) — `parsePreSharedKey` now asserts `identities.items.len == binders.items.len` before transferring ownership and returns the new typed `error.PskBinderMismatch`; new `HandshakeError.PskBinderMismatch` variant in `src/tls13/types.zig:287-294`; mapped to TLS alert `illegal_parameter` via `src/alert.zig:131`; routed through the GAP-0138 alert path in `src/tls13/context.zig:1149`. Defense in depth: the existing bound check at `src/tls13/context/psk_selection.zig:212` (idx >= offered_binders.len) remains as a second-line guard. New regression `tests/security/sec098_psk_cardinality.zig` (3 cases — identities>binders, identities<binders, matched-pair positive control). |
+| SEC-099 | **36** | Medium | [#340](https://gitlab.com/devnw/zig/tls/-/issues/340) | **yes** | confirmed | `src/tls13/messages/client_hello.zig:303-321` | **PoC-CONFIRMED pre-auth panic.** ClientHello.cipher_suites length parity not validated; odd `cs_len` at exact data tail panics at line 314 (`thread panic: index out of bounds: index 43, len 42`). PoC at `tests/security/sec094_cipher_suites_parity_poc.zig` (renamed sec099 on landing). CWE-787 / CWE-125. | **Closed** 2026-04-27 (Phase 22 sweep) — parser at `src/tls13/messages/client_hello.zig:308-313` now rejects odd `cs_len` with typed `error.IllegalCipherSuites` before the cipher-suite loop; new `HandshakeError.IllegalCipherSuites` variant in `src/tls13/types.zig:277-285`; mapped to TLS alert `illegal_parameter` via `src/alert.zig:130`; routed through the GAP-0138 alert path in `src/tls13/context.zig:1148`. PoC renamed to `tests/security/sec099_cipher_suites_parity.zig` (4 cases — odd-with-tail, odd-at-data-tail, sub-suite length 3, even baseline). |
+| SEC-100 | **24** | Low | [#345](https://gitlab.com/devnw/zig/tls/-/issues/345) | no | confirmed | `src/tls13/handshake_state.zig:337,352,369` | PSK identities/binders unbounded count (u16 wire field, no cap). 65535 × allocations per ClientHello = 5-10 MB heap pressure. Cap at 16. CWE-770. | **Open** |
+| SEC-101 | **12** | Low | [#347](https://gitlab.com/devnw/zig/tls/-/issues/347) | no | confirmed | `src/x509.zig:666` (32 truncate) + `:943` (8 doc) | parseExtSan dNSName cap doc/code drift; silent truncation is a soft authentication-bypass surface. Harden to 8 + `error.TooManyDnsNames` OR fix the doc. CWE-1284. | **Open** |
+| SEC-102 | **8** | Info | [#349](https://gitlab.com/devnw/zig/tls/-/issues/349) | no | suspected | `src/tls13/messages/extensions/cookie.zig:152` | MAX_COOKIE_SIZE = 65535 vs realistic 40 bytes (built at `:256`). Tighten to MAX_COOKIE_ACCEPT_SIZE = 256. CWE-1284. | **Open** |
+| SEC-103 | **6** | Low | — (cross-ref only; canonical [GAP-0143](https://gitlab.com/devnw/zig/tls/-/issues/?label_name%5B%5D=gap)) | no | confirmed | `src/x509.zig` Certificate-entry parser | **Cross-ref pointer row.** Certificate-entry duplicate-extension rejection. Same parse-class as SEC-079 / SEC-092. **Canonical = GAP-0143** per the SEC-082/GAP-0135 precedent (see GAP_ANALYSIS.md Phase 22 follow-up). Owned by gap-sync. | **Open** |
+| SEC-104 | **12** | Medium | — (cross-ref only; canonical [GAP-0144](https://gitlab.com/devnw/zig/tls/-/issues/?label_name%5B%5D=gap)) | no | confirmed | `src/tls13/context/hello_retry.zig` HRR parser | **Cross-ref pointer row.** HelloRetryRequest duplicate-extension rejection. Same parse-class as SEC-079 / SEC-092. **Canonical = GAP-0144** per the SEC-082/GAP-0135 precedent. Owned by gap-sync. | **Closed** 2026-04-27 — canonical GAP-0144 closed (see `docs/GAP_ANALYSIS.md`). HRR parser at `src/tls13/context/hello_retry.zig:106-117` now rejects duplicates with `HandshakeError.DuplicateExtension`; regression at `tests/security/gap0144_hrr_dup_ext.zig` (3 cases). |
+
+### SEC-079 / SEC-080 bundled rollups
+
+The Phase 22 follow-up sweep merges two previously-separated NEW findings into
+their already-filed parent issues:
+
+- **SEC-079 + SEC-NEW-E** ([#295](https://gitlab.com/devnw/zig/tls/-/issues/295)
+  - comment 3291193340) — single MR. SEC-NEW-E covers the
+  `errdefer` chain at `src/x509.zig:1101-1108` only freeing the latest pointer
+  on dup-extension overwrite (CWE-401 corollary of the SEC-079 EnumSet gate).
+  Acceptance: implement seen-OID `EnumSet` AND fix `errdefer` chain in same
+  commit; corpus regression with two SAN, two NameConstraints, two
+  PolicyMappings extensions; counting allocator confirms no leak;
+  `error.DuplicateExtension` returns.
+- **SEC-080 + SEC-NEW-B** ([#297](https://gitlab.com/devnw/zig/tls/-/issues/297)
+  - comment 3291194289) — single MR. SEC-NEW-B covers (a) `stateless_reset_token`
+  at `src/quic_transport_params.zig:670-675` sharing the same dup-detection
+  gap; (b) `preferred_address` inner `connection_id` allocation leak on
+  overwrite; (c) port-zero validation gap in `PreferredAddress.decode` at
+  `:284` (RFC 9000 §18.2). Acceptance: matching `if (params.X != null) return
+  error.InvalidParameter` for both branches (lines 651-668 pattern); port-zero
+  validation; dup-TP corpus + port-zero corpus + role-decoupled
+  validateClientRole regression.
+
+### SEC-099 PoC outcome and closure
+
+The audit-prompt instructed: "write the PoC test FIRST. If it panics → file as
+confirmed Medium. If it returns a graceful error → file as Info."
+
+**Pre-fix outcome: PANIC.** `tests/security/sec094_cipher_suites_parity_poc.zig`
+(renamed to `tests/security/sec099_cipher_suites_parity.zig` on landing of the
+fix) crashed deterministically with:
+
+```text
+[SEC-094] tail probe: parser accepted odd cs_len=5
+thread 1547896 panic: index out of bounds: index 43, len 42
+   at src/tls13/messages/client_hello.zig:314:46
+       const cs_value = helpers.readU16(data[pos + cs_pos .. pos + cs_pos + 2]);
+                                            ^
+```
+
+The first probe (odd `cs_len=5` with valid downstream tail) silently accepted
+— the parser absorbed one byte of `compression_methods` into a corrupt
+cipher-suite u16 that the 0x1301/0x1302/0x1303 allow-list then filtered. The
+second probe (`cs_len=5` at exact data tail) panicked at the inner read.
+**Filed as Medium / confidential per audit policy.**
+
+**Post-fix closure (2026-04-27):** Parser gates on `cs_len % 2 != 0` immediately
+after the existing bounds check and returns the typed
+`error.IllegalCipherSuites`, mapped to TLS alert `illegal_parameter` (RFC 8446
+§6.2). The renamed regression file pins all four shapes — odd-with-tail,
+odd-at-data-tail, sub-suite length 3, and the even-length baseline that must
+still parse. `zig build test` green.
+
+### SEC-083 follow-up: 11-file seed-replay plan
+
+Comment added to SEC-083 (#300) with the 11 \*_replay.zig test files plan
+covering `parseEncryptedExtensions`, `parseCertificate`,
+`parseCertificateRequest`, `parseCertificateVerify`, ServerHello,
+HelloRetryRequest, x509 validateChain, asn1 Decoder, OCSP, SCT, QUIC TPs.
+Pattern: existing `client_hello_trace_capture.zig` +
+`context_decomp_trace_capture.zig`. Each ~30 LOC; total effort ~1.5 days.
+Wire as `fuzz-replay` CI job (separate from blocked `--fuzz` lane).
+
+### SEC-086 / cookie hardening forward-list
+
+Comment added to SEC-091 (#325, currently the canonical-open cookie issue)
+with v0.3 forward-hardening items: (1) IP/peer-address binding [Info,
+optional], (2) single-use enforcement within freshness window [Low], (3)
+`max_age_seconds: i64 = 10` configurability, (4) `server_secret_generated`
+rotation for long-running servers. **NOT filed as new SEC-* issues** —
+forward-looking v0.3 hardening, not v0.2.0 vulnerabilities.
+
+### Phase 22 follow-up posture delta
+
+- **+5 SEC issues filed** (SEC-098, SEC-099, SEC-100, SEC-101, SEC-102 →
+  GitLab #334, #340, #345, #347, #349).
+- **+2 cross-ref ledger rows** (SEC-103 → GAP-0143, SEC-104 → GAP-0144;
+  no GitLab issues).
+- **2 issue bodies updated** (SEC-079 #295, SEC-080 #297 — bundled rollup
+  comments).
+- **2 issue comments** (SEC-083 #300 seed-replay plan; SEC-091 #325
+  cookie forward-list).
+- **0 Critical / 0 High filed.**
+- **+2 Medium opened** (SEC-098, SEC-099) — both with public RFC text and
+  identifiable wire-format triggers.
+- SEC-099 is the **only** new confidential filing this sweep (PoC-confirmed
+  pre-auth panic).
+
+---
+
 ## Cycle 7 / Phase 20 Findings (2026-04-21)
 
 `/codepros:audit` Phase 3 security-reviewer sync. 11 new SEC items filed (5 confidential, 6 public), plus carry-forward comment on SEC-065 (#249) under audit-cycle marker SEC-085.
@@ -47,8 +164,8 @@ became reachable after the parent fix made the HRR path live.
 | SEC-076 | **15** | High | [#293](https://gitlab.com/devnw/zig/tls/-/issues/293) | yes | confirmed | `src/ocsp.zig:72,76,80,84,147` + `src/sig.zig:288,293,297,316,914,917` + `src/x509.zig:738,742,746` (EKU, followup) | OID suffix-match bypass — SEC-069 regression class across 14 sites. CWE-345. | Closed 2026-04-21 — src/asn1.zig oidEqual helper + 11 sites migrated in ocsp.zig/sig.zig; 3 EKU sites in x509.zig migrated in followup (7ef03a9) |
 | SEC-077 | **15** | High | [#294](https://gitlab.com/devnw/zig/tls/-/issues/294) | yes | confirmed | `src/x509.zig:1685,1687,1913-1914,1950-1955,2001` | `allow_insecure: bool` on public `validateChainEx` short-circuits all chain validation; no compile-time guard. CWE-295/693. | Closed 2026-04-21 — replaced bool with InsecureValidation sentinel; gated by -Dtls-insecure-testing build flag; runtime panic on misuse |
 | SEC-078 | **12** | Medium | [#296](https://gitlab.com/devnw/zig/tls/-/issues/296) | no | confirmed | `src/tls13/context.zig:2081-2110` + `src/tls13/messages/encrypted_extensions.zig:215-251` + `src/tls13/context/server_hello_parsers.zig:30-86` | ServerHello + EncryptedExtensions lack duplicate-extension detection (SEC-066 regression class). CWE-693. | Closed 2026-04-27 (Phase 22, commit ab1f781) — **subsumed by SEC-092**. |
-| SEC-079 | **12** | Medium | [#295](https://gitlab.com/devnw/zig/tls/-/issues/295) | yes | confirmed | `src/x509.zig:1108-1114` | X.509 duplicate extension accepted — last-wins + slice leak. Dual-SAN impersonation class. CWE-295/401. | **Open** |
-| SEC-080 | **9** | Medium | [#297](https://gitlab.com/devnw/zig/tls/-/issues/297) | no | confirmed | `src/quic_transport_params.zig:677-680` | QUIC preferred_address TP accepts duplicate + leaks connection_id (SEC-068 regression class). CWE-401/693. | **Open** |
+| SEC-079 | **12** | Medium | [#295](https://gitlab.com/devnw/zig/tls/-/issues/295) | yes | confirmed | `src/x509.zig:1101-1114` | X.509 duplicate extension accepted — last-wins + slice leak. Dual-SAN impersonation class. **+ SEC-NEW-E rolled in** (Phase 22 sweep, comment 3291193340): errdefer chain at `:1101-1108` only frees latest pointer on overwrite — CWE-401 corollary. Bundled MR: implement seen-OID EnumSet AND fix errdefer chain. CWE-295/401. | **Closed** 2026-04-27 (Phase 22 sweep, bundled MR) — `parseExtensionsBlock` at `src/x509.zig:1090-1230` now keeps a 32-slot seen-OID table (RFC 5280 §4.2 cap with headroom) and returns `error.DuplicateExtension` before the inner `parseExt*` allocator runs. Because the second occurrence is rejected pre-allocation, the existing `errdefer` chain at `:1117-1126` can no longer leak an overwritten slice (SEC-NEW-E corollary closed by construction). New in-file regression tests: dup id-ce-subjectAltName, dup id-ce-nameConstraints (errdefer leak guard exercised under `std.testing.allocator`), and a positive control with two distinct extensions. |
+| SEC-080 | **9** | Medium | [#297](https://gitlab.com/devnw/zig/tls/-/issues/297) | no | confirmed | `src/quic_transport_params.zig:670-680` + `:284` | QUIC preferred_address TP accepts duplicate + leaks connection_id (SEC-068 regression class). **+ SEC-NEW-B rolled in** (Phase 22 sweep, comment 3291194289): `stateless_reset_token` shares same gap; `preferred_address` inner `connection_id` leaks on overwrite; port-zero validation missing in `PreferredAddress.decode`. Bundled MR. CWE-401/693. | **Closed** 2026-04-27 (Phase 22 sweep, bundled MR) — `TransportParameters.decode` at `src/quic_transport_params.zig:680-697` now matches the SEC-068 pattern (`if (params.X != null) return error.InvalidParameter`) for both `stateless_reset_token` and `preferred_address`. Because the second `preferred_address` is rejected before `PreferredAddress.decode` runs, the inner `connection_id` over-allocation is eliminated by construction (CWE-401 SEC-NEW-B subfinding closed). `PreferredAddress.decode` at `src/quic_transport_params.zig:307-319` now also rejects an all-zero IPv4+IPv6 endpoint pair per RFC 9000 §9.6 / §18.2. Three new in-file regressions cover dup-token, dup-preferred-address (leak guard via `std.testing.allocator`), and the port-zero corpus, plus a `validateClientRole` regression that pins the role-decoupled contract. |
 | SEC-081 | **9** | Medium | [#298](https://gitlab.com/devnw/zig/tls/-/issues/298) | no | confirmed | `src/tls13/context.zig` (9 sites) | getrandom hardwired to `std.os.linux` — portability + correctness. Subsumed by SEC-074 fix. | Closed 2026-04-21 — subsumed by SEC-074 via cross-platform std.Io entropy source |
 | SEC-082 | **6** | Low | [#299](https://gitlab.com/devnw/zig/tls/-/issues/299) | no | confirmed | `src/tls13/context/key_update.zig:118-129` | KeyUpdate count unbounded (RFC 8446 §5.5 SHOULD). Same as GAP-0135. CWE-400. | **Open** |
 | SEC-083 | **6** | Low | [#300](https://gitlab.com/devnw/zig/tls/-/issues/300) | no | confirmed | `tests/fuzz/corpus/` | Fuzz corpora missing for 7 attacker-reachable parsers (ServerHello, EE, Certificate, CertificateVerify, OCSP, SCT, X.509). Test-gap. | **Open** |
@@ -168,14 +285,25 @@ became reachable after the parent fix made the HRR path live.
 |-----------|------|--------|----------|-----------------|-------|
 | Critical  | 0    | 0      | 0        | 0               | 0     |
 | High      | 0    | 12     | 0        | 0               | 12    |
-| Medium    | 0    | 21     | 0        | 0               | 21    |
-| Low       | 0    | 27     | 4        | 0               | 31    |
-| Info      | 0    | 5      | 1        | 3               | 9     |
-| **Total** | **0** | **65** | **5**   | **3**           | **73** |
+| Medium    | 4    | 23     | 0        | 0               | 27    |
+| Low       | 5    | 27     | 4        | 0               | 36    |
+| Info      | 1    | 5      | 1        | 3               | 10    |
+| **Total** | **10** | **67** | **5**   | **3**           | **85** |
 
-*Counts reflect Cycle 7 / Phase 20 Stage-8 closure (2026-04-21):* +1 Closed (SEC-065 / SEC-085 — Config.persistent_anti_replay_store wired into 0-RTT accept path with fail-closed semantics). Cycle 6 / Phase 19 prior: +8 Closed (SEC-066, SEC-067, SEC-068, SEC-069, SEC-070, SEC-071, SEC-072, SEC-073).
+*Counts reflect Cycle 8 / Phase 22 follow-up sweep (2026-04-27):* **+5 SEC issues filed** (SEC-098 Medium, SEC-099 Medium [confidential, PoC-confirmed], SEC-100 Low, SEC-101 Low, SEC-102 Info → GitLab #334, #340, #345, #347, #349); **+2 cross-ref pointer rows** (SEC-103 → GAP-0143 Low, SEC-104 → GAP-0144 Medium; canonical = GAP-* per SEC-082/GAP-0135 precedent — counted as Open but no separate GitLab issue). Phase 22 prior: +2 Closed in same cycle (SEC-088, SEC-092). Cycle 7 / Phase 20 prior: +1 Closed (SEC-065 / SEC-085 — Config.persistent_anti_replay_store wired into 0-RTT accept path with fail-closed semantics). Cycle 6 / Phase 19 prior: +8 Closed (SEC-066, SEC-067, SEC-068, SEC-069, SEC-070, SEC-071, SEC-072, SEC-073).
 
-**Phase 13** (2026-04-19) closed all 4 remaining open SEC findings (SEC-061, SEC-062, SEC-063, SEC-064). **Posture is now STRONG: 0 open at every risk level.** **Phase 12** filed the 4 LOW findings and attached the Phase 3 SHA-pinning patch draft to SEC-061.
+**Open breakdown (post-sweep):**
+
+- **Medium (4):** SEC-079 (#295, confidential, X.509 dup-ext + NEW-E rollup), SEC-080 (#297, QUIC preferred_address TP + NEW-B rollup), SEC-098 (#334, PSK cardinality), **SEC-099 (#340, confidential, cipher_suites parity — PoC-confirmed pre-auth panic)**, SEC-104 (cross-ref → GAP-0144 HRR dup-ext).
+- **Low (5):** SEC-082 (#299, KeyUpdate budget — cross-ref GAP-0135), SEC-083 (#300, fuzz corpora; comment with seed-replay 11-file plan added), SEC-100 (#345, PSK unbounded), SEC-101 (#347, SAN truncation drift), SEC-103 (cross-ref → GAP-0143 Cert-entry dup-ext).
+- **Info (1):** SEC-102 (#349, cookie cap 65535 vs ~40).
+
+**Note on cross-ref rows:** SEC-103 / SEC-104 are ledger-only pointer rows
+(no GitLab issue). They mirror the existing SEC-082 row pattern (which says
+"Same as GAP-0135"). Canonical issues are GAP-0143 / GAP-0144 in the
+gap-sync ledger.
+
+**Phase 13** (2026-04-19) closed all 4 remaining open SEC findings (SEC-061, SEC-062, SEC-063, SEC-064). Posture was STRONG at end of Phase 13 with 0 open. Subsequent re-audits (Phase 20, Phase 22) re-opened the ledger as new findings surfaced. **Current posture: 0 Critical / 0 High / 4 Medium / 5 Low / 1 Info / 2 Cross-ref open.** **Phase 12** filed the 4 LOW findings and attached the Phase 3 SHA-pinning patch draft to SEC-061.
 
 **Phase 11** added 5 new findings (SEC-057 through SEC-061) plus 3 info-only notes (NEW-SEC-04, NEW-SEC-05, NEW-SEC-08). As of 2026-04-18, 4 of the 5 new findings (SEC-057, SEC-058, SEC-059, SEC-060) are closed by in-branch remediation; SEC-061 remains open under its 180-day SLA.
 

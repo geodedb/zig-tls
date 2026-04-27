@@ -447,7 +447,10 @@ pub const Config = tls13.Config;
 /// - `on_alert`: Called when TLS alert is sent or received
 ///
 /// Optional callbacks:
-/// - `on_new_session_ticket`: 0-RTT session ticket received
+/// - `on_session_ticket`: GAP-0132 — invoked on the client when a server
+///   NewSessionTicket message arrives. Receives a `ParsedNewSessionTicket`
+///   with borrowed slices into the inbound frame; copy if you need to
+///   persist the ticket beyond the call.
 pub const Callbacks = tls13.Callbacks;
 
 /// TLS role: client or server.

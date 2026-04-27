@@ -373,6 +373,38 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // SEC-099: ClientHello.cipher_suites length-parity check
+            // (RFC 8446 §4.1.2). Odd `cs_len` is rejected with
+            // `error.IllegalCipherSuites` before the cipher-suite loop runs.
+            .name = "sec099_cipher_suites_parity",
+            .source = "tests/security/sec099_cipher_suites_parity.zig",
+            .imports = &.{
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
+        .{
+            // SEC-098: pre_shared_key identities/binders cardinality
+            // (RFC 8446 §4.2.11). Mismatched lists are rejected with
+            // `error.PskBinderMismatch` before downstream PSK selection
+            // can index out of bounds.
+            .name = "sec098_psk_cardinality",
+            .source = "tests/security/sec098_psk_cardinality.zig",
+            .imports = &.{
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
+        .{
+            // GAP-0144 (= SEC-104 cross-ref): HelloRetryRequest
+            // duplicate-extension gate (RFC 8446 §4.2). Twin of SEC-066
+            // (CH), SEC-092 (EE/SH), and SEC-079 (X.509).
+            .name = "gap0144_hrr_dup_ext",
+            .source = "tests/security/gap0144_hrr_dup_ext.zig",
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
+        .{
             // GAP-0139: CertificateRequest level + post-handshake-auth gate.
             .name = "gap0139_certreq_level_gate",
             .source = "tests/security/gap0139_certreq_level_gate.zig",
@@ -500,6 +532,16 @@ pub fn build(b: *std.Build) void {
         },
     };
 
+    // QUAL-315: optional `zig build coverage` step. Per ADR-0003, line
+    // coverage is collected by running each unit-test binary under kcov.
+    // The step is intentionally additive: callers without kcov on their
+    // PATH still get the unmodified `zig build test` flow, and CI images
+    // are expected to install kcov before invoking this target.
+    const coverage_step = b.step(
+        "coverage",
+        "Run unit tests under kcov and write line-coverage reports to zig-out/coverage/ (requires `kcov` on PATH; see docs/adr/0003-coverage-tooling.md)",
+    );
+
     for (tests) |test_info| {
         const unit_test = b.addTest(.{
             .root_module = b.createModule(.{
@@ -512,6 +554,19 @@ pub fn build(b: *std.Build) void {
 
         const run_test = b.addRunArtifact(unit_test);
         test_step.dependOn(&run_test.step);
+
+        // QUAL-315: shadow the test executable under kcov so line-level
+        // coverage spans the full src/ tree on every invocation. Writes
+        // to `zig-out/coverage/<test_name>` per kcov's directory layout.
+        const kcov_outdir = b.fmt("zig-out/coverage/{s}", .{test_info.name});
+        const run_kcov = b.addSystemCommand(&.{
+            "kcov",
+            "--include-pattern=src/",
+            "--exclude-pattern=src/build_options",
+            kcov_outdir,
+        });
+        run_kcov.addArtifactArg(unit_test);
+        coverage_step.dependOn(&run_kcov.step);
     }
 
     // TLS13 tests with full dependencies
@@ -1469,7 +1524,39 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_bench = b.addRunArtifact(bench_exe);
+    if (b.args) |user_args| run_bench.addArgs(user_args);
     bench_step.dependOn(&run_bench.step);
+
+    // PERF-258: dedicated emit-json step. Forwards args after `--` so callers
+    // can override the output path:
+    //   zig build bench-emit-json -Doptimize=ReleaseFast -- tests/perf/baseline.json
+    const bench_emit_json_step = b.step(
+        "bench-emit-json",
+        "Run benchmarks and emit results as JSON (default: tests/perf/baseline.json)",
+    );
+    const run_bench_emit = b.addRunArtifact(bench_exe);
+    if (b.args) |user_args| {
+        run_bench_emit.addArg("--emit-json");
+        run_bench_emit.addArgs(user_args);
+    } else {
+        run_bench_emit.addArgs(&.{ "--emit-json", "tests/perf/baseline.json" });
+    }
+    bench_emit_json_step.dependOn(&run_bench_emit.step);
+
+    // PERF-258: regression-detect step. Loads the committed baseline JSON
+    // and exits non-zero on any sample exceeding the ±10% tolerance.
+    const bench_check_baseline_step = b.step(
+        "bench-check-baseline",
+        "Run benchmarks and compare against tests/perf/baseline.json (10% tolerance)",
+    );
+    const run_bench_check = b.addRunArtifact(bench_exe);
+    if (b.args) |user_args| {
+        run_bench_check.addArg("--check-baseline");
+        run_bench_check.addArgs(user_args);
+    } else {
+        run_bench_check.addArgs(&.{ "--check-baseline", "tests/perf/baseline.json" });
+    }
+    bench_check_baseline_step.dependOn(&run_bench_check.step);
 
     // ========================================================================
     // Allocation-Count Baseline Harness (PERF-024 / PERF-201)

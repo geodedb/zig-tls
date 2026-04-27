@@ -1087,6 +1087,16 @@ const ParsedExtensions = struct {
 /// the inner `parseExt*` helpers. This function's `errdefer` blocks
 /// release them if a later `parseExt*` call fails, preserving the
 /// pre-refactor error-path ownership contract.
+///
+/// SEC-079: RFC 5280 §4.2 forbids more than one instance of any extension
+/// in a certificate. The seen-OID gate below rejects duplicates with
+/// `error.DuplicateExtension` before the second occurrence reaches an
+/// allocating helper, which (together with the existing `errdefer`
+/// chain) eliminates the dual-SAN impersonation class as well as the
+/// last-wins allocation leak that SEC-NEW-E flagged on the same
+/// `errdefer` chain. The bound on `MAX_X509_EXTENSIONS` caps memory at a
+/// fixed table; real-world certificates rarely exceed a dozen
+/// extensions, so 32 is generous.
 fn parseExtensionsBlock(alloc: std.mem.Allocator, ti: *asn1.Decoder) !ParsedExtensions {
     var out: ParsedExtensions = .{
         .san = null,
@@ -1098,6 +1108,9 @@ fn parseExtensionsBlock(alloc: std.mem.Allocator, ti: *asn1.Decoder) !ParsedExte
         .policy_constraints = null,
     };
 
+    // The dup-detection gate guarantees these slots are written at most
+    // once, so the per-slot `errdefer` blocks below cannot leak an
+    // earlier overwrite (CWE-401 corollary tracked under SEC-NEW-E).
     errdefer if (out.san) |san| alloc.free(san.dns);
     errdefer if (out.name_constraints) |nc| {
         if (nc.permitted_dns.len > 0) alloc.free(nc.permitted_dns);
@@ -1106,6 +1119,15 @@ fn parseExtensionsBlock(alloc: std.mem.Allocator, ti: *asn1.Decoder) !ParsedExte
     errdefer if (out.policy_mappings) |pm| {
         if (pm.mappings.len > 0) alloc.free(pm.mappings);
     };
+
+    // SEC-079: track every OID encountered in this Extensions block to
+    // reject duplicates per RFC 5280 §4.2 ("A certificate MUST NOT
+    // include more than one instance of a particular extension."). 32
+    // slots covers the union of every extension referenced by RFC 5280
+    // §4.2 and PKIX with comfortable headroom.
+    const MAX_X509_EXTENSIONS = 32;
+    var seen_oids: [MAX_X509_EXTENSIONS][]const u8 = undefined;
+    var seen_count: usize = 0;
 
     while (true) {
         const tlv = ti.readTLV() catch break;
@@ -1122,6 +1144,17 @@ fn parseExtensionsBlock(alloc: std.mem.Allocator, ti: *asn1.Decoder) !ParsedExte
             const ext = exd.readSequence() catch break;
             var one = asn1.Decoder.init(ext);
             const oid = one.readOID() catch continue;
+
+            // SEC-079: reject duplicates before the OID dispatcher
+            // allocates anything — this both honours RFC 5280 §4.2 and
+            // closes the SEC-NEW-E errdefer leak (an overwrite would
+            // strand the previously-allocated slice).
+            for (seen_oids[0..seen_count]) |prev_oid| {
+                if (std.mem.eql(u8, prev_oid, oid)) return error.DuplicateExtension;
+            }
+            if (seen_count >= MAX_X509_EXTENSIONS) return error.TooManyExtensions;
+            seen_oids[seen_count] = oid;
+            seen_count += 1;
 
             // SEC-075: Parse optional critical BOOLEAN (DEFAULT FALSE).
             // RFC 5280 §4.1: Extension ::= SEQUENCE {
@@ -2098,4 +2131,147 @@ pub fn validateChainReturnParsed(
     parsed_count = 0;
 
     return leaf;
+}
+
+// ============================================================================
+// SEC-079: parseExtensionsBlock duplicate-extension regression tests
+// ============================================================================
+
+/// Encode a DER SEQUENCE wrapping `inner`. Length is constrained to short
+/// form (<128 bytes) which is sufficient for the synthetic fixtures below.
+fn derWrap(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, tag: u8, inner: []const u8) !void {
+    std.debug.assert(inner.len < 128);
+    try buf.append(alloc, tag);
+    try buf.append(alloc, @intCast(inner.len));
+    try buf.appendSlice(alloc, inner);
+}
+
+/// Build a single Extension entry: SEQUENCE { OID, OCTET STRING extnValue }.
+/// `oid_body` is the bytes after the OID tag/len (e.g. {0x55, 0x1d, 0x11}
+/// for id-ce-subjectAltName). `value` is the raw extension value bytes
+/// already wrapped in their own SEQUENCE/structure as appropriate.
+fn buildExtension(alloc: std.mem.Allocator, oid_body: []const u8, value: []const u8) ![]u8 {
+    var inner = std.ArrayList(u8).empty;
+    defer inner.deinit(alloc);
+    try inner.append(alloc, 0x06); // OID tag
+    try inner.append(alloc, @intCast(oid_body.len));
+    try inner.appendSlice(alloc, oid_body);
+    try inner.append(alloc, 0x04); // OCTET STRING tag
+    try inner.append(alloc, @intCast(value.len));
+    try inner.appendSlice(alloc, value);
+
+    var seq = std.ArrayList(u8).empty;
+    errdefer seq.deinit(alloc);
+    try derWrap(&seq, alloc, 0x30, inner.items);
+    return try seq.toOwnedSlice(alloc);
+}
+
+/// Build the [3] EXPLICIT Extensions block expected by parseExtensionsBlock.
+/// `entries` is the concatenation of one or more `buildExtension` outputs.
+fn buildExtensionsBlock(alloc: std.mem.Allocator, entries: []const u8) ![]u8 {
+    var seq = std.ArrayList(u8).empty;
+    defer seq.deinit(alloc);
+    try derWrap(&seq, alloc, 0x30, entries); // SEQUENCE OF Extension
+
+    var explicit = std.ArrayList(u8).empty;
+    errdefer explicit.deinit(alloc);
+    try derWrap(&explicit, alloc, 0xA3, seq.items); // [3] EXPLICIT
+    return try explicit.toOwnedSlice(alloc);
+}
+
+test "SEC-079: parseExtensionsBlock rejects duplicate id-ce-subjectAltName" {
+    const alloc = std.testing.allocator;
+
+    // Minimal SAN extension value: SEQUENCE { [2] dNSName "x" }.
+    const san_value = [_]u8{ 0x30, 0x03, 0x82, 0x01, 'x' };
+    const id_ce_san = [_]u8{ 0x55, 0x1d, 0x11 };
+
+    const ext_one = try buildExtension(alloc, &id_ce_san, &san_value);
+    defer alloc.free(ext_one);
+    const ext_two = try buildExtension(alloc, &id_ce_san, &san_value);
+    defer alloc.free(ext_two);
+
+    var entries = std.ArrayList(u8).empty;
+    defer entries.deinit(alloc);
+    try entries.appendSlice(alloc, ext_one);
+    try entries.appendSlice(alloc, ext_two);
+
+    const block = try buildExtensionsBlock(alloc, entries.items);
+    defer alloc.free(block);
+
+    var ti = asn1.Decoder.init(block);
+    try std.testing.expectError(error.DuplicateExtension, parseExtensionsBlock(alloc, &ti));
+}
+
+test "SEC-079: parseExtensionsBlock rejects duplicate id-ce-nameConstraints (errdefer leak guard)" {
+    const alloc = std.testing.allocator;
+
+    // Minimal NameConstraints: SEQUENCE { [0] permittedSubtrees SEQUENCE OF
+    // GeneralSubtree } where the GeneralSubtree wraps a [2] dNSName "y".
+    const nc_value = [_]u8{
+        0x30, 0x09, // SEQUENCE NameConstraints
+        0xA0, 0x07, // [0] permittedSubtrees
+        0x30, 0x05, //   SEQUENCE GeneralSubtree
+        0x82, 0x03, 'a', 'b', 'c', // [2] dNSName "abc"
+    };
+    const id_ce_nc = [_]u8{ 0x55, 0x1d, 0x1e };
+
+    const ext_one = try buildExtension(alloc, &id_ce_nc, &nc_value);
+    defer alloc.free(ext_one);
+    const ext_two = try buildExtension(alloc, &id_ce_nc, &nc_value);
+    defer alloc.free(ext_two);
+
+    var entries = std.ArrayList(u8).empty;
+    defer entries.deinit(alloc);
+    try entries.appendSlice(alloc, ext_one);
+    try entries.appendSlice(alloc, ext_two);
+
+    const block = try buildExtensionsBlock(alloc, entries.items);
+    defer alloc.free(block);
+
+    // Pre-fix: the second parseExtNameConstraints call would overwrite
+    // out.name_constraints, leaking the first allocation when the loop
+    // eventually erred or exited. Post-fix: the dup-check returns
+    // DuplicateExtension before the second allocation runs, and the
+    // testing allocator (which detects leaks) confirms no slice escapes.
+    var ti = asn1.Decoder.init(block);
+    try std.testing.expectError(error.DuplicateExtension, parseExtensionsBlock(alloc, &ti));
+}
+
+test "SEC-079: parseExtensionsBlock accepts distinct extensions (regression guard)" {
+    const alloc = std.testing.allocator;
+
+    // SAN with one DNS entry "z".
+    const san_value = [_]u8{ 0x30, 0x03, 0x82, 0x01, 'z' };
+    const id_ce_san = [_]u8{ 0x55, 0x1d, 0x11 };
+    // BasicConstraints: SEQUENCE { cA BOOLEAN TRUE }.
+    const bc_value = [_]u8{ 0x30, 0x03, 0x01, 0x01, 0xff };
+    const id_ce_bc = [_]u8{ 0x55, 0x1d, 0x13 };
+
+    const ext_san = try buildExtension(alloc, &id_ce_san, &san_value);
+    defer alloc.free(ext_san);
+    const ext_bc = try buildExtension(alloc, &id_ce_bc, &bc_value);
+    defer alloc.free(ext_bc);
+
+    var entries = std.ArrayList(u8).empty;
+    defer entries.deinit(alloc);
+    try entries.appendSlice(alloc, ext_san);
+    try entries.appendSlice(alloc, ext_bc);
+
+    const block = try buildExtensionsBlock(alloc, entries.items);
+    defer alloc.free(block);
+
+    var ti = asn1.Decoder.init(block);
+    const parsed = try parseExtensionsBlock(alloc, &ti);
+    // The dup gate must not interfere with two distinct extensions.
+    try std.testing.expect(parsed.san != null);
+    try std.testing.expect(parsed.basic != null);
+    if (parsed.san) |san| alloc.free(san.dns);
+    if (parsed.name_constraints) |nc| {
+        if (nc.permitted_dns.len > 0) alloc.free(nc.permitted_dns);
+        if (nc.excluded_dns.len > 0) alloc.free(nc.excluded_dns);
+    }
+    if (parsed.policy_mappings) |pm| {
+        if (pm.mappings.len > 0) alloc.free(pm.mappings);
+    }
 }

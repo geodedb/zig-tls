@@ -307,6 +307,19 @@ pub const PreferredAddress = struct {
         addr.ipv6_port = (@as(u16, data[idx]) << 8) | data[idx + 1];
         idx += 2;
 
+        // SEC-080 / SEC-NEW-B port-zero validation. RFC 9000 §18.2 says a
+        // family is "not present" when its address and port are both
+        // zero, and §9.6 requires the peer to migrate to one of the
+        // advertised endpoints. A `preferred_address` with both
+        // families fully zeroed (no IPv4 endpoint AND no IPv6 endpoint)
+        // is therefore meaningless and SHOULD be rejected — a peer that
+        // applied it would have no reachable target.
+        const ipv4_addr_zero = std.mem.allEqual(u8, addr.ipv4_address[0..], 0);
+        const ipv6_addr_zero = std.mem.allEqual(u8, addr.ipv6_address[0..], 0);
+        const ipv4_absent = ipv4_addr_zero and addr.ipv4_port == 0;
+        const ipv6_absent = ipv6_addr_zero and addr.ipv6_port == 0;
+        if (ipv4_absent and ipv6_absent) return error.InvalidParameter;
+
         const conn_id_len = data[idx];
         idx += 1;
         if (conn_id_len == 0 or conn_id_len > max_connection_id_length) {
@@ -668,6 +681,11 @@ pub const TransportParameters = struct {
                     params.retry_source_connection_id = cid;
                 },
                 .stateless_reset_token => {
+                    // SEC-080 / SEC-NEW-B: A second `stateless_reset_token`
+                    // would silently overwrite the first 16-byte buffer.
+                    // RFC 9000 §18 forbids any transport parameter from
+                    // appearing more than once.
+                    if (params.stateless_reset_token != null) return error.InvalidParameter;
                     // RFC 9000 §18.2: Must be exactly 16 bytes
                     if (value.len != 16) return error.InvalidParameter;
                     var token: [16]u8 = undefined;
@@ -675,6 +693,12 @@ pub const TransportParameters = struct {
                     params.stateless_reset_token = token;
                 },
                 .preferred_address => {
+                    // SEC-080 / SEC-NEW-B: reject duplicate
+                    // `preferred_address`. A second decode would not only
+                    // strand the first allocation's `connection_id` slice
+                    // (CWE-401 leak) but also let an off-path peer
+                    // displace the legitimate preferred-address vector.
+                    if (params.preferred_address != null) return error.InvalidParameter;
                     const addr = try PreferredAddress.decode(value, allocator);
                     params.preferred_address = addr;
                 },
@@ -1217,4 +1241,89 @@ test "RFC 9000 §18 - comprehensive parameter encoding/decoding" {
     try testing.expectEqual(@as(u64, 2), decoded.active_connection_id_limit.?);
     try testing.expect(decoded.disable_active_migration);
     try testing.expectEqualSlices(u8, &cid, decoded.initial_source_connection_id.?);
+}
+
+// SEC-080 / SEC-NEW-B: Duplicate stateless_reset_token MUST be rejected.
+test "SEC-080: duplicate stateless_reset_token rejected" {
+    var params = TransportParameters{};
+    const token = [_]u8{0x42} ** 16;
+    params.stateless_reset_token = token;
+
+    const first = try params.encode(testing.allocator);
+    defer testing.allocator.free(first);
+
+    // Build a wire string that contains the stateless_reset_token TP twice
+    // by concatenating the encoding with itself (the encoder emits exactly
+    // one such TP per `params`, so concatenation produces a duplicate
+    // stream).
+    const both = try testing.allocator.alloc(u8, first.len * 2);
+    defer testing.allocator.free(both);
+    @memcpy(both[0..first.len], first);
+    @memcpy(both[first.len..], first);
+
+    try testing.expectError(error.InvalidParameter, TransportParameters.decode(both, testing.allocator));
+}
+
+// SEC-080 / SEC-NEW-B: Duplicate preferred_address MUST be rejected without
+// stranding the connection_id allocation from the first occurrence.
+test "SEC-080: duplicate preferred_address rejected without CID leak" {
+    var connection_id = [_]u8{ 0xab, 0xcd, 0xef };
+    const reset_token = [_]u8{0x77} ** 16;
+
+    const preferred = PreferredAddress{
+        .ipv4_address = .{ 198, 51, 100, 1 },
+        .ipv4_port = 4433,
+        .ipv6_address = .{0} ** 16,
+        .ipv6_port = 0,
+        .connection_id = &connection_id,
+        .stateless_reset_token = reset_token,
+    };
+
+    var params = TransportParameters{ .preferred_address = preferred };
+    const first = try params.encode(testing.allocator);
+    defer testing.allocator.free(first);
+
+    var both = try testing.allocator.alloc(u8, first.len * 2);
+    defer testing.allocator.free(both);
+    @memcpy(both[0..first.len], first);
+    @memcpy(both[first.len..], first);
+
+    // The dup-detection branch returns InvalidParameter BEFORE the second
+    // PreferredAddress.decode runs, so the second connection_id is never
+    // allocated. The first allocation is freed by the outer
+    // `errdefer params.deinit(allocator)` in TransportParameters.decode,
+    // which the testing allocator (leak detector) verifies for us.
+    try testing.expectError(error.InvalidParameter, TransportParameters.decode(both, testing.allocator));
+}
+
+// SEC-080 / SEC-NEW-B: Reject preferred_address whose IPv4 and IPv6 endpoints
+// are both fully zeroed (no usable migration target — RFC 9000 §9.6).
+test "SEC-080: PreferredAddress.decode rejects all-zero address+port pair" {
+    // Hand-roll a wire encoding because PreferredAddress.encode rejects an
+    // empty connection_id, and the regression here is on the decode path.
+    var connection_id = [_]u8{ 0x01, 0x02 };
+    const reset_token = [_]u8{0xee} ** 16;
+
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(testing.allocator);
+    try buf.appendSlice(testing.allocator, &[_]u8{0} ** 4); // ipv4_address = 0.0.0.0
+    try buf.appendSlice(testing.allocator, &[_]u8{ 0x00, 0x00 }); // ipv4_port = 0
+    try buf.appendSlice(testing.allocator, &[_]u8{0} ** 16); // ipv6_address = ::
+    try buf.appendSlice(testing.allocator, &[_]u8{ 0x00, 0x00 }); // ipv6_port = 0
+    try buf.append(testing.allocator, @intCast(connection_id.len));
+    try buf.appendSlice(testing.allocator, &connection_id);
+    try buf.appendSlice(testing.allocator, &reset_token);
+
+    try testing.expectError(error.InvalidParameter, PreferredAddress.decode(buf.items, testing.allocator));
+}
+
+// SEC-080 / SEC-NEW-B: validateClientRole already rejects each server-only
+// parameter; this test pins the contract for `stateless_reset_token` so the
+// dup-gate does not introduce a parsing-vs-validation skew (i.e. a client
+// receiving a single legitimate stateless_reset_token still fails the
+// role check, not the dup check).
+test "SEC-080: validateClientRole still rejects stateless_reset_token" {
+    var params = TransportParameters{};
+    params.stateless_reset_token = [_]u8{0x11} ** 16;
+    try testing.expectError(error.InvalidParameter, params.validateClientRole());
 }

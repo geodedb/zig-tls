@@ -305,6 +305,12 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     const cs_len = helpers.readU16(data[pos .. pos + 2]);
     pos += 2;
     if (pos + cs_len > data.len) return error.TooShort;
+    // SEC-099 / RFC 8446 §4.1.2: `CipherSuite cipher_suites<2..2^16-2>;`. Each
+    // CipherSuite is exactly two bytes, so an odd length is malformed. Without
+    // this check, the `cs_pos += 2` loop below reads `data[pos+cs_len-1 ..
+    // pos+cs_len+1]` on the final iteration — a one-byte over-read that panics
+    // when the ClientHello has no compression/extensions tail (pre-auth crash).
+    if (cs_len % 2 != 0) return error.IllegalCipherSuites;
 
     var cipher_suites = try std.ArrayList(core_types.CipherSuite).initCapacity(allocator, 4);
     defer cipher_suites.deinit(allocator);

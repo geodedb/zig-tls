@@ -202,6 +202,18 @@ pub const buildKeyUpdate = messages.buildKeyUpdate;
 /// Parse a KeyUpdate message body (RFC 8446 §4.6.3).
 pub const parseKeyUpdate = messages.parseKeyUpdate;
 
+/// Build a NewSessionTicket message body (RFC 8446 §4.6.1, GAP-0132).
+pub const buildNewSessionTicket = messages.buildNewSessionTicket;
+
+/// Parse a NewSessionTicket message body (RFC 8446 §4.6.1, GAP-0132).
+pub const parseNewSessionTicket = messages.parseNewSessionTicket;
+
+/// Parameters accepted by `buildNewSessionTicket`.
+pub const NewSessionTicketParams = messages.NewSessionTicketParams;
+
+/// Result type of `parseNewSessionTicket`.
+pub const ParsedNewSessionTicket = messages.ParsedNewSessionTicket;
+
 /// Encode handshake message with framing.
 pub const encodeHandshake = messages.encodeHandshake;
 
@@ -213,6 +225,20 @@ pub const x25519KeypairAndShared = messages.x25519KeypairAndShared;
 
 /// Parse minimal Hello public key (testing).
 pub const parseMinimalHelloPub = messages.parseMinimalHelloPub;
+
+// ============================================================================
+// HelloRetryRequest (RFC 8446 §4.1.4) — exposed for direct regression tests.
+// ============================================================================
+
+const hello_retry = @import("context/hello_retry.zig");
+
+/// Parse a HelloRetryRequest body (RFC 8446 §4.1.4). Returns the selected
+/// group + optional cookie. Rejects duplicate extensions (GAP-0144 / SEC-104
+/// cross-ref) with `HandshakeError.DuplicateExtension`.
+pub const parseHelloRetryRequest = hello_retry.parseHelloRetryRequest;
+
+/// Parsed HelloRetryRequest (selected_group + optional cookie borrow).
+pub const HrrParsed = hello_retry.HrrParsed;
 
 // ============================================================================
 // Configuration

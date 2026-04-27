@@ -39,7 +39,6 @@ src/
 ├── zero_rtt.zig            # 0-RTT anti-replay support (shipped)
 ├── ocsp.zig                # OCSP stapling
 ├── sct.zig                 # Signed Certificate Timestamps
-├── parallel.zig            # Thread-pool-backed parallel chain validation
 ├── varint.zig              # QUIC/TLS variable-length integer codec
 ├── byteorder.zig           # Endianness helpers (big-endian writers)
 ├── quic_logger.zig         # Structured logger for QUIC/TLS events

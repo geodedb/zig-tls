@@ -482,6 +482,13 @@ fn parsePreSharedKey(ctx: *ParseCtx, data: []const u8) anyerror!void {
     }
     if (binder_pos != binders_len) return error.TooShort;
 
+    // SEC-098 / RFC 8446 §4.2.11: identities and binders MUST be equal-length
+    // lists. Downstream PSK selection (e.g. validatePskBinder) indexes binders
+    // by the negotiated identity index, so a length mismatch here translates
+    // to an out-of-bounds read post-handshake (CWE-345). Reject before owning
+    // the slices so the temporary ArrayList `defer deinit` path runs cleanly.
+    if (identities.items.len != binders.items.len) return error.PskBinderMismatch;
+
     ctx.ch.pre_shared_key = PreSharedKey{
         .identities = try identities.toOwnedSlice(ctx.alloc),
         .binders = try binders.toOwnedSlice(ctx.alloc),

@@ -308,6 +308,22 @@ pub const Callbacks = struct {
     ///
     /// null = Not notified of alerts (default).
     on_alert: ?*const fn (ctx: *Context, desc: alert_mod.AlertDescription) void = null,
+
+    /// GAP-0132: Invoked on the client when an inbound NewSessionTicket
+    /// message is parsed (RFC 8446 §4.6.1). The application is expected
+    /// to persist the parsed ticket so future connections can present it
+    /// in a `pre_shared_key` extension to enable resumption / 0-RTT.
+    ///
+    /// The borrowed slices in `ticket` point into the inbound handshake
+    /// frame and are only valid for the duration of the call; callers
+    /// who need to retain them across the callback boundary MUST copy.
+    /// Errors propagate back through `processCrypto`, allowing the
+    /// application to refuse a ticket without aborting the handshake
+    /// state machine (the dispatcher already enforced role + level).
+    ///
+    /// null = Tickets are decoded and dropped (matches the prior
+    /// QUAL-074 accept-and-log behaviour).
+    on_session_ticket: ?*const fn (ctx: *Context, ticket: messages_mod.ParsedNewSessionTicket) anyerror!void = null,
 };
 
 /// Error type for TLS API operations (canonical definition in types.zig).
@@ -1145,6 +1161,8 @@ pub const Context = struct {
             error.InvalidCookie,
             error.DuplicateExtension,
             error.IllegalCompressionMethods,
+            error.IllegalCipherSuites,
+            error.PskBinderMismatch,
             => return self.failAlert(err),
             // PeerFatalAlert / InvalidAlert are alert-layer events that
             // already manage phase + alert queuing; pass through.
@@ -1152,227 +1170,228 @@ pub const Context = struct {
         };
     }
 
+    /// QUAL-375 (bundled with QUAL-344, QUAL-350): per-handshake-type
+    /// dispatch. The 222-line god-method that lived here was decomposed
+    /// into focused per-message helpers below; the dispatcher itself is
+    /// now a flat switch with `depth = 2` (one level for the switch,
+    /// one for the helper call), well under the QUAL-375 acceptance bar
+    /// of `depth ≤ 2`. Each helper preserves the original RFC 8446
+    /// gating semantics verbatim — only the surrounding nesting is gone.
+    /// GAP-0079 still applies: `parseHandshakeOne` rejects unknown
+    /// HsType variants with `error.UnknownHandshakeType`, so we never
+    /// reach an unhandled arm here.
     fn dispatchHandshake(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage, raw: []const u8) !void {
-        switch (parsed.typ) {
-            .client_hello => {
-                // RFC 8446 §4.1.2: ClientHello only valid for server role
-                if (self.config.role != .Server) return HandshakeError.UnexpectedMessage;
+        return switch (parsed.typ) {
+            .client_hello => self.inboundClientHello(level, parsed),
+            .server_hello => self.inboundServerHello(parsed),
+            .certificate_request => self.inboundCertificateRequest(level, parsed),
+            .finished => self.handlePeerFinished(level, parsed.body, raw),
+            .key_update => self.inboundKeyUpdate(level, parsed),
+            .encrypted_extensions => self.inboundEncryptedExtensions(parsed),
+            .certificate => self.inboundCertificate(parsed),
+            .certificate_verify => self.inboundCertificateVerify(parsed),
+            .new_session_ticket => self.inboundNewSessionTicket(level, parsed),
+        };
+    }
 
-                // RFC 8446 §4.1.4: After HelloRetryRequest, server must accept a
-                // second ClientHello. Reset stored CH state so setClientHello
-                // doesn't reject it as DuplicateClientHello.
-                if (self.hrr_sent) {
-                    self.state.reset(self.allocator);
-                }
+    /// Server-side ClientHello handler. Validates role, resets state on
+    /// HRR retransmits, calls `state.setClientHello` with diagnostic
+    /// logging, snapshots the parsed CH for interop traces, and (for
+    /// QUIC) extracts and validates the peer transport parameters.
+    fn inboundClientHello(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage) !void {
+        // RFC 8446 §4.1.2: ClientHello only valid for server role
+        if (self.config.role != .Server) return HandshakeError.UnexpectedMessage;
 
-                // Parse and store ClientHello for parameter negotiation.
-                //
-                // QUIC-INTEROP-HRR (2026-04-27): wrap setClientHello so any
-                // RFC 8446 §4.2.x parse failure (MissingKeyShare,
-                // NoCipherSuite, UnsupportedVersion, …) surfaces a tagged
-                // line in the interop log instead of bubbling up as a
-                // generic NoHandshakeKeys at the QUIC layer. Without this
-                // diagnostic the failing CH for quic-go / mvfst clients was
-                // indistinguishable from a transport-level CRYPTO drop. See
-                // docs/QUIC_INTEROP_HRR_ISSUE.md.
-                self.state.setClientHello(self.allocator, parsed.body) catch |err| {
-                    logger.err(
-                        "[TLS-HRR] ClientHello parse failed at level={s}: {s} (body_len={d}, hrr_sent={})",
-                        .{ @tagName(level), @errorName(err), parsed.body.len, self.hrr_sent },
-                    );
-                    return err;
-                };
-
-                // QUIC-INTEROP-HRR (2026-04-27): one-shot snapshot of the
-                // parsed CH state so interop logs distinguish "client
-                // offered X25519" from "client offered group X classified
-                // as Y". Includes the RAW codepoint (preserved by
-                // parseKeyShare/QUAL-369) so PQ-hybrid (0x6399) shows up
-                // verbatim. Logged at err level so it lands in the same
-                // stream as the existing HRR / cookie-verify diagnostics.
-                if (self.state.clientHello()) |ch_snap| {
-                    const ch_index: u8 = if (self.hrr_sent) 2 else 1;
-                    logger.err(
-                        "[TLS-HRR] ClientHello#{d} parsed at level={s}: " ++
-                            "key_share.group={s}, raw_group_code=0x{x:0>4}, " ++
-                            "key_len={d}, cipher_suites={d}, has_cookie={}",
-                        .{
-                            ch_index,
-                            @tagName(level),
-                            @tagName(ch_snap.key_share.group),
-                            ch_snap.key_share.raw_group_code,
-                            ch_snap.key_share.key.len,
-                            ch_snap.cipher_suites.len,
-                            ch_snap.cookie != null,
-                        },
-                    );
-                }
-
-                // Phase 36 FIX: Extract peer transport parameters from ClientHello
-                // RFC 9001 §8.2: quic_transport_parameters (0x0039) mandatory for QUIC
-                // Client sends its transport parameters in ClientHello extension
-                if (self.state.clientHello()) |ch| {
-                    if (ch.quic_transport_parameters) |tp| {
-                        // GAP-0081: Validate client transport params don't contain
-                        // server-only parameters per RFC 9000 §18.2.
-                        var decoded_tp = transport_params.TransportParameters.decode(tp, self.allocator) catch {
-                            return HandshakeError.InvalidTransportParameters;
-                        };
-                        defer decoded_tp.deinit(self.allocator);
-                        decoded_tp.validateClientRole() catch {
-                            return HandshakeError.InvalidTransportParameters;
-                        };
-
-                        // Store peer (client) transport parameters
-                        const tp_copy = try self.allocator.dupe(u8, tp);
-                        errdefer self.allocator.free(tp_copy);
-                        if (self.peer_quic_transport_parameters) |old| {
-                            self.allocator.free(old);
-                        }
-                        self.peer_quic_transport_parameters = tp_copy;
-                    }
-                }
-
-                // RFC 8446 §4: Transition from initial to negotiating phase
-                if (self.phase == .initial) {
-                    self.phase = .negotiating;
-                }
-            },
-            .server_hello => {
-                // RFC 8446 §4.1.3: ServerHello only valid for client role
-                if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
-
-                // Parse ServerHello, extract key_share, derive handshake secrets
-                try self.handleServerHello(parsed.body);
-            },
-            .certificate_request => {
-                // RFC 8446 §4.3.2: CertificateRequest only valid for client role during initial handshake
-                if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
-
-                // GAP-0139: encryption-level + handshake-phase gate.
-                //
-                // RFC 8446 §4.3.2 places CertificateRequest after ServerHello
-                // / EncryptedExtensions, so during the initial handshake it
-                // arrives at the Handshake encryption level. RFC 8446 §4.6.2
-                // permits a server to issue a post-handshake CertificateRequest
-                // at the Application encryption level, but only if the
-                // `post_handshake_auth` extension was negotiated. We surface
-                // both invariants as `HandshakeError.UnexpectedMessage`
-                // (mapped to the `unexpected_message` alert by the GAP-0138
-                // alert layer).
-                switch (level) {
-                    .Initial => return HandshakeError.UnexpectedMessage,
-                    .Handshake => {
-                        // Initial-handshake path: only valid before the local
-                        // Finished has been verified.
-                        if (self.phase == .application_ready or self.phase == .post_handshake) {
-                            return HandshakeError.UnexpectedMessage;
-                        }
-                    },
-                    .Application => {
-                        if (!self.config.post_handshake_auth) {
-                            return HandshakeError.UnexpectedMessage;
-                        }
-                        if (self.phase != .application_ready and self.phase != .post_handshake) {
-                            return HandshakeError.UnexpectedMessage;
-                        }
-                    },
-                }
-
-                // Parse CertificateRequest to extract context and signature algorithms
-                const cr_parsed = try tls13_full.parseCertificateRequest(self.allocator, parsed.body);
-                defer self.allocator.free(cr_parsed.signature_algorithms);
-
-                // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
-                const new_ctx = if (cr_parsed.context.len > 0)
-                    try self.allocator.dupe(u8, cr_parsed.context)
-                else
-                    null;
-                errdefer if (new_ctx) |ctx_buf| self.allocator.free(ctx_buf);
-                if (self.client_cert_request_context) |old| {
-                    self.allocator.free(old);
-                }
-                self.client_cert_request_context = new_ctx;
-
-                self.client_cert_requested = true;
-
-                // RFC 8446 §4.4.3: Client selects a signature scheme from the
-                // CertificateRequest's signature_algorithms that it supports.
-                self.negotiated_signature = null;
-                for (self.config.supported_signature_schemes) |ours| {
-                    for (cr_parsed.signature_algorithms) |theirs| {
-                        if (ours == theirs) {
-                            self.negotiated_signature = ours;
-                            break;
-                        }
-                    }
-                    if (self.negotiated_signature != null) break;
-                }
-
-                traceHandshake("Client: Received CertificateRequest from server\n", .{});
-            },
-            .finished => {
-                // RFC 8446 §4.4.4: Verify peer Finished message
-                // Must verify BEFORE adding to transcript
-                try self.handlePeerFinished(level, parsed.body, raw);
-            },
-            .key_update => {
-                // RFC 8446 §4.6.3: KeyUpdate can only occur at Application level
-                if (level != .Application) return HandshakeError.UnexpectedMessage;
-
-                // Parse KeyUpdate message body
-                const request = try parseKeyUpdate(parsed.body);
-
-                // Handle the key update
-                try self.handleKeyUpdateMessage(request);
-            },
-            .encrypted_extensions => {
-                // RFC 8446 §4.3.1: EncryptedExtensions only valid for client role
-                if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
-
-                // Parse EncryptedExtensions to extract transport parameters and ALPN
-                try self.handleEncryptedExtensions(parsed.body);
-            },
-            .certificate => {
-                // RFC 8446 §4.4.2: Certificate message valid for client role (server cert),
-                // or for server role when mTLS is enabled (client cert)
-                if (self.config.role == .Client) {
-                    try self.handleCertificate(parsed.body);
-                } else if (self.config.role == .Server and self.config.request_client_cert) {
-                    try self.handleClientCertificate(parsed.body);
-                } else {
-                    return HandshakeError.UnexpectedMessage;
-                }
-            },
-            .certificate_verify => {
-                // RFC 8446 §4.4.3: CertificateVerify valid for client role (server CV),
-                // or for server role when mTLS is enabled (client CV)
-                if (self.config.role == .Client) {
-                    try self.handleCertificateVerify(parsed.body);
-                } else if (self.config.role == .Server and self.config.request_client_cert) {
-                    try self.handleClientCertificateVerify(parsed.body);
-                } else {
-                    return HandshakeError.UnexpectedMessage;
-                }
-            },
-            .new_session_ticket => {
-                // QUAL-074: RFC 8446 §4.6.1: NewSessionTicket is a post-handshake message
-                // sent by the server to the client. It MUST only be accepted by clients
-                // at the Application encryption level after the handshake completes.
-                if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
-                if (level != .Application) return HandshakeError.UnexpectedMessage;
-
-                // Parse and log the ticket for debugging; full session resumption
-                // storage is deferred to application-layer callbacks (not yet implemented).
-                // QUAL-074/QUAL-109: NewSessionTicket is accepted and not silently
-                // dropped. An on_session_ticket callback for application-layer
-                // session ticket management is deferred as a future enhancement.
-                logger.debugPrint("[TLS] Context: Received NewSessionTicket ({} bytes)\n", .{parsed.body.len});
-            },
-            // GAP-0079: Note — unknown handshake message types are rejected at the parsing
-            // layer in parseHandshakeOne() with error.UnknownHandshakeType (RFC 8446 §4).
-            // All defined HsType variants are handled above, so no else branch is needed.
+        // RFC 8446 §4.1.4: After HelloRetryRequest, server must accept a
+        // second ClientHello. Reset stored CH state so setClientHello
+        // doesn't reject it as DuplicateClientHello.
+        if (self.hrr_sent) {
+            self.state.reset(self.allocator);
         }
+
+        // QUIC-INTEROP-HRR (2026-04-27): wrap setClientHello so any
+        // RFC 8446 §4.2.x parse failure (MissingKeyShare, NoCipherSuite,
+        // UnsupportedVersion, …) surfaces a tagged line in the interop
+        // log instead of bubbling up as a generic NoHandshakeKeys at the
+        // QUIC layer. Without this diagnostic the failing CH for
+        // quic-go / mvfst clients was indistinguishable from a
+        // transport-level CRYPTO drop. See
+        // docs/QUIC_INTEROP_HRR_ISSUE.md.
+        self.state.setClientHello(self.allocator, parsed.body) catch |err| {
+            logger.err(
+                "[TLS-HRR] ClientHello parse failed at level={s}: {s} (body_len={d}, hrr_sent={})",
+                .{ @tagName(level), @errorName(err), parsed.body.len, self.hrr_sent },
+            );
+            return err;
+        };
+
+        // QUIC-INTEROP-HRR (2026-04-27): one-shot snapshot of the parsed
+        // CH state so interop logs distinguish "client offered X25519"
+        // from "client offered group X classified as Y". Includes the
+        // RAW codepoint (preserved by parseKeyShare/QUAL-369) so
+        // PQ-hybrid (0x6399) shows up verbatim. Logged at err level so
+        // it lands in the same stream as the existing HRR / cookie-
+        // verify diagnostics.
+        if (self.state.clientHello()) |ch_snap| {
+            const ch_index: u8 = if (self.hrr_sent) 2 else 1;
+            logger.err(
+                "[TLS-HRR] ClientHello#{d} parsed at level={s}: " ++
+                    "key_share.group={s}, raw_group_code=0x{x:0>4}, " ++
+                    "key_len={d}, cipher_suites={d}, has_cookie={}",
+                .{
+                    ch_index,
+                    @tagName(level),
+                    @tagName(ch_snap.key_share.group),
+                    ch_snap.key_share.raw_group_code,
+                    ch_snap.key_share.key.len,
+                    ch_snap.cipher_suites.len,
+                    ch_snap.cookie != null,
+                },
+            );
+        }
+
+        try self.absorbClientTransportParameters();
+
+        // RFC 8446 §4: Transition from initial to negotiating phase
+        if (self.phase == .initial) {
+            self.phase = .negotiating;
+        }
+    }
+
+    /// Phase 36 / RFC 9001 §8.2: pull the QUIC transport_parameters
+    /// extension out of the parsed ClientHello, run the GAP-0081
+    /// client-role validation, and stash the bytes on the Context.
+    fn absorbClientTransportParameters(self: *Context) !void {
+        const ch = self.state.clientHello() orelse return;
+        const tp = ch.quic_transport_parameters orelse return;
+
+        var decoded_tp = transport_params.TransportParameters.decode(tp, self.allocator) catch {
+            return HandshakeError.InvalidTransportParameters;
+        };
+        defer decoded_tp.deinit(self.allocator);
+        decoded_tp.validateClientRole() catch {
+            return HandshakeError.InvalidTransportParameters;
+        };
+
+        const tp_copy = try self.allocator.dupe(u8, tp);
+        errdefer self.allocator.free(tp_copy);
+        if (self.peer_quic_transport_parameters) |old| {
+            self.allocator.free(old);
+        }
+        self.peer_quic_transport_parameters = tp_copy;
+    }
+
+    /// Client-side ServerHello handler. RFC 8446 §4.1.3.
+    fn inboundServerHello(self: *Context, parsed: HandshakeMessage) !void {
+        if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
+        return self.handleServerHello(parsed.body);
+    }
+
+    /// Client-side CertificateRequest handler. RFC 8446 §4.3.2 +
+    /// GAP-0139 encryption-level / phase gating.
+    fn inboundCertificateRequest(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage) !void {
+        if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
+
+        // GAP-0139: encryption-level + handshake-phase gate.
+        //
+        // RFC 8446 §4.3.2 places CertificateRequest after ServerHello /
+        // EncryptedExtensions, so during the initial handshake it
+        // arrives at the Handshake encryption level. RFC 8446 §4.6.2
+        // permits a server to issue a post-handshake CertificateRequest
+        // at the Application encryption level, but only if the
+        // `post_handshake_auth` extension was negotiated. We surface
+        // both invariants as `HandshakeError.UnexpectedMessage` (mapped
+        // to the `unexpected_message` alert by the GAP-0138 alert
+        // layer).
+        switch (level) {
+            .Initial => return HandshakeError.UnexpectedMessage,
+            .Handshake => {
+                if (self.phase == .application_ready or self.phase == .post_handshake) {
+                    return HandshakeError.UnexpectedMessage;
+                }
+            },
+            .Application => {
+                if (!self.config.post_handshake_auth) {
+                    return HandshakeError.UnexpectedMessage;
+                }
+                if (self.phase != .application_ready and self.phase != .post_handshake) {
+                    return HandshakeError.UnexpectedMessage;
+                }
+            },
+        }
+
+        const cr_parsed = try tls13_full.parseCertificateRequest(self.allocator, parsed.body);
+        defer self.allocator.free(cr_parsed.signature_algorithms);
+
+        // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
+        const new_ctx = if (cr_parsed.context.len > 0)
+            try self.allocator.dupe(u8, cr_parsed.context)
+        else
+            null;
+        errdefer if (new_ctx) |ctx_buf| self.allocator.free(ctx_buf);
+        if (self.client_cert_request_context) |old| {
+            self.allocator.free(old);
+        }
+        self.client_cert_request_context = new_ctx;
+
+        self.client_cert_requested = true;
+
+        // RFC 8446 §4.4.3: Client selects a signature scheme from the
+        // CertificateRequest's signature_algorithms that it supports.
+        self.negotiated_signature = null;
+        for (self.config.supported_signature_schemes) |ours| {
+            for (cr_parsed.signature_algorithms) |theirs| {
+                if (ours == theirs) {
+                    self.negotiated_signature = ours;
+                    break;
+                }
+            }
+            if (self.negotiated_signature != null) break;
+        }
+
+        traceHandshake("Client: Received CertificateRequest from server\n", .{});
+    }
+
+    /// KeyUpdate handler. RFC 8446 §4.6.3 — only at Application level.
+    fn inboundKeyUpdate(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage) !void {
+        if (level != .Application) return HandshakeError.UnexpectedMessage;
+        const request = try parseKeyUpdate(parsed.body);
+        return self.handleKeyUpdateMessage(request);
+    }
+
+    /// EncryptedExtensions handler. RFC 8446 §4.3.1 — client role only.
+    fn inboundEncryptedExtensions(self: *Context, parsed: HandshakeMessage) !void {
+        if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
+        return self.handleEncryptedExtensions(parsed.body);
+    }
+
+    /// Certificate handler. RFC 8446 §4.4.2 — client (server cert) or
+    /// server-with-mTLS (client cert).
+    fn inboundCertificate(self: *Context, parsed: HandshakeMessage) !void {
+        if (self.config.role == .Client) return self.handleCertificate(parsed.body);
+        if (self.config.role == .Server and self.config.request_client_cert) {
+            return self.handleClientCertificate(parsed.body);
+        }
+        return HandshakeError.UnexpectedMessage;
+    }
+
+    /// CertificateVerify handler. RFC 8446 §4.4.3 — client (server CV)
+    /// or server-with-mTLS (client CV).
+    fn inboundCertificateVerify(self: *Context, parsed: HandshakeMessage) !void {
+        if (self.config.role == .Client) return self.handleCertificateVerify(parsed.body);
+        if (self.config.role == .Server and self.config.request_client_cert) {
+            return self.handleClientCertificateVerify(parsed.body);
+        }
+        return HandshakeError.UnexpectedMessage;
+    }
+
+    /// NewSessionTicket handler. RFC 8446 §4.6.1 — client at Application
+    /// level only. Delegates to `handleNewSessionTicket` for the parse +
+    /// callback dispatch (GAP-0132).
+    fn inboundNewSessionTicket(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage) !void {
+        if (self.config.role != .Client) return HandshakeError.UnexpectedMessage;
+        if (level != .Application) return HandshakeError.UnexpectedMessage;
+        return self.handleNewSessionTicket(parsed.body);
     }
 
     fn afterHandshakeMessage(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage) !void {
@@ -3190,6 +3209,35 @@ pub const Context = struct {
     /// # Notes
     /// - Automatically called when KeyUpdate message is received
     /// - Private method, not intended for direct use by application
+    /// Handle an inbound NewSessionTicket (RFC 8446 §4.6.1).
+    ///
+    /// QUAL-074 history: this used to be a `debugPrint` swallow. The
+    /// dispatch-level role/level gating already happened in
+    /// `inboundNewSessionTicket`, so the body's job is the parse + the
+    /// optional `on_session_ticket` callback (GAP-0132).
+    ///
+    /// Parse errors propagate as `HandshakeError`; a missing callback is
+    /// not an error — the parsed ticket is simply discarded with a
+    /// debug-level log, matching the prior accept-and-log behaviour.
+    fn handleNewSessionTicket(self: *Context, body: []const u8) !void {
+        const parsed = messages_mod.parseNewSessionTicket(body) catch |err| {
+            logger.err(
+                "[TLS] NewSessionTicket parse failed: {s} (body_len={d})",
+                .{ @errorName(err), body.len },
+            );
+            return HandshakeError.UnexpectedMessage;
+        };
+
+        logger.debugPrint(
+            "[TLS] Context: Received NewSessionTicket (lifetime={d}s, nonce_len={d}, ticket_len={d}, ext_len={d})\n",
+            .{ parsed.ticket_lifetime, parsed.ticket_nonce.len, parsed.ticket.len, parsed.extensions.len },
+        );
+
+        if (self.callbacks.on_session_ticket) |cb| {
+            try cb(self, parsed);
+        }
+    }
+
     fn handleKeyUpdateMessage(self: *Context, request: KeyUpdateRequest) !void {
         // RFC 8446 §7.2: Update receiving traffic secret
         const recv_slot = self.secrets.slot(.Application, .recv);
