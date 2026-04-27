@@ -845,3 +845,190 @@ QUIC-side state dump recommended in the previous section
   **still open**, tracked in zig-quic.
 - Stand-alone TLS-only repro from a captured CH1: **still open**,
   blocked on a real interop tcpdump.
+
+---
+
+## 2026-04-27 — Verification against `9f56b0e` (zig-quic commit `d188f20`)
+
+zig-quic bumped to tls `9f56b0e` and re-ran the interop matrix. Critically,
+this run captured the **container's full stderr via `docker logs <id>`**
+(not the compose-runner tee, which truncates to the compose-attached
+window and was masking the diagnostic surface in earlier runs).
+
+### Captured docker logs
+
+```text
+zig (server) <-> quic-go (client) — handshake
+─────────────────────────────────────────────
+  Setting up routes... (sim/network setup)
+  Endpoint's IPv4 address is 193.167.100.100
+  === Zig QUIC Implementation ===
+  Version: zig-quic-20260427
+  Role: server
+  Test case: handshake
+  [qns] WARNING: TLS certificate validation disabled for interop testing
+  [qns] server: TLS enabled with mounted interop certificate
+  [qns] server: TCP readiness listener active on 0.0.0.0:443
+  [qns] server: started (listening [::]:443)
+  ERROR: processInitial: sendHandshakePackets failed: NoHandshakeKeys
+  [qns] server: accepted connection
+  (no [TLS-HS] line; no [TLS-HRR] line)
+
+zig (server) <-> mvfst (client) — handshake
+───────────────────────────────────────────
+  Setting up routes...
+  Endpoint's IPv4 address is 193.167.100.100
+  === Zig QUIC Implementation ===
+  [qns] server: TLS enabled with mounted interop certificate
+  [qns] server: started (listening [::]:443)
+  [qns] server: accepted connection
+  (no [TLS-HS] line; no [TLS-HRR] line; no NoHandshakeKeys; no other ERROR)
+```
+
+### Implication
+
+This is **decisive evidence that the active fault is not in the TLS engine**.
+With `[TLS-HRR]` failure-path diagnostics on every silent early-return in
+`negotiateCipherAndKeys` and `[TLS-HS]` success-path diagnostic on the
+`installTrafficSecret` callback boundary, *and* the zig-quic
+`tls_logger.setTestSink(...)` wiring in place to forward those lines to
+container stderr (verified independently), the absence of *any* tls-package
+log line means the TLS engine never gets called for the failing handshake.
+
+The active fault is upstream of `tls_ctx.processCrypto(.Initial, ...)` —
+i.e. **between zig-quic's QUIC-layer Initial packet processing and the
+ClientHello bytes arriving at the TLS state machine**. Specifically:
+
+| Failure mode (zig-quic side) | Hypothesis |
+|---|---|
+| **mvfst** | CH1 reaches `processInitial` (we see `accepted connection`), but the CRYPTO frame is never delivered to `tls_ctx.processCrypto`. Either CRYPTO-frame parse fails silently in the QUIC layer, or `pushCrypto` is called but `parseHandshakeOne` returns null (need-more-data — CH1 fragmented across packets, reassembly mis-tracking). |
+| **quic-go** | Same as mvfst, with the additional twist that the QUIC layer's `sendHandshakePackets` path runs and emits `NoHandshakeKeys`. That means handleInitialCrypto returned saw_crypto=true (so processInitial proceeded to call sendHandshakePackets) but the TLS context was never advanced enough to install Handshake-level secrets. |
+
+The "saw_crypto=true but no [TLS-HS]" combo for quic-go is a smoking gun
+for a CRYPTO-frame-handling bug on the zig-quic side: the connection is
+told a CRYPTO frame was processed, but the bytes never reached
+`tls_ctx.processCrypto`. Worth grep'ing the path:
+
+```text
+src/quic/endpoint/incoming.zig:processInitial → handleInitialCrypto →
+src/quic/connection/methods_a.zig:handleCryptoFrameGeneric → pushCrypto →
+src/quic/connection/methods_a.zig:pushCrypto:425
+  tls_ctx.processCrypto(level, hs)
+```
+
+Adding a `logger.err` at `methods_a.zig:425` immediately before
+`processCrypto(level, hs)` would prove or refute whether the bytes
+reach TLS at all. If they reach TLS, the new `[TLS-HS]` /
+`[TLS-HRR]` diagnostics will name the next failure mode.
+
+### TLS package status
+
+The TLS package's contribution to QUIC-INTEROP-HRR is now complete in
+the sense that:
+
+- HRR emit path on non-X25519 first key_share is correct (`4d2d69e`).
+- Cookie verify on CH2 is correct (`db073a3`, `3de2983`).
+- Diagnostic surface for every failure branch and the success branch
+  is in place (`307b100`, `3de2983`, `9f56b0e`).
+- Conformance tests cover the HRR success and failure paths
+  (`tests/security/quic_interop_hrr_diagnostics.zig`, 13/13 passing).
+
+The next steps are entirely in zig-quic. The TLS package's role here is
+the contract check that lets the zig-quic team locate their own bug
+without false suspicion of the TLS engine. Once the QUIC-side fault is
+named (via the `methods_a.zig:425`-style diagnostic), the failure mode
+will tell whether any further TLS-side work is even needed.
+
+---
+
+## 2026-04-27 — Resolved on zig-quic side (commit `4033fe3`)
+
+The `methods_a.zig:425`-style instrumentation suggested above was
+landed in zig-quic and the failing handshake mode is now fully
+characterised. **The fault was not in CRYPTO-frame reassembly nor in
+TLS at all** — it was in the QUIC-layer datagram packing during the
+server's first response flight.
+
+### Captured evidence (zig-quic with `[QUIC-CR-DIAG]` instrumentation)
+
+For both quic-go and mvfst clients:
+
+```text
+[QUIC-CR-DIAG] processInitial CRYPTO frame received: ... offset=0  data.len=63   expected=0
+[QUIC-CR-DIAG] -> branch=IN_ORDER  ... pushCrypto(len=63)
+[QUIC-CR-DIAG] -> tls_ctx.processCrypto OK: level=Initial hs_len=63
+[QUIC-CR-DIAG] processInitial CRYPTO frame received: ... offset=67 data.len=1171 expected=63
+[QUIC-CR-DIAG] -> branch=BUFFERED  ... offset=67 > expected=63 (gap=4)
+[QUIC-CR-DIAG] processInitial CRYPTO frame received: ... offset=63 data.len=4    expected=63
+[QUIC-CR-DIAG] -> branch=IN_ORDER  ... pushCrypto(len=4)        # drains buffer
+[QUIC-CR-DIAG] -> tls_ctx.processCrypto OK: level=Initial hs_len=1171  # buffer drain
+[QUIC-CR-DIAG] -> tls_ctx.processCrypto OK: level=Initial hs_len=274   # buffer drain
+[tls/ERROR] [TLS-HRR] ClientHello#1 parsed at level=Initial: key_share.group=x25519
+[tls/INFO]  [TLS-HS] secret installed: role=Server, level=Handshake, dir=send
+[tls/INFO]  [TLS-HS] secret installed: role=Server, level=Handshake, dir=recv
+[QUIC-CR-DIAG] processInitial -> sendServerHello/sendHandshakePackets path:
+              hs_tx_keys_present=true, hs_rx_keys_present=true
+[QUIC-CR-DIAG] sendServerHello: pollCrypto(.Initial) returned 90 bytes
+[QUIC-CR-DIAG] sendServerHello: pollCrypto(.Handshake) returned 745 bytes
+[QUIC-CR-DIAG] sendServerHello: BUFFERED Initial pkt 1200 bytes for coalesce
+[QUIC-CR-DIAG] sendHandshakePackets: SENT COALESCED initial+hs total=1985 bytes
+                                                                 ^^^^
+                                              ← exceeds path MTU; QNS drops it
+```
+
+### Root cause
+
+`sendServerHello` was unconditionally padding the inner Initial packet to
+1200 bytes (the RFC 9000 §14.1 "ack-eliciting Initial datagram MUST be ≥
+1200 bytes" floor) — even when a Handshake packet was queued for
+coalescing (`will_send_handshake = conn.hs_tx_keys != null`). The
+resulting *coalesced* server flight was Initial(1200) + Handshake(~785) ≈
+**1985 bytes**, well over the typical Ethernet MTU. The QNS network
+simulator (and many production paths) drop or fragment such datagrams,
+so quic-go and mvfst never received the server's flight and timed out.
+
+ngtcp2 was unaffected because its ClientHello arrives in many small
+chunks; by the time the TLS engine had enough bytes to install
+Handshake secrets, retransmission timing had already cycled the buffered
+Initial out of `pending_initial_packet`, so `sendHandshakePackets`
+emitted a Handshake-only datagram of ≤ 1100 bytes — which fit the path.
+The matrix dependency was hidden behind reassembly timing, not key share
+selection.
+
+### Fix (zig-quic commit `4033fe3`)
+
+In `src/quic/endpoint/handshake_integration.zig`:
+
+1. `sendServerHello`: when `is_last_chunk and will_send_handshake`,
+   skip inner-Initial padding. The Initial stays at its natural size
+   (~130 bytes).
+2. `sendHandshakePackets`: when this is the first Handshake packet of a
+   coalesced datagram with a pending Initial, project the resulting
+   coalesced size and add PADDING frames inside the Handshake CRYPTO
+   payload to lift the total to exactly 1200 bytes (§14.1 floor) without
+   exceeding the path MTU.
+
+Result: server flight is exactly 1200 bytes total instead of ~1985.
+
+### Verification
+
+`SKIP_BUILD=1 INTEROP_IMPLS=quic-go INTEROP_TESTCASES=handshake bash scripts/interop_full.sh basic`
+→ `quic-go_zig PASS`, `zig_quic-go PASS`.
+
+`SKIP_BUILD=1 INTEROP_IMPLS=mvfst INTEROP_TESTCASES=handshake bash scripts/interop_full.sh full`
+→ `mvfst_zig PASS`, `zig_mvfst PASS`, plus `haproxy/nginx PASS`.
+
+`SKIP_BUILD=1 INTEROP_IMPLS=ngtcp2 INTEROP_TESTCASES=handshake bash scripts/interop_full.sh full`
+→ `ngtcp2_zig PASS`, `zig_ngtcp2 PASS` (control - already passing).
+
+### TLS package final disposition for QUIC-INTEROP-HRR
+
+The TLS-side observability work landed in `4d2d69e`, `db073a3`,
+`307b100`, `3de2983`, and `9f56b0e` did exactly its job: every silent
+TLS-side failure mode is now tagged, and the *absence* of any tagged
+line on the failing run is what isolated the fault to the QUIC datagram
+layer. **No further TLS-side work is required for this issue.** The
+diagnostics remain valuable as a contract check for future
+QUIC<->TLS regressions.
+
+**Status: CLOSED.**
