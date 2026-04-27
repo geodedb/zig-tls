@@ -1,6 +1,6 @@
 # GAP Analysis
 
-> **Last updated:** 2026-04-21 (Cycle 7 / Phase 20 gap-detector sync — 5 substantive GAPs filed (GAP-0131..GAP-0135), 1 wishlist GAP-0136, 1 ledger-only GAP-0137; two stale Open ledger rows (Row 63 GAP-0097, Row 65 GAP-0098) superseded by GAP-0131 / GAP-0137 after evidence drift audit. GitLab issues: [#267](https://gitlab.com/devnw/zig/tls/-/work_items/267) GAP-0131, [#268](https://gitlab.com/devnw/zig/tls/-/work_items/268) GAP-0132, [#269](https://gitlab.com/devnw/zig/tls/-/work_items/269) GAP-0133, [#270](https://gitlab.com/devnw/zig/tls/-/work_items/270) GAP-0134, [#273](https://gitlab.com/devnw/zig/tls/-/work_items/273) GAP-0135, [#274](https://gitlab.com/devnw/zig/tls/-/work_items/274) GAP-0136.) Previous: 2026-04-20 (Cycle 6 / Phase 19 gap-closure — 17 QUAL/SEC/PERF items closed + 1 QUAL Won't-Do across other ledgers; NO GAP-* items touched that cycle. See `docs/QUALITY_GAP_ANALYSIS.md`, `docs/SECURITY_GAP_ANALYSIS.md`, and `docs/PERF_GAP_ANALYSIS.md` Cycle 6 / Phase 19 sections for detail. Cycle 6 / Phase 18 sync preceded: QUAL-069/QUAL-073/QUAL-091 closed as subsumed by engine.zig deletion + QUAL-317 decomposition; QUAL-116 filed as [#242](https://gitlab.com/devnw/zig/tls/-/work_items/242); QUAL-315 promoted Deferred → Open.)
+> **Last updated:** 2026-04-27 (Cycle 8 / Phase 22 gap-close — 3 GAP closures: GAP-0131 (#267) via `src/parallel.zig` deletion + 0.2.0 bump, GAP-0138 (#302) RFC 8446 §6.2 fatal-alert-on-handshake-error wired, GAP-0139 (#303) CertificateRequest level + post-handshake-auth gate. See `GAP_ANALYSIS_RESOLVED.md` "Cycle 8 / Phase 22" for evidence. Previous: 2026-04-21 (Cycle 7 / Phase 20 gap-detector sync — 5 substantive GAPs filed (GAP-0131..GAP-0135), 1 wishlist GAP-0136, 1 ledger-only GAP-0137; two stale Open ledger rows (Row 63 GAP-0097, Row 65 GAP-0098) superseded by GAP-0131 / GAP-0137 after evidence drift audit. GitLab issues: [#267](https://gitlab.com/devnw/zig/tls/-/work_items/267) GAP-0131, [#268](https://gitlab.com/devnw/zig/tls/-/work_items/268) GAP-0132, [#269](https://gitlab.com/devnw/zig/tls/-/work_items/269) GAP-0133, [#270](https://gitlab.com/devnw/zig/tls/-/work_items/270) GAP-0134, [#273](https://gitlab.com/devnw/zig/tls/-/work_items/273) GAP-0135, [#274](https://gitlab.com/devnw/zig/tls/-/work_items/274) GAP-0136.) Previous: 2026-04-20 (Cycle 6 / Phase 19 gap-closure — 17 QUAL/SEC/PERF items closed + 1 QUAL Won't-Do across other ledgers; NO GAP-* items touched that cycle. See `docs/QUALITY_GAP_ANALYSIS.md`, `docs/SECURITY_GAP_ANALYSIS.md`, and `docs/PERF_GAP_ANALYSIS.md` Cycle 6 / Phase 19 sections for detail. Cycle 6 / Phase 18 sync preceded: QUAL-069/QUAL-073/QUAL-091 closed as subsumed by engine.zig deletion + QUAL-317 decomposition; QUAL-116 filed as [#242](https://gitlab.com/devnw/zig/tls/-/work_items/242); QUAL-315 promoted Deferred → Open.)
 > **Reviewer:** Codex (Adversarial Security Review) + Claude Code (Audit + Implementation)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 >
@@ -18,10 +18,14 @@
 | Severity | Original | Closed | Won't Do | Superseded | Open |
 |----------|----------|--------|----------|------------|------|
 | Critical | 8        | 8      | 0        | 0          | 0    |
-| High     | 24       | 24     | 0        | 0          | 3    |
-| Medium   | 51       | 47     | 1        | 1          | 5    |
+| High     | 24       | 24     | 0        | 0          | 0    |
+| Medium   | 51       | 49     | 1        | 1          | 3    |
 | Low      | 54       | 50     | 6        | 1          | 2    |
-| **Total**| **137**  | **121**| **7**    | **2**      | **10** |
+| **Total**| **137**  | **131**| **7**    | **2**      | **5** |
+
+### Cycle 8 / Phase 22 Net Delta
+
++3 closures: GAP-0131 (Medium) via `src/parallel.zig` deletion + semver MAJOR -> 0.2.0; GAP-0138 (High) via `failAlert` helper queuing fatal alerts for every `HandshakeError` per RFC 8446 §6.2; GAP-0139 (Medium) via `Config.post_handshake_auth` + level-gated `certificate_request` arm. Closed cross-ledger items also referenced from this run: SEC-088, SEC-092 (subsumes SEC-078), SEC-084 (subsumed by QUAL-374), QUAL-374 (subsumes QUAL-364), PERF-229, PERF-237 (subsumes #180/#190/#195/#200/#248/#263/#267/#278), PERF-249, PERF-255.
 
 ### Cycle 7 / Phase 20 Net Delta
 
@@ -29,9 +33,9 @@
 
 ### Implementation Status
 
-**Closed: 121 findings** - Cycle 3 / Phase 15 (2026-04-20) closed GAP-0104 (delivered via PERF-209 allocator swap, commit 24a275c). Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
+**Closed: 131 findings** - Cycle 8 / Phase 22 (2026-04-27) closed GAP-0131 (commit 14b73a6), GAP-0138 (commit aa9254b + 8a7f394), GAP-0139 (commit aabbb74). Cycle 3 / Phase 15 (2026-04-20) closed GAP-0104 (delivered via PERF-209 allocator swap, commit 24a275c). Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
 **Won't Do: 7 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133), GAP-0099 (issue tracker maintenance, separate from code), GAP-0093 (2 skipped tests require stdlib features not yet available)
-**Open: 2 findings** - GAP-0106 (bench 0.16 API drift, blocker for local perf validation), GAP-0110 partial (engine EE nesting subsumed by deletion; analogous Context nesting tracked separately). GAP-0109 cross-file RSA-PSS canonicalization fully closed in Cycle 4 (2026-04-20) via `sig.rsaPssVerifyGeneric` shared core + differential fuzz harness.
+**Open: 5 findings** - GAP-0106 (bench 0.16 API drift, blocker for local perf validation), GAP-0110 partial (engine EE nesting subsumed by deletion; analogous Context nesting tracked separately), GAP-0132 (server NewSessionTicket build path + on_session_ticket callback), GAP-0135 (rotatePeerSecret per-connection KeyUpdate budget — cross-ref SEC-082), GAP-0136 (RFC 9001 §5.5 Retry integrity wishlist), plus ledger-only GAP-0137. GAP-0109 cross-file RSA-PSS canonicalization fully closed in Cycle 4 (2026-04-20) via `sig.rsaPssVerifyGeneric` shared core + differential fuzz harness.
 
 ### Cycle 3 / Phase 15 Gap Closure Run (2026-04-20)
 
@@ -1137,12 +1141,12 @@ All 11 remaining open issues from the third review have been implemented:
 - **Labels:** `gap`, `rfc::9001`, `type::feature`, `priority::low`, `status::wishlist`, `component::record`
 - **Created:** 2026-04-21
 
-### GAP-0138: Handshake errors do not queue fatal alerts [OPEN]
+### GAP-0138: Handshake errors do not queue fatal alerts [CLOSED]
 
 - **Issue:** [#302](https://gitlab.com/devnw/zig/tls/-/issues/302)
 - **Category:** Protocol Conformance / Alert Layer
 - **Severity:** High
-- **Status:** Open (2026-04-27)
+- **Status:** Closed 2026-04-27 (Cycle 8 / Phase 22, commit aa9254b + follow-up 8a7f394) — `failAlert` helper queues fatal alert via `sendFatalAlert` before propagating typed `HandshakeError`; `dispatchHandshake` wrapper centralizes the catch site in `handleHandshakeMessage`; `alert.fromHandshakeError` provides the §6.2 alert-code mapping for every `HandshakeError` variant (including the new `IllegalCompressionMethods` and `DuplicateExtension` variants from SEC-088 / SEC-092). Regression tests in `tests/security/gap0138_handshake_alert_emit.zig` assert the outbound CryptoBuffer payload (level=2, expected description) and `Context.phase == .terminated` on each error category.
 - **Requirement source:** RFC 8446 §6.2 ("Whenever an implementation encounters a fatal error condition, it SHOULD send an appropriate alert prior to closing the connection.")
 - **Current state (evidence):**
   - `src/tls13/context.zig:1108-1240` — the `handleHandshakeMessage` switch returns typed `HandshakeError.X` values without first queuing a fatal alert on the outbound CryptoBuffer.
@@ -1154,12 +1158,12 @@ All 11 remaining open issues from the third review have been implemented:
 - **Labels:** `category::protocol`, `severity::high`, `cwe::693`
 - **Created:** 2026-04-27
 
-### GAP-0139: CertificateRequest level + post-handshake-auth gate missing [OPEN]
+### GAP-0139: CertificateRequest level + post-handshake-auth gate missing [CLOSED]
 
 - **Issue:** [#303](https://gitlab.com/devnw/zig/tls/-/issues/303)
 - **Category:** Protocol Conformance
 - **Severity:** Medium
-- **Status:** Open (2026-04-27) — fix landing same cycle
+- **Status:** Closed 2026-04-27 (Cycle 8 / Phase 22, commit aabbb74) — `Config.post_handshake_auth: bool = false` added; `handleHandshakeMessage` `certificate_request` arm now switches on encryption level: Initial -> reject, Handshake -> accept only pre-`application_ready`, Application -> accept only when `post_handshake_auth == true` AND phase has reached `.application_ready` / `.post_handshake`. All 4 acceptance cases at `tests/security/gap0139_certreq_level_gate.zig` pass.
 - **Requirement source:** RFC 8446 §4.3.2 (CertificateRequest in initial handshake) + §4.6.2 (post-handshake CertificateRequest gated by `post_handshake_auth` extension).
 - **Current state (evidence):** `src/tls13/context.zig:1139-1174` accepted CertificateRequest at any encryption level without distinguishing initial-handshake vs post-handshake paths. No `Config.post_handshake_auth` toggle existed.
 - **Why this is a gap:** A peer could replay a stale CertificateRequest payload at the Application encryption level even when post-handshake auth was never negotiated, causing the client to dupe a fresh `client_cert_request_context` and drive a spurious CertificateVerify computation.

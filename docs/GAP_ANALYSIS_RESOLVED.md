@@ -64,12 +64,20 @@ commit (including markdownlint, zig fmt, commitizen). Per-gap evidence:
   exactly once and clones for the binder digest. Regression in
   `src/tls13/transcript.zig` confirms `clone()+update(rest)` matches
   `update(full)` on both SHA-256 and SHA-384.
-- **PERF-229** (P0, #243) — Closed (ADR-0002 Accepted 2026-04-27;
-  commit pending in this batch). Status flipped from Deferred to
-  Closed; ADR-0002 status flipped from Proposed to Accepted with
-  guidance-first strategy (option c) preserved; `README.md`
-  Performance note + `RUNBOOK.md` guidance already in place;
-  `benchEcdsaP256Verify` continues guarding regressions.
+- **PERF-229** (P0, #243) — Closed (ADR-0002 Accepted 2026-04-27,
+  commit 25c3690). Status flipped from Deferred to Closed; ADR-0002
+  status flipped from Proposed to Accepted with guidance-first
+  strategy (option c) preserved; `README.md` Performance note +
+  `RUNBOOK.md` guidance already in place; `benchEcdsaP256Verify`
+  continues guarding regressions.
+- **PERF-237b / GAP-0131** (#278 / #267) — Closed (commit 14b73a6;
+  semver MAJOR -> 0.2.0). `src/parallel.zig` (997 LOC) deleted; the
+  `pub const parallel = @import("parallel");` re-export and smoke
+  test stripped from `src/lib.zig`; `parallel_mod` wiring removed
+  from `build.zig`; `tests/fuzz/rsa_pss_verify.zig` migrated to
+  `sig.rsaPssVerifyGeneric`; `build.zig.zon` bumped to 0.2.0;
+  `CHANGELOG.md` migration notes added. Cascade closures (deletion
+  subsumption): #180, #190, #195, #200, #248, #263, #267, #278.
 
 ### Scope-creep deferred (1)
 

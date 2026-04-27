@@ -1,6 +1,6 @@
 # Performance Gap Analysis
 
-> **Last updated:** 2026-04-21 (Cycle 7 / Phase 20 — filed PERF-237..PERF-246 (10 new findings) against Phase 3 deep-review. Parallel.zig deletion verdict (PERF-237) cross-references GAP-0131 (#267). getrandom batching (PERF-238) cross-references SEC-074. PERF-229 (P0, ECDSA-P256 stdlib) confirmed Open pending ADR. PERF-210 demoted to Info (already filed `severity::info`; auto-vectorizes under ReleaseFast). Cycle 6 / Phase 19 previously closed PERF-230, PERF-231, PERF-234.)
+> **Last updated:** 2026-04-27 (Cycle 8 / Phase 22 — Closed PERF-229 (P0, ADR-0002 Accepted, commit 25c3690), PERF-237 (P2, parallel.zig deletion + 0.2.0 bump, commit 14b73a6, cross-closes GAP-0131 + cascaded #180/#190/#195/#200/#248/#263/#267/#278), PERF-249 (P1, outbound CryptoBuffer pre-size, commit 2502b80), PERF-255 (P1, PSK-binder transcript clone, commit 6298477). Previous: 2026-04-21 (Cycle 7 / Phase 20 — filed PERF-237..PERF-246 (10 new findings) against Phase 3 deep-review. Parallel.zig deletion verdict (PERF-237) cross-references GAP-0131 (#267). getrandom batching (PERF-238) cross-references SEC-074. PERF-229 (P0, ECDSA-P256 stdlib) confirmed Open pending ADR. PERF-210 demoted to Info (already filed `severity::info`; auto-vectorizes under ReleaseFast). Cycle 6 / Phase 19 previously closed PERF-230, PERF-231, PERF-234.)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 > **Target:** <2ms handshake, <100KB memory per connection
 > **Methodology:** Static code analysis, allocation pattern review, hot-path tracing
@@ -12,15 +12,17 @@
 
 | PerfSeverity | Total | Closed | Open | Not Issue | Won't Do | Deferred | Blocker |
 |-------------|-------|--------|------|-----------|----------|----------|---------|
-| P0          | 7     | 4      | 1    | 2         | 0        | 0        | 0       |
-| P1          | 14    | 10     | 4    | 0         | 0        | 0        | 0       |
-| P2          | 41    | 31     | 6    | 1         | 4        | 0        | 0       |
+| P0          | 7     | 5      | 0    | 2         | 0        | 0        | 0       |
+| P1          | 16    | 12     | 4    | 0         | 0        | 0        | 0       |
+| P2          | 41    | 32     | 5    | 1         | 4        | 0        | 0       |
 | P3          | 29    | 19     | 8    | 0         | 1        | 1        | 0       |
 | Info        | 3     | 1      | 1    | 0         | 1        | 0        | 0       |
 | Blocker     | 1     | 1      | 0    | 0         | 0        | 0        | 0       |
-| **Total**   | **95**| **66** | **20**| **3**   | **6**    | **1**    | **0**   |
+| **Total**   | **97**| **70** | **18**| **3**   | **6**    | **1**    | **0**   |
 
 *Counts reflect Cycle 7 / Phase 20 perf-issue-tracker (2026-04-21):* +10 newly filed (PERF-237 P2 parallel.zig deletion, PERF-238 P1 getrandom batching, PERF-239 P2 lockHash pre-CH, PERF-240 P2 scratch arena, PERF-241 P3 buildFinished dupe, PERF-242 P3 AeadCipher.init memcpy, PERF-243 P3 compact @memcpy, PERF-244 P3 @branchHint, PERF-245 P2 Context sizeOf guard, PERF-246 P3 BoundedArray supported_groups). PERF-210 ledger state confirmed Info (auto-vectorized). Cycle 6 / Phase 19 previously closed PERF-230, PERF-231, PERF-234. Cycle 5 / Phase 17 previously filed PERF-229..PERF-236 (8 items). Cycle 4 / Phase 16 closed PERF-218. Cycle 2 / Phase 14 closed 7 items. Phase 13 previously added +12 Closed and +1 Won't-Do.
+
+*Counts reflect Cycle 8 / Phase 22 (2026-04-27):* -1 P0 Open (+1 Closed: PERF-229 via ADR-0002 Accepted), -1 P2 Open (+1 Closed: PERF-237 via `src/parallel.zig` deletion + 0.2.0 bump; cross-closes GAP-0131 (#267) and the parallel-related cascade items #180/#190/#195/#200/#248/#263/#278 by deletion-subsumption); +2 P1 size (+2 Closed: PERF-249 outbound pre-size, PERF-255 PSK-binder transcript clone). Net: -2 Open, +4 Closed, +2 total.
 
 ### Cycle 2 / Phase 14 Gap Closure Run (2026-04-20)
 
