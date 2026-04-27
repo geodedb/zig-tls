@@ -5,6 +5,83 @@
 
 ---
 
+## Cycle 8 / Phase 22 Gap Closure (2026-04-27)
+
+Execution of the Phase 22 plan (10 gap items in implementation order). All
+landed in 11 code commits + 1 doc commit on `main`. Verifier (`zig build`,
+`zig build test`) PASS; full suite green; pre-commit hooks pass on every
+commit (including markdownlint, zig fmt, commitizen). Per-gap evidence:
+
+### SEC closures (2 new + 1 subsumed)
+
+- **SEC-088** (#323) — Closed (commit a941970). ClientHello
+  `legacy_compression_methods` enforcement (RFC 8446 §4.1.2): parser
+  returns typed `error.IllegalCompressionMethods` for any shape other
+  than `[0x00]`; ServerHello handler rejects non-zero compression byte.
+  Tests at `tests/security/sec088_clienthello_compression.zig` (4 cases).
+- **SEC-092** (#296, subsumes SEC-078) — Closed (commit ab1f781). EE
+  parser, SH `validateSupportedVersions`, SH `parsePskExtension`, and
+  the inline ServerHello extension walk in `handleServerHello` all
+  reject duplicate extension types via `EnumSet(ExtensionType)` per
+  RFC 8446 §4.2. Tests at `tests/security/sec092_ee_dup_ext.zig` (3) +
+  three new in-file tests on `server_hello_parsers.zig`.
+
+### GAP closures (2 new)
+
+- **GAP-0138** (#302) — Closed (commit aa9254b). Handshake errors now
+  queue fatal alerts per RFC 8446 §6.2 via a `failAlert` helper +
+  `dispatchHandshake` wrapper; alert mapping handled by
+  `alert.fromHandshakeError`. Tests at
+  `tests/security/gap0138_handshake_alert_emit.zig` assert outbound
+  CryptoBuffer payloads (level=2, expected description) and
+  `Context.phase == .terminated`.
+- **GAP-0139** (#303) — Closed (commit aabbb74). CertificateRequest
+  level + post-handshake-auth gate: Initial reject; Handshake accept
+  during initial; Application accept only with new
+  `Config.post_handshake_auth = true` AND completed phase. Tests at
+  `tests/security/gap0139_certreq_level_gate.zig` (4 cases).
+
+### QUAL closures (1 new + 2 subsumed)
+
+- **QUAL-374** (subsumes QUAL-364 #282 + SEC-084 #301) — Closed
+  (commit 23df917). Two unconditionally-skipping tests replaced with
+  real coverage:
+  - `tests/sig_unit_tests.zig` `parseRsaSpki - wrong OID rejection`
+    now constructs an SPKI with `id-ecPublicKey` (1.2.840.10045.2.1).
+  - `tests/x509_unit_tests.zig` `validateChain - single self-signed
+    certificate` runs against the existing Ed25519 fixture.
+
+### PERF closures (2 new + 1 ADR)
+
+- **PERF-249** (#315) — Closed (commit 2502b80). Outbound CryptoBuffer
+  paths in `src/tls13/context.zig` (`appendOutbound`, `sendCloseNotify`,
+  `sendFatalAlert`, KeyUpdate emit) now call `ensureUnusedCapacity`
+  before `appendSlice`. Regression at `tests/perf/test_outbound_allocs.zig`
+  asserts ≤2 outbound resizes per workload via `CountingAllocator`.
+- **PERF-255** (#320) — Closed (commit 6298477). `Transcript.clone()`
+  added (zero-cost: SHA-256/SHA-384 state is value-copyable). PSK-binder
+  path now hashes the truncated CH prefix into the main transcript
+  exactly once and clones for the binder digest. Regression in
+  `src/tls13/transcript.zig` confirms `clone()+update(rest)` matches
+  `update(full)` on both SHA-256 and SHA-384.
+- **PERF-229** (P0, #243) — Closed (ADR-0002 Accepted 2026-04-27;
+  commit pending in this batch). Status flipped from Deferred to
+  Closed; ADR-0002 status flipped from Proposed to Accepted with
+  guidance-first strategy (option c) preserved; `README.md`
+  Performance note + `RUNBOOK.md` guidance already in place;
+  `benchEcdsaP256Verify` continues guarding regressions.
+
+### Scope-creep deferred (1)
+
+- **QUAL-351** (#245) — remains **Open / Deferred** with a refined
+  evidence note (commit d482da4). Closure requires coordinated changes
+  across `ClientPriv` field, `ClientHelloParams.client_pub`, the
+  `buildKeyShare` extension handler, `handleServerHello` ECDHE compute,
+  `sendClientHello2` HRR rekey, and the server-side `scalarmult` site;
+  P256 ECDH is not in `std.crypto.dh`. Defer to a dedicated wave.
+
+---
+
 ## Cycle 6 / Phase 19 Gap Closure (2026-04-20)
 
 Execution of Cycle 5 / Phase 17 audit findings. 17 cross-ledger closures + 1 Won't-Do landed across 17 code commits + 1 doc commit on `main`. Verifier (gap-closer-verifier, APPROVED): `zig build` PASS, `zig build test` 668/668 PASS (+9 new tests), both oracles byte-identical (context-decomp + client_hello ExtHandler), `zig fmt --check` clean, pre-commit clean. No GAP-* ledger items touched this cycle; all closures are on the QUAL / SEC / PERF ledgers.

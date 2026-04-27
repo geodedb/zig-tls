@@ -2916,7 +2916,7 @@ Phase 2 scan confirmed 4 existing-issue findings (PERF-216, PERF-213, PERF-208, 
 
 | PERF-ID | Sev | Issue | Reason |
 |---------|-----|-------|--------|
-| PERF-229 | P0 | [#243](https://gitlab.com/devnw/zig/tls/-/issues/243) | **Status:** Open → Deferred per ADR-0002 (2026-04-21). See [`docs/adr/0002-ecdsa-p256-performance.md`](adr/0002-ecdsa-p256-performance.md). ECDSA-P256 stdlib ~10x slower than BoringSSL nistz256. Blocks <2ms handshake SLO on P-256 ecosystem. Guidance-first strategy adopted (option c); nistz256 port reserved as future opt-in build flag. |
+| PERF-229 | P0 | [#243](https://gitlab.com/devnw/zig/tls/-/issues/243) | **Status:** Closed (ADR-0002 Accepted 2026-04-27). See [`docs/adr/0002-ecdsa-p256-performance.md`](adr/0002-ecdsa-p256-performance.md). ECDSA-P256 stdlib ~10x slower than BoringSSL nistz256; blocks <2ms handshake SLO on P-256 ecosystem. Guidance-first strategy adopted (option c — README + RUNBOOK Performance notes); nistz256 port reserved as future opt-in `-Dnistz256=true` build flag. The `benchEcdsaP256Verify` bench in `tests/bench.zig` continues to alert on >10% regression. |
 | PERF-232 | P1 | [#255](https://gitlab.com/devnw/zig/tls/-/issues/255) | Missing end-to-end handshake benchmark. Needs new bench harness `bench_full_handshake.zig`. |
 | PERF-233 | P1 | [#257](https://gitlab.com/devnw/zig/tls/-/issues/257) | ThreadPool cold-start spike — needs profiling + `parallel.warmPool()` design. |
 | PERF-235 | P2 | [#263](https://gitlab.com/devnw/zig/tls/-/issues/263) | `parallel*` thresholds unvalidated; needs crossover bench. |
@@ -2936,7 +2936,7 @@ Phase 3 perf-reviewer delivered 8 new findings. All filed on GitLab under PERF-2
 
 | Rank | PerfSeverity | PerfScore | Finding | Component | Evidence (file:line) | Issue | Fix Summary | Confidence | Owner | SLA | Status |
 |------|--------------|-----------|---------|-----------|----------------------|-------|-------------|-----------|-------|-----|--------|
-| 1 | P0 | 100 | PERF-229: ECDSA-P256 at 1.63ms via stdlib — ~10x slower than BoringSSL nistz256 asm; blocks <2ms handshake SLO | sig / parallel / x509 | `src/sig.zig:648,668,731`; `src/parallel.zig:350,364`; `src/x509.zig:1489,1498` | #243 | Scope ADR: (a) pure-Zig nistz256 port, (b) optional FFI to BoringSSL/OpenSSL, (c) guidance to prefer Ed25519 | confirmed | benji | Immediate | Deferred (ADR-0002) — see [`docs/adr/0002-ecdsa-p256-performance.md`](adr/0002-ecdsa-p256-performance.md) (2026-04-21) |
+| 1 | P0 | 100 | PERF-229: ECDSA-P256 at 1.63ms via stdlib — ~10x slower than BoringSSL nistz256 asm; blocks <2ms handshake SLO | sig / parallel / x509 | `src/sig.zig:648,668,731`; `src/parallel.zig:350,364`; `src/x509.zig:1489,1498` | #243 | Scope ADR: (a) pure-Zig nistz256 port, (b) optional FFI to BoringSSL/OpenSSL, (c) guidance to prefer Ed25519 | confirmed | benji | Immediate | **Closed** (ADR-0002 Accepted 2026-04-27) — see [`docs/adr/0002-ecdsa-p256-performance.md`](adr/0002-ecdsa-p256-performance.md). Option (c) adopted; README + RUNBOOK guidance landed; nistz256 port reserved as future opt-in. |
 | 2 | P1 | 48 | PERF-230: ThreadPool worker count uncapped at cpu_count; cgroup-hostile and not Config-exposed | infra | `src/parallel.zig:78` | #247 | Add `parallel.Config.worker_count`; auto-detect cgroup v2 quota on Linux; default cap `min(getCpuCount(), 8)` | confirmed | benji | Within sprint | **Closed** (Cycle 6 / Phase 19, commit 821e929) |
 | 3 | P1 | 40 | PERF-231: Transcript.snapshot() ignores locked_hash; finalizes both SHA-256 + SHA-384 always | transcript | `src/tls13/transcript.zig:266-271` | #251 | Gate on `locked_hash`; finalize only the pinned hash variant — mirrors PERF-228 on the snapshot side | confirmed | benji | Within sprint | **Closed** (Cycle 6 / Phase 19, commit 5a048dc) |
 | 4 | P1 | 36 | PERF-232: Missing end-to-end handshake benchmark (`bench_full_handshake.zig`) | ci / bench | `tests/perf/` — file absent | #255 | New bench: in-memory client/server pair across Ed25519/P-256/P-384/RSA-PSS × {no-resumption, PSK, 0-RTT} × {chain=1,3}. Depends on PERF-223 harness primitives. | confirmed | benji | Within sprint | Open (2026-04-20) |
@@ -2968,7 +2968,7 @@ Phase 3 perf-reviewer delivered 8 new findings. All filed on GitLab under PERF-2
 
 ### Phase 17 top 5 risks
 
-1. **PERF-229** (PerfScore 100, P0) — <2ms handshake SLO is architecturally unreachable on P-256 chains without this. Expected post-fix: ~1.63ms → ~150-200 us per op (~8-10x). **Open.**
+1. **PERF-229** (PerfScore 100, P0) — <2ms handshake SLO is architecturally unreachable on P-256 chains without this. Expected post-fix: ~1.63ms → ~150-200 us per op (~8-10x). **Closed (ADR-0002 Accepted 2026-04-27).**
 2. ~~**PERF-230** (PerfScore 48, P1)~~ — **Closed** Cycle 6 / Phase 19 (commit 821e929). ThreadPool capped at `min(getCpuCount(), 16)`.
 3. ~~**PERF-231** (PerfScore 40, P1)~~ — **Closed** Cycle 6 / Phase 19 (commit 5a048dc). `Transcript.snapshot` honors `locked_hash`; ~2 us/handshake saved.
 4. **PERF-233** (PerfScore 36, P1, suspected) — tail-latency spike on first handshake. Expected post-fix: p999 spike on cold process removed. **Open** (deferred — needs profiling).

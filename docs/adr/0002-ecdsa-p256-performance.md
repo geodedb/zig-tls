@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed — 2026-04-21. Addresses PERF-229 (previously Open P0).
+Accepted — 2026-04-27. Addresses PERF-229 (previously Open P0).
+Originally proposed 2026-04-21; adopted in Phase 22 gap-close after the
+README + RUNBOOK guidance landed and the perf-bench regression guard
+was confirmed in `tests/bench.zig`.
 
 ## Context
 
