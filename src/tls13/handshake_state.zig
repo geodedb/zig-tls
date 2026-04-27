@@ -204,6 +204,12 @@ pub const CryptoStreams = struct {
 pub const ClientHelloKeyShareView = struct {
     group: tls13_full.NamedGroup,
     key: []const u8,
+    /// Raw u16 codepoint as offered by the client (RFC 8446 §4.2.8).
+    /// See `tls13_full.KeyShareEntry.raw_group_code` for semantics — for
+    /// codepoints outside the `NamedGroup` enum (e.g. PQ-hybrid 0x6399)
+    /// `group` carries a non-X25519 sentinel while this field preserves
+    /// the actual offered value.
+    raw_group_code: u16 = 0,
 };
 
 /// View of a pre-shared key identity advertised by the client.
@@ -231,6 +237,10 @@ pub const ClientHelloView = struct {
     early_data: bool,
     pre_shared_key: ?ClientHelloPreSharedKeyView,
     psk_key_exchange_modes: ?[]const u8, // RFC 8446 §4.2.9: Required when using PSK
+    /// SEC-086: RFC 8446 §4.2.2 cookie echo carried on a post-HRR
+    /// ClientHello2. Null on CH1 (which never carries a cookie) and
+    /// on CH2 if the client failed to echo. Borrowed slice into `raw`.
+    cookie: ?[]const u8,
     raw: []const u8,
 };
 
@@ -256,12 +266,14 @@ pub const ClientHelloInfo = struct {
     key_share: struct {
         group: tls13_full.NamedGroup,
         key: []u8,
+        raw_group_code: u16 = 0,
     },
     quic_transport_parameters: ?[]u8,
     alpn_list: ?[][]u8,
     early_data: bool,
     pre_shared_key: ?PreSharedKeyInfo,
     psk_key_exchange_modes: ?[]u8, // RFC 8446 §4.2.9
+    cookie: ?[]u8, // SEC-086: RFC 8446 §4.2.2 — HRR cookie echo (CH2 only)
     raw: []u8,
 
     /// Parse ClientHello message body and allocate owned copies.
@@ -375,18 +387,28 @@ pub const ClientHelloInfo = struct {
             psk_modes_ref = reslice.into(raw_copy, body, modes);
         }
 
+        // SEC-086: cookie ext (RFC 8446 §4.2.2) — present only on
+        // post-HRR CH2. Reslice onto the duped raw buffer like the
+        // other view-typed fields so it survives the parsed struct's
+        // teardown.
+        var cookie_ref: ?[]u8 = null;
+        if (parsed.cookie) |ck| {
+            cookie_ref = reslice.into(raw_copy, body, ck);
+        }
+
         const info = ClientHelloInfo{
             .random = parsed.random,
             .session_id = session_id_ref,
             .cipher_suites = cipher_suites_owned,
             .signature_algorithms = sigalgs_owned,
             .supported_versions = versions_ref,
-            .key_share = .{ .group = key_share.group, .key = key_bytes_ref },
+            .key_share = .{ .group = key_share.group, .key = key_bytes_ref, .raw_group_code = key_share.raw_group_code },
             .quic_transport_parameters = tp_ref,
             .alpn_list = alpn_owned,
             .early_data = parsed.early_data,
             .pre_shared_key = psk_owned,
             .psk_key_exchange_modes = psk_modes_ref,
+            .cookie = cookie_ref,
             .raw = raw_copy,
         };
 
@@ -513,7 +535,7 @@ pub const HandshakeState = struct {
                 .cipher_suites = info.cipher_suites,
                 .signature_algorithms = info.signature_algorithms,
                 .supported_versions = info.supported_versions,
-                .key_share = .{ .group = info.key_share.group, .key = info.key_share.key },
+                .key_share = .{ .group = info.key_share.group, .key = info.key_share.key, .raw_group_code = info.key_share.raw_group_code },
                 .quic_transport_parameters = info.quic_transport_parameters,
                 // SEC-045: [][]u8 coerces to []const []const u8 without @ptrCast.
                 .alpn_list = info.alpn_list,
@@ -525,6 +547,7 @@ pub const HandshakeState = struct {
                     .binders = psk.binders,
                 } else null,
                 .psk_key_exchange_modes = info.psk_key_exchange_modes,
+                .cookie = info.cookie,
                 .raw = info.raw,
             };
         }

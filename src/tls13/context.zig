@@ -579,6 +579,13 @@ pub const Context = struct {
     hrr_sent: bool = false, // Track if we already sent HelloRetryRequest (server)
     hrr_received: bool = false, // Track if we received HelloRetryRequest (client)
     server_secret_generated: ?[32]u8 = null, // Generated server secret for HRR cookies
+
+    /// SEC-086: RFC 8446 §4.2.2 cookie binding requires the server to
+    /// remember the CH1 transcript hash across HRR so the cookie HMAC
+    /// over (server_secret, client_random, ch1_transcript_hash) can
+    /// be re-verified when CH2 arrives. Captured at HRR emit; consumed
+    /// by `negotiateCipherAndKeys` on the second pass.
+    ch1_transcript_hash: ?Secret = null,
     // mTLS state (RFC 8446 §4.3.2)
     client_cert_requested: bool = false, // Client: tracks that server sent CertificateRequest
     client_cert_request_context: ?[]u8 = null, // Client: stores request context from CertificateRequest
@@ -725,6 +732,14 @@ pub const Context = struct {
             std.crypto.secureZero(u8, ssg);
         }
         self.server_secret_generated = null;
+        // SEC-086: zeroize CH1 transcript hash on teardown so it cannot
+        // leak to a later cookie-validation oracle (defense in depth —
+        // the hash itself isn't secret but the size/contents reveal
+        // negotiated cipher suite).
+        if (self.ch1_transcript_hash) |*h| {
+            std.crypto.secureZero(u8, h.bytes[0..h.len]);
+        }
+        self.ch1_transcript_hash = null;
         self.hash_kind = .sha256;
         self.phase = .initial;
     }
@@ -1581,6 +1596,10 @@ pub const Context = struct {
         // Compute transcript hash of first ClientHello.
         const ch1_hash = self.transcripts.handshake.finalize(self.hash_kind);
 
+        // SEC-086: persist CH1 transcript hash so the cookie can be
+        // re-verified when CH2 arrives (RFC 8446 §4.2.2 server side).
+        self.ch1_transcript_hash = ch1_hash;
+
         // Delegate cookie generation + HRR body encoding to the pure module.
         const hrr_result = try hello_retry_mod.buildHrrBody(self.allocator, .{
             .server_secret = server_secret,
@@ -1698,6 +1717,27 @@ pub const Context = struct {
         }
 
         if (ch_view.key_share.key.len != 32) return HandshakeError.UnsupportedKeyShareGroup;
+
+        // SEC-086: post-HRR cookie verification (RFC 8446 §4.2.2). When
+        // we sent HRR, the second ClientHello MUST echo the cookie we
+        // issued; we re-derive the HMAC inputs from per-Context state
+        // captured at HRR emit time. A missing, malformed, stale, or
+        // forged cookie aborts the handshake (handshake_failure /
+        // illegal_parameter on the wire).
+        if (self.hrr_sent) {
+            const ch1_hash = self.ch1_transcript_hash orelse return HandshakeError.InvalidCookie;
+            const cookie_bytes = ch_view.cookie orelse return HandshakeError.InvalidCookie;
+            const server_secret = try self.ensureServerSecret();
+            const max_age_seconds: i64 = 10; // RFC 8446 §4.2.2 typical
+            const ok = cookie_mod.verifyCookie(
+                cookie_bytes,
+                server_secret,
+                ch_view.random,
+                ch1_hash.slice(),
+                max_age_seconds,
+            );
+            if (!ok) return HandshakeError.InvalidCookie;
+        }
 
         var server_random: [32]u8 = undefined;
         // SEC-074: fail-closed entropy (replaces unchecked getrandom).

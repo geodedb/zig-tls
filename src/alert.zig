@@ -124,6 +124,7 @@ pub fn fromHandshakeError(err: anyerror) AlertDescription {
         error.MissingResumptionTicket => .illegal_parameter,
         error.UnexpectedPskExtension => .illegal_parameter,
         error.PskIndexOutOfRange => .illegal_parameter,
+        error.InvalidCookie => .illegal_parameter, // SEC-086: RFC 8446 §4.2.2 cookie verification failure
         error.CryptoError => .internal_error,
         error.MissingServerName => .handshake_failure,
         error.OutOfMemory => .internal_error,

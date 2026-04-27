@@ -45,6 +45,7 @@ test "PERF-218: selectServerAlpn borrows from config (no dupe)" {
         .early_data = false,
         .pre_shared_key = null,
         .psk_key_exchange_modes = null,
+        .cookie = null,
         .raw = &.{},
     };
 

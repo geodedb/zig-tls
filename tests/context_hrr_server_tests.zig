@@ -123,17 +123,18 @@ fn buildFramedClientHelloWithGroup(
         0x00, 0x00, // ext_len = 0
     });
 
-    // Optional cookie extension (post-HRR CH2 echo). The TLS package's HRR
-    // builder writes the cookie bytes directly as ext_data with no inner
-    // length prefix (see `helpers.writeExtension` + `buildHelloRetryRequest`),
-    // so the CH2 echo here matches that wire format. The server's parseCookie
-    // handler is currently a no-op, so the test does not depend on cookie
-    // contents — this keeps the message shape symmetric with what the HRR
-    // emitted.
+    // Optional cookie extension (post-HRR CH2 echo). RFC 8446 §4.2.2:
+    // ext_data carries a `Cookie` struct (`opaque cookie<1..2^16-1>`),
+    // i.e. 2-byte ext_data_len, then a 2-byte inner cookie length,
+    // then the cookie bytes.
     if (cookie) |c| {
-        try exts.appendSlice(allocator, &[_]u8{ 0x00, 0x2c });
-        try exts.append(allocator, @intCast(c.len >> 8));
-        try exts.append(allocator, @intCast(c.len & 0xff));
+        const ext_data_len: u16 = @intCast(c.len + 2);
+        const inner_len: u16 = @intCast(c.len);
+        try exts.appendSlice(allocator, &[_]u8{
+            0x00,                        0x2c,
+            @intCast(ext_data_len >> 8), @intCast(ext_data_len & 0xff),
+            @intCast(inner_len >> 8),    @intCast(inner_len & 0xff),
+        });
         try exts.appendSlice(allocator, c);
     }
 
@@ -192,10 +193,9 @@ fn findHrrSelectedGroupOffset(msg: []const u8) ?usize {
 
 /// Extract the cookie bytes from an HRR message. Caller does NOT own.
 ///
-/// NOTE: the TLS package's HRR builder emits the cookie ext_data as raw
-/// HMAC bytes (no inner 2-byte length prefix), matching what
-/// `helpers.writeExtension(.cookie, cookie)` produces. We surface that
-/// raw payload directly — clients echo it byte-for-byte in CH2.
+/// RFC 8446 §4.2.2: ext_data wraps a `Cookie` struct with a 2-byte inner
+/// length prefix followed by the cookie bytes. We surface the inner
+/// payload (i.e. the bytes the client echoes verbatim in CH2).
 fn extractHrrCookie(msg: []const u8) ?[]const u8 {
     if (msg.len < 4) return null;
     var pos: usize = 4 + 2 + 32;
@@ -215,7 +215,10 @@ fn extractHrrCookie(msg: []const u8) ?[]const u8 {
         pos += 4;
         if (pos + elen > exts_end) return null;
         if (etype == 0x002c) {
-            return msg[pos .. pos + elen];
+            if (elen < 2) return null;
+            const ck_len: usize = @as(usize, msg[pos]) << 8 | msg[pos + 1];
+            if (2 + ck_len > elen) return null;
+            return msg[pos + 2 .. pos + 2 + ck_len];
         }
         pos += elen;
     }
@@ -301,6 +304,116 @@ test "HRR-server: CH1 with x25519_kyber768_draft00 key_share triggers HRR" {
         return error.TestExpectedKeyShareInHrr;
     try testing.expectEqual(@as(u8, 0x00), hrr_msg[grp_off]);
     try testing.expectEqual(@as(u8, 0x1d), hrr_msg[grp_off + 1]);
+}
+
+// ============================================================================
+// Test 2b (QUAL-369): preserve raw key_share codepoint for unknown groups
+// ============================================================================
+
+test "HRR-server: parser preserves raw_group_code for unknown PQ-hybrid codepoint" {
+    // QUAL-369: when the offered key_share group code is outside our
+    // NamedGroup enum (e.g. 0x6399), the parser stores .secp256r1 as a
+    // sentinel so the orchestrator can issue HRR, but the original u16
+    // codepoint MUST be preserved on KeyShareEntry.raw_group_code so
+    // future logic can switch on the actual offered group.
+    var server_ctx = try makeServerCtx();
+    defer server_ctx.deinit();
+
+    var hybrid_key: [1216]u8 = undefined;
+    @memset(&hybrid_key, 0xC9);
+
+    const ch1 = try buildFramedClientHelloWithGroup(
+        testing.allocator,
+        0x6399,
+        &hybrid_key,
+        null,
+    );
+    defer testing.allocator.free(ch1);
+
+    try server_ctx.processCrypto(.Initial, ch1);
+
+    // The orchestrator's view of the parsed CH1 must still expose the
+    // original codepoint even though `group` is the X25519-not-X25519
+    // sentinel. State has already been reset post-HRR, so we read the
+    // view BEFORE the reset by inspecting the surviving HRR; this test
+    // exercises the parser-to-view plumbing directly.
+    const ch1_body = ch1[4..]; // strip 4-byte handshake header
+    const parsed = try tls13_full.parseClientHello(testing.allocator, ch1_body);
+    defer {
+        testing.allocator.free(parsed.cipher_suites);
+        if (parsed.supported_groups) |g| testing.allocator.free(g);
+        if (parsed.signature_algorithms) |a| testing.allocator.free(a);
+        if (parsed.alpn_list) |l| testing.allocator.free(l);
+        if (parsed.pre_shared_key) |psk| {
+            testing.allocator.free(psk.identities);
+            testing.allocator.free(psk.binders);
+        }
+    }
+    const ks = parsed.key_share orelse return error.TestExpectedKeyShare;
+    try testing.expectEqual(@as(u16, 0x6399), ks.raw_group_code);
+    // Sentinel non-X25519 group so the orchestrator triggers HRR.
+    try testing.expect(ks.group != .x25519);
+}
+
+// ============================================================================
+// Test 2c (SEC-087): HRR cookie ext_data carries the RFC 8446 §4.2.2 inner length prefix
+// ============================================================================
+
+test "HRR-server: cookie ext on the wire has the RFC 8446 §4.2.2 inner length prefix" {
+    // SEC-087: RFC 8446 §4.2.2 specifies the cookie extension's ext_data
+    // as a `Cookie` struct (`opaque cookie<1..2^16-1>`), i.e. a 2-byte
+    // length prefix followed by the cookie bytes. Prior to this fix the
+    // HRR builder elided the inner prefix, breaking interop with clients
+    // that parsed the ext_data per spec. This regression test asserts
+    // the wire format directly.
+    var server_ctx = try makeServerCtx();
+    defer server_ctx.deinit();
+
+    var p256_key: [65]u8 = undefined;
+    p256_key[0] = 0x04;
+    @memset(p256_key[1..], 0xA1);
+
+    const ch1 = try buildFramedClientHelloWithGroup(
+        testing.allocator,
+        0x0017,
+        &p256_key,
+        null,
+    );
+    defer testing.allocator.free(ch1);
+    try server_ctx.processCrypto(.Initial, ch1);
+
+    const hrr_msg = try server_ctx.pollCrypto(testing.allocator, .Initial);
+    defer testing.allocator.free(hrr_msg);
+
+    // Walk extensions to find the cookie. ext_data must be:
+    //   inner_len (2) | <inner_len cookie bytes>
+    // and inner_len + 2 MUST equal ext_data_len.
+    var pos: usize = 4 + 2 + 32; // header + version + random
+    if (pos + 1 > hrr_msg.len) return error.TestUnexpectedHrrShape;
+    const sid_len: usize = hrr_msg[pos];
+    pos += 1 + sid_len;
+    pos += 2 + 1; // cipher_suite + compression
+    if (pos + 2 > hrr_msg.len) return error.TestUnexpectedHrrShape;
+    const exts_len: usize = @as(usize, hrr_msg[pos]) << 8 | hrr_msg[pos + 1];
+    pos += 2;
+    const exts_end = pos + exts_len;
+
+    var found = false;
+    while (pos + 4 <= exts_end) {
+        const etype: u16 = @as(u16, hrr_msg[pos]) << 8 | hrr_msg[pos + 1];
+        const elen: usize = @as(usize, hrr_msg[pos + 2]) << 8 | hrr_msg[pos + 3];
+        pos += 4;
+        if (etype == 0x002c) {
+            try testing.expect(elen >= 2);
+            const inner: usize = @as(usize, hrr_msg[pos]) << 8 | hrr_msg[pos + 1];
+            try testing.expectEqual(elen - 2, inner);
+            try testing.expect(inner > 0); // RFC 8446: cookie<1..2^16-1>
+            found = true;
+            break;
+        }
+        pos += elen;
+    }
+    try testing.expect(found);
 }
 
 // ============================================================================
@@ -426,4 +539,95 @@ test "HRR-server: CH2 with x25519 after HRR is accepted (parser does not reject)
     try testing.expect(hs_send.valid or hs_recv.valid or
         server_ctx.phase == .keys_installed or
         server_ctx.phase == .application_ready);
+}
+
+// ============================================================================
+// Test 5 (SEC-086): forged cookie on CH2 is rejected with InvalidCookie
+// ============================================================================
+
+test "HRR-server: CH2 with a forged cookie is rejected (SEC-086)" {
+    // RFC 8446 §4.2.2: the server MUST verify that the cookie echoed in
+    // CH2 is the one it issued in HRR (HMAC over server_secret,
+    // client_random, CH1_transcript_hash). A flipped HMAC bit must
+    // abort with `illegal_parameter`.
+    var server_ctx = try makeServerCtx();
+    defer server_ctx.deinit();
+
+    var p256_key: [65]u8 = undefined;
+    p256_key[0] = 0x04;
+    @memset(p256_key[1..], 0x55);
+    const ch1 = try buildFramedClientHelloWithGroup(
+        testing.allocator,
+        0x0017,
+        &p256_key,
+        null,
+    );
+    defer testing.allocator.free(ch1);
+    try server_ctx.processCrypto(.Initial, ch1);
+
+    const hrr_msg = try server_ctx.pollCrypto(testing.allocator, .Initial);
+    defer testing.allocator.free(hrr_msg);
+    const cookie = extractHrrCookie(hrr_msg) orelse return error.TestExpectedCookieInHrr;
+
+    // Flip the high bit of the first HMAC byte to force a verification miss.
+    const forged = try testing.allocator.dupe(u8, cookie);
+    defer testing.allocator.free(forged);
+    forged[0] ^= 0x80;
+
+    var x25519_key: [32]u8 = undefined;
+    @memset(&x25519_key, 0x77);
+    const ch2 = try buildFramedClientHelloWithGroup(
+        testing.allocator,
+        0x001d,
+        &x25519_key,
+        forged,
+    );
+    defer testing.allocator.free(ch2);
+
+    try testing.expectError(
+        tls13.HandshakeError.InvalidCookie,
+        server_ctx.processCrypto(.Initial, ch2),
+    );
+}
+
+// ============================================================================
+// Test 6 (SEC-086): missing cookie on CH2 is rejected with InvalidCookie
+// ============================================================================
+
+test "HRR-server: CH2 without a cookie ext is rejected (SEC-086)" {
+    // RFC 8446 §4.2.2: the cookie is OPTIONAL in HRR but if the server
+    // sent one (it always does in this implementation), the client MUST
+    // echo it. Absent cookie on CH2 aborts with InvalidCookie.
+    var server_ctx = try makeServerCtx();
+    defer server_ctx.deinit();
+
+    var p256_key: [65]u8 = undefined;
+    p256_key[0] = 0x04;
+    @memset(p256_key[1..], 0x66);
+    const ch1 = try buildFramedClientHelloWithGroup(
+        testing.allocator,
+        0x0017,
+        &p256_key,
+        null,
+    );
+    defer testing.allocator.free(ch1);
+    try server_ctx.processCrypto(.Initial, ch1);
+
+    const hrr_msg = try server_ctx.pollCrypto(testing.allocator, .Initial);
+    defer testing.allocator.free(hrr_msg);
+
+    var x25519_key: [32]u8 = undefined;
+    @memset(&x25519_key, 0x77);
+    const ch2 = try buildFramedClientHelloWithGroup(
+        testing.allocator,
+        0x001d,
+        &x25519_key,
+        null, // no cookie echo — RFC violation
+    );
+    defer testing.allocator.free(ch2);
+
+    try testing.expectError(
+        tls13.HandshakeError.InvalidCookie,
+        server_ctx.processCrypto(.Initial, ch2),
+    );
 }

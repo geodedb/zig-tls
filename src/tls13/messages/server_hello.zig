@@ -544,8 +544,23 @@ pub fn buildHelloRetryRequest(
     // supported_versions (MANDATORY)
     try helpers.writeExtension(allocator, &exts, .supported_versions, &[_]u8{ 0x03, 0x04 });
 
-    // cookie extension (RFC 8446 §4.2.2)
-    try helpers.writeExtension(allocator, &exts, .cookie, cookie);
+    // cookie extension (RFC 8446 §4.2.2):
+    //
+    //     struct {
+    //         opaque cookie<1..2^16-1>;
+    //     } Cookie;
+    //
+    // The Cookie struct has a 2-byte inner length prefix that the
+    // extension data MUST carry. We assemble the wrapped payload first,
+    // then `writeExtension` adds the outer 2-byte ext_data_len.
+    if (cookie.len > std.math.maxInt(u16)) return error.CookieTooLarge;
+    const cookie_inner_len: u16 = @intCast(cookie.len);
+    var wrapped = try std.ArrayList(u8).initCapacity(allocator, 2 + cookie.len);
+    defer wrapped.deinit(allocator);
+    try wrapped.append(allocator, @intCast(cookie_inner_len >> 8));
+    try wrapped.append(allocator, @intCast(cookie_inner_len & 0xff));
+    try wrapped.appendSlice(allocator, cookie);
+    try helpers.writeExtension(allocator, &exts, .cookie, wrapped.items);
 
     // key_share extension with selected_group only (RFC 8446 §4.2.8)
     // Format for HRR: just the 2-byte NamedGroup value

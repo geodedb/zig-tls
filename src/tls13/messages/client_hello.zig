@@ -97,6 +97,7 @@ pub const ClientHello = struct {
     psk_key_exchange_modes: ?[]const u8 = null, // RFC 8446 §4.2.9: PSK modes (psk_ke, psk_dhe_ke)
     pre_shared_key: ?PreSharedKey = null, // RFC 8446 §4.2.11: PSK identities (MUST be last extension)
     early_data: bool = false, // RFC 8446 §4.2.10: 0-RTT early data indication
+    cookie: ?[]const u8 = null, // RFC 8446 §4.2.2: HRR cookie echo (CH2 only)
 };
 
 /// Key share entry for ECDHE key exchange (RFC 8446 §4.2.8).
@@ -121,6 +122,17 @@ pub const ClientHello = struct {
 pub const KeyShareEntry = struct {
     group: core_types.NamedGroup, // RFC 8446 §4.2.8: Named group identifier
     key_exchange: []const u8, // RFC 8446 §4.2.8: Public key bytes (format depends on group)
+
+    /// Raw u16 codepoint as offered by the client.
+    ///
+    /// For groups that round-trip through `core_types.NamedGroup` this equals
+    /// `@intFromEnum(group)`. For codepoints outside the enum (e.g. PQ-hybrid
+    /// `x25519_kyber768_draft00 = 0x6399`) the parser stores a non-X25519
+    /// sentinel in `group` so `negotiateCipherAndKeys` can issue HRR per
+    /// RFC 8446 §4.1.4, while `raw_group_code` preserves the original
+    /// codepoint for diagnostics and future logic that wants to switch on
+    /// the actual offered group (instead of the sentinel).
+    raw_group_code: u16 = 0,
 };
 
 /// TLS 1.3 Pre-Shared Key identity entry (RFC 8446 §4.2.11).

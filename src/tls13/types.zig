@@ -251,4 +251,12 @@ pub const HandshakeError = error{
 
     /// GAP-0133: inbound alert payload was not exactly 2 bytes.
     InvalidAlert,
+
+    /// SEC-086: post-HelloRetryRequest cookie validation failed.
+    /// RFC 8446 §4.2.2: ClientHello2 MUST echo the cookie issued in HRR;
+    /// servers verify it via HMAC over (server_secret, client_random,
+    /// CH1_transcript_hash). Triggered when the cookie is absent on
+    /// CH2, malformed, stale beyond max-age, or HMAC-mismatched. Maps
+    /// to TLS alert `illegal_parameter` (RFC 8446 §6.2).
+    InvalidCookie,
 };

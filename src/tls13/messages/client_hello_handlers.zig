@@ -248,6 +248,7 @@ fn parseKeyShare(ctx: *ParseCtx, data: []const u8) anyerror!void {
             ctx.ch.key_share = KeyShareEntry{
                 .group = .x25519,
                 .key_exchange = data[ks_pos .. ks_pos + key_len],
+                .raw_group_code = group_raw,
             };
             return;
         }
@@ -258,14 +259,16 @@ fn parseKeyShare(ctx: *ParseCtx, data: []const u8) anyerror!void {
         // fall back to `.secp256r1` as a generic non-X25519 placeholder.
         // The orchestrator at `negotiateCipherAndKeys` only inspects
         // `group == .x25519`, so any non-X25519 sentinel is sufficient
-        // to trigger HRR. The `key_exchange` slice is retained so future
-        // diagnostics can surface the offered bytes.
+        // to trigger HRR. The `raw_group_code` field preserves the
+        // original codepoint exactly so future logic can distinguish
+        // (for example) secp256r1 from x25519_kyber768_draft00.
         if (first_unsupported == null) {
             const group_known = std.enums.fromInt(core_types.NamedGroup, group_raw);
             const group_for_orchestrator = group_known orelse core_types.NamedGroup.secp256r1;
             first_unsupported = KeyShareEntry{
                 .group = group_for_orchestrator,
                 .key_exchange = data[ks_pos .. ks_pos + key_len],
+                .raw_group_code = group_raw,
             };
         }
 
@@ -302,18 +305,28 @@ fn buildKeyShare(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocat
 // ============================================================================
 
 fn parseCookie(ctx: *ParseCtx, data: []const u8) anyerror!void {
-    // The current parser silently ignores cookie in ClientHello (falls
-    // through the switch's `else` arm); the ClientHello struct has no
-    // `cookie` field today. Preserve literal behavior.
-    _ = ctx;
-    _ = data;
+    // RFC 8446 §4.2.2: ClientHello cookie ext_data carries a `Cookie`
+    // struct (`opaque cookie<1..2^16-1>` — a 2-byte length prefix
+    // followed by the cookie bytes). Borrow into the source body so
+    // ClientHelloInfo.parse can later reslice it onto its `raw` copy.
+    if (data.len < 2) return error.TooShort;
+    const ck_len: usize = (@as(usize, data[0]) << 8) | data[1];
+    if (2 + ck_len > data.len) return error.TooShort;
+    ctx.ch.cookie = data[2 .. 2 + ck_len];
 }
 
 fn buildCookie(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
     const params = ctx.params;
     const ck = params.cookie orelse return;
-    const ck_len: u16 = @intCast(ck.len);
-    try out.appendSlice(alloc, &.{ 0x00, 0x2c, @intCast(ck_len >> 8), @intCast(ck_len & 0xff) });
+    if (ck.len > std.math.maxInt(u16)) return error.CookieTooLarge;
+    // RFC 8446 §4.2.2 wire format: ext_type(2) | ext_data_len(2) | inner_len(2) | cookie_bytes.
+    const inner_len: u16 = @intCast(ck.len);
+    const ext_data_len: u16 = inner_len + 2;
+    try out.appendSlice(alloc, &.{
+        0x00,                        0x2c,
+        @intCast(ext_data_len >> 8), @intCast(ext_data_len & 0xff),
+        @intCast(inner_len >> 8),    @intCast(inner_len & 0xff),
+    });
     try out.appendSlice(alloc, ck);
 }
 

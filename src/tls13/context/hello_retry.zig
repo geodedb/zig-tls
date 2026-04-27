@@ -112,9 +112,14 @@ pub fn parseHelloRetryRequest(body: []const u8) !HrrParsed {
         pos += 4;
         if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
 
-        // RFC 8446 §4.2.2: cookie extension.
+        // RFC 8446 §4.2.2: cookie extension. The ext_data carries a
+        // `Cookie` struct: `opaque cookie<1..2^16-1>` — i.e. a 2-byte
+        // length prefix followed by the cookie bytes.
         if (etype == @intFromEnum(tls13_full.ExtensionType.cookie)) {
-            cookie = body[pos .. pos + elen];
+            if (elen < 2) return HandshakeError.UnexpectedMessage;
+            const ck_len: usize = readU16(body[pos .. pos + 2]);
+            if (2 + ck_len > elen) return HandshakeError.UnexpectedMessage;
+            cookie = body[pos + 2 .. pos + 2 + ck_len];
         }
         // RFC 8446 §4.2.8: key_share HRR variant — 2-byte selected_group.
         else if (etype == @intFromEnum(tls13_full.ExtensionType.key_share)) {
@@ -316,9 +321,15 @@ fn buildTestHrrBody(
     try exts.append(alloc, @intCast(gv & 0xff));
 
     if (cookie) |c| {
-        try exts.appendSlice(alloc, &[_]u8{ 0x00, 0x2c });
-        try exts.append(alloc, @intCast((c.len >> 8) & 0xff));
-        try exts.append(alloc, @intCast(c.len & 0xff));
+        // RFC 8446 §4.2.2: ext_data wraps `opaque cookie<1..2^16-1>` —
+        // 2-byte ext_data_len, then 2-byte inner cookie length, then bytes.
+        const ext_data_len: u16 = @intCast(c.len + 2);
+        const inner_len: u16 = @intCast(c.len);
+        try exts.appendSlice(alloc, &[_]u8{
+            0x00,                                 0x2c,
+            @intCast((ext_data_len >> 8) & 0xff), @intCast(ext_data_len & 0xff),
+            @intCast((inner_len >> 8) & 0xff),    @intCast(inner_len & 0xff),
+        });
         try exts.appendSlice(alloc, c);
     }
 
