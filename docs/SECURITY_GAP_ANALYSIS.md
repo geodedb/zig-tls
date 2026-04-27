@@ -1,10 +1,35 @@
 # Security Gap Analysis
 
-> **Last updated:** 2026-04-21 (Cycle 7 / Phase 20 — 11 new SEC findings from Phase 3 audit: SEC-074..SEC-084 + SEC-085 carry-forward marker for SEC-065. 5 confidential issues filed.)
+> **Last updated:** 2026-04-27 (Cycle 8 / Phase 22 — QUIC-INTEROP-HRR follow-ups: SEC-086 cookie validation wired; SEC-087 RFC 8446 §4.2.2 cookie wire format fixed. Both filed and Closed in this cycle.)
 > **Scope:** TLS 1.3/QUIC Implementation in Zig
 > **Review phase:** Cycle 7 / Phase 20 (Phase 3 security-reviewer sync). **Posture: 0 Critical / 1 High open / 3 Medium open / 2 Low open / 1 Info open.** 11 new findings filed this cycle (SEC-074..SEC-084); SEC-065 / SEC-085 closed 2026-04-21 (Config.persistent_anti_replay_store wired with fail-closed semantics). Phase 14 / Phase 19 history retained below. SEC-077 closed 2026-04-21 (InsecureValidation sentinel + -Dtls-insecure-testing gate). SEC-076 closed 2026-04-21 (asn1.oidEqual helper + 11 sites migrated in ocsp.zig and sig.zig). SEC-075 closed 2026-04-21 (BOOLEAN parsing + RFC 5280 §4.2 reject of unknown critical extensions).
 >
 > **Phase 20 banner:** Phase 3 re-audit surfaced a cluster of cert-chain and RNG integrity gaps. Highest risk: **SEC-074** (RNG return value discarded -> potential uninitialized key material under seccomp / EINTR; 9 sites in `src/tls13/context.zig`). Three cert-parser gaps (SEC-075 unknown critical ext silently accepted, SEC-076 OID suffix-match bypass — SEC-069 regression class in ocsp.zig + sig.zig, SEC-077 `allow_insecure` trust-bypass flag on public API). Medium tier extends SEC-066/068 duplicate-extension defenses to ServerHello/EncryptedExtensions (SEC-078), QUIC preferred_address TP (SEC-080), and X.509 extensions (SEC-079, confidential due to dual-SAN impersonation class). All new confidential issues filed under `confidentiality` + `confidence::confirmed`; public issues are regressions of already-disclosed classes (SEC-066, 068, 069). No RCE. No leaked secrets. No Critical-severity finding.
+
+## Cycle 8 / Phase 22 Findings (2026-04-27) — QUIC-INTEROP-HRR follow-ups
+
+Filed and Closed in the same cycle. These items surfaced in the
+`docs/QUIC_INTEROP_HRR_ISSUE.md` triage's risk-notes section (post-fix
+follow-ups) and were tracked through to closure as part of the same
+investigation. Both items are RFC 8446 §4.2.2 conformance bugs that
+became reachable after the parent fix made the HRR path live.
+
+| SEC-ID | Risk | Severity | File:Line | Description | Status |
+|--------|------|----------|-----------|-------------|--------|
+| SEC-086 | **12** | Medium | `src/tls13/messages/client_hello_handlers.zig:269-281` (parseCookie no-op) + `src/tls13/context.zig:negotiateCipherAndKeys` | Server did not verify the cookie echoed in CH2 after sending HRR (RFC 8446 §4.2.2). Allowed forged or absent CH2 cookies to short-circuit the HRR-binding check. CWE-345 (Insufficient Verification of Data Authenticity). | Closed 2026-04-27 — `parseCookie` now stores cookie on ClientHello; Context persists `ch1_transcript_hash` at HRR emit; `negotiateCipherAndKeys` calls `cookie.verifyCookie` on second pass and returns `HandshakeError.InvalidCookie` on miss. Tests cover valid / forged / missing cookie cases. |
+| SEC-087 | **6** | Low | `src/tls13/messages/server_hello.zig:buildHelloRetryRequest` + `src/tls13/messages/client_hello_handlers.zig:buildCookie/parseCookie` + `src/tls13/context/hello_retry.zig:parseHelloRetryRequest` | Cookie ext_data emitted without the RFC 8446 §4.2.2 inner 2-byte `Cookie` length prefix. Internally consistent (round-tripped with itself) but non-conformant with peer implementations. Interop-only impact. | Closed 2026-04-27 — emit + parse paths on both server (HRR) and client (CH2 echo) now wrap/strip the inner length prefix; explicit byte-level wire-format regression test added. |
+
+### Phase 22 closure notes
+
+- The orchestrator gate at `src/tls13/context.zig:1693-1698` (the HRR
+  trigger) is now load-bearing; cookie validation is its post-condition
+  on the second pass. Previously dead code, now exercised by tests
+  `tests/context_hrr_server_tests.zig:test 4..6`.
+- A QUAL companion item (QUAL-369 — preserve raw key_share group code
+  for unknown codepoints) landed in the same change for diagnostics /
+  future-proofing; tracked under the QUALITY ledger.
+
+---
 
 ## Cycle 7 / Phase 20 Findings (2026-04-21)
 

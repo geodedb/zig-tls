@@ -3449,3 +3449,18 @@ Eight new actionable issues filed from Phase 3 quality-reviewer output, plus thr
 - **QUAL-360 ↔ QUAL-116** — scoped under the LOC-ceiling umbrella; `duplicate-of::QUAL-116` label applied; QUAL-116 comment updated inline.
 - **QUAL-363 ↔ QUAL-313** — extension of the invariant-comment umbrella; `duplicate-of::QUAL-313` label applied.
 - **QUAL-357 ↔ QUAL-345** — supersession; QUAL-345 closed on GitLab with cross-reference.
+
+---
+
+## Cycle 8 / Phase 22 Filings (2026-04-27, QUAL-369) — QUIC-INTEROP-HRR follow-up
+
+| QUAL-ID | Severity | PS | Category | Finding | File:Line | Status |
+|---------|----------|----|----------|---------|-----------|--------|
+| QUAL-369 | Low | 24 | extensibility / diagnostics | `parseKeyShare` mapped non-X25519 codepoints (e.g. PQ-hybrid `0x6399`) to a `.secp256r1` sentinel so the orchestrator could trigger HRR — the actual offered codepoint was lost. Future logic that wants to switch on the specific group (logging, metrics, alternative HRR selection policy) needs the original u16. | `src/tls13/messages/client_hello.zig:KeyShareEntry`, `src/tls13/handshake_state.zig:ClientHelloKeyShareView` | Closed 2026-04-27 — added `raw_group_code: u16` to `KeyShareEntry` and threaded through `ClientHelloInfo` + `ClientHelloKeyShareView`; parser populates it for both X25519 and non-X25519 entries; regression test asserts round-trip for `0x6399`. |
+
+### Phase 22 Cross-References
+
+- **QUAL-369 ↔ SEC-086 / SEC-087** — landed in the same change set as the
+  cookie-validation + cookie-wire-format security follow-ups; all three
+  emerged from the QUIC-INTEROP-HRR triage's risk-notes (see
+  `docs/QUIC_INTEROP_HRR_ISSUE.md`).
