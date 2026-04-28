@@ -72,6 +72,10 @@ const logger = @import("quic_logger");
 const transport_params = @import("quic_transport_params");
 // GAP-0133/0134: Inbound alert dispatch + outbound close_notify/fatal alert API.
 const alert_mod = @import("alert");
+// Observability seam (otel). Every helper collapses to a no-op when
+// -Dwith_otel=false, so unconditionally calling them here is free at
+// runtime (the optimizer drops the calls entirely).
+const observability = @import("observability");
 
 /// Zig 0.16 compat: unixTimestamp() was removed; use Io clock to get unix seconds.
 fn unixTimestamp() i64 {
@@ -611,6 +615,15 @@ pub const Context = struct {
     // clients and servers that do not use 0-RTT.
     anti_replay: ?*zero_rtt_mod.AntiReplayWindow = null,
 
+    // Observability seam (otel). One span per handshake. Started in
+    // `init`, ended on success in `bumpPhaseAfterFinished`, or as a
+    // failure in `deinit` if `obs_span_ended` is still false (handshake
+    // aborted before reaching `application_ready`). When
+    // -Dwith_otel=false, `Span` is a zero-sized struct and these fields
+    // contribute nothing to the Context layout.
+    obs_span: observability.Span = .{},
+    obs_span_ended: bool = false,
+
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) !Context {
         // GAP-0080: Validate that config.supported_groups only contains implemented groups.
@@ -628,6 +641,18 @@ pub const Context = struct {
 
         // PERF-016: Cache the global trust store at init to avoid RwLock on every handshake.
         const cached_ts = x509.getTrustStore();
+
+        // Observability: open a "TLS handshake" span at the moment the
+        // Context is constructed. The span is closed in
+        // `bumpPhaseAfterFinished` on success, or in `deinit` as a
+        // failure if the handshake aborted before reaching
+        // `application_ready`. When -Dwith_otel=false the call is a
+        // comptime no-op returning a zero-sized Span.
+        const obs_role: observability.Role = switch (config.role) {
+            .Client => .client,
+            .Server => .server,
+        };
+        const obs_span = observability.startHandshakeSpan(obs_role);
 
         const ctx = Context{
             .config = config,
@@ -650,6 +675,8 @@ pub const Context = struct {
             .client_pub = null,
             .anti_replay = anti_replay,
             .cached_trust_store = cached_ts,
+            .obs_span = obs_span,
+            .obs_span_ended = false,
         };
 
         // NOTE: For clients, DO NOT automatically call startClientHandshake() here!
@@ -685,6 +712,23 @@ pub const Context = struct {
 
     /// Cleans up the context, freeing resources and resetting state.
     pub fn deinit(self: *Context) void {
+        // Observability: if the handshake never reached
+        // `application_ready`, close the span now as a failure with
+        // whatever (possibly empty) cipher-suite info was negotiated.
+        // Telemetry is non-fatal; failures inside the seam are
+        // swallowed.
+        if (!self.obs_span_ended) {
+            const suite_name: []const u8 = if (self.negotiated_cipher_suite) |cs|
+                @tagName(cs)
+            else
+                "";
+            // Empty version when the handshake aborted before TLS 1.3
+            // was negotiated; otherwise "1.3".
+            const version_str: []const u8 = if (self.negotiated_cipher_suite != null) "1.3" else "";
+            observability.endHandshakeSpan(self.obs_span, false, version_str, suite_name);
+            self.obs_span_ended = true;
+        }
+
         self.streams.deinit(self.allocator);
         self.secrets.reset();
         self.transcripts.reset();
@@ -1092,6 +1136,20 @@ pub const Context = struct {
     fn bumpPhaseAfterFinished(self: *Context) !void {
         if (self.flags.peer_finished_verified and self.flags.local_finished_sent) {
             self.phase = .application_ready;
+
+            // Observability: close the handshake span as success
+            // before invoking the user callback, so the span is
+            // recorded even if the callback fails. Telemetry is
+            // non-fatal; failures inside the seam are swallowed.
+            if (!self.obs_span_ended) {
+                const suite_name: []const u8 = if (self.negotiated_cipher_suite) |cs|
+                    @tagName(cs)
+                else
+                    "";
+                observability.endHandshakeSpan(self.obs_span, true, "1.3", suite_name);
+                self.obs_span_ended = true;
+            }
+
             if (self.callbacks.on_handshake_complete) |cb| {
                 try cb(self);
             }
