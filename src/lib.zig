@@ -538,6 +538,28 @@ pub const AlertLevel = alert.AlertLevel;
 /// Encoded TLS alert message (2 bytes: level + description).
 pub const Alert = alert.Alert;
 
+// ============================================================================
+// Observability (otel)
+// ============================================================================
+
+/// Observability seam (otel). The seam is always compiled, but its
+/// `enabled` flag tracks `-Dwith_otel`; when off, every call collapses
+/// to a comptime-known no-op (verified by the disabled-mode test under
+/// tests/observability_disabled_test.zig). Imported as a named module
+/// so it lives in a single module tree across all consumers.
+pub const observability = @import("observability");
+
+/// Bootstrap helper: builds OTEL TracerProvider/MeterProvider/LoggerProvider
+/// from OTEL_* env vars and publishes Tracer/Meter handles to
+/// `observability.global`. Application entry-point code calls
+/// `observability_init.Otel.init` then `installGlobals()` to publish
+/// providers; when `-Dwith_otel=false` this collapses to an empty
+/// struct so the import never resolves the otel namespace.
+pub const observability_init = if (observability.enabled)
+    @import("observability_init")
+else
+    struct {};
+
 // Version information
 pub const version = std.SemanticVersion{
     .major = 0,

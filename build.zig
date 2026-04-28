@@ -18,9 +18,42 @@ pub fn build(b: *std.Build) void {
         "Enable insecure test-only cert validation bypass (SEC-077; never use in production)",
     ) orelse false;
 
+    // -Dwith_otel: compile in otel instrumentation. OFF by default;
+    // when off the otel dependency is never resolved and the seam
+    // collapses to a comptime-known no-op (verified by
+    // otel/scripts/verify-consumer-noop.sh).
+    const with_otel = b.option(
+        bool,
+        "with_otel",
+        "Compile in otel instrumentation (off by default; zero overhead when off)",
+    ) orelse false;
+
     const build_options = b.addOptions();
     build_options.addOption(bool, "tls_insecure_testing", tls_insecure_testing);
+    build_options.addOption(bool, "with_otel", with_otel);
+    // Materialize ONE shared `build_options` module. Each consumer module
+    // imports the SAME module instance via `addImport` to avoid Zig 0.16's
+    // "file exists in modules X and X0" error when two independent
+    // `addOptions` modules end up sharing a transitive file path.
     const build_options_mod = build_options.createModule();
+
+    // Observability seam (otel). Declared as a SHARED NAMED MODULE so
+    // every consumer (lib + test roots that exercise the seam) resolves
+    // to the same source file via `@import("observability")`. Using
+    // relative `@import("observability.zig")` from each module would
+    // trip Zig's "file exists in modules X and Y" error because the
+    // file would be pulled into multiple module trees. The seam's
+    // `enabled` flag tracks `build_options.with_otel`; when off, every
+    // helper compiles to a comptime-known no-op and the otel dependency
+    // is never resolved. The optional `otel` import is wired below
+    // inside the `if (with_otel)` block.
+    const observability_mod = b.addModule("observability", .{
+        .root_source_file = b.path("src/observability.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options_mod },
+        },
+    });
 
     // thread-pool parallelism option
     const enable_tp = b.option(bool, "thread-pool", "Enable thread-pool-based parallelism") orelse true;
@@ -231,6 +264,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "sct", .module = sct_mod },
             .{ .name = "entropy", .module = entropy_mod },
             .{ .name = "build_options", .module = build_options_mod },
+            // Observability seam: handshake span call sites live in
+            // src/tls13/context.zig. Every emit collapses to a no-op
+            // when -Dwith_otel=false.
+            .{ .name = "observability", .module = observability_mod },
         },
     });
 
@@ -273,6 +310,11 @@ pub fn build(b: *std.Build) void {
             .{ .name = "quic_transport_params", .module = transport_params_mod },
             .{ .name = "ocsp", .module = ocsp_mod },
             .{ .name = "sct", .module = sct_mod },
+            // Observability seam re-exported as `ztls.observability` so
+            // downstream consumers (and the seam tests) can drive the
+            // disabled/enabled invariants through the public root.
+            .{ .name = "observability", .module = observability_mod },
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
     // PERF-237b: parallel module removed in 0.2.0; no addImport here.
@@ -588,6 +630,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "sct", .module = sct_mod },
                 .{ .name = "entropy", .module = entropy_mod },
                 .{ .name = "build_options", .module = build_options_mod },
+                // Observability seam: context.zig calls into the seam.
+                .{ .name = "observability", .module = observability_mod },
             },
         }),
     });
@@ -1614,4 +1658,56 @@ pub fn build(b: *std.Build) void {
         const run_bench_tp = b.addRunArtifact(bench_tp_exe);
         bench_tp_step.dependOn(&run_bench_tp.step);
     }
+
+    // ========================================================================
+    // Observability (otel) -- gated dep + disabled-mode no-op test
+    // ========================================================================
+    //
+    // Gated otel dependency. The `lazy = true` entry in build.zig.zon
+    // means Zig only fetches the package when this branch executes;
+    // with the flag off the dependency is never resolved and the
+    // produced artifacts contain zero otel symbols (verified by
+    // otel/scripts/verify-consumer-noop.sh).
+    if (with_otel) {
+        const otel_dep = b.lazyDependency("otel", .{
+            .target = target,
+            .optimize = optimize,
+        }) orelse return;
+        const otel_module = otel_dep.module("otel");
+        // Wire `otel` onto the shared observability module so every
+        // consumer sees the same otel namespace.
+        observability_mod.addImport("otel", otel_module);
+
+        // Bootstrap helper. Only registered when `-Dwith_otel=true` so
+        // the disabled build never compiles otel-touching code. Gated
+        // from lib.zig via
+        // `if (observability.enabled) @import("observability_init")`.
+        const observability_init_mod = b.addModule("observability_init", .{
+            .root_source_file = b.path("src/observability_init.zig"),
+            .target = target,
+            .imports = &.{
+                .{ .name = "otel", .module = otel_module },
+                .{ .name = "observability", .module = observability_mod },
+            },
+        });
+        zig_tls_mod.addImport("observability_init", observability_init_mod);
+    }
+
+    // Disabled-mode no-op tests. Verifies `build_options.with_otel ==
+    // false` and the seam's `enabled` flag tracks it; drives every
+    // helper to confirm the no-op fallback compiles and never touches
+    // otel symbols.
+    const observability_disabled_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/observability_disabled_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ztls", .module = zig_tls_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        }),
+    });
+    const run_observability_disabled_tests = b.addRunArtifact(observability_disabled_tests);
+    test_step.dependOn(&run_observability_disabled_tests.step);
 }
