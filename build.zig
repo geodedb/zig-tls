@@ -1710,4 +1710,35 @@ pub fn build(b: *std.Build) void {
     });
     const run_observability_disabled_tests = b.addRunArtifact(observability_disabled_tests);
     test_step.dependOn(&run_observability_disabled_tests.step);
+
+    // Enabled-mode smoke test. Skips under -Dwith_otel=false; under
+    // -Dwith_otel=true it installs an in-memory recorder, drives one
+    // `startHandshakeSpan(.client)` -> `endHandshakeSpan` round-trip,
+    // and asserts exactly one span with name "TLS handshake" and the
+    // expected `tls.role`, `tls.protocol.version`, `tls.cipher_suite`
+    // attributes.
+    const observability_enabled_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/observability_enabled_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ztls", .module = zig_tls_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        }),
+    });
+    if (with_otel) {
+        // Re-resolve the otel module under the same `with_otel` guard
+        // so the test root can call into the otel SDK directly. The
+        // module identity matches the one wired onto observability_mod
+        // earlier in this branch.
+        const otel_dep = b.lazyDependency("otel", .{
+            .target = target,
+            .optimize = optimize,
+        }) orelse return;
+        observability_enabled_tests.root_module.addImport("otel", otel_dep.module("otel"));
+    }
+    const run_observability_enabled_tests = b.addRunArtifact(observability_enabled_tests);
+    test_step.dependOn(&run_observability_enabled_tests.step);
 }
