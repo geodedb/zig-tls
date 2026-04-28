@@ -23,6 +23,9 @@ test_clients/rust/target/release/
 zig-out/
 zig-pkg/
 
+# Local git worktrees (per-feature isolated checkouts)
+.worktrees/
+
 .vscode/
 .rightnow/
 .remember/
