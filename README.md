@@ -203,6 +203,36 @@ make install-deps  # Auto-detects your OS
 make test-conformance
 ```
 
+## Observability
+
+ztls ships with an opt-in OpenTelemetry seam. When the `-Dwith_otel=true`
+build flag is set, the library emits exactly one span per TLS handshake
+(span name: `"TLS handshake"`) with the following semantic-convention
+attributes attached on completion:
+
+- `tls.role` -- `"client"` or `"server"`
+- `tls.protocol.version` -- `"1.3"` (always for ztls)
+- `tls.cipher_suite` -- the negotiated cipher (e.g.
+  `TLS_AES_128_GCM_SHA256`)
+- `network.protocol.name` -- `"tls"`
+
+```bash
+# Default build: no otel symbols, zero overhead.
+zig build test
+
+# Enabled build: one span per handshake, exported via the OTLP
+# defaults (http://localhost:4318) or whatever OTEL_* env vars
+# specify.
+zig build test -Dwith_otel=true
+```
+
+The seam is gated behind a lazy dependency, so the `otel` package is
+only fetched when the flag is on. Application entry-point code that
+wants to install a TracerProvider should call
+`ztls.observability_init.Otel.init` then `installGlobals()`; consult
+the upstream `otel` integration recipe (`otel/docs/integration/RECIPE.md`)
+for the full host-application bootstrap.
+
 ## Documentation
 
 - **BUILD_SYSTEM.md** - Detailed build system documentation
