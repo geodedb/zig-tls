@@ -40,8 +40,8 @@
         // otel: OpenTelemetry instrumentation. Lazy + gated by
         // -Dwith_otel; never fetched when the flag is off.
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git#efe116b388d43472eaab5b6c24a13725156df417",
-            .hash = "otel-0.1.0-B0v3lrgNNAAbt_xZDbOsBAS1bFFkspiibIElaWuVMK4M",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git#57ef1f221930e5fd85e50297588c253e04361733",
+            .hash = "otel-0.1.0-B0v3lrgNNAA5vn53MsLSUUunxIAdI88cPgcgpgg5JMKr",
             .lazy = true,
         },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
