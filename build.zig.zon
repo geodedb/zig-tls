@@ -34,14 +34,14 @@
     .dependencies = .{
         // thread-pool: bounded thread pool with work-stealing scheduler
         .thread_pool = .{
-            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git#2da0f3055ae109e8c0a34b02db6d04493fd6948e",
-            .hash = "thread_pool-0.2.1-11B1BobIdgCNh_BzZ_4Ed4oSbXu1msJz_XCW9FJZtU4S",
+            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git#930d41bcd52b0f92f5405da69a72949a970a2990",
+            .hash = "thread_pool-0.2.1-11B1BobIdgAJ7WWVFfqS0BxtbO_vXdSevdXwauTZhSuS",
         },
         // otel: OpenTelemetry instrumentation. Lazy + gated by
         // -Dwith_otel; never fetched when the flag is off.
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git#a1647d2f26f73ec2042b12ab60c1ee3effb7d411",
-            .hash = "otel-0.1.0-B0v3lrgNNAC_Asch0mgFZ-vhA2cXGmBss4K1xNjmTnzA",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git#1d8b3b66981baae662c451f71d4d6ef9f9e113b2",
+            .hash = "otel-0.1.0-B0v3lrgNNABT5br5x4wxZvZOp5mAHpu3UGBdCxKY8m8I",
             .lazy = true,
         },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
