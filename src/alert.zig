@@ -126,6 +126,7 @@ pub fn fromHandshakeError(err: anyerror) AlertDescription {
         error.PskIndexOutOfRange => .illegal_parameter,
         error.InvalidCookie => .illegal_parameter, // SEC-086: RFC 8446 §4.2.2 cookie verification failure
         error.DuplicateExtension => .decode_error, // SEC-092 / RFC 8446 §4.2
+        error.TooManyKeyUpdates => .decode_error, // GAP-0135 / RFC 8446 §4.6.3
         error.IllegalCompressionMethods => .illegal_parameter, // SEC-088 / RFC 8446 §4.1.2
         error.IllegalCipherSuites => .illegal_parameter, // SEC-099 / RFC 8446 §4.1.2
         error.PskBinderMismatch => .illegal_parameter, // SEC-098 / RFC 8446 §4.2.11
@@ -251,6 +252,7 @@ test "fromHandshakeError - comprehensive mapping" {
     try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.MissingResumptionTicket));
     try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.UnexpectedPskExtension));
     try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.PskIndexOutOfRange));
+    try std.testing.expectEqual(AlertDescription.decode_error, fromHandshakeError(error.TooManyKeyUpdates));
     try std.testing.expectEqual(AlertDescription.internal_error, fromHandshakeError(error.CryptoError));
     try std.testing.expectEqual(AlertDescription.internal_error, fromHandshakeError(error.OutOfMemory));
 }

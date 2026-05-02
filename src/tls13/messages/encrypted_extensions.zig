@@ -213,11 +213,14 @@ pub fn parseEncryptedExtensions(body: []const u8) !EncryptedExtensions {
     var offset: usize = 2;
     const ext_end = 2 + ext_len;
 
-    // SEC-092 (subsumes SEC-078): RFC 8446 §4.2 forbids duplicate extension
+    // SEC-092 / GAP-0145 (subsumes SEC-078): RFC 8446 §4.2 forbids duplicate extension
     // types in the same block. Track known types via an EnumSet so a
     // crafted EE message cannot leak a previously-stored extension pointer
     // by overwriting it with a second copy.
-    var seen = std.EnumSet(core_types.ExtensionType).initEmpty();
+    // We use a fixed-size array of raw u16 types to ensure unknown extensions are
+    // also tracked and rejected if duplicated, preventing GAP-0145 evasion.
+    var seen: [64]u16 = undefined;
+    var seen_count: usize = 0;
 
     while (offset < ext_end) {
         // Need at least 4 bytes for type (2) and length (2)
@@ -232,10 +235,13 @@ pub fn parseEncryptedExtensions(body: []const u8) !EncryptedExtensions {
         const ext_data = body[offset .. offset + data_len];
         offset += data_len;
 
-        if (std.enums.fromInt(core_types.ExtensionType, ext_type)) |etag| {
-            if (seen.contains(etag)) return error.DuplicateExtension;
-            seen.insert(etag);
+        // GAP-0145: Reject duplicate extension types.
+        for (seen[0..seen_count]) |s| {
+            if (s == ext_type) return error.DuplicateExtension;
         }
+        if (seen_count == 64) return error.DuplicateExtension;
+        seen[seen_count] = ext_type;
+        seen_count += 1;
 
         switch (ext_type) {
             // ALPN (0x0010) - RFC 7301

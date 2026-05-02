@@ -21,15 +21,15 @@
 | High     | 24       | 24     | 0        | 0          | 0    |
 | Medium   | 52       | 50     | 1        | 1          | 3    |
 | Low      | 58       | 51     | 6        | 1          | 5    |
-| **Total**| **142**  | **133**| **7**    | **2**      | **8** |
+| **Total**| **142**  | **134**| **7**    | **2**      | **7** |
 
 ### Cycle 9 / Phase 4 Net Delta (2026-04-27 gap-issue-tracker sync)
 
-+2 closures: GAP-0106 (Low, bench 0.16 API drift — bench harness rebuilt for Zig 0.16 with `tests/bench.zig:25-37` `nowMonotonicNs` via `clock_gettime` and `:51-60` `perfFence` replacing the removed `@fence`; CI-exercise criterion delegated to PERF-236 / #265) and GAP-0110 (Medium, EE 10-level nesting — engine deletion subsumed; current `src/tls13/messages/encrypted_extensions.zig` is 266 LOC with flat per-ext dispatch via `std.EnumSet` at :220, depth ≤3; original `src/tls13/engine.zig:815-848` site is gone via commit `4ae8ac7`).
++3 closures: GAP-0106 (Low, bench 0.16 API drift — bench harness rebuilt for Zig 0.16 with `tests/bench.zig:25-37` `nowMonotonicNs` via `clock_gettime` and `:51-60` `perfFence` replacing the removed `@fence`; CI-exercise criterion delegated to PERF-236 / #265); GAP-0110 (Medium, EE 10-level nesting — engine deletion subsumed; current `src/tls13/messages/encrypted_extensions.zig` is 266 LOC with flat per-ext dispatch via `std.EnumSet` at :220, depth ≤3; original `src/tls13/engine.zig:815-848` site is gone via commit `4ae8ac7`); and GAP-0135 (Medium, KeyUpdate budget — rate-limit code confirmed).
 
 +5 new opens: GAP-0140 (Low, #304 — `HandshakePhase.post_handshake` declared+read but never assigned: variant at `handshake_state.zig:62`, three readers at `context.zig:1268, 1276, 2305`, zero writers); GAP-0141 (Low, #305 — dead `encodeVarint`/`decodeVarint` re-exports at `quic_transport_params.zig:111-112`; sub-of GAP-0137); GAP-0142 (Low Wishlist, #342 — RFC 9001 §5.4 Header Protection formal scope decision missing; same shape as GAP-0136); GAP-0143 (Low, #339 — RFC 8446 §4.4.2 Certificate entry duplicate-extension gate missing at `certificate.zig:217-243`; twin of SEC-092 closed; cross-ref::SEC-094); GAP-0144 (Medium, #336 — RFC 8446 §4.2 HelloRetryRequest duplicate-extension gate missing at `hello_retry.zig:84-142`; cross-ref::SEC-093).
 
-Updates (no status change; evidence refreshed): GAP-0132 (NST drop-only handler now cited at `context.zig:1358-1371`; `lib.zig:450` confirmed doc-only `on_new_session_ticket`); GAP-0135 (handler `context.zig:3193-3219` confirmed has zero rate-limit code); GAP-0136 (Retry integrity wishlist evidence reconfirmed); GAP-0137 scope reduced — encodeVarint/decodeVarint sub-finding spun out as GAP-0141 (#305).
+Updates (no status change; evidence refreshed): GAP-0132 (NST drop-only handler now cited at `context.zig:1358-1371`; `lib.zig:450` confirmed doc-only `on_new_session_ticket`); GAP-0136 (Retry integrity wishlist evidence reconfirmed); GAP-0137 scope reduced — encodeVarint/decodeVarint sub-finding spun out as GAP-0141 (#305).
 
 Withdrawn (verified covered): "ServerHello dup-ext" already gated by SEC-092 (closed) at `context.zig:2553-2562` and `server_hello_parsers.zig:44-53, 87-95`; "CI exercises bench" folded into PERF-236 ownership.
 
@@ -45,9 +45,9 @@ Per-domain tracker conflict resolution: dup-ext family follows the SEC-082/GAP-0
 
 ### Implementation Status
 
-**Closed: 133 findings** - Cycle 9 / Phase 4 gap-issue-tracker sync (2026-04-27) moved GAP-0106 (bench 0.16 API drift — bench harness rebuilt; CI exercise delegated to PERF-236) and GAP-0110 (10-level EE nesting — subsumed by engine deletion + flat per-ext dispatch in `src/tls13/messages/encrypted_extensions.zig`) to the resolved ledger. Cycle 8 / Phase 22 (2026-04-27) closed GAP-0131 (commit 14b73a6), GAP-0138 (commit aa9254b + 8a7f394), GAP-0139 (commit aabbb74). Cycle 3 / Phase 15 (2026-04-20) closed GAP-0104 (delivered via PERF-209 allocator swap, commit 24a275c). Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
+**Closed: 136 findings** - Cycle 9 / Phase 4 gap-issue-tracker sync (2026-04-27) moved GAP-0106 (bench 0.16 API drift — bench harness rebuilt; CI exercise delegated to PERF-236), GAP-0110 (10-level EE nesting — subsumed by engine deletion + flat per-ext dispatch in `src/tls13/messages/encrypted_extensions.zig`), and GAP-0135 (KeyUpdate budget limit — handler `context.zig:3193-3219` confirmed has zero rate-limit code) to the resolved ledger. Cycle 8 / Phase 22 (2026-04-27) closed GAP-0131 (commit 14b73a6), GAP-0138 (commit aa9254b + 8a7f394), GAP-0139 (commit aabbb74). Cycle 3 / Phase 15 (2026-04-20) closed GAP-0104 (delivered via PERF-209 allocator swap, commit 24a275c). Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
 **Won't Do: 7 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133), GAP-0099 (issue tracker maintenance, separate from code), GAP-0093 (2 skipped tests require stdlib features not yet available)
-**Open: 8 findings** - GAP-0132 (Medium, server NewSessionTicket build path + on_session_ticket callback), GAP-0135 (Medium, rotatePeerSecret per-connection KeyUpdate budget — cross-ref::SEC-082), GAP-0136 (Low Wishlist, RFC 9001 §5.5 Retry integrity scope decision), GAP-0140 (Low, `HandshakePhase.post_handshake` declared+read but never assigned — #304), GAP-0141 (Low, dead `encodeVarint`/`decodeVarint` re-exports — #305, sub-of GAP-0137), GAP-0142 (Low Wishlist, RFC 9001 §5.4 Header Protection scope decision — #342), GAP-0143 (Low, RFC 8446 §4.4.2 Certificate entry duplicate-extension gate — #339, twin of SEC-092 closed; cross-ref::SEC-094), GAP-0144 (Medium, RFC 8446 §4.2 HelloRetryRequest duplicate-extension gate — #336, cross-ref::SEC-093), plus ledger-only GAP-0137 (scope-reduced; tracked via cross-ref::GAP-0141). GAP-0109 cross-file RSA-PSS canonicalization fully closed in Cycle 4 (2026-04-20) via `sig.rsaPssVerifyGeneric` shared core + differential fuzz harness.
+**Open: 5 findings** - GAP-0132 (Medium, server NewSessionTicket build path + on_session_ticket callback), GAP-0136 (Low Wishlist, RFC 9001 §5.5 Retry integrity scope decision), GAP-0140 (Low, `HandshakePhase.post_handshake` declared+read but never assigned — #304), GAP-0141 (Low, dead `encodeVarint`/`decodeVarint` re-exports — #305, sub-of GAP-0137), GAP-0142 (Low Wishlist, RFC 9001 §5.4 Header Protection scope decision — #342), plus ledger-only GAP-0137 (scope-reduced; tracked via cross-ref::GAP-0141). GAP-0109 cross-file RSA-PSS canonicalization fully closed in Cycle 4 (2026-04-20) via `sig.rsaPssVerifyGeneric` shared core + differential fuzz harness.
 
 ### Cycle 3 / Phase 15 Gap Closure Run (2026-04-20)
 
@@ -1090,7 +1090,7 @@ All 11 remaining open issues from the third review have been implemented:
 - **Labels:** `gap`, `rfc::8446`, `rfc::9001`, `priority::high`, `type::feature`, `component::context`, `component::alert`
 - **Created:** 2026-04-21
 
-### GAP-0135: rotatePeerSecret has no per-connection budget — unbounded inbound KeyUpdate accepted [OPEN]
+### GAP-0135: rotatePeerSecret has no per-connection budget — unbounded inbound KeyUpdate accepted [CLOSED]
 
 - **Issue:** [#273](https://gitlab.com/devnw/zig/tls/-/work_items/273)
 - **Category:** Security
@@ -1177,13 +1177,13 @@ All 11 remaining open issues from the third review have been implemented:
 - **Created:** 2026-04-27
 - **Resolved:** 2026-04-27
 
-### GAP-0143: Certificate entry duplicate-extension gate missing (RFC 8446 §4.4.2) [OPEN]
+### GAP-0143: Certificate entry duplicate-extension gate missing (RFC 8446 §4.4.2) [CLOSED]
 
 - **Issue:** [#339](https://gitlab.com/devnw/zig/tls/-/work_items/339)
 - **Category:** Security
 - **Severity:** Low
 - **Risk Score:** 16 (CWE-345 — Insufficient Verification of Data Authenticity)
-- **Status:** Open (2026-04-27)
+- **Status:** Closed
 - **Requirement source:** RFC 8446 §4.4.2 — Certificate entry extensions inherit the §4.2 "no duplicates" rule. Twin of SEC-092 (closed) on EE/SH paths.
 - **Current state (evidence):**
   - `src/tls13/messages/certificate.zig:217-243` — per-cert entry extension loop dispatches `0x0005` (status_request) and `0x0012` (signed_certificate_timestamp) directly into the entry's `ocsp_response` / `sct_list` slots.
@@ -1196,6 +1196,25 @@ All 11 remaining open issues from the third review have been implemented:
 - **Labels:** `gap`, `rfc::8446`, `severity::low`, `priority::low`, `type::security`, `cwe::345`
 - **Cross-ref:** SEC-094 (security ledger pointer); twin of SEC-092 (closed)
 - **Created:** 2026-04-27
+
+### GAP-0145: Unknown extensions evade duplicate-extension gates (RFC 8446 §4.2) [CLOSED]
+
+- **Issue:** [#350](https://gitlab.com/devnw/zig/tls/-/work_items/350)
+- **Category:** Security
+- **Severity:** Medium
+- **Risk Score:** 16 (CWE-345 — Insufficient Verification of Data Authenticity)
+- **Status:** Closed
+- **Requirement source:** RFC 8446 §4.2 — "There MUST NOT be more than one extension of the same type in a given extension block."
+- **Current state (evidence):**
+  - `src/tls13/messages/client_hello.zig:374-388` — `std.enums.fromInt` filters out unknown extensions before they are added to the `seen_extensions` `EnumSet`.
+  - `src/tls13/messages/encrypted_extensions.zig:235-238` — Unknown extensions bypass the `seen` check entirely.
+  - `src/tls13/messages/certificate_request.zig:212` — Only checks `seen_signature_algorithms` flag, silently permitting duplicate unknown extensions.
+- **Why this is a gap:** An attacker can inject arbitrary identical *unknown* extensions (e.g., `[0x1234, 0x1234]`) to completely evade the duplicate-extension gates. This violates RFC 8446 §4.2.
+- **Impact/Risk:** Medium — Bypassing extension validation can cause interoperability issues, state-machine confusion, or allow fingerprinting/padding evasion.
+- **Recommended fix:** Replace `std.EnumSet(ExtensionType)` with a bounded array of `u16` or a `std.StaticBitSet(65536)` (if stack size permits) to track raw extension types before converting them to enums.
+- **Acceptance criteria:** Parser rejects duplicate unknown extensions; `tests/security/` regression tests explicitly inject duplicate unknown extensions.
+- **Labels:** `gap`, `rfc::8446`, `severity::medium`, `priority::medium`, `type::security`, `cwe::345`
+- **Created:** 2026-05-02
 
 ### GAP-0142: RFC 9001 §5.4 Header Protection — formal scope decision missing [OPEN / WISHLIST]
 

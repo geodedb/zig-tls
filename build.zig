@@ -521,6 +521,15 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // GAP-0135: KeyUpdate CPU exhaustion budget test.
+            .name = "gap0135_key_update_exhaustion",
+            .source = "tests/security/gap0135_key_update_exhaustion.zig",
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
+        .{
             .name = "counting_allocator",
             .source = "src/testing/counting_allocator.zig",
             .imports = &.{},

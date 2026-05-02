@@ -349,12 +349,15 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
 
     const ext_end = pos + ext_len;
     var psk_seen = false; // RFC 8446 §4.2.11: Track if pre_shared_key was seen
-    // SEC-066: Track which extension types have been seen so duplicates are
+    // SEC-066 / GAP-0145: Track which extension types have been seen so duplicates are
     // rejected. A repeated extension with its own allocated payload would
     // overwrite the pointer stored by the first copy and leak the prior
     // allocation. RFC 8446 §4.2: "There MUST NOT be more than one extension
     // of the same type in a given extension block."
-    var seen_extensions = std.EnumSet(core_types.ExtensionType).initEmpty();
+    // We use a fixed-size array of raw u16 types to ensure unknown extensions are
+    // also tracked and rejected if duplicated, preventing GAP-0145 evasion.
+    var seen_extensions: [64]u16 = undefined;
+    var seen_count: usize = 0;
 
     // QUAL-339: ParseCtx threads ch + allocator into per-extension handlers.
     // Handlers only populate fields on `ch`; they never own cleanup or touch
@@ -369,6 +372,14 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
         if (pos + ext_data_len > ext_end) return error.TooShort;
         const ext_data = data[pos .. pos + ext_data_len];
 
+        // SEC-066 / GAP-0145: Reject duplicate extension types (RFC 8446 §4.2).
+        for (seen_extensions[0..seen_count]) |seen| {
+            if (seen == ext_type_raw) return error.DecodeError;
+        }
+        if (seen_count == 64) return error.DecodeError;
+        seen_extensions[seen_count] = ext_type_raw;
+        seen_count += 1;
+
         // SEC-057: Use enums.fromInt to reject unknown extension-type
         // discriminants without panicking on peer-chosen bytes.
         const ext = std.enums.fromInt(core_types.ExtensionType, ext_type_raw) orelse {
@@ -380,12 +391,6 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
             pos += ext_data_len;
             continue;
         };
-
-        // SEC-066: Reject duplicate extension types (RFC 8446 §4.2).
-        if (seen_extensions.contains(ext)) {
-            return error.DecodeError;
-        }
-        seen_extensions.insert(ext);
 
         // CWE-345: pre_shared_key MUST be the last extension. Any non-PSK
         // extension after a PSK is a protocol violation.

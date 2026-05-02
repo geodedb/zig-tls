@@ -283,6 +283,11 @@ pub const HandshakeError = error{
     /// crash.
     IllegalCipherSuites,
 
+    /// GAP-0135: Peer exceeded the max_peer_key_updates budget.
+    /// Defends against CPU exhaustion (CWE-400) from rapid inbound KeyUpdates.
+    /// Maps to TLS alert `decode_error` (or `unexpected_message`).
+    TooManyKeyUpdates,
+
     /// SEC-098: pre_shared_key extension carried mismatched cardinalities for
     /// `identities` and `binders`. RFC 8446 §4.2.11 mandates `len(identities)
     /// == len(binders)`; downstream PSK selection indexes binders by the

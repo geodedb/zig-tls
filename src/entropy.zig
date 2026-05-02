@@ -44,3 +44,32 @@ pub fn fillRandom(buf: []u8) void {
         std.debug.panic("TLS RNG fail-closed: entropy unavailable ({t})", .{err});
     };
 }
+
+/// A per-handshake entropy reservoir to amortize the cost of `getrandom` syscalls.
+/// A typical TLS 1.3 handshake needs up to ~160 bytes of random material.
+/// This struct fetches a large chunk of entropy at once and doles it out.
+pub const Reservoir = struct {
+    buffer: [160]u8 = undefined,
+    used: usize = 160, // Initially marked as fully used to trigger fetch on first take
+
+    /// Takes `dest.len` bytes of entropy from the reservoir.
+    /// If the reservoir is empty, it refills the entire buffer using `fillRandom`.
+    pub fn take(self: *Reservoir, dest: []u8) void {
+        var needed = dest.len;
+        var out_idx: usize = 0;
+
+        while (needed > 0) {
+            const available = self.buffer.len - self.used;
+            if (available == 0) {
+                fillRandom(&self.buffer);
+                self.used = 0;
+            }
+
+            const chunk_size = @min(needed, self.buffer.len - self.used);
+            @memcpy(dest[out_idx .. out_idx + chunk_size], self.buffer[self.used .. self.used + chunk_size]);
+            self.used += chunk_size;
+            out_idx += chunk_size;
+            needed -= chunk_size;
+        }
+    }
+};

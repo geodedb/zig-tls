@@ -563,6 +563,8 @@ pub const Context = struct {
     secrets: SecretSchedule = SecretSchedule.init(),
     streams: CryptoStreams = .{},
     state: HandshakeState = HandshakeState.init(),
+    rng: entropy.Reservoir = .{},
+    scratch_arena: std.heap.ArenaAllocator,
     flags: HandshakeFlags = .{},
     config: Config,
     callbacks: Callbacks,
@@ -624,6 +626,9 @@ pub const Context = struct {
     obs_span: observability.Span = .{},
     obs_span_ended: bool = false,
 
+    // GAP-0135: Peer KeyUpdate exhaustion budget
+    peer_key_updates_seen: u32 = 0,
+
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) !Context {
         // GAP-0080: Validate that config.supported_groups only contains implemented groups.
@@ -658,6 +663,7 @@ pub const Context = struct {
             .config = config,
             .callbacks = callbacks,
             .allocator = config.allocator,
+            .scratch_arena = std.heap.ArenaAllocator.init(config.allocator),
             .phase = .initial,
             .transcripts = TranscriptSet.init(),
             .secrets = SecretSchedule.init(),
@@ -767,8 +773,9 @@ pub const Context = struct {
         // Clean up mTLS state
         if (self.client_cert_request_context) |ctx_data| {
             self.allocator.free(ctx_data);
-            self.client_cert_request_context = null;
         }
+
+        self.scratch_arena.deinit();
         self.client_cert_requested = false;
         // PERF-002: Free heap-allocated anti-replay window (only if allocated)
         if (self.anti_replay) |ar| {
@@ -1773,7 +1780,7 @@ pub const Context = struct {
         // RFC 8446 §4.1.4: MUST use same random as ClientHello1.
         const rnd = self.client_random orelse return HandshakeError.UnexpectedMessage;
 
-        const ch_result = try hello_retry_mod.buildClientHello2Body(self.allocator, .{
+        const ch_result = try hello_retry_mod.buildClientHello2Body(self.scratch_arena.allocator(), .{
             .client_random = rnd,
             .client_pub = pub_key,
             .selected_group = selected_group,
@@ -1784,11 +1791,11 @@ pub const Context = struct {
             .quic_transport_parameters = self.local_transport_parameters orelse self.config.quic_transport_parameters,
             .cookie = cookie,
         });
-        defer self.allocator.free(ch_result.body);
 
         // PERF-019: Use appendOutboundFramed to write handshake header + body
         // directly into the outbound buffer, avoiding encodeHandshake allocation.
         try self.appendOutboundFramed(.Initial, .client_hello, ch_result.body, true);
+        _ = self.scratch_arena.reset(.retain_capacity);
     }
 
     /// Get or generate server secret for HRR cookie generation.
@@ -1836,14 +1843,13 @@ pub const Context = struct {
         self.ch1_transcript_hash = ch1_hash;
 
         // Delegate cookie generation + HRR body encoding to the pure module.
-        const hrr_result = try hello_retry_mod.buildHrrBody(self.allocator, .{
+        const hrr_result = try hello_retry_mod.buildHrrBody(self.scratch_arena.allocator(), .{
             .server_secret = server_secret,
             .client_random = ch_view.random,
             .ch1_transcript_hash = ch1_hash.slice(),
             .selected_group = selected_group,
             .session_id = ch_view.session_id,
         });
-        defer self.allocator.free(hrr_result.body);
 
         // RFC 8446 §4.4.1: Update transcript hash for HelloRetryRequest
         // (message_hash(ClientHello1) || HelloRetryRequest) — zero-alloc.
@@ -1856,6 +1862,7 @@ pub const Context = struct {
 
         // Queue HRR for transmission at Initial encryption level (zero-alloc framing)
         try self.appendOutboundFramed(.Initial, .server_hello, hrr_result.body, false);
+        _ = self.scratch_arena.reset(.retain_capacity);
 
         // Mark that we sent HRR (handshake ordering — owned by Context).
         self.hrr_sent = true;
@@ -2125,7 +2132,7 @@ pub const Context = struct {
         // SAFETY: negotiated_cipher_suite is set by negotiateCipherAndKeys() which
         // runs before emitServerFlight(), the sole caller of this function.
         const cipher = self.negotiated_cipher_suite orelse return HandshakeError.InternalError;
-        return server_flight_builders.buildServerHelloMsg(self.allocator, .{
+        return server_flight_builders.buildServerHelloMsg(self.scratch_arena.allocator(), .{
             .cipher = cipher,
             .key_share_group = neg.ch_view.key_share.group,
             .server_random = neg.server_random,
@@ -2143,7 +2150,7 @@ pub const Context = struct {
         const server_tp = try self.ensureLocalTransportParameters();
         const selected_alpn = try self.selectServerAlpn(ch_view);
         self.notifyMetadata();
-        return server_flight_builders.buildEncryptedExtensionsMsg(self.allocator, .{
+        return server_flight_builders.buildEncryptedExtensionsMsg(self.scratch_arena.allocator(), .{
             .alpn = selected_alpn,
             .quic_transport_parameters = server_tp,
         });
@@ -2162,7 +2169,7 @@ pub const Context = struct {
             traceHandshake("Server: ERROR - Certificate required when not using PSK authentication\n", .{});
         }
         return server_flight_builders.buildCertificateMsg(
-            self.allocator,
+            self.scratch_arena.allocator(),
             self.config.server_cert_der,
             psk_selected,
         );
@@ -2185,7 +2192,7 @@ pub const Context = struct {
             return HandshakeError.UnexpectedMessage;
         };
 
-        return server_flight_builders.buildCertificateVerifyMsg(self.allocator, .{
+        return server_flight_builders.buildCertificateVerifyMsg(self.scratch_arena.allocator(), .{
             .signature_scheme = sig_scheme,
             .private_key_der = priv_key,
             .transcript_hash = hash_for_sig,
@@ -2209,7 +2216,6 @@ pub const Context = struct {
     fn emitServerFlight(self: *Context, neg: *ServerNegotiationResult) !void {
         // --- ServerHello (Initial level) ---
         const sh_body = try self.buildServerHelloMsg(neg);
-        defer self.allocator.free(sh_body);
 
         traceHandshake("[TRANSCRIPT_DEBUG] ServerHello body ({} bytes)\n", .{sh_body.len});
 
@@ -2270,28 +2276,24 @@ pub const Context = struct {
 
         // --- EncryptedExtensions (Handshake level) ---
         const ee_body = try self.buildEncryptedExtensionsMsg(neg.ch_view);
-        defer self.allocator.free(ee_body);
         try self.appendOutboundFramed(.Handshake, .encrypted_extensions, ee_body, true);
 
         // --- CertificateRequest (mTLS, optional) ---
         if (self.config.request_client_cert) {
             const cr_body = try tls13_full.buildCertificateRequest(
-                self.allocator,
+                self.scratch_arena.allocator(),
                 self.config.supported_signature_schemes,
                 self.config.client_auth_ca_certs,
             );
-            defer self.allocator.free(cr_body);
             try self.appendOutboundFramed(.Handshake, .certificate_request, cr_body, true);
             traceHandshake("Server: Sent CertificateRequest message\n", .{});
         }
 
         // --- Certificate + CertificateVerify (if not PSK-only) ---
         if (try self.buildCertificateMsg(neg.psk_selected)) |cert_body| {
-            defer self.allocator.free(cert_body);
             try self.appendOutboundFramed(.Handshake, .certificate, cert_body, true);
 
             const cv_body = try self.buildCertificateVerifyMsg();
-            defer self.allocator.free(cv_body);
             try self.appendOutboundFramed(.Handshake, .certificate_verify, cv_body, true);
 
             traceHandshake("Server: Certificate and CertificateVerify sent successfully\n", .{});
@@ -2302,6 +2304,7 @@ pub const Context = struct {
         try self.appendOutboundFramed(.Handshake, .finished, verify_data.slice(), true);
 
         try self.markLocalFinished();
+        _ = self.scratch_arena.reset(.retain_capacity);
     }
 
     /// QUAL-095: Concise orchestrator for the server handshake flight.
@@ -2489,7 +2492,7 @@ pub const Context = struct {
         // the header before PSK binder computation. `ch_result.body` is
         // now the full handshake message (header + body) and
         // `ch_result.binder_offset` is already header-inclusive.
-        const ch_result = try tls13_full.buildClientHello(self.allocator, .{
+        const ch_result = try tls13_full.buildClientHello(self.scratch_arena.allocator(), .{
             .random = rnd,
             .client_pub = client_pubkey,
             .cipher_suites = self.config.supported_cipher_suites,
@@ -2504,7 +2507,6 @@ pub const Context = struct {
             .psk_binder_len = if (has_any_psk) @intCast(ks.digestLength(self.hash_kind)) else 0,
             .prepend_handshake_header = true,
         });
-        defer self.allocator.free(ch_result.body);
 
         // `msg` is the fully-framed handshake message (HsType + 3-byte
         // length + ClientHello body) in a single allocation.
@@ -2579,6 +2581,7 @@ pub const Context = struct {
         }
         self.transcripts.client_hello_hash = self.transcripts.handshake.snapshot();
         if (self.phase == .initial) self.phase = .negotiating;
+        _ = self.scratch_arena.reset(.retain_capacity);
     }
 
     fn handleServerHello(self: *Context, body: []const u8) !void {
@@ -2738,8 +2741,7 @@ pub const Context = struct {
             if (self.config.client_cert_der) |cert_der| {
                 // Client has a certificate: send Certificate with the cert
                 const cert_entries = [_]tls13_full.CertificateEntryData{.{ .cert = cert_der }};
-                const cert_body = try tls13_full.buildCertificate(self.allocator, request_context, &cert_entries);
-                defer self.allocator.free(cert_body);
+                const cert_body = try tls13_full.buildCertificate(self.scratch_arena.allocator(), request_context, &cert_entries);
 
                 // PERF-038: Use appendOutboundFramed to write handshake header + body
                 // directly into the outbound buffer, avoiding encodeHandshake allocation.
@@ -2772,8 +2774,7 @@ pub const Context = struct {
                     );
                     defer self.allocator.free(signature);
 
-                    const cv_body = try tls13_full.buildCertificateVerify(self.allocator, sig_scheme, signature);
-                    defer self.allocator.free(cv_body);
+                    const cv_body = try tls13_full.buildCertificateVerify(self.scratch_arena.allocator(), sig_scheme, signature);
 
                     // PERF-038: Use appendOutboundFramed instead of encodeHandshake.
                     try self.appendOutboundFramed(.Handshake, .certificate_verify, cv_body, true);
@@ -2782,8 +2783,7 @@ pub const Context = struct {
                 }
             } else {
                 // No client certificate configured: send empty Certificate (RFC 8446 §4.4.2)
-                const cert_body = try tls13_full.buildCertificate(self.allocator, request_context, &[_]tls13_full.CertificateEntryData{});
-                defer self.allocator.free(cert_body);
+                const cert_body = try tls13_full.buildCertificate(self.scratch_arena.allocator(), request_context, &[_]tls13_full.CertificateEntryData{});
 
                 // PERF-038: Use appendOutboundFramed instead of encodeHandshake.
                 try self.appendOutboundFramed(.Handshake, .certificate, cert_body, true);
@@ -2798,6 +2798,7 @@ pub const Context = struct {
         // PERF-038: Use appendOutboundFramed instead of encodeHandshake for Finished message.
         try self.appendOutboundFramed(.Handshake, .finished, verify_data.slice(), true);
         try self.markLocalFinished();
+        _ = self.scratch_arena.reset(.retain_capacity);
     }
 
     fn notifyMetadata(self: *Context) void {
@@ -2885,12 +2886,11 @@ pub const Context = struct {
         //    per RFC 8446 §4.4.1)
         const snapshot_hash = send_slot.hash;
         const result = try key_update_mod.buildLocalKeyUpdate(
-            self.allocator,
+            self.scratch_arena.allocator(),
             snapshot_hash,
             &send_slot.value,
             request_peer_update,
         );
-        defer self.allocator.free(result.wire_message);
 
         // SECURITY: zero the OLD send secret before installing the new one.
         // installTrafficSecret overwrites in place via slot.store; doing the
@@ -2911,6 +2911,7 @@ pub const Context = struct {
         try stream.outbound.appendSlice(self.allocator, result.wire_message);
 
         traceHandshake("TLS: Sent KeyUpdate (request_update={})\n", .{request_peer_update});
+        _ = self.scratch_arena.reset(.retain_capacity);
     }
 
     /// Check AEAD usage and automatically trigger key update if nearing limit.
@@ -3316,6 +3317,12 @@ pub const Context = struct {
         // RFC 8446 §7.2: Update receiving traffic secret
         const recv_slot = self.secrets.slot(.Application, .recv);
         if (!recv_slot.valid) return HandshakeError.UnexpectedMessage;
+
+        // GAP-0135: Enforce peer KeyUpdate budget to prevent CPU exhaustion
+        self.peer_key_updates_seen += 1;
+        if (self.peer_key_updates_seen > self.config.max_peer_key_updates) {
+            return HandshakeError.TooManyKeyUpdates;
+        }
 
         // QUAL-317: delegate HKDF-Expand-Label derivation to the pure
         // key_update module. The shell retains:

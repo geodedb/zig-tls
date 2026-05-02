@@ -497,4 +497,10 @@ pub const Config = struct {
     ///
     /// **Default:** 0 (no obfuscated ticket age).
     resumption_ticket_age_add: u32 = 0,
+
+    /// Maximum number of inbound KeyUpdate messages accepted per connection.
+    /// Defends against CPU exhaustion (CWE-400) from rapid key rotation (GAP-0135).
+    ///
+    /// **Default:** 32 KeyUpdates per connection.
+    max_peer_key_updates: u32 = 32,
 };

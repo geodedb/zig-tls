@@ -213,6 +213,10 @@ pub fn parseCertificate(
         var ocsp_resp: ?[]const u8 = null;
         var sct_list: ?[]const u8 = null;
 
+        // GAP-0143: Reject duplicate extensions per certificate entry.
+        var seen_extensions: [64]u16 = undefined;
+        var seen_count: usize = 0;
+
         var ext_pos: usize = 0;
         while (ext_pos + 4 <= ext_len) {
             const ext_type = helpers.readU16(ext_slice[ext_pos .. ext_pos + 2]);
@@ -220,6 +224,13 @@ pub fn parseCertificate(
             ext_pos += 4;
             if (ext_pos + ext_size > ext_len) return error.MalformedCertificateList;
             const ext_value = ext_slice[ext_pos .. ext_pos + ext_size];
+
+            for (seen_extensions[0..seen_count]) |s| {
+                if (s == ext_type) return error.DuplicateExtension;
+            }
+            if (seen_count == 64) return error.DuplicateExtension;
+            seen_extensions[seen_count] = ext_type;
+            seen_count += 1;
 
             switch (ext_type) {
                 0x0005 => { // status_request (RFC 6066 §8, RFC 8446 §4.4.2.1)
