@@ -22,11 +22,7 @@ pub fn build(b: *std.Build) void {
     // when off the otel dependency is never resolved and the seam
     // collapses to a comptime-known no-op (verified by
     // otel/scripts/verify-consumer-noop.sh).
-    const with_otel = b.option(
-        bool,
-        "with_otel",
-        "Compile in otel instrumentation (off by default; zero overhead when off)",
-    ) orelse false;
+    const with_otel = false; // 2026-05-02: hardcoded after removing the lazy otel dep — see build.zig.zon header note.
 
     const build_options = b.addOptions();
     build_options.addOption(bool, "tls_insecure_testing", tls_insecure_testing);
