@@ -252,6 +252,15 @@ pub const SubjectAltName = struct {
     /// List of DNS names from the SubjectAltName extension.
     /// RFC 5280 §4.2.1.6 - dNSName is IA5String
     dns: []const []const u8,
+    /// List of iPAddress entries from the SubjectAltName extension, each as
+    /// raw network-order bytes (4 for IPv4, 16 for IPv6).
+    /// RFC 5280 §4.2.1.6 - iPAddress is OCTET STRING. Required so a peer
+    /// addressed by an IP literal (e.g. a Raft cluster member dialed by IP)
+    /// can be verified against an iPAddress SAN per RFC 6125 §6.4 / RFC 2818;
+    /// previously these were dropped during parsing, so any IP-literal
+    /// server_name failed with NameMismatch even with a correct IP SAN
+    /// (GAP-0838).
+    ip: []const []const u8 = &.{},
 };
 
 /// Basic Constraints extension indicating CA status and path length limit.
@@ -550,7 +559,8 @@ pub const Certificate = struct {
     /// arrays ([][]const u8 and []PolicyMapping) are heap-allocated.
     pub fn deinit(self: Certificate, alloc: std.mem.Allocator) void {
         if (self.san) |san| {
-            alloc.free(san.dns);
+            if (san.dns.len > 0) alloc.free(san.dns);
+            if (san.ip.len > 0) alloc.free(san.ip);
         }
         if (self.name_constraints) |nc| {
             if (nc.permitted_dns.len > 0) alloc.free(nc.permitted_dns);
@@ -665,20 +675,46 @@ fn parseExtSan(alloc: std.mem.Allocator, inner: []const u8) !?SubjectAltName {
     const san_seq = vd2.readSequence() catch return null;
     var dns_list: [32][]const u8 = undefined;
     var dns_len: usize = 0;
+    var ip_list: [32][]const u8 = undefined;
+    var ip_len: usize = 0;
     var s2 = asn1.Decoder.init(san_seq);
-    while (dns_len < dns_list.len) {
+    while (dns_len < dns_list.len and ip_len < ip_list.len) {
         const gn = s2.readTLV() catch break;
-        if (asn1.tagClass(gn.tag) == .context and asn1.tagNumber(gn.tag) == 2) {
-            dns_list[dns_len] = gn.val;
-            dns_len += 1;
+        if (asn1.tagClass(gn.tag) != .context) continue;
+        switch (asn1.tagNumber(gn.tag)) {
+            // dNSName [2] IA5String
+            2 => {
+                if (dns_len < dns_list.len) {
+                    dns_list[dns_len] = gn.val;
+                    dns_len += 1;
+                }
+            },
+            // iPAddress [7] OCTET STRING (4 bytes IPv4, 16 bytes IPv6)
+            7 => {
+                if (ip_len < ip_list.len and (gn.val.len == 4 or gn.val.len == 16)) {
+                    ip_list[ip_len] = gn.val;
+                    ip_len += 1;
+                }
+            },
+            else => {},
         }
     }
+    if (dns_len == 0 and ip_len == 0) return null;
+    var out: SubjectAltName = .{ .dns = &.{}, .ip = &.{} };
     if (dns_len > 0) {
         const heap_dns = try alloc.alloc([]const u8, dns_len);
         @memcpy(heap_dns, dns_list[0..dns_len]);
-        return .{ .dns = heap_dns };
+        out.dns = heap_dns;
     }
-    return null;
+    if (ip_len > 0) {
+        const heap_ip = alloc.alloc([]const u8, ip_len) catch |e| {
+            if (out.dns.len > 0) alloc.free(out.dns);
+            return e;
+        };
+        @memcpy(heap_ip, ip_list[0..ip_len]);
+        out.ip = heap_ip;
+    }
+    return out;
 }
 
 /// Parse Basic Constraints extension (OID 2.5.29.19).
@@ -1111,7 +1147,10 @@ fn parseExtensionsBlock(alloc: std.mem.Allocator, ti: *asn1.Decoder) !ParsedExte
     // The dup-detection gate guarantees these slots are written at most
     // once, so the per-slot `errdefer` blocks below cannot leak an
     // earlier overwrite (CWE-401 corollary tracked under SEC-NEW-E).
-    errdefer if (out.san) |san| alloc.free(san.dns);
+    errdefer if (out.san) |san| {
+        if (san.dns.len > 0) alloc.free(san.dns);
+        if (san.ip.len > 0) alloc.free(san.ip);
+    };
     errdefer if (out.name_constraints) |nc| {
         if (nc.permitted_dns.len > 0) alloc.free(nc.permitted_dns);
         if (nc.excluded_dns.len > 0) alloc.free(nc.excluded_dns);
@@ -1541,7 +1580,37 @@ pub fn checkNameConstraints(name: []const u8, constraints: NameConstraints) bool
 /// - Wildcard certificates are limited to left-most label only
 /// - No support for multiple wildcards or mid-label wildcards
 /// - Case-insensitive comparison per RFC 4343 (A-Z treated as a-z)
+/// Decode an IP-literal reference identity (`name`) into its raw network-order
+/// octets (4 for IPv4, 16 for IPv6), written into `buf`. Returns the byte slice,
+/// or null when `name` is not a valid IP literal (i.e. it is a DNS hostname).
+fn ipLiteralBytes(name: []const u8, buf: *[16]u8) ?[]const u8 {
+    const net = std.Io.net;
+    if (net.Ip4Address.parse(name, 0)) |a4| {
+        @memcpy(buf[0..4], &a4.bytes);
+        return buf[0..4];
+    } else |_| {}
+    if (net.Ip6Address.parse(name, 0)) |a6| {
+        @memcpy(buf[0..16], &a6.bytes);
+        return buf[0..16];
+    } else |_| {}
+    return null;
+}
+
 pub fn matchDnsName(cert: *const Certificate, name: []const u8) bool {
+    // RFC 6125 §6.4.1 / RFC 2818: when the reference identity is an IP literal,
+    // match it against iPAddress SANs. Without this, a peer dialed by IP (e.g. a
+    // Raft cluster member) failed verification even with a correct IP SAN
+    // (GAP-0838). This is additive: on no IP-SAN match we fall through to the
+    // legacy dNSName/CN matching so existing self-signed certs that carry the
+    // address only in the CN (no SAN) keep verifying as before.
+    var ip_buf: [16]u8 = undefined;
+    if (ipLiteralBytes(name, &ip_buf)) |want| {
+        if (cert.san) |san| {
+            for (san.ip) |ip| {
+                if (std.mem.eql(u8, ip, want)) return true;
+            }
+        }
+    }
     // Case-insensitive match per RFC 4343; wildcard support for leading label.
     if (cert.san) |san| {
         for (san.dns) |d| {
@@ -2266,7 +2335,10 @@ test "SEC-079: parseExtensionsBlock accepts distinct extensions (regression guar
     // The dup gate must not interfere with two distinct extensions.
     try std.testing.expect(parsed.san != null);
     try std.testing.expect(parsed.basic != null);
-    if (parsed.san) |san| alloc.free(san.dns);
+    if (parsed.san) |san| {
+        if (san.dns.len > 0) alloc.free(san.dns);
+        if (san.ip.len > 0) alloc.free(san.ip);
+    }
     if (parsed.name_constraints) |nc| {
         if (nc.permitted_dns.len > 0) alloc.free(nc.permitted_dns);
         if (nc.excluded_dns.len > 0) alloc.free(nc.excluded_dns);

@@ -74,3 +74,27 @@ test "RFC 5280 §6: validateChain rejects malformed intermediate" {
     );
     if (result) |_| return error.UnexpectedSuccess else |_| {}
 }
+
+// GAP-0838: cross-IP Raft peer TLS verification regression.
+// Cert carries DNS SANs (pod FQDNs) and an IP SAN (127.0.0.2). Before the fix,
+// iPAddress SANs were dropped during parsing so an IP-literal server_name
+// failed with NameMismatch even though the cert listed that IP.
+test "GAP-0838: validateChain matches DNS SAN and iPAddress SAN" {
+    const leaf = @embedFile("leaf.der");
+    const ca = @embedFile("ca.der");
+    const chain = [_][]const u8{ leaf, ca };
+    const ts = x509.TrustStore{ .isTrustedSpki = struct {
+        fn f(_: []const u8) bool {
+            return true;
+        }
+    }.f };
+    const now: i64 = 1780184268;
+    // DNS SAN (pod FQDN) — must verify.
+    try x509.validateChainEx(std.testing.allocator, &chain, now, "geode-0.geode.divelife-qa.svc.cluster.local", .secure, .server_auth, ts);
+    // iPAddress SAN — must verify (regression: previously NameMismatch).
+    try x509.validateChainEx(std.testing.allocator, &chain, now, "127.0.0.2", .secure, .server_auth, ts);
+    // An IP NOT in the cert must still be rejected.
+    try std.testing.expectError(error.NameMismatch, x509.validateChainEx(std.testing.allocator, &chain, now, "127.0.0.9", .secure, .server_auth, ts));
+    // A hostname NOT in the cert must still be rejected.
+    try std.testing.expectError(error.NameMismatch, x509.validateChainEx(std.testing.allocator, &chain, now, "evil.example.com", .secure, .server_auth, ts));
+}
