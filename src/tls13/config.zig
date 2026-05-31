@@ -328,6 +328,23 @@ pub const Config = struct {
     /// **Default:** null (no SNI extension; hostname validation skipped).
     server_name: ?[]const u8 = null,
 
+    /// Per-connection trust anchors: DER-encoded CA certificate(s) the client
+    /// trusts for THIS connection when verifying the peer's chain. Used instead
+    /// of (or in addition to) the process-global trust store so a caller can
+    /// pin a specific CA per connection without affecting other TLS clients in
+    /// the same process.
+    ///
+    /// When set, peer-chain validation (a) treats each of these certs as a
+    /// trusted root by SPKI, and (b) appends any missing anchor to the
+    /// presented chain so a peer that sends only its leaf (no intermediates /
+    /// root) still builds a complete path to the anchor. This is what makes a
+    /// CA-issued cluster peer cert verify when the server presents leaf-only
+    /// (geode GAP-0838: GEODE_CLUSTER_CA_CERT plumbed here).
+    ///
+    /// **Role:** Client (verifying the server's certificate).
+    /// **Default:** null (fall back to the global trust store / self-signed path).
+    trusted_ca_der: ?[]const []const u8 = null,
+
     /// SEC-077: Certificate-validation mode. Defaults to full validation.
     /// To use `.testing_only_i_know_what_i_am_doing`, the library must be
     /// built with `-Dtls-insecure-testing=true`; otherwise a runtime panic
