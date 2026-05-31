@@ -3071,6 +3071,7 @@ pub const Context = struct {
             server_name,
             self.config.allow_insecure,
             self.cached_trust_store,
+            self.config.trusted_ca_der orelse &.{},
         );
         defer leaf_parsed.deinit(self.allocator);
 

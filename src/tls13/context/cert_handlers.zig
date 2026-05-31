@@ -219,6 +219,21 @@ pub fn verifyCertVerifySignature(
 /// SEC-077: When `insecure == .testing_only_i_know_what_i_am_doing`, the
 /// underlying x509 call short-circuits chain validation but STILL returns a
 /// parsed leaf (needed for downstream CertificateVerify signature checks).
+/// Per-connection trust anchors for the duration of one synchronous
+/// `validateChainAndLeaf` call. The chain validator's `TrustStore` callback is
+/// a bare (stateless) function pointer, so we publish the anchor SPKIs through
+/// a thread-local that `anchorTrustStoreIsTrusted` reads. Safe because TLS
+/// handshake certificate validation runs synchronously on one connection's
+/// thread and never re-enters `validateChainAndLeaf`. Always saved/restored.
+threadlocal var tl_trusted_anchor_spkis: []const []const u8 = &.{};
+
+fn anchorTrustStoreIsTrusted(spki_der: []const u8) bool {
+    for (tl_trusted_anchor_spkis) |anchor_spki| {
+        if (std.mem.eql(u8, anchor_spki, spki_der)) return true;
+    }
+    return false;
+}
+
 pub fn validateChainAndLeaf(
     alloc: std.mem.Allocator,
     chain: [][]const u8,
@@ -226,15 +241,70 @@ pub fn validateChainAndLeaf(
     server_name: []const u8,
     insecure: x509.InsecureValidation,
     trust_store_override: ?x509.TrustStore,
+    trusted_ca_der: []const []const u8,
 ) !x509.Certificate {
+    // Fast path: no per-connection anchors — preserve prior behavior exactly.
+    if (trusted_ca_der.len == 0) {
+        return x509.validateChainReturnParsed(
+            alloc,
+            chain,
+            now_unix,
+            server_name,
+            insecure,
+            .server_auth,
+            trust_store_override,
+        ) catch return HandshakeError.CertificateValidationFailed;
+    }
+
+    // GAP-0838: build a complete path to a caller-pinned trust anchor.
+    //
+    // (a) Trust anchors by SPKI: parse each configured CA cert and collect its
+    //     SubjectPublicKeyInfo, which the per-connection trust store matches
+    //     against the chain's terminal (root) cert.
+    // (b) Complete the chain: append each anchor that the peer did not already
+    //     present, so a server that sends only its leaf (no intermediates /
+    //     root) still chains up to a trusted, self-signed CA.
+    var anchor_spkis = std.ArrayList([]const u8).empty;
+    defer {
+        for (anchor_spkis.items) |s| alloc.free(s);
+        anchor_spkis.deinit(alloc);
+    }
+    var effective = std.ArrayList([]const u8).empty;
+    defer effective.deinit(alloc);
+    try effective.appendSlice(alloc, chain);
+
+    for (trusted_ca_der) |anchor_der| {
+        var parsed = x509.parseCert(alloc, anchor_der) catch continue;
+        const spki_copy = alloc.dupe(u8, parsed.spki) catch |e| {
+            parsed.deinit(alloc);
+            return e;
+        };
+        parsed.deinit(alloc);
+        try anchor_spkis.append(alloc, spki_copy);
+
+        var already_present = false;
+        for (chain) |c| {
+            if (std.mem.eql(u8, c, anchor_der)) {
+                already_present = true;
+                break;
+            }
+        }
+        if (!already_present) try effective.append(alloc, anchor_der);
+    }
+
+    const prev = tl_trusted_anchor_spkis;
+    tl_trusted_anchor_spkis = anchor_spkis.items;
+    defer tl_trusted_anchor_spkis = prev;
+
+    const anchor_ts = x509.TrustStore{ .isTrustedSpki = anchorTrustStoreIsTrusted };
     return x509.validateChainReturnParsed(
         alloc,
-        chain,
+        effective.items,
         now_unix,
         server_name,
         insecure,
         .server_auth,
-        trust_store_override,
+        anchor_ts,
     ) catch return HandshakeError.CertificateValidationFailed;
 }
 
@@ -392,4 +462,34 @@ test "cert_handlers: parseAndStoreChain — empty chain allowed when allow_empty
     });
     try testing.expectEqual(@as(?ChainStorage, null), result.storage);
     try testing.expect(result.was_empty);
+}
+
+// GAP-0838: a CA-issued peer that presents only its leaf (no intermediates /
+// root) must still verify when the verifier pins the issuing CA via
+// trusted_ca_der — validateChainAndLeaf completes the path to that anchor.
+test "cert_handlers: validateChainAndLeaf completes leaf-only chain via trusted_ca_der (GAP-0838)" {
+    const leaf = @embedFile("gap838_leaf.der");
+    const ca = @embedFile("gap838_ca.der");
+    var leaf_only = [_][]const u8{leaf};
+    const anchors = [_][]const u8{ca};
+    const now: i64 = 1780185764;
+    const sni = "geode-0.geode.divelife-qa.svc.cluster.local";
+
+    // No trust anchor + leaf-only presentation: cannot build a path → fails.
+    try std.testing.expectError(
+        HandshakeError.CertificateValidationFailed,
+        validateChainAndLeaf(std.testing.allocator, leaf_only[0..], now, sni, .secure, null, &.{}),
+    );
+
+    // With the issuing CA pinned via trusted_ca_der: path is completed and the
+    // anchor is trusted → verifies (this is the divelife cluster-peer case).
+    var ok = try validateChainAndLeaf(std.testing.allocator, leaf_only[0..], now, sni, .secure, null, &anchors);
+    ok.deinit(std.testing.allocator);
+
+    // A pinned anchor that did NOT issue the leaf must not spuriously verify.
+    var wrong_anchor = [_][]const u8{leaf}; // leaf is not a CA for itself
+    try std.testing.expectError(
+        HandshakeError.CertificateValidationFailed,
+        validateChainAndLeaf(std.testing.allocator, leaf_only[0..], now, sni, .secure, null, &wrong_anchor),
+    );
 }
