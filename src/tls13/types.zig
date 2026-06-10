@@ -300,6 +300,15 @@ pub const HandshakeError = error{
     /// `handshake_failure`).
     IllegalCipherSuiteSelected,
 
+    /// NEWGAP-13: the client received a HelloRetryRequest that would not change
+    /// the ClientHello (it selected an already-offered key_share group and
+    /// carried no cookie). RFC 8446 §4.1.4 MUST abort with `illegal_parameter`.
+    HrrNoChange,
+
+    /// NEWGAP-12: a CertificateRequest omitted the mandatory
+    /// `signature_algorithms` extension (RFC 8446 §4.3.2 -> `missing_extension`).
+    MissingSignatureAlgorithms,
+
     /// SEC-088: ClientHello/ServerHello carried a `legacy_compression_methods`
     /// field that violates RFC 8446 §4.1.2 / §4.1.3 (must be exactly one byte
     /// equal to 0x00 on CH; must equal 0x00 on SH). Maps to TLS alert

@@ -119,3 +119,24 @@ test "NEWGAP-08: live HRR with un-offered cipher_suite is rejected (illegal_para
 
     try testing.expectError(tls13.HandshakeError.IllegalCipherSuiteSelected, ctx.processCrypto(.Initial, msg));
 }
+
+test "NEWGAP-13: live HRR with no cookie + already-offered group is rejected (no change)" {
+    const alloc = testing.allocator;
+    var ctx = try clientCtx();
+    defer ctx.deinit();
+    try ctx.startClientHandshake();
+
+    // HRR selects x25519 (the only group the client offered/key_shared) with an
+    // offered cipher and NO cookie -> ClientHello2 would be identical -> the
+    // RFC 8446 §4.1.4 retry-loop prohibition.
+    const body = try buildHrr(alloc, .{
+        .random = tls13_full.HELLO_RETRY_REQUEST_RANDOM,
+        .cipher_suite = 0x1301, // offered
+        .extensions = &hrr_key_share, // key_share x25519, no cookie
+    });
+    defer alloc.free(body);
+    const msg = try frameHandshake(alloc, 0x02, body);
+    defer alloc.free(msg);
+
+    try testing.expectError(tls13.HandshakeError.HrrNoChange, ctx.processCrypto(.Initial, msg));
+}

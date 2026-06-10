@@ -1716,6 +1716,23 @@ pub const Context = struct {
         if (!hrr_suite_offered) return HandshakeError.IllegalCipherSuiteSelected;
         self.hrr_cipher_suite = hrr_suite;
 
+        // NEWGAP-13: RFC 8446 §4.1.4 — abort with illegal_parameter if the HRR
+        // would not result in any change to the ClientHello. A change requires
+        // either a different key_share group than one already offered, or a
+        // cookie (which CH2 must echo). This client key_shares every group it
+        // supports, so an HRR selecting an already-offered group with no cookie
+        // produces an identical ClientHello2 — the prohibited retry loop.
+        var hrr_group_already_offered = false;
+        for (self.config.supported_groups) |g| {
+            if (g == parsed.selected_group) {
+                hrr_group_already_offered = true;
+                break;
+            }
+        }
+        if (parsed.cookie == null and hrr_group_already_offered) {
+            return HandshakeError.HrrNoChange;
+        }
+
         traceHandshake("Client: HRR requests group: {s}\n", .{@tagName(parsed.selected_group)});
 
         // RFC 8446 §4.4.1: Update transcript for HelloRetryRequest
