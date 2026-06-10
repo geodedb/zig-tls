@@ -201,6 +201,9 @@ pub fn parseCertificateRequest(
     // unknown extensions are also tracked and rejected if duplicated.
     var seen_extensions: [core_types.MAX_EXTENSION_TYPES]u16 = undefined;
     var seen_count: usize = 0;
+    // NEWGAP-12: RFC 8446 §4.3.2 — the signature_algorithms extension MUST be
+    // present in a CertificateRequest.
+    var saw_sig_algs = false;
 
     while (pos + 4 <= ext_end) {
         const etype = helpers.readU16(data[pos .. pos + 2]);
@@ -219,6 +222,7 @@ pub fn parseCertificateRequest(
         seen_count += 1;
 
         if (etype == @intFromEnum(core_types.ExtensionType.signature_algorithms)) {
+            saw_sig_algs = true;
             if (elen < 2) return error.MalformedCertificateRequest;
             const list_len: usize = helpers.readU16(data[pos .. pos + 2]);
             var spos: usize = pos + 2;
@@ -236,6 +240,10 @@ pub fn parseCertificateRequest(
         pos += elen;
     }
 
+    // NEWGAP-12: RFC 8446 §4.3.2 — reject a CertificateRequest that omits the
+    // mandatory signature_algorithms extension (maps to missing_extension).
+    if (!saw_sig_algs) return error.MissingSignatureAlgorithms;
+
     return ParsedCertificateRequest{
         .context = context,
         .signature_algorithms = try sig_algs.toOwnedSlice(allocator),
@@ -245,6 +253,14 @@ pub fn parseCertificateRequest(
 // ============================================================================
 // Tests
 // ============================================================================
+
+test "NEWGAP-12: CertificateRequest without signature_algorithms is rejected" {
+    const alloc = std.testing.allocator;
+    // context_len(1)=0, extensions_len(2)=0 -> a CR with no extensions at all,
+    // which omits the mandatory signature_algorithms extension (RFC 8446 §4.3.2).
+    const body = [_]u8{ 0x00, 0x00, 0x00 };
+    try std.testing.expectError(error.MissingSignatureAlgorithms, parseCertificateRequest(alloc, &body));
+}
 
 test "CertificateRequest: build and parse roundtrip" {
     const alloc = std.testing.allocator;

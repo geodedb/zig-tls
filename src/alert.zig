@@ -188,7 +188,9 @@ pub fn fromHandshakeError(err: anyerror) AlertDescription {
         => .illegal_parameter,
 
         // missing_extension (109): a mandatory extension was absent.
-        error.MissingPskKeyExchangeModes => .missing_extension,
+        error.MissingPskKeyExchangeModes,
+        error.MissingSignatureAlgorithms, // NEWGAP-12 / RFC 8446 §4.3.2
+        => .missing_extension,
 
         // decrypt_error (51): a signature over handshake data failed to verify
         // (RFC 8446 §4.4.3).
