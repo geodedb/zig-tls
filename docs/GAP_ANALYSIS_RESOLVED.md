@@ -5,6 +5,52 @@
 
 ---
 
+## Conformance-suite reality pass (2026-06-10)
+
+A quality audit found that the `tests/conformance/openssl|boringssl/*.zig` X.509 /
+cert-auth / OCSP cluster (and the `tests/x509_openssl_conformance.zig`
+differential stubs) were largely VACUOUS — hardcoded `signature_valid = true`
+verdicts, mock cert DER, anonymous-struct "chains", or empty-body stubs that
+never exercised `src/`. The highest-bug-value tests were converted to REAL
+checks, which surfaced and fixed a genuine interop bug:
+
+| ID | Sev | Title | Resolution |
+|----|-----|-------|------------|
+| CONF-01 | **High** | ECDSA cert verify conflated curve and hash — a P-384 key signed with ecdsa-with-SHA256 was rejected (OpenSSL accepts it) | `verifyCertSig` now dispatches on (curve-from-SPKI, hash-from-OID) via `verifyEcdsaWith`; adds ecdsa-with-SHA512. Found by a new differential test. |
+
+**Conformance tests made REAL (now exercise `src/` + differential vs OpenSSL):**
+
+- `tests/x509_openssl_conformance.zig` — filled the empty `verifyCertificateSignedBy`
+  (Ed25519 / P-256 / P-384 / RSA PKCS#1 v1.5) and `validateChain`
+  signature/verification stubs with differential `X509_verify` comparisons over
+  the real fixtures and the leaf→intermediate→root chain.
+- `tests/conformance/openssl/chain_validation.zig` — ~14 empty-chain tautologies
+  converted to drive `x509.validateChain` over the real chain: accept, expiry,
+  broken-chain (`BadSignature`), shuffle (`NameMismatch`), CA-flag
+  (`BasicConstraints`), untrusted root (`UntrustedRoot`), self-signed root, EKU
+  mismatch (`EkuNotAllowed`), pathLen, KeyUsage.
+- Added `tests/test_certs.zig` module so nested conformance modules can reach the
+  embedded DER fixtures.
+
+**Still placeholder / lower-value (tracked, not yet converted):**
+
+- `openssl/{mutual_tls,client_auth}.zig` — `.signature_valid = true` chain
+  theater; mostly DUPLICATE the now-real `chain_validation` coverage. Convert to
+  `validateChain` differential when time permits.
+- `openssl/ocsp_validation.zig` — `signature_valid = true` simulation; the real
+  `ocsp.validateStapledResponse` exists but a real OCSP-response fixture
+  (`openssl ocsp -respout`) must be generated first. HIGH bug-surfacing.
+- `openssl/name_constraints.zig` — reimplements matching inline; converting needs
+  resolving the library's leading-dot constraint convention vs RFC 5280 subdomain
+  semantics (needs a name-constrained cert fixture). MED-HIGH bug-surfacing.
+- `openssl/{crl,aia,policy}_validation.zig` — assert semantics for CRL / AIA /
+  policy-tree features the library deliberately does NOT implement (SEC-007).
+  Should be deleted or down-scoped to an honest "not implemented" marker rather
+  than "fixed in place".
+- `boringssl/{performance,cross_suite_interop}.zig`, `boringssl/fuzzing.zig` —
+  arithmetic tautologies / fuzz of the test's own inline parser; re-point fuzz
+  inputs at the real `tls13_full.parse*` / `x509.parseCert` for real value.
+
 ## Iterative appsec + codepros review run (2026-06-10)
 
 Three review rounds (`/security:appsec-review` + `/codepros:audit`) iterated to
