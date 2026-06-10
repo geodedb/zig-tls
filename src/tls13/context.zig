@@ -371,10 +371,16 @@ pub const TranscriptSet = struct {
     handshake: Transcript,
     client_hello_hash: transcript_mod.HashDigestCache = .{},
     finished_hash: transcript_mod.HashDigestCache = .{},
+    /// R6-01: snapshot of Transcript-Hash(ClientHello...server Finished), used
+    /// as the RFC 8446 §7.1/§7.5 input for the application-traffic and exporter
+    /// secrets. Captured when the server's Finished is folded so that later
+    /// client-auth messages (Certificate/CertificateVerify, mTLS) do NOT leak
+    /// into the application-secret transcript.
+    app_secret_hash: transcript_mod.HashDigestCache = .{},
 
     /// Creates a new transcript set with empty transcripts.
     pub fn init() TranscriptSet {
-        return .{ .handshake = Transcript.init(), .client_hello_hash = .{}, .finished_hash = .{} };
+        return .{ .handshake = Transcript.init(), .client_hello_hash = .{}, .finished_hash = .{}, .app_secret_hash = .{} };
     }
 
     /// Resets all transcripts to their initial empty state.
@@ -382,6 +388,7 @@ pub const TranscriptSet = struct {
         self.handshake.reset();
         self.client_hello_hash.clear();
         self.finished_hash.clear();
+        self.app_secret_hash.clear();
     }
 };
 
@@ -1579,10 +1586,19 @@ pub const Context = struct {
         // handshake_secret was saved after ServerHello processing
         const hs_secret = self.handshake_secret orelse return HandshakeError.UnexpectedMessage;
 
-        // Transcript hash at this point includes all messages (CH...Finished)
-        var transcript_snapshot = self.transcripts.handshake;
+        // RFC 8446 §7.1/§7.5: application + exporter secrets are derived over
+        // Transcript-Hash(ClientHello...server Finished). R6-01: prefer the
+        // snapshot captured when the server folded its Finished. The live
+        // transcript is correct for the client (it derives at server-Finished
+        // arrival, before sending its own auth messages) but WRONG for an mTLS
+        // server (the client Certificate/CertificateVerify have been folded by
+        // the time the client Finished arrives), so fall back to live only when
+        // no snapshot exists (e.g. the client path).
         if (secret_trace_enabled) std.debug.print("[ensureApplicationSecrets] About to finalize transcript for role={}\n", .{self.config.role});
-        const transcript_hash = transcript_snapshot.finalize(self.hash_kind);
+        const transcript_hash = self.transcripts.app_secret_hash.get(self.hash_kind) orelse blk: {
+            var transcript_snapshot = self.transcripts.handshake;
+            break :blk transcript_snapshot.finalize(self.hash_kind);
+        };
         if (secret_trace_enabled) {
             std.debug.print("[ensureApplicationSecrets] Finalized transcript hash: ", .{});
             for (transcript_hash.slice()) |b| std.debug.print("{X:0>2}", .{b});
@@ -2320,6 +2336,12 @@ pub const Context = struct {
         // --- Finished ---
         const verify_data = self.buildFinishedMsg(&hs.server_hs);
         try self.appendOutboundFramed(.Handshake, .finished, verify_data.slice(), true);
+
+        // R6-01: capture Transcript-Hash(CH...server Finished) NOW, before any
+        // client Certificate/CertificateVerify (mTLS) can be folded in, so the
+        // §7.1 application + §7.5 exporter secrets are derived over the correct
+        // transcript regardless of when ensureApplicationSecrets later runs.
+        self.transcripts.app_secret_hash.set(self.hash_kind, self.transcripts.handshake.finalize(self.hash_kind));
 
         try self.markLocalFinished();
         _ = self.scratch_arena.reset(.retain_capacity);

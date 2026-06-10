@@ -545,3 +545,84 @@ test "NEWGAP-11: server rejects ClientHello missing quic_transport_parameters" {
 
     try testing.expectError(tls13.HandshakeError.MissingTransportParameters, server.processCrypto(.Initial, ch));
 }
+
+test "R6-01: mTLS loopback — server derives app secrets over CH..serverFinished (not client Cert/CV)" {
+    const alloc = testing.allocator;
+    const cert_der = @embedFile("test_certs/ed25519_cert.der");
+    const key_der = @embedFile("test_certs/ed25519_key.der");
+
+    var anchor = try x509.parseCert(alloc, cert_der);
+    defer anchor.deinit(alloc);
+    R5Trust.anchor_spki = anchor.spki;
+    x509.setTrustStore(.{ .isTrustedSpki = R5Trust.isTrusted });
+    defer x509.setTrustStore(null);
+
+    // Server requests a client certificate (mTLS).
+    var server = try tls13.Context.init(.{
+        .allocator = alloc,
+        .role = .Server,
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .server_cert_der = cert_der,
+        .server_key_der = key_der,
+        .request_client_cert = true,
+        .quic_transport_parameters = &[_]u8{},
+    }, .{});
+    defer server.deinit();
+
+    // Client presents the (same self-signed) cert for client auth.
+    var client = try tls13.Context.init(.{
+        .allocator = alloc,
+        .role = .Client,
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .server_name = "ed25519.example.com",
+        .client_cert_der = cert_der,
+        .client_key_der = key_der,
+        .quic_transport_parameters = &[_]u8{},
+    }, .{});
+    defer client.deinit();
+
+    try client.startClientHandshake();
+
+    const Pump = struct {
+        fn relay(a: std.mem.Allocator, from: *tls13.Context, to: *tls13.Context, lvl: tls13.EncryptionLevel) !bool {
+            const out = from.pollCrypto(a, lvl) catch |e| {
+                if (e == error.NothingToRead) return false;
+                return e;
+            };
+            defer a.free(out);
+            if (out.len == 0) return false;
+            try to.processCrypto(lvl, out);
+            return true;
+        }
+    };
+    const levels = [_]tls13.EncryptionLevel{ .Initial, .Handshake, .Application };
+    var round: usize = 0;
+    while (round < 16) : (round += 1) {
+        var progressed = false;
+        for (levels) |lvl| {
+            if (try Pump.relay(alloc, &client, &server, lvl)) progressed = true;
+            if (try Pump.relay(alloc, &server, &client, lvl)) progressed = true;
+        }
+        if (!progressed) break;
+    }
+
+    try testing.expect(client.phase == .application_ready);
+
+    // R6-01: the two peers MUST install matching application traffic secrets.
+    // The server sends with server_app and the client receives with server_app;
+    // if the server derived server_app over a transcript that wrongly included
+    // the client Certificate/CertificateVerify, these would differ.
+    const s_send = server.secrets.slot(.Application, .send);
+    const c_recv = client.secrets.slot(.Application, .recv);
+    try testing.expect(s_send.valid and c_recv.valid);
+    try testing.expectEqualSlices(u8, c_recv.value.slice(), s_send.value.slice());
+
+    const s_recv = server.secrets.slot(.Application, .recv);
+    const c_send = client.secrets.slot(.Application, .send);
+    try testing.expect(s_recv.valid and c_send.valid);
+    try testing.expectEqualSlices(u8, c_send.value.slice(), s_recv.value.slice());
+}
