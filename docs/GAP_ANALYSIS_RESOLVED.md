@@ -5,6 +5,35 @@
 
 ---
 
+## Iterative appsec + codepros review run (2026-06-10)
+
+Three review rounds (`/security:appsec-review` + `/codepros:audit`) iterated to
+convergence; every finding below was closed with a failing-first regression
+test and the full suite green under Debug and ReleaseFast. IDs are referenced
+in code comments and the named tests.
+
+| ID | Sev | Title | Resolution |
+|----|-----|-------|------------|
+| APPSEC-2026-06-10-01 | High | ASN.1/X.509 `off + attacker_len` length-overflow OOB/DoS | Bounds-check `len > buf.len - off` before the add at `asn1.readTLV`, `x509.parseSpki`, `x509.parseCert`. Test: `tests/security/appsec01_asn1_length_overflow.zig`. |
+| NEWGAP-01 | High | RSA PKCS#1 v1.5 certificate/OCSP signatures unverifiable | `sig.rsaPkcs1VerifyGeneric` + `verifyCertSig` dispatch for sha256/384/512WithRSAEncryption (cert sigs only; CertificateVerify still rejects PKCS#1 v1.5). Tests in `tests/x509_unit_tests.zig`. |
+| NEWGAP-05 | Med | Duplicate unknown extensions accepted in ServerHello/HRR helper parsers | Raw-`u16` tracking in `server_hello_parsers.zig` + `hello_retry.zig`. |
+| NEWGAP-06 | Med | Client did not validate ServerHello `legacy_session_id_echo` / `legacy_version` | `handleServerHello` rejects non-empty echo (`IllegalSessionIdEcho`) and non-0x0303 version (`IllegalLegacyVersion`). Test: `tests/security/newgap06_07_serverhello_hardening.zig`. |
+| NEWGAP-07 (= QUAL-387) | Med | Live `handleServerHello` duplicate-unknown-extension bypass (EnumSet) | Converted to raw-`u16` seen-list + `TooManyExtensions` cap. |
+| NEWGAP-08 (incl. QUAL-392) | Med | HelloRetryRequest skipped §4.1.3/§4.1.4 field MUST-checks | `parseHelloRetryRequest`/`handleHelloRetryRequest` enforce legacy_version, empty session_id, compression, cipher-in-offered + ServerHello2 cipher-match. Test: `tests/security/newgap08_hrr_field_checks.zig`. |
+| NEWGAP-02 | Med | ECDSA P-521 enum present, no verifier | Documented out-of-scope (no Zig 0.16 stdlib primitive), fail-closed; `docs/RFC_COVERAGE.md`. |
+| NEWGAP-03 / NEWGAP-04 | Low | Stale algorithm/validation doc comments; stale RFC_COVERAGE rows | Corrected in `core_types.zig`, `certificate_verify.zig`, `x509.zig`, `docs/RFC_COVERAGE.md`. |
+| APPSEC-04 / QUAL-386 | Low | Extension capacity cap conflated with duplicate; inconsistent error taxonomy | Added `error.TooManyExtensions`; unified to `DuplicateExtension` across parsers. |
+| QUAL-381 / QUAL-382 | High/Med | Dead `performKeyUpdate*` (bypassed GAP-0135 budget); dead entropy `Reservoir` | Removed. |
+| QUAL-383/384/385 | Med/Low | Non-compilable lib.zig API examples; stale version | Corrected + version test. |
+| QUAL-388/389/390 | Low/Info | Dead `validateChainAndLeaf`; RSA-verify near-dup; magic `[64]u16` | Deleted; cross-ref comment; centralized as `core_types.MAX_EXTENSION_TYPES`. |
+| QUAL-391 | Low | ServerHello bad compression returned `unexpected_message` not `illegal_parameter` | Typed `IllegalCompressionMethods`; stale comment removed. |
+| PERF-262 | P2 | Issuer cert re-parsed in OCSP-staple validation | `validateChainReturnLeafAndIssuer` returns + reuses the issuer. See `docs/PERF_GAP_ANALYSIS.md` Cycle 10. |
+
+APPSEC-02/03 (GAP-0135 doc inconsistency; already-fixed unknown-ext dup bypass)
+were reconciled in `docs/GAP_ANALYSIS.md` and `docs/SECURITY_REVIEW_NOTES.md`.
+
+---
+
 ## Cycle 9 / Phase 4 Gap Closure (2026-04-27)
 
 Phase 4 gap-issue-tracker sync. No code commits this cycle — moves are
