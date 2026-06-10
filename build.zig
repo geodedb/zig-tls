@@ -1416,6 +1416,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/conformance/openssl/name_constraints.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "test_certs", .module = test_certs_mod },
+            },
         }),
     });
     const run_name_constraints_conformance_test = b.addRunArtifact(name_constraints_conformance_test);
