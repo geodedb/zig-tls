@@ -915,29 +915,35 @@ pub const Context = struct {
 
             logger.debugPrint("  Parsed handshake message: type={X:0>2} ({s}), len={}\n", .{ @intFromEnum(parsed.typ), @tagName(parsed.typ), parsed.body.len });
 
-            // RFC 8446 §4.4.3/§4.4.4: fold each message into the transcript BEFORE
-            // processing it, EXCEPT Finished and CertificateVerify, which are each
-            // verified against the transcript that does NOT yet include themselves:
-            //   - Finished's MAC covers the transcript up to (not including) Finished.
-            //   - CertificateVerify's signature covers the transcript through the
-            //     Certificate message only. Folding CertificateVerify before the
-            //     verify made the verifier hash H(...||Certificate||CertificateVerify),
-            //     which never matches the signer's H(...||Certificate), so every
-            //     secure handshake failed with InvalidSignature (GAP-0838).
+            // RFC 8446 §4.4.4: Update transcript BEFORE processing message so
+            // that handlers computing Handshake secrets see the transcript up
+            // to and including the current message (e.g. ClientHello+ServerHello).
+            //
+            // EXCEPTIONS — folded AFTER their own verification instead:
+            //   - Finished (§4.4.4): its verify_data is HMAC over the transcript
+            //     EXCLUDING the Finished message.
+            //   - CertificateVerify (R5-01 / GAP-0838 / §4.4.3): its signature
+            //     covers Transcript-Hash(Handshake Context, Certificate) — i.e.
+            //     the transcript EXCLUDING the CertificateVerify message itself.
+            //     Folding it before verification made the client check the
+            //     signature over Hash(...Certificate || CertificateVerify),
+            //     which never matches the server's Hash(...Certificate),
+            //     breaking every RFC-compliant server-authenticated handshake.
             if (parsed.typ != .finished and parsed.typ != .certificate_verify) {
                 self.transcripts.handshake.update(message_bytes);
             }
 
-            // Validate and process message type. For CertificateVerify the handler
-            // now finalizes the correct through-Certificate transcript.
+            // Validate and process message type.
             try self.handleHandshakeMessage(level, parsed, message_bytes);
 
-            // RFC 8446 §4.4.3: the peer's CertificateVerify is now verified; fold it
-            // so the subsequent Finished MAC covers it. This mirrors the server's own
-            // emitServerFlight ordering (fold Certificate -> sign CV -> fold CV) and
-            // covers both the client (server-auth) and server (mTLS client-auth)
-            // inbound paths, which share this loop. (Finished folds itself
-            // post-verification inside handlePeerFinished.)
+            // R5-01 / RFC 8446 §4.4.3: now that the CertificateVerify signature
+            // has been verified over the pre-CV transcript, fold CV in so the
+            // subsequent Finished (and exporter/resumption secrets) bind it.
+            // This mirrors the server's own emitServerFlight ordering (fold
+            // Certificate -> sign CV -> fold CV) and covers both the client
+            // (server-auth) and server (mTLS client-auth) inbound paths, which
+            // share this loop. (Finished folds itself post-verification inside
+            // handlePeerFinished.)
             if (parsed.typ == .certificate_verify) {
                 self.transcripts.handshake.update(message_bytes);
             }

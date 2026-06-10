@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const testing = std.testing;
+const x509 = @import("x509");
 const tls13 = @import("tls13");
 const tls13_full = @import("tls13_full");
 const key_schedule = @import("quic_tls");
@@ -424,4 +425,92 @@ test "TLS 1.3 PSK with ticket succeeds" {
 
     // This should succeed without error
     try client_ctx.startClientHandshake();
+}
+
+// ============================================================================
+// R5-01: CertificateVerify transcript-binding regression (RFC 8446 §4.4.3)
+// ============================================================================
+//
+// The dispatcher folded CertificateVerify into the handshake transcript BEFORE
+// verifying it, so the client checked the server's CV signature over
+// Hash(...Certificate || CertificateVerify) instead of the §4.4.3-mandated
+// Hash(...Certificate). Every RFC-compliant server-authenticated handshake
+// therefore aborted with InvalidSignature. This secure end-to-end loopback
+// (both peers = this library) drives a real server CertificateVerify through
+// the client's verifier; it fails (InvalidSignature) before the fix and
+// completes after it.
+
+const R5Trust = struct {
+    var anchor_spki: []const u8 = &[_]u8{};
+    fn isTrusted(spki: []const u8) bool {
+        return std.mem.eql(u8, spki, anchor_spki);
+    }
+};
+
+test "R5-01: secure loopback — client verifies a real server CertificateVerify" {
+    const alloc = testing.allocator;
+    const cert_der = @embedFile("test_certs/ed25519_cert.der");
+    const key_der = @embedFile("test_certs/ed25519_key.der");
+
+    var anchor = try x509.parseCert(alloc, cert_der);
+    defer anchor.deinit(alloc);
+    R5Trust.anchor_spki = anchor.spki;
+    x509.setTrustStore(.{ .isTrustedSpki = R5Trust.isTrusted });
+    defer x509.setTrustStore(null);
+
+    var server = try tls13.Context.init(.{
+        .allocator = alloc,
+        .role = .Server,
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .server_cert_der = cert_der,
+        .server_key_der = key_der,
+        .quic_transport_parameters = &[_]u8{},
+    }, .{});
+    defer server.deinit();
+
+    var client = try tls13.Context.init(.{
+        .allocator = alloc,
+        .role = .Client,
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .server_name = "ed25519.example.com",
+        .quic_transport_parameters = &[_]u8{},
+    }, .{});
+    defer client.deinit();
+
+    try client.startClientHandshake();
+
+    // Pump plaintext CRYPTO between the two contexts across all levels until
+    // both complete or no further progress is made.
+    const Pump = struct {
+        fn relay(a: std.mem.Allocator, from: *tls13.Context, to: *tls13.Context, lvl: tls13.EncryptionLevel) !bool {
+            const out = from.pollCrypto(a, lvl) catch |e| {
+                if (e == error.NothingToRead) return false;
+                return e;
+            };
+            defer a.free(out);
+            if (out.len == 0) return false;
+            try to.processCrypto(lvl, out);
+            return true;
+        }
+    };
+
+    const levels = [_]tls13.EncryptionLevel{ .Initial, .Handshake, .Application };
+    var round: usize = 0;
+    while (round < 12) : (round += 1) {
+        var progressed = false;
+        for (levels) |lvl| {
+            if (try Pump.relay(alloc, &client, &server, lvl)) progressed = true;
+            if (try Pump.relay(alloc, &server, &client, lvl)) progressed = true;
+        }
+        if (!progressed) break;
+    }
+
+    // The client must have verified the server CertificateVerify and reached
+    // the application phase (it would have terminated on InvalidSignature).
+    try testing.expect(client.phase == .application_ready);
+    try testing.expect(server.phase == .application_ready or server.phase == .keys_installed);
 }
