@@ -214,7 +214,9 @@ pub fn computeCertificateVerifySignature(
     msg[64 + context_string.len] = 0; // separator
     @memcpy(msg[65 + context_string.len ..], &transcript_hash);
 
-    // For now, we only support Ed25519
+    // This is an Ed25519-only convenience helper (its [64]u8 return type is the
+    // Ed25519 signature size). The production multi-scheme CertificateVerify
+    // signer is `sig.signCertificateVerify` (Ed25519 + ECDSA P-256).
     if (signature_scheme != .ed25519) {
         return error.UnsupportedSignatureScheme;
     }

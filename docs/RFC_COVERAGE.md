@@ -96,7 +96,26 @@ The related ClientHello / EncryptedExtensions / CertificateRequest
 duplicate-extension gates (GAP-0145) are likewise implemented at
 `src/tls13/messages/client_hello.zig:359-384`,
 `src/tls13/messages/encrypted_extensions.zig:222-245`, and
-`src/tls13/messages/certificate_request.zig:202-219`.
+`src/tls13/messages/certificate_request.zig:202-219`. NEWGAP-05 extended the
+same raw-`u16` tracking (rejecting duplicate **unknown** extension types, not
+just known ones) to the ServerHello (`supported_versions` / `pre_shared_key`)
+and HelloRetryRequest parsers, which previously used a known-types-only
+`EnumSet`. All parsers cap distinct types at 64 with `error.TooManyExtensions`
+(APPSEC-04).
+
+## Signature algorithm support (RFC 8446 §4.2.3, RFC 5280 §6)
+
+`verifyCertSig` (`src/x509.zig`) verifies certificate-chain and OCSP signatures
+for:
+
+| Scheme | Certificate sig | CertificateVerify | Notes |
+|--------|-----------------|-------------------|-------|
+| Ed25519 | [x] | [x] | |
+| ECDSA P-256 / SHA-256 | [x] | [x] | |
+| ECDSA P-384 / SHA-384 | [x] | [x] | |
+| RSA-PSS (rsae) SHA-256 | [x] | [x] | |
+| RSA PKCS#1 v1.5 SHA-256/384/512 | [x] (NEWGAP-01) | [ ] by design | Cert sigs only; RFC 8446 §4.2.3 bans PKCS#1 v1.5 for the CertificateVerify handshake message, which is still rejected. |
+| ECDSA P-521 / SHA-512 | [ ] out-of-scope | [ ] out-of-scope | NEWGAP-02: no constant-time P-521 primitive in the Zig 0.16 stdlib (`std.crypto` ships P-256/P-384 only). The enum value exists to parse legacy advertisements; it is not advertised by default (`Config.supported_signature_schemes` defaults to `[ed25519]`) and is rejected fail-closed (`error.UnsupportedSignatureScheme` in `sig.zig`; `verifyCertSig` returns `false`). |
 
 Open scope-decision items for `[ ]` rows:
 

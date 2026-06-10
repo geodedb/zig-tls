@@ -175,8 +175,12 @@ pub const NamedGroup = enum(u16) {
 ///
 /// ## Current Implementation Support
 ///
-/// This implementation currently supports **Ed25519 only** for signing operations.
-/// Other schemes are recognized for parsing but verification is not yet implemented.
+/// Verification (certificate chains, OCSP, and CertificateVerify) is
+/// implemented for Ed25519, ECDSA P-256/SHA-256, ECDSA P-384/SHA-384,
+/// RSA-PSS (rsae) SHA-256, and — for certificate signatures only — RSA
+/// PKCS#1 v1.5 SHA-256/384/512. CertificateVerify *signing* is implemented for
+/// Ed25519 and ECDSA P-256. P-521 is out of scope (no constant-time stdlib
+/// primitive). See `docs/RFC_COVERAGE.md` for the authoritative matrix.
 pub const SignatureScheme = enum(u16) {
     // Legacy RSA PKCS#1 v1.5 - DEPRECATED for TLS 1.3 certificates (RFC 8446 §4.2.3)
     rsa_pkcs1_sha256 = 0x0401, // RSASSA-PKCS1-v1_5 with SHA-256 (legacy only)
@@ -242,12 +246,13 @@ pub const SignatureScheme = enum(u16) {
 ///
 /// ## Current Implementation Support
 ///
-/// This implementation supports:
-/// - **TLS_AES_128_GCM_SHA256** (primary focus, fully implemented)
-/// - **TLS_AES_256_GCM_SHA384** (recognized, partial support)
-/// - **TLS_CHACHA20_POLY1305_SHA256** (recognized, partial support)
+/// This implementation supports (AEAD fully implemented in `record/aead.zig`):
+/// - **TLS_AES_128_GCM_SHA256** (fully implemented)
+/// - **TLS_AES_256_GCM_SHA384** (fully implemented)
+/// - **TLS_CHACHA20_POLY1305_SHA256** (fully implemented)
 ///
-/// CCM variants are recognized for parsing but not yet implemented.
+/// CCM variants (TLS_AES_128_CCM_SHA256 / _CCM_8) are out of scope: optional
+/// per RFC 8446 §B.4 and recognized for parsing only.
 ///
 /// ## Security Considerations
 ///

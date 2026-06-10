@@ -1847,7 +1847,9 @@ pub fn verifySignatureWithSpki(spki_der: []const u8, signed: []const u8, algo_oi
 /// - Path length constraints prevent deep chains that could hide rogue CAs
 ///
 /// ## Design Notes
-/// - Currently validates only the leaf certificate in detail; partial intermediate validation
+/// - Validates the full chain: each certificate's signature is verified against
+///   its issuer's SPKI, with basic-constraints CA flags and path-length limits
+///   enforced on every intermediate (see `validateSignatureChain`)
 /// - Self-signed roots are accepted (last cert signs itself)
 /// - Name constraints enforced per RFC 5280 §4.2.1.10
 /// - Policy mapping not supported (RFC 5280 §4.2.1.5)
