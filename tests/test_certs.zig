@@ -12,6 +12,9 @@ pub const leaf = @embedFile("test_certs/leaf_cert.der");
 pub const intermediate = @embedFile("test_certs/intermediate_cert.der");
 pub const root = @embedFile("test_certs/root_cert.der");
 
+// Client-auth fixture (gen_client_auth.sh): self-signed, EKU=clientAuth.
+pub const client_cert = @embedFile("test_certs/client_cert.der");
+
 // Self-signed single-cert fixtures.
 pub const ed25519 = @embedFile("test_certs/ed25519_cert.der");
 pub const p256 = @embedFile("test_certs/p256_cert.der");
