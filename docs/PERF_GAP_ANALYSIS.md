@@ -26,6 +26,17 @@
 
 *Counts reflect Cycle 9 / Phase 23 (2026-04-27):* +6 newly filed (PERF-256 P2 AEAD throughput unmeasured, PERF-257 P3 finalize repetition, PERF-258 P1 baseline JSON helper, PERF-259 P3 bench-allocs gaps, PERF-260 Info doc hygiene, PERF-261 Info status reconciliation). -1 P1 Open (PERF-233 closed Won't-Do/subsumed); -1 P2 Open (PERF-235 closed Won't-Do/subsumed); -1 P2 Open (PERF-239 closed not-a-bug → Not Issue). +1 P1 Open (PERF-258 filed); +1 P2 Open (PERF-256 filed); +2 P3 Open (PERF-257, PERF-259 filed). Info: +2 Closed (PERF-260, PERF-261 closed in same MR via doc edits). Net: +6 Total, +2 Closed, +1 Open, +1 Not Issue, +2 Won't Do.
 
+### Cycle 10 / appsec+codepros iterative-review run (2026-06-10)
+
+Deep perf-review (handshake / record / key-schedule / X.509 hot paths) found one
+new actionable item plus two bounded observations.
+
+| PERF-ID | Sev | Status | Note |
+|---------|-----|--------|------|
+| PERF-262 | P2 | **Closed** (commit this run) | Issuer cert (`chain[1]`) was re-parsed from DER during OCSP-staple validation, immediately after `validateChainReturnParsed` parsed and freed it (residual of PERF-207, which only returned the leaf). Fixed: `validateChainReturnLeafAndIssuer` returns leaf + issuer; `validateOcspStaple` reuses it. One fewer full ASN.1 walk + allocations per OCSP-stapled handshake (chain depth >= 2). |
+| PERF-263 | P3 | **Won't Do** | Architectural generalization of PERF-262 (a single "parse chain once, hand back owned slice" API). PERF-262's targeted leaf+issuer return already removes the only present-day re-parse; a broader API change is not justified until a second intermediate-dependent consumer exists. |
+| PERF-264 | Info | **Not Issue** | `validateNameConstraints` inner accumulation is O(n²) in chain length but `n <= max_chain_depth = 10` and each step is a pointer append (~50-200 ns worst case). Bounded; recorded so it is not re-flagged as an unnoticed O(n²). |
+
 ### Cycle 2 / Phase 14 Gap Closure Run (2026-04-20)
 
 7 PERF items closed + 1 Deferred landed across 19 commits on `main`. Verifier: `zig build` PASS, `zig build test` PASS (586/588), `zig fmt --check` clean, bench harness green (warmup + p50/p95 reporting + memory-clobber compiler barriers now in place).
