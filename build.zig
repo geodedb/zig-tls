@@ -196,6 +196,18 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // RFC 5280 §5.1: Certificate Revocation List (CRL)
+    // CRL parsing + provided-CRL revocation checking
+    const crl_mod = b.addModule("crl", .{
+        .root_source_file = b.path("src/crl.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "asn1", .module = asn1_mod },
+            .{ .name = "x509", .module = x509_mod },
+            .{ .name = "test_certs", .module = test_certs_mod },
+        },
+    });
+
     // RFC 8446 §5: Record Protocol
     // TLSPlaintext/TLSCiphertext, AEAD operations
     const record_mod = b.addModule("record", .{
@@ -363,6 +375,15 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "asn1", .module = asn1_mod },
                 .{ .name = "build_options", .module = build_options_mod },
+            },
+        },
+        .{
+            .name = "crl",
+            .source = "src/crl.zig",
+            .imports = &.{
+                .{ .name = "asn1", .module = asn1_mod },
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "test_certs", .module = test_certs_mod },
             },
         },
         .{
@@ -1388,6 +1409,11 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/conformance/openssl/crl_validation.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "crl", .module = crl_mod },
+                .{ .name = "test_certs", .module = test_certs_mod },
+            },
         }),
     });
     const run_crl_validation_conformance_test = b.addRunArtifact(crl_validation_conformance_test);

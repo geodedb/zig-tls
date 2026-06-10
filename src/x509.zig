@@ -1940,7 +1940,12 @@ pub fn matchDnsName(cert: *const Certificate, name: []const u8) bool {
     return false;
 }
 
-fn parseCertSignature(der: []const u8) !struct { algo_oid: []const u8, sig_der: []const u8 } {
+/// Extract the signatureAlgorithm OID and signatureValue bytes from a DER blob
+/// with the X.509 Certificate / CRL CertificateList outer shape:
+/// `SEQUENCE { tbs, signatureAlgorithm AlgorithmIdentifier, signatureValue BIT STRING }`.
+/// `readBitString()` strips the BIT STRING unused-bits byte, so `sig_der` is the
+/// raw signature ready to pass to `verifyCertSig`.
+pub fn parseCertSignature(der: []const u8) !struct { algo_oid: []const u8, sig_der: []const u8 } {
     var d = asn1.Decoder.init(der);
     const cert_seq = try d.readSequence();
     var c = asn1.Decoder.init(cert_seq);
@@ -2014,7 +2019,12 @@ fn oidIsEd25519(oid: []const u8) bool {
     return std.mem.eql(u8, oid, &expected);
 }
 
-fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const u8, sig_der: []const u8, alloc: std.mem.Allocator) bool {
+/// Verify ANY DER `tbs` blob (TBSCertificate or tbsCertList from an RFC 5280
+/// §5.1 CRL) signed by the holder of `issuer_spki_der` under signatureAlgorithm
+/// `algo_oid`. Dispatches across RSA-PKCS#1/RSA-PSS, ECDSA (incl. the P-384 vs
+/// SHA-256 independent curve/hash CONF-01 fix) and Ed25519. Returns false on any
+/// parse or verification failure.
+pub fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const u8, sig_der: []const u8, alloc: std.mem.Allocator) bool {
     // ECDSA: the hash comes from the signatureAlgorithm OID; the curve comes
     // from the issuer's SubjectPublicKeyInfo. Dispatch on the (curve, hash)
     // pair rather than assuming P-256↔SHA-256 / P-384↔SHA-384 (a P-384 key
