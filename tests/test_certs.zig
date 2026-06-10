@@ -38,3 +38,7 @@ pub const crl_empty = @embedFile("test_certs/crl_empty.der");
 pub const crl_with_revoked = @embedFile("test_certs/crl_with_revoked.der");
 pub const crl_ca = @embedFile("test_certs/crl_ca.der");
 pub const crl_leaf = @embedFile("test_certs/crl_leaf.der");
+
+// AIA + certificate-policy fixtures (gen_aia.sh / gen_policy.sh).
+pub const aia_leaf = @embedFile("test_certs/aia_leaf.der");
+pub const policy_leaf = @embedFile("test_certs/policy_leaf.der");

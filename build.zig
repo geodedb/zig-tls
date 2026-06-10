@@ -1425,6 +1425,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/conformance/openssl/aia_validation.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "test_certs", .module = test_certs_mod },
+            },
         }),
     });
     const run_aia_validation_conformance_test = b.addRunArtifact(aia_validation_conformance_test);
@@ -1436,6 +1440,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/conformance/openssl/policy_validation.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "test_certs", .module = test_certs_mod },
+            },
         }),
     });
     const run_policy_validation_conformance_test = b.addRunArtifact(policy_validation_conformance_test);
