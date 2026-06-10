@@ -228,7 +228,8 @@ pub fn parseCertificate(
             for (seen_extensions[0..seen_count]) |s| {
                 if (s == ext_type) return error.DuplicateExtension;
             }
-            if (seen_count == 64) return error.DuplicateExtension;
+            // APPSEC-04: capacity cap is distinct from a duplicate.
+            if (seen_count == seen_extensions.len) return error.TooManyExtensions;
             seen_extensions[seen_count] = ext_type;
             seen_count += 1;
 

@@ -209,10 +209,12 @@ pub fn parseCertificateRequest(
         if (pos + elen > ext_end) return error.MalformedCertificateRequest;
 
         // GAP-0145: Reject duplicate extension types.
+        // QUAL-386: canonical error.DuplicateExtension (maps to decode_error).
         for (seen_extensions[0..seen_count]) |s| {
-            if (s == etype) return error.MalformedCertificateRequest;
+            if (s == etype) return error.DuplicateExtension;
         }
-        if (seen_count == 64) return error.MalformedCertificateRequest;
+        // APPSEC-04: capacity cap is distinct from a duplicate.
+        if (seen_count == seen_extensions.len) return error.TooManyExtensions;
         seen_extensions[seen_count] = etype;
         seen_count += 1;
 

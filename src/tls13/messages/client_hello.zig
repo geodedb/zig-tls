@@ -373,10 +373,13 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
         const ext_data = data[pos .. pos + ext_data_len];
 
         // SEC-066 / GAP-0145: Reject duplicate extension types (RFC 8446 §4.2).
+        // QUAL-386: canonical error.DuplicateExtension (maps to decode_error).
         for (seen_extensions[0..seen_count]) |seen| {
-            if (seen == ext_type_raw) return error.DecodeError;
+            if (seen == ext_type_raw) return error.DuplicateExtension;
         }
-        if (seen_count == 64) return error.DecodeError;
+        // APPSEC-04: capacity cap is a distinct condition from a duplicate; do
+        // not mislabel a message with >64 DISTINCT extension types as a dup.
+        if (seen_count == seen_extensions.len) return error.TooManyExtensions;
         seen_extensions[seen_count] = ext_type_raw;
         seen_count += 1;
 

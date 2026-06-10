@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! SEC-066 regression: parseClientHello must reject a ClientHello that
-//! contains the same extension type twice with error.DecodeError, and must
+//! contains the same extension type twice with error.DuplicateExtension, and must
 //! not leak allocations from the first copy (RFC 8446 §4.2).
 
 const std = @import("std");
@@ -98,7 +98,7 @@ fn keyShareExtension(alloc: std.mem.Allocator) ![]u8 {
     return try ext.toOwnedSlice(alloc);
 }
 
-test "SEC-066: duplicate server_name extension is rejected with DecodeError" {
+test "SEC-066: duplicate server_name extension is rejected with DuplicateExtension" {
     const alloc = std.testing.allocator;
     const sni_a = try sniExtension(alloc);
     defer alloc.free(sni_a);
@@ -114,10 +114,10 @@ test "SEC-066: duplicate server_name extension is rejected with DecodeError" {
     defer alloc.free(body);
 
     const result = tls13_full.parseClientHello(alloc, body);
-    try std.testing.expectError(error.DecodeError, result);
+    try std.testing.expectError(error.DuplicateExtension, result);
 }
 
-test "SEC-066: duplicate ALPN extension is rejected with DecodeError" {
+test "SEC-066: duplicate ALPN extension is rejected with DuplicateExtension" {
     const alloc = std.testing.allocator;
     const a = try alpnExtension(alloc, "h3");
     defer alloc.free(a);
@@ -133,10 +133,10 @@ test "SEC-066: duplicate ALPN extension is rejected with DecodeError" {
     defer alloc.free(body);
 
     const result = tls13_full.parseClientHello(alloc, body);
-    try std.testing.expectError(error.DecodeError, result);
+    try std.testing.expectError(error.DuplicateExtension, result);
 }
 
-test "SEC-066: duplicate key_share extension is rejected with DecodeError" {
+test "SEC-066: duplicate key_share extension is rejected with DuplicateExtension" {
     const alloc = std.testing.allocator;
     const a = try keyShareExtension(alloc);
     defer alloc.free(a);
@@ -152,5 +152,27 @@ test "SEC-066: duplicate key_share extension is rejected with DecodeError" {
     defer alloc.free(body);
 
     const result = tls13_full.parseClientHello(alloc, body);
-    try std.testing.expectError(error.DecodeError, result);
+    try std.testing.expectError(error.DuplicateExtension, result);
+}
+
+test "APPSEC-04: 65 distinct extension types yield TooManyExtensions, not a duplicate" {
+    const alloc = std.testing.allocator;
+
+    // 65 DISTINCT unknown extension types (0x8000..0x8040), empty bodies.
+    // The 64-slot dedup tracker fills at 64; the 65th distinct type must be
+    // reported as a capacity condition (TooManyExtensions), NOT mislabeled as
+    // a DuplicateExtension/DecodeError.
+    var exts = std.ArrayList(u8).empty;
+    defer exts.deinit(alloc);
+    var t: u16 = 0x8000;
+    while (t <= 0x8040) : (t += 1) {
+        try writeU16(&exts, alloc, t); // ext_type
+        try writeU16(&exts, alloc, 0); // ext_len = 0
+    }
+
+    const body = try buildClientHelloWithExtensions(alloc, exts.items);
+    defer alloc.free(body);
+
+    const result = tls13_full.parseClientHello(alloc, body);
+    try std.testing.expectError(error.TooManyExtensions, result);
 }

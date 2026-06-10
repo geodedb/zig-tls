@@ -126,6 +126,7 @@ pub fn fromHandshakeError(err: anyerror) AlertDescription {
         error.PskIndexOutOfRange => .illegal_parameter,
         error.InvalidCookie => .illegal_parameter, // SEC-086: RFC 8446 §4.2.2 cookie verification failure
         error.DuplicateExtension => .decode_error, // SEC-092 / RFC 8446 §4.2
+        error.TooManyExtensions => .decode_error, // APPSEC-04: distinct-extension capacity cap
         error.TooManyKeyUpdates => .decode_error, // GAP-0135 / RFC 8446 §4.6.3
         error.IllegalCompressionMethods => .illegal_parameter, // SEC-088 / RFC 8446 §4.1.2
         error.IllegalCipherSuites => .illegal_parameter, // SEC-099 / RFC 8446 §4.1.2
