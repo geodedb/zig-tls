@@ -1255,3 +1255,92 @@ every pipeline and cmps against the committed golden file.
 
 Closes QUAL-317 (BLOCKED at Cycle 3, design brainstormed 2026-04-20,
 delivered Phase 17).
+
+---
+
+## Conformance completion — real mTLS/OCSP/NC tests + CRL/AIA/policy implementation (2026-06-10)
+
+Executed via `superpowers:writing-plans` →
+`superpowers:subagent-driven-development` from
+`docs/superpowers/plans/2026-06-10-conformance-completion.md`. Goal:
+replace every remaining *vacuous* conformance test under
+`tests/conformance/openssl/` (placeholder "`signature_valid = true`"
+theater whose build targets had **no module imports**, so they could
+not reach the library at all) with real differential tests, and
+*implement* the genuinely-missing X.509 features they required.
+
+### Converted to real (7 files, theater removed)
+
+All now import the real `x509`/`ocsp`/`crl`/`test_certs` modules (build
+targets re-wired) and assert real library verdicts against
+OpenSSL-generated DER fixtures:
+
+| File | Real coverage |
+|------|---------------|
+| `mutual_tls.zig` | `validateChain` server_auth accept, tampered→`BadSignature`, server-leaf-under-`.client_auth`→`EkuNotAllowed`, hostname→`NameMismatch` |
+| `client_auth.zig` | clientAuth self-signed cert accepted under `.client_auth`, rejected under `.server_auth`; `checkEkuPurpose` maps real cert EKUs |
+| `name_constraints.zig` | constrained-CA chain: `host.example.com` accepted, `evil.test`→`NameConstraintsViolation`; matcher subtree semantics |
+| `ocsp_validation.zig` | `validateStapledResponse` GOOD→ok, REVOKED→`CertStatusRevoked`, tampered→`SignatureInvalid` (SHA-256 CertID fixtures) |
+| `crl_validation.zig` | `CertificateList.parse` + `checkRevocation`: revoked leaf→revoked, empty CRL→good, wrong issuer→`CrlBadSignature`, serial-set matches OpenSSL |
+| `aia_validation.zig` | `AuthorityInfoAccess` OCSP + caIssuers URIs parsed; documented app-layer-fetch boundary |
+| `policy_validation.zig` | `certificatePolicies` OID parsed; `certHasPolicy` present/absent; documented §6.1 policy-tree boundary |
+
+### Implemented (truly-missing features)
+
+- **`src/crl.zig` (NEW)** — RFC 5280 §5.1 `CertificateList` parser
+  (`parse`, `isRevoked`), CRL signature verification against an issuer
+  (`verifySignedBy`), and provided-CRL revocation check
+  (`checkRevocation` → good/revoked, with signature + `nextUpdate`
+  freshness gates). Reuses `x509.verifyCertSig` (no duplication of the
+  CONF-01 P-384 dispatch). Bounds-checked DER walk (APPSEC-pattern OOB
+  guards). **Network CRL fetching is intentionally out of scope** —
+  documented as app/QUIC-layer responsibility.
+- **`src/x509.zig` extension parsers (NEW)** — `certificatePolicies`
+  (§4.2.1.4), `cRLDistributionPoints` fullName URIs (§4.2.1.13),
+  `authorityInfoAccess` OCSP/caIssuers URIs (§4.2.2.1),
+  `inhibitAnyPolicy` skipCerts (§4.2.1.14), wired through
+  `parseExtensionsBlock` (incl. the SEC-079 duplicate-OID gate and
+  errdefer ownership chain) and exposed on `Certificate`. Added
+  `certHasPolicy` single-cert presence helper. **Full RFC 5280 §6.1
+  policy-tree processing remains intentionally out of scope** (parsed +
+  exposed, not chain-intersected).
+- `parseCertSignature` / `verifyCertSig` promoted to `pub` so `crl.zig`
+  reuses the proven signature path.
+
+### Real bugs found & fixed (surfaced by the new differential tests)
+
+- **SEC (name-constraint exclusion bypass) — `matchesNameConstraint`**:
+  RFC 5280 §4.2.1.10 dotless dNSName constraints were treated as
+  EXACT-match only. A dotless *excluded* subtree (`example.com`) failed
+  to exclude subdomains (`evil.example.com`) — an exclusion **bypass**;
+  dotless *permitted* subtrees wrongly false-rejected legitimate
+  subdomains. Fixed to RFC subtree semantics (apex + dot-boundary
+  subdomains, rejecting `notexample.com`). Proven by red tests first;
+  two pre-existing tests that encoded the buggy over-restriction were
+  corrected. (`a651244`)
+- **CORRECTNESS (OCSP defeated) — `parseCert` issuer/subject Name DER**:
+  `issuer_der`/`subject_der` captured the Name SEQUENCE **content only**,
+  dropping the outer `30 LL` header. RFC 6960 §4.1.1 requires
+  `issuerNameHash = Hash(full Name DER)` incl. the header, so OCSP
+  validation against any spec-compliant responder would **always** fail
+  with `MissingSingleResponse`, silently defeating OCSP stapling.
+  Reproduced via byte-level hash comparison against the fixture; fixed
+  to capture the full Name TLV (consistent both sides, self-signed
+  detection preserved). (`16792f3`)
+- **INTEROP — OCSP SHA-1 CertID fixtures**: the library correctly
+  rejects SHA-1 CertIDs (CWE-328); fixtures were regenerated with
+  `-sha256` so the GOOD/REVOKED distinction is actually exercised.
+
+### Fixtures added (OpenSSL-generated, committed with generator scripts)
+
+name-constrained CA + conforming/violating leaves; SHA-256-CertID
+GOOD/REVOKED OCSP responses + issuer/leaf; empty + revoking CRLs +
+issuer/leaf; clientAuth self-signed leaf; AIA leaf; certificatePolicies
+leaf. All re-exported from `tests/test_certs.zig`.
+
+### Verification
+
+Debug: 733/741 unit (8 skipped, 0 failed) + 400/400 conformance.
+ReleaseSafe + ReleaseFast: green. No memory leaks (testing allocator).
+OpenSSL differential cross-checks pass (`X509_verify`, `openssl crl …
+verify OK`, `openssl ocsp -text`).
