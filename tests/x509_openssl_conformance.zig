@@ -46,6 +46,10 @@ extern "c" fn X509_EXTENSION_get_data(ex: ?*const X509_EXTENSION_st) ?*const ASN
 extern "c" fn ASN1_STRING_get0_data(x: ?*const ASN1_STRING_st) [*c]const u8;
 extern "c" fn ASN1_STRING_length(x: ?*const ASN1_STRING_st) c_int;
 extern "c" fn OBJ_obj2nid(o: ?*const ASN1_OBJECT_st) c_int;
+// X509_verify checks `cert`'s signature against `pkey` (the issuer's public
+// key). Returns 1 on success, 0 on failure, <0 on error. This is OpenSSL's
+// single-link signature check — the reference for our verifyCertificateSignedBy.
+extern "c" fn X509_verify(cert: ?*X509_st, pkey: ?*EVP_PKEY_st) c_int;
 
 // OpenSSL NIDs (Numeric IDs) for common OIDs
 const NID_subject_alt_name = 85;
@@ -56,6 +60,37 @@ const NID_ext_key_usage = 126;
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// OpenSSL reference: does `child_der`'s signature verify against the public
+/// key in `issuer_der`? (For a self-signed cert, pass the same DER twice.)
+fn opensslVerifySignedBy(child_der: []const u8, issuer_der: []const u8) !bool {
+    var cptr: [*c]const u8 = child_der.ptr;
+    const child = d2i_X509(null, &cptr, @intCast(child_der.len)) orelse return error.OpenSSLParseFailed;
+    defer X509_free(child);
+    var iptr: [*c]const u8 = issuer_der.ptr;
+    const issuer = d2i_X509(null, &iptr, @intCast(issuer_der.len)) orelse return error.OpenSSLParseFailed;
+    defer X509_free(issuer);
+    const issuer_pkey = X509_get_pubkey(issuer) orelse return error.NoPubkey;
+    defer EVP_PKEY_free(issuer_pkey);
+    return X509_verify(child, issuer_pkey) == 1;
+}
+
+/// Our implementation: does `child_der`'s signature verify against `issuer_der`?
+fn ztlsVerifySignedBy(alloc: std.mem.Allocator, child_der: []const u8, issuer_der: []const u8) !bool {
+    var child = try x509.parseCert(alloc, child_der);
+    defer child.deinit(alloc);
+    var issuer = try x509.parseCert(alloc, issuer_der);
+    defer issuer.deinit(alloc);
+    return x509.verifyCertificateSignedBy(&child, child_der, &issuer, alloc);
+}
+
+/// Assert our per-link signature verdict matches OpenSSL's for a (child, issuer)
+/// pair — the core differential conformance check.
+fn assertSignatureAgrees(child_der: []const u8, issuer_der: []const u8) !void {
+    const ours = try ztlsVerifySignedBy(testing.allocator, child_der, issuer_der);
+    const openssl = try opensslVerifySignedBy(child_der, issuer_der);
+    try testing.expectEqual(openssl, ours);
+}
 
 // QUAL-205: hexToBytes moved to tests/test_utils.zig.
 const test_utils = @import("test_utils");
@@ -231,7 +266,25 @@ test "validateChain conformance - OpenSSL verification" {
 }
 
 test "validateChain conformance - signature verification" {
-    // Verify certificate signatures match OpenSSL verification
+    // DIFFERENTIAL: each link of the real leaf->intermediate->root chain must
+    // get the SAME signature verdict from our verifier and from OpenSSL's
+    // X509_verify. The chain is RSA sha256WithRSAEncryption (PKCS#1 v1.5),
+    // which exercises the NEWGAP-01 verifier path.
+    try assertSignatureAgrees(TEST_CHAIN_LEAF, TEST_CHAIN_INTERMEDIATE); // leaf signed by intermediate
+    try assertSignatureAgrees(TEST_CHAIN_INTERMEDIATE, TEST_CHAIN_ROOT); // intermediate signed by root
+    try assertSignatureAgrees(TEST_CHAIN_ROOT, TEST_CHAIN_ROOT); // root self-signed
+
+    // Cross-pairs that are NOT a valid signing relationship must be rejected by
+    // BOTH (leaf is not signed by the root directly).
+    try assertSignatureAgrees(TEST_CHAIN_LEAF, TEST_CHAIN_ROOT);
+    // A tampered leaf must fail verification on both sides.
+    var tampered = try testing.allocator.dupe(u8, TEST_CHAIN_LEAF);
+    defer testing.allocator.free(tampered);
+    tampered[tampered.len - 1] ^= 0xFF; // corrupt the signature's last byte
+    const ours = try ztlsVerifySignedBy(testing.allocator, tampered, TEST_CHAIN_INTERMEDIATE);
+    const ossl = try opensslVerifySignedBy(tampered, TEST_CHAIN_INTERMEDIATE);
+    try testing.expectEqual(false, ours);
+    try testing.expectEqual(ossl, ours);
 }
 
 test "validateChain conformance - path validation" {
@@ -243,19 +296,24 @@ test "validateChain conformance - path validation" {
 // ============================================================================
 
 test "verifyCertificateSignedBy conformance - Ed25519" {
-    // Verify Ed25519 certificate signature matches OpenSSL verification
+    // Self-signed: cert verifies against its own key. Differential vs OpenSSL.
+    try assertSignatureAgrees(TEST_CERT_ED25519_SELF_SIGNED, TEST_CERT_ED25519_SELF_SIGNED);
 }
 
 test "verifyCertificateSignedBy conformance - ECDSA P-256" {
-    // Verify ECDSA P-256 signature matches OpenSSL
+    try assertSignatureAgrees(TEST_CERT_ECDSA_P256, TEST_CERT_ECDSA_P256);
 }
 
 test "verifyCertificateSignedBy conformance - ECDSA P-384" {
-    // Verify ECDSA P-384 signature matches OpenSSL
+    try assertSignatureAgrees(TEST_CERT_ECDSA_P384, TEST_CERT_ECDSA_P384);
 }
 
-test "verifyCertificateSignedBy conformance - RSA-PSS" {
-    // Verify RSA-PSS signature matches OpenSSL
+test "verifyCertificateSignedBy conformance - RSA PKCS#1 v1.5 (NEWGAP-01)" {
+    // The self-signed RSA-2048 cert uses sha256WithRSAEncryption. Both our
+    // verifier (NEWGAP-01) and OpenSSL must accept it; a wrong issuer (Ed25519
+    // key) must be rejected by both.
+    try assertSignatureAgrees(TEST_CERT_RSA_2048, TEST_CERT_RSA_2048);
+    try assertSignatureAgrees(TEST_CERT_RSA_2048, TEST_CERT_ED25519_SELF_SIGNED);
 }
 
 // ============================================================================

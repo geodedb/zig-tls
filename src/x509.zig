@@ -1665,6 +1665,24 @@ fn oidIsEcdsaSha384(oid: []const u8) bool {
     const expected = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03 };
     return std.mem.eql(u8, oid, &expected);
 }
+fn oidIsEcdsaSha512(oid: []const u8) bool {
+    // 1.2.840.10045.4.3.4
+    const expected = [_]u8{ 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x04 };
+    return std.mem.eql(u8, oid, &expected);
+}
+
+/// Verify an ECDSA certificate signature with an explicit (curve, hash) pair.
+/// In ECDSA the curve is determined by the issuer's public key (SPKI) and the
+/// hash by the signatureAlgorithm OID — they are INDEPENDENT (e.g. a P-384 key
+/// may sign with ecdsa-with-SHA256). Conflating them rejects valid certs that
+/// OpenSSL accepts.
+fn verifyEcdsaWith(comptime Curve: type, comptime Hash: type, sec1_uncompressed: []const u8, tbs: []const u8, sig_der: []const u8) bool {
+    const E = std.crypto.sign.ecdsa.Ecdsa(Curve, Hash);
+    const signature = E.Signature.fromDer(sig_der) catch return false;
+    const pubkey = E.PublicKey.fromSec1(sec1_uncompressed) catch return false;
+    signature.verify(tbs, pubkey) catch return false;
+    return true;
+}
 fn oidIsRsaPss(oid: []const u8) bool {
     // 1.2.840.113549.1.1.10
     const expected = [_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A };
@@ -1692,23 +1710,27 @@ fn oidIsEd25519(oid: []const u8) bool {
 }
 
 fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const u8, sig_der: []const u8, alloc: std.mem.Allocator) bool {
-    if (oidIsEcdsaSha256(algo_oid)) {
-        const E = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, std.crypto.hash.sha2.Sha256);
-        const signature = E.Signature.fromDer(sig_der) catch return false;
+    // ECDSA: the hash comes from the signatureAlgorithm OID; the curve comes
+    // from the issuer's SubjectPublicKeyInfo. Dispatch on the (curve, hash)
+    // pair rather than assuming P-256↔SHA-256 / P-384↔SHA-384 (a P-384 key
+    // signing with ecdsa-with-SHA256 is valid and accepted by OpenSSL).
+    const EcdsaHash = enum { sha256, sha384, sha512 };
+    const ecdsa_hash: ?EcdsaHash =
+        if (oidIsEcdsaSha256(algo_oid)) .sha256 else if (oidIsEcdsaSha384(algo_oid)) .sha384 else if (oidIsEcdsaSha512(algo_oid)) .sha512 else null;
+    if (ecdsa_hash) |h| {
         var spki = sigmod.parseEcdsaSpki(issuer_spki_der, alloc) catch return false;
         defer spki.deinit();
-        const pubkey = E.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
-        signature.verify(tbs, pubkey) catch return false;
-        return true;
-    }
-    if (oidIsEcdsaSha384(algo_oid)) {
-        const E = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, std.crypto.hash.sha2.Sha384);
-        const signature = E.Signature.fromDer(sig_der) catch return false;
-        var spki = sigmod.parseEcdsaSpki(issuer_spki_der, alloc) catch return false;
-        defer spki.deinit();
-        const pubkey = E.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
-        signature.verify(tbs, pubkey) catch return false;
-        return true;
+        const P256 = std.crypto.ecc.P256;
+        const P384 = std.crypto.ecc.P384;
+        const Sha256 = std.crypto.hash.sha2.Sha256;
+        const Sha384 = std.crypto.hash.sha2.Sha384;
+        const Sha512 = std.crypto.hash.sha2.Sha512;
+        const sec1 = spki.sec1_uncompressed;
+        return switch (h) {
+            .sha256 => if (spki.curve_p256) verifyEcdsaWith(P256, Sha256, sec1, tbs, sig_der) else verifyEcdsaWith(P384, Sha256, sec1, tbs, sig_der),
+            .sha384 => if (spki.curve_p256) verifyEcdsaWith(P256, Sha384, sec1, tbs, sig_der) else verifyEcdsaWith(P384, Sha384, sec1, tbs, sig_der),
+            .sha512 => if (spki.curve_p256) verifyEcdsaWith(P256, Sha512, sec1, tbs, sig_der) else verifyEcdsaWith(P384, Sha512, sec1, tbs, sig_der),
+        };
     }
     if (oidIsRsaPss(algo_oid)) {
         // Constrain to SHA-256 and saltLen=32. Verify TBSCertificate directly (no TLS context).
