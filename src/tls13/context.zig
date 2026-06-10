@@ -599,6 +599,9 @@ pub const Context = struct {
     client_random: ?[32]u8 = null, // Client random from first ClientHello (for HRR)
     hrr_sent: bool = false, // Track if we already sent HelloRetryRequest (server)
     hrr_received: bool = false, // Track if we received HelloRetryRequest (client)
+    // NEWGAP-08: cipher_suite selected by the HRR; the subsequent ServerHello
+    // MUST select the same one (RFC 8446 §4.1.4).
+    hrr_cipher_suite: ?tls13_full.CipherSuite = null,
     server_secret_generated: ?[32]u8 = null, // Generated server secret for HRR cookies
 
     /// SEC-086: RFC 8446 §4.2.2 cookie binding requires the server to
@@ -1714,6 +1717,21 @@ pub const Context = struct {
 
         const parsed = try hello_retry_mod.parseHelloRetryRequest(body);
 
+        // NEWGAP-08 (SEC-028 twin): the HRR cipher_suite MUST be one the client
+        // offered (RFC 8446 §4.1.3/§4.1.4). Record it so the subsequent
+        // ServerHello can be required to select the same suite.
+        const hrr_suite = std.enums.fromInt(tls13_full.CipherSuite, parsed.cipher_suite) orelse
+            return HandshakeError.NoCipherSuite;
+        var hrr_suite_offered = false;
+        for (self.config.supported_cipher_suites) |offered| {
+            if (offered == hrr_suite) {
+                hrr_suite_offered = true;
+                break;
+            }
+        }
+        if (!hrr_suite_offered) return HandshakeError.NoCipherSuite;
+        self.hrr_cipher_suite = hrr_suite;
+
         traceHandshake("Client: HRR requests group: {s}\n", .{@tagName(parsed.selected_group)});
 
         // RFC 8446 §4.4.1: Update transcript for HelloRetryRequest
@@ -2629,6 +2647,14 @@ pub const Context = struct {
             return HandshakeError.NoCipherSuite;
         }
 
+        // NEWGAP-08: RFC 8446 §4.1.4 — after an HRR, the ServerHello cipher_suite
+        // MUST match the one the server selected in the HRR.
+        if (self.hrr_received) {
+            if (self.hrr_cipher_suite) |hrr_suite| {
+                if (cipher_suite != hrr_suite) return HandshakeError.NoCipherSuite;
+            }
+        }
+
         self.negotiated_cipher_suite = cipher_suite;
         self.hash_kind = cipherSuiteHash(cipher_suite);
         // PERF-004: Lock transcript to the negotiated hash; subsequent updates
@@ -2636,9 +2662,9 @@ pub const Context = struct {
         self.transcripts.handshake.lockHash(self.hash_kind);
         pos += 2; // cipher_suite
         // RFC 8446 §4.1.3: ServerHello.legacy_compression_method MUST be 0x00.
-        // Reject any other value with `illegal_parameter` (mapped from
-        // UnexpectedMessage upstream until GAP-0138 lands).
-        if (body[pos] != 0x00) return HandshakeError.UnexpectedMessage;
+        // QUAL-391: reject with the typed IllegalCompressionMethods (maps to
+        // illegal_parameter), symmetric with the SEC-088 ClientHello path.
+        if (body[pos] != 0x00) return HandshakeError.IllegalCompressionMethods;
         pos += 1; // compression
         if (pos + 2 > body.len) return HandshakeError.UnexpectedMessage;
         const exts_len: usize = readU16(body[pos .. pos + 2]);

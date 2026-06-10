@@ -408,6 +408,16 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // NEWGAP-08: HelloRetryRequest §4.1.3/§4.1.4 field MUST-checks
+            // (legacy_version, session_id echo, compression, cipher_suite).
+            .name = "newgap08_hrr_field_checks",
+            .source = "tests/security/newgap08_hrr_field_checks.zig",
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
+        .{
             .name = "sec066_clienthello_dup_ext",
             .source = "tests/security/sec066_clienthello_dup_ext.zig",
             .imports = &.{

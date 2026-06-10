@@ -37,6 +37,16 @@ fn frameServerHello(
     cipher: u16,
     exts: []const u8,
 ) ![]u8 {
+    return frameServerHelloComp(alloc, session_id, cipher, 0x00, exts);
+}
+
+fn frameServerHelloComp(
+    alloc: std.mem.Allocator,
+    session_id: []const u8,
+    cipher: u16,
+    compression: u8,
+    exts: []const u8,
+) ![]u8 {
     var b = std.ArrayList(u8).empty;
     errdefer b.deinit(alloc);
     try b.appendSlice(alloc, &.{ 0x03, 0x03 }); // legacy_version
@@ -45,7 +55,7 @@ fn frameServerHello(
     try b.appendSlice(alloc, session_id);
     try b.append(alloc, @intCast((cipher >> 8) & 0xff));
     try b.append(alloc, @intCast(cipher & 0xff));
-    try b.append(alloc, 0x00); // compression
+    try b.append(alloc, compression); // compression
     try b.append(alloc, @intCast((exts.len >> 8) & 0xff));
     try b.append(alloc, @intCast(exts.len & 0xff));
     try b.appendSlice(alloc, exts);
@@ -127,4 +137,22 @@ test "NEWGAP-06/07: well-formed ServerHello with empty session_id still parses p
         try testing.expect(err != tls13.HandshakeError.IllegalLegacyVersion);
         try testing.expect(err != tls13.HandshakeError.TooManyExtensions);
     };
+}
+
+test "QUAL-391: ServerHello with non-zero legacy_compression_method -> IllegalCompressionMethods" {
+    const alloc = testing.allocator;
+    var ctx = try clientCtx();
+    defer ctx.deinit();
+    try ctx.startClientHandshake();
+
+    var exts = std.ArrayList(u8).empty;
+    defer exts.deinit(alloc);
+    try exts.appendSlice(alloc, &supported_versions_ext);
+    try exts.appendSlice(alloc, &key_share_ext);
+
+    // RFC 8446 §4.1.3: ServerHello.legacy_compression_method MUST be 0x00.
+    const msg = try frameServerHelloComp(alloc, &[_]u8{}, 0x1301, 0x01, exts.items);
+    defer alloc.free(msg);
+
+    try testing.expectError(tls13.HandshakeError.IllegalCompressionMethods, ctx.processCrypto(.Initial, msg));
 }

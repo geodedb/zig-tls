@@ -72,6 +72,11 @@ const readU16 = tls13_full.readU16;
 pub const HrrParsed = struct {
     selected_group: tls13_full.NamedGroup,
     cookie: ?[]const u8,
+    /// NEWGAP-08: raw legacy `cipher_suite` codepoint from the HRR. The caller
+    /// (`handleHelloRetryRequest`) validates it against the offered list and
+    /// asserts the subsequent ServerHello selects the same suite (RFC 8446
+    /// §4.1.4).
+    cipher_suite: u16,
 };
 
 /// Parse the body of a HelloRetryRequest handshake message (RFC 8446 §4.1.4).
@@ -84,16 +89,27 @@ pub const HrrParsed = struct {
 pub fn parseHelloRetryRequest(body: []const u8) !HrrParsed {
     // Minimum HRR body: legacy_version(2) + random(32) + session_id_len(1) = 35.
     if (body.len < 2 + 32 + 1) return HandshakeError.UnexpectedMessage;
+
+    // NEWGAP-08: HRR is ServerHello-shaped (RFC 8446 §4.1.4), so the §4.1.3
+    // field MUSTs apply here exactly as on the non-HRR path. legacy_version
+    // MUST be 0x0303.
+    if (body[0] != 0x03 or body[1] != 0x03) return HandshakeError.IllegalLegacyVersion;
     var pos: usize = 2 + 32; // skip legacy_version + random
 
-    // Skip session_id (SEC-035: bounds-check sid_len before advancing pos).
+    // session_id (SEC-035: bounds-check sid_len before advancing pos).
     if (pos >= body.len) return HandshakeError.UnexpectedMessage;
     const sid_len: usize = body[pos];
+    // NEWGAP-08: the client sends an empty legacy_session_id, so the echo MUST
+    // be empty (RFC 8446 §4.1.3).
+    if (sid_len != 0) return HandshakeError.IllegalSessionIdEcho;
     if (pos + 1 + sid_len > body.len) return HandshakeError.UnexpectedMessage;
     pos += 1 + sid_len;
 
-    // Skip cipher_suite + legacy_compression_method.
+    // cipher_suite (2) + legacy_compression_method (1).
     if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
+    const cipher_suite = readU16(body[pos .. pos + 2]);
+    // NEWGAP-08: legacy_compression_method MUST be 0x00 (RFC 8446 §4.1.3).
+    if (body[pos + 2] != 0x00) return HandshakeError.IllegalCompressionMethods;
     pos += 2 + 1;
 
     // Extensions list length.
@@ -156,6 +172,7 @@ pub fn parseHelloRetryRequest(body: []const u8) !HrrParsed {
     return HrrParsed{
         .selected_group = group,
         .cookie = cookie,
+        .cipher_suite = cipher_suite,
     };
 }
 
