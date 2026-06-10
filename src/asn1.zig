@@ -393,8 +393,13 @@ pub const Decoder = struct {
     /// X.690 §8.1 - Complete TLV structure encoding
     pub fn readTLV(self: *Decoder) !struct { tag: u8, val: []const u8 } {
         const hdr = try self.nextHeader();
+        // APPSEC-2026-06-10-01: validate against remaining bytes WITHOUT the
+        // overflowing `off + len` add. `hdr.len` is attacker-controlled up to
+        // maxInt(usize) via an 8-octet DER long-form length; computing
+        // `self.off + hdr.len` first could wrap and bypass the bounds check,
+        // yielding an inverted (start > end) slice -> OOB read / panic.
+        if (hdr.len > self.buf.len - self.off) return error.Truncated;
         const end = self.off + hdr.len;
-        if (end > self.buf.len) return error.Truncated;
         const val = self.buf[self.off..end];
         self.off = end;
         return .{ .tag = hdr.tag, .val = val };

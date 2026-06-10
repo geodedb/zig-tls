@@ -1096,8 +1096,11 @@ fn parseSpki(ti: *asn1.Decoder, tbs_seq: []const u8) ![]const u8 {
         return error.UnexpectedTag;
     }
     const spki_start = ti.off - spki_hdr.hdr_len;
+    // APPSEC-2026-06-10-01: bound the attacker-controlled length against the
+    // remaining bytes before the `off + len` add, which would otherwise wrap
+    // and bypass the `> tbs_seq.len` guard (inverted-slice OOB / panic).
+    if (spki_hdr.len > tbs_seq.len - ti.off) return error.Truncated;
     const spki_end = ti.off + spki_hdr.len;
-    if (spki_end > tbs_seq.len) return error.Truncated;
     const spki_bytes = tbs_seq[spki_start..spki_end];
     ti.off = spki_end;
     return spki_bytes;
@@ -1285,8 +1288,11 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
         return error.UnexpectedTag;
     }
     const tbs_start = ci.off - tbs_hdr.hdr_len;
+    // APPSEC-2026-06-10-01: bound the attacker-controlled length against the
+    // remaining bytes before the `off + len` add, which would otherwise wrap
+    // and bypass the `> cert_seq.len` guard (inverted-slice OOB / panic).
+    if (tbs_hdr.len > cert_seq.len - ci.off) return error.Truncated;
     const tbs_end = ci.off + tbs_hdr.len;
-    if (tbs_end > cert_seq.len) return error.Truncated;
     const tbs_seq = cert_seq[ci.off..tbs_end];
     const tbs_bytes = cert_seq[tbs_start..tbs_end];
     ci.off = tbs_end;

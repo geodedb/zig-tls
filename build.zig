@@ -388,6 +388,16 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // APPSEC-2026-06-10-01: DER length-bounds `off + attacker_len`
+            // integer-overflow rejection in asn1.readTLV and x509.parseCert.
+            .name = "appsec01_asn1_length_overflow",
+            .source = "tests/security/appsec01_asn1_length_overflow.zig",
+            .imports = &.{
+                .{ .name = "asn1", .module = asn1_mod },
+                .{ .name = "x509", .module = x509_mod },
+            },
+        },
+        .{
             .name = "sec066_clienthello_dup_ext",
             .source = "tests/security/sec066_clienthello_dup_ext.zig",
             .imports = &.{
