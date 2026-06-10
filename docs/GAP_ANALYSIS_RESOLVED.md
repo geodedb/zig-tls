@@ -29,6 +29,34 @@ in code comments and the named tests.
 | QUAL-391 | Low | ServerHello bad compression returned `unexpected_message` not `illegal_parameter` | Typed `IllegalCompressionMethods`; stale comment removed. |
 | PERF-262 | P2 | Issuer cert re-parsed in OCSP-staple validation | `validateChainReturnLeafAndIssuer` returns + reuses the issuer. See `docs/PERF_GAP_ANALYSIS.md` Cycle 10. |
 
+Round 5 (comprehensive whole-codebase sweep) closures:
+
+| ID | Sev | Title | Resolution |
+|----|-----|-------|------------|
+| R5-01 | **Critical** | CertificateVerify verified over the wrong transcript (CV folded before verification) | Exclude `certificate_verify` from the pre-dispatch transcript fold and fold it AFTER its signature is verified, like Finished (RFC 8446 §4.4.3/§4.4.4). Adds a secure end-to-end loopback regression test (no such test existed, which is why it went undetected). |
+| QUAL-394 | Med | `fromHandshakeError` internal_error default observable for ~20 parse errors after the QUAL-393 inversion | Explicit RFC §6.2 mappings: malformed/length → decode_error; semantic → illegal_parameter; InvalidSignature → decrypt_error; cert/OCSP/SCT → bad_certificate; etc. |
+| NEWGAP-09 | Med | EncryptedExtensions accepted forbidden extensions (§4.3.1) | Denylist → `error.ForbiddenExtension` (illegal_parameter). |
+| NEWGAP-11 | Med | Server accepted a ClientHello missing quic_transport_parameters (RFC 9001 §8.2) | Reject absent extension → `MissingTransportParameters` (missing_extension). |
+| NEWGAP-10 | Low | certificate_request_context not validated (§4.4.2) | Reject non-empty context → `IllegalCertificateRequestContext` (illegal_parameter). |
+| NEWGAP-12 | Low | CertificateRequest accepted without signature_algorithms (§4.3.2) | Reject → `MissingSignatureAlgorithms` (missing_extension). |
+| NEWGAP-13 | Low | No-change HelloRetryRequest accepted (§4.1.4 retry loop) | Reject same-group, no-cookie HRR → `HrrNoChange` (illegal_parameter). |
+| NEWGAP08-N1 | Low | Client cipher-suite rejection used handshake_failure not illegal_parameter (§4.1.3/§4.1.4) | New `IllegalCipherSuiteSelected` (illegal_parameter) at 5 client sites. |
+| NEWGAP-15 | Low | Malformed-KeyUpdate alert code internal_error not decode_error | Folded into the QUAL-394 decode_error group. |
+| QUAL-391/393/395 | Med/Low | ServerHello compression alert; dispatcher alert-map drift; stale dispatcher comment | Fixed (see round-3/4 rows and QUAL-394). |
+
+**Deferred / tracked (open, with rationale):**
+
+- **NEWGAP-14 (Low) — explicit handshake message-ordering state machine.** The
+  dispatcher enforces role + encryption-level gating, and the security-relevant
+  orderings are already enforced by data dependencies (duplicate ServerHello via
+  `client_priv` consumption; CertificateVerify requires a prior Certificate;
+  Finished requires the Handshake recv secret; a skipped EncryptedExtensions
+  surfaces as missing QUIC transport params). The residual exposure is
+  acceptance of certain reordered/duplicated *intermediate* messages without an
+  explicit `unexpected_message`. An explicit per-message expected-next state
+  machine is a tracked hardening item, deferred to avoid destabilizing the
+  handshake for a Low, well-mitigated finding.
+
 APPSEC-02/03 (GAP-0135 doc inconsistency; already-fixed unknown-ext dup bypass)
 were reconciled in `docs/GAP_ANALYSIS.md` and `docs/SECURITY_REVIEW_NOTES.md`.
 
