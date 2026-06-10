@@ -1201,10 +1201,13 @@ pub const Context = struct {
     /// RFC 8446 §4: Validate and process handshake message based on type and role.
     /// Enforces message sequencing and role-based authorization.
     fn handleHandshakeMessage(self: *Context, level: EncryptionLevel, parsed: HandshakeMessage, raw: []const u8) !void {
-        // GAP-0138: any HandshakeError surfaced from below queues a fatal
-        // alert mapped via alert.fromHandshakeError before the error
-        // propagates back to the caller. ApiError values (e.g.
-        // OutOfMemory) and successful returns pass through unchanged.
+        // GAP-0138 / QUAL-393: any error surfaced from below (other than the
+        // two alert-layer pass-throughs) queues a fatal alert mapped via
+        // alert.fromHandshakeError before the error propagates back to the
+        // caller. QUAL-395: this includes OutOfMemory and any other non-protocol
+        // error — they map to internal_error and are best-effort alerted
+        // (failAlert swallows a secondary send failure). Only PeerFatalAlert /
+        // InvalidAlert pass through unchanged.
         return self.dispatchHandshake(level, parsed, raw) catch |err| switch (err) {
             // PeerFatalAlert / InvalidAlert are alert-layer events that already
             // manage phase + alert queuing; pass through WITHOUT re-alerting.

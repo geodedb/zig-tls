@@ -139,6 +139,75 @@ pub fn fromHandshakeError(err: anyerror) AlertDescription {
         error.CryptoError => .internal_error,
         error.MissingServerName => .handshake_failure,
         error.OutOfMemory => .internal_error,
+
+        // QUAL-394: explicit RFC 8446 §6.2 codes for the remaining
+        // dispatch-reachable protocol errors. Before the QUAL-393 dispatcher
+        // inversion these aborted silently or via the internal_error default;
+        // map them to the alert the RFC prescribes instead.
+        //
+        // decode_error (50): "a field was out of range or the message length
+        // was incorrect" — malformed / truncated / oversized / empty-where-
+        // disallowed encoding errors.
+        error.TooShort,
+        error.TooLarge,
+        error.Truncated,
+        error.InvalidMessage,
+        error.InvalidBinderLength,
+        error.MalformedExtensions,
+        error.MalformedCertificateList,
+        error.MalformedCertificateRequest,
+        error.MalformedSctList,
+        error.MalformedStatusRequest,
+        error.SctParsingFailed,
+        error.InvalidKeyUpdateLength, // NEWGAP-15 / RFC 8446 §4.6.3
+        error.InvalidKeyUpdateRequest, // NEWGAP-15 / RFC 8446 §4.6.3
+        error.InvalidTicketLength,
+        error.EmptyCertificateChain,
+        error.EmptyCookie,
+        error.CookieTooLarge,
+        error.CertificateTooLarge,
+        error.CertificateListTooLarge,
+        error.CertificateExtensionsTooLarge,
+        error.CertificateContextTooLong,
+        error.OcspResponseTooLarge,
+        error.SctListTooLarge,
+        error.UnsupportedStatusType,
+        => .decode_error,
+
+        // illegal_parameter (47): a field's value was semantically invalid for
+        // its context (ordering, downgrade sentinels, un-offered algorithms).
+        error.PskNotLastExtension,
+        error.MissingPskIdentity,
+        error.PskDheKeModeRequired,
+        error.DowngradeDetected,
+        error.Tls11DowngradeDetected,
+        error.Tls12DowngradeDetected,
+        error.UnsupportedSignatureAlgorithm,
+        error.UnsupportedSignatureScheme,
+        error.InvalidTransportParameters,
+        => .illegal_parameter,
+
+        // missing_extension (109): a mandatory extension was absent.
+        error.MissingPskKeyExchangeModes => .missing_extension,
+
+        // decrypt_error (51): a signature over handshake data failed to verify
+        // (RFC 8446 §4.4.3).
+        error.InvalidSignature => .decrypt_error,
+
+        // bad_certificate (42): the peer certificate / its status proof was
+        // rejected (validation, OCSP, SCT policy).
+        error.CertificateValidationFailed,
+        error.OcspValidationFailed,
+        error.MissingOcspResponse,
+        error.MissingSctList,
+        error.EmptySctList,
+        error.SctCallbackRejected,
+        => .bad_certificate,
+
+        // unexpected_message (10): CertificateVerify arrived without a prior
+        // Certificate (message-ordering violation).
+        error.MissingCertificate => .unexpected_message,
+
         else => .internal_error,
     };
 }
@@ -255,6 +324,20 @@ test "fromHandshakeError - comprehensive mapping" {
     try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.IllegalCertificateRequestContext));
     try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.IllegalCipherSuiteSelected));
     try std.testing.expectEqual(AlertDescription.decode_error, fromHandshakeError(error.TooManyExtensions));
+    // QUAL-394 / NEWGAP-15: protocol-parse errors map to RFC §6.2 codes, not
+    // the internal_error default.
+    try std.testing.expectEqual(AlertDescription.decode_error, fromHandshakeError(error.TooShort));
+    try std.testing.expectEqual(AlertDescription.decode_error, fromHandshakeError(error.MalformedExtensions));
+    try std.testing.expectEqual(AlertDescription.decode_error, fromHandshakeError(error.Truncated));
+    try std.testing.expectEqual(AlertDescription.decode_error, fromHandshakeError(error.InvalidKeyUpdateLength));
+    try std.testing.expectEqual(AlertDescription.decode_error, fromHandshakeError(error.EmptyCertificateChain));
+    try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.PskNotLastExtension));
+    try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.UnsupportedSignatureScheme));
+    try std.testing.expectEqual(AlertDescription.decrypt_error, fromHandshakeError(error.InvalidSignature));
+    try std.testing.expectEqual(AlertDescription.bad_certificate, fromHandshakeError(error.CertificateValidationFailed));
+    try std.testing.expectEqual(AlertDescription.bad_certificate, fromHandshakeError(error.OcspValidationFailed));
+    try std.testing.expectEqual(AlertDescription.unexpected_message, fromHandshakeError(error.MissingCertificate));
+    try std.testing.expectEqual(AlertDescription.internal_error, fromHandshakeError(error.OutOfMemory));
     try std.testing.expectEqual(AlertDescription.missing_extension, fromHandshakeError(error.MissingTransportParameters));
     try std.testing.expectEqual(AlertDescription.no_application_protocol, fromHandshakeError(error.AlpnNegotiationFailed));
     try std.testing.expectEqual(AlertDescription.handshake_failure, fromHandshakeError(error.NoSignatureScheme));
