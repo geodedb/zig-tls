@@ -131,6 +131,7 @@ pub fn fromHandshakeError(err: anyerror) AlertDescription {
         error.IllegalLegacyVersion => .illegal_parameter, // NEWGAP-06 / RFC 8446 §4.1.3
         error.ForbiddenExtension => .illegal_parameter, // NEWGAP-09 / RFC 8446 §4.2/§4.3.1
         error.IllegalCertificateRequestContext => .illegal_parameter, // NEWGAP-10 / RFC 8446 §4.4.2
+        error.IllegalCipherSuiteSelected => .illegal_parameter, // NEWGAP08-N1 / RFC 8446 §4.1.3/§4.1.4
         error.TooManyKeyUpdates => .decode_error, // GAP-0135 / RFC 8446 §4.6.3
         error.IllegalCompressionMethods => .illegal_parameter, // SEC-088 / RFC 8446 §4.1.2
         error.IllegalCipherSuites => .illegal_parameter, // SEC-099 / RFC 8446 §4.1.2
@@ -247,6 +248,13 @@ test "fromHandshakeError - comprehensive mapping" {
     try std.testing.expectEqual(AlertDescription.missing_extension, fromHandshakeError(error.MissingKeyShare));
     try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.UnsupportedKeyShareGroup));
     try std.testing.expectEqual(AlertDescription.handshake_failure, fromHandshakeError(error.NoCipherSuite));
+    // NEWGAP06/08/09/10 + N1: new typed errors map to their RFC §6.2 alerts.
+    try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.IllegalSessionIdEcho));
+    try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.IllegalLegacyVersion));
+    try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.ForbiddenExtension));
+    try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.IllegalCertificateRequestContext));
+    try std.testing.expectEqual(AlertDescription.illegal_parameter, fromHandshakeError(error.IllegalCipherSuiteSelected));
+    try std.testing.expectEqual(AlertDescription.decode_error, fromHandshakeError(error.TooManyExtensions));
     try std.testing.expectEqual(AlertDescription.missing_extension, fromHandshakeError(error.MissingTransportParameters));
     try std.testing.expectEqual(AlertDescription.no_application_protocol, fromHandshakeError(error.AlpnNegotiationFailed));
     try std.testing.expectEqual(AlertDescription.handshake_failure, fromHandshakeError(error.NoSignatureScheme));

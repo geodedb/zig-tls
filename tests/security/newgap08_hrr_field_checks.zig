@@ -100,7 +100,7 @@ fn frameHandshake(alloc: std.mem.Allocator, hs_type: u8, body: []const u8) ![]u8
     return m.toOwnedSlice(alloc);
 }
 
-test "NEWGAP-08: live HRR with un-offered cipher_suite is rejected (NoCipherSuite)" {
+test "NEWGAP-08: live HRR with un-offered cipher_suite is rejected (illegal_parameter)" {
     const alloc = testing.allocator;
     var ctx = try clientCtx();
     defer ctx.deinit();
@@ -117,5 +117,5 @@ test "NEWGAP-08: live HRR with un-offered cipher_suite is rejected (NoCipherSuit
     const msg = try frameHandshake(alloc, 0x02, body);
     defer alloc.free(msg);
 
-    try testing.expectError(tls13.HandshakeError.NoCipherSuite, ctx.processCrypto(.Initial, msg));
+    try testing.expectError(tls13.HandshakeError.IllegalCipherSuiteSelected, ctx.processCrypto(.Initial, msg));
 }

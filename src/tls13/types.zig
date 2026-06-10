@@ -293,6 +293,13 @@ pub const HandshakeError = error{
     /// `illegal_parameter`.
     IllegalCertificateRequestContext,
 
+    /// NEWGAP08-N1: the client received a ServerHello/HelloRetryRequest whose
+    /// `cipher_suite` was never offered (or, post-HRR, differs from the HRR's).
+    /// RFC 8446 §4.1.3/§4.1.4 MUST abort with `illegal_parameter`. Distinct from
+    /// `NoCipherSuite` (server-side "no mutually supported suite" ->
+    /// `handshake_failure`).
+    IllegalCipherSuiteSelected,
+
     /// SEC-088: ClientHello/ServerHello carried a `legacy_compression_methods`
     /// field that violates RFC 8446 §4.1.2 / §4.1.3 (must be exactly one byte
     /// equal to 0x00 on CH; must equal 0x00 on SH). Maps to TLS alert

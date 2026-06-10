@@ -362,9 +362,9 @@ test "SEC-028: client rejects unoffered cipher suite from ServerHello" {
     sh_msg[3] = @intCast(body_len & 0xff);
     @memcpy(sh_msg[4 .. 4 + body_len], sh_body[0..body_len]);
 
-    // Client should reject with NoCipherSuite since 0x1302 was not offered
+    // Client should reject with IllegalCipherSuiteSelected (illegal_parameter) since 0x1302 was not offered
     try testing.expectError(
-        tls13.HandshakeError.NoCipherSuite,
+        tls13.HandshakeError.IllegalCipherSuiteSelected,
         client_ctx.processCrypto(.Initial, sh_msg[0 .. 4 + body_len]),
     );
 }

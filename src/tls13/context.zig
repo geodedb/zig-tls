@@ -1691,7 +1691,7 @@ pub const Context = struct {
         // offered (RFC 8446 §4.1.3/§4.1.4). Record it so the subsequent
         // ServerHello can be required to select the same suite.
         const hrr_suite = std.enums.fromInt(tls13_full.CipherSuite, parsed.cipher_suite) orelse
-            return HandshakeError.NoCipherSuite;
+            return HandshakeError.IllegalCipherSuiteSelected;
         var hrr_suite_offered = false;
         for (self.config.supported_cipher_suites) |offered| {
             if (offered == hrr_suite) {
@@ -1699,7 +1699,8 @@ pub const Context = struct {
                 break;
             }
         }
-        if (!hrr_suite_offered) return HandshakeError.NoCipherSuite;
+        // NEWGAP08-N1: un-offered server selection -> illegal_parameter (§4.1.3).
+        if (!hrr_suite_offered) return HandshakeError.IllegalCipherSuiteSelected;
         self.hrr_cipher_suite = hrr_suite;
 
         traceHandshake("Client: HRR requests group: {s}\n", .{@tagName(parsed.selected_group)});
@@ -2601,7 +2602,8 @@ pub const Context = struct {
         pos += 1 + sid_len;
         if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
         const suite_value: u16 = readU16(body[pos .. pos + 2]);
-        const cipher_suite = std.enums.fromInt(tls13_full.CipherSuite, suite_value) orelse return HandshakeError.NoCipherSuite;
+        // NEWGAP08-N1: an unknown (not-offered) suite -> illegal_parameter (§4.1.3).
+        const cipher_suite = std.enums.fromInt(tls13_full.CipherSuite, suite_value) orelse return HandshakeError.IllegalCipherSuiteSelected;
 
         // SEC-028: Verify the server-selected cipher suite was in our offered list.
         // RFC 8446 §4.1.3: Server MUST select from the client's cipher_suites.
@@ -2614,14 +2616,15 @@ pub const Context = struct {
         }
         if (!cipher_suite_offered) {
             traceHandshake("Client: Server selected cipher suite {x} not in offered list\\n", .{suite_value});
-            return HandshakeError.NoCipherSuite;
+            // NEWGAP08-N1: RFC 8446 §4.1.3 mandates illegal_parameter here.
+            return HandshakeError.IllegalCipherSuiteSelected;
         }
 
         // NEWGAP-08: RFC 8446 §4.1.4 — after an HRR, the ServerHello cipher_suite
         // MUST match the one the server selected in the HRR.
         if (self.hrr_received) {
             if (self.hrr_cipher_suite) |hrr_suite| {
-                if (cipher_suite != hrr_suite) return HandshakeError.NoCipherSuite;
+                if (cipher_suite != hrr_suite) return HandshakeError.IllegalCipherSuiteSelected;
             }
         }
 
