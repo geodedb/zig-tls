@@ -1285,6 +1285,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/conformance/openssl/mutual_tls.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "test_certs", .module = test_certs_mod },
+            },
         }),
     });
     const run_mutual_tls_conformance_test = b.addRunArtifact(mutual_tls_conformance_test);
