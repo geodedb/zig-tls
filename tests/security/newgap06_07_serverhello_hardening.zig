@@ -156,3 +156,60 @@ test "QUAL-391: ServerHello with non-zero legacy_compression_method -> IllegalCo
 
     try testing.expectError(tls13.HandshakeError.IllegalCompressionMethods, ctx.processCrypto(.Initial, msg));
 }
+
+fn assertFatalAlert(ctx: *tls13.Context, level: tls13.EncryptionLevel, description: u8) !void {
+    try testing.expect(ctx.phase == .terminated);
+    // The Initial outbound buffer already holds the ClientHello; the fatal
+    // alert is appended after it, so inspect the trailing 2 bytes.
+    const out = try ctx.pollCrypto(testing.allocator, level);
+    defer testing.allocator.free(out);
+    try testing.expect(out.len >= 2);
+    try testing.expectEqual(@as(u8, 2), out[out.len - 2]); // fatal
+    try testing.expectEqual(description, out[out.len - 1]);
+}
+
+test "QUAL-393: IllegalSessionIdEcho queues an illegal_parameter fatal alert" {
+    const alloc = testing.allocator;
+    var ctx = try clientCtx();
+    defer ctx.deinit();
+    try ctx.startClientHandshake();
+
+    var exts = std.ArrayList(u8).empty;
+    defer exts.deinit(alloc);
+    try exts.appendSlice(alloc, &supported_versions_ext);
+    try exts.appendSlice(alloc, &key_share_ext);
+
+    const msg = try frameServerHello(alloc, &[_]u8{ 0xDE, 0xAD }, 0x1301, exts.items);
+    defer alloc.free(msg);
+
+    try testing.expectError(tls13.HandshakeError.IllegalSessionIdEcho, ctx.processCrypto(.Initial, msg));
+    // QUAL-393: previously this aborted WITHOUT an alert (dispatcher allowlist
+    // drift). illegal_parameter = 47 (RFC 8446 §4.1.3 / §6.2).
+    try assertFatalAlert(&ctx, .Handshake, 47);
+}
+
+test "QUAL-393: TooManyExtensions queues a decode_error fatal alert" {
+    const alloc = testing.allocator;
+    var ctx = try clientCtx();
+    defer ctx.deinit();
+    try ctx.startClientHandshake();
+
+    // supported_versions + key_share + 63 distinct unknown extensions = 65
+    // distinct types, over the 64 cap.
+    var exts = std.ArrayList(u8).empty;
+    defer exts.deinit(alloc);
+    try exts.appendSlice(alloc, &supported_versions_ext);
+    try exts.appendSlice(alloc, &key_share_ext);
+    var t: u16 = 0x8000;
+    while (t < 0x8000 + 63) : (t += 1) {
+        try exts.append(alloc, @intCast((t >> 8) & 0xff));
+        try exts.append(alloc, @intCast(t & 0xff));
+        try exts.appendSlice(alloc, &.{ 0x00, 0x00 });
+    }
+
+    const msg = try frameServerHello(alloc, &[_]u8{}, 0x1301, exts.items);
+    defer alloc.free(msg);
+
+    try testing.expectError(tls13.HandshakeError.TooManyExtensions, ctx.processCrypto(.Initial, msg));
+    try assertFatalAlert(&ctx, .Handshake, 50); // decode_error = 50
+}

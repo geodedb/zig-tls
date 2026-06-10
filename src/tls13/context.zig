@@ -1206,49 +1206,19 @@ pub const Context = struct {
         // propagates back to the caller. ApiError values (e.g.
         // OutOfMemory) and successful returns pass through unchanged.
         return self.dispatchHandshake(level, parsed, raw) catch |err| switch (err) {
-            // The HandshakeError variants — queue an alert then re-raise.
-            error.UnexpectedMessage,
-            error.DuplicateClientHello,
-            error.UnsupportedVersion,
-            error.MissingKeyShare,
-            error.UnsupportedKeyShareGroup,
-            error.NoCipherSuite,
-            error.MissingTransportParameters,
-            error.AlpnNegotiationFailed,
-            error.NoSignatureScheme,
-            error.FinishedVerifyFailed,
-            error.DowngradeAttempt,
-            error.PostHandshakeAuthUnsupported,
-            error.EmptyCertificateChain,
-            error.MissingCertificate,
-            error.CertificateValidationFailed,
-            error.MissingOcspResponse,
-            error.OcspValidationFailed,
-            error.MissingSctList,
-            error.SctParsingFailed,
-            error.EmptySctList,
-            error.SctCallbackRejected,
-            error.InvalidSignature,
-            error.UnsupportedSignatureAlgorithm,
-            error.DecryptError,
-            error.CryptoError,
-            error.MissingPskKeyExchangeModes,
-            error.PskDheKeModeRequired,
-            error.MissingResumptionTicket,
-            error.UnexpectedPskExtension,
-            error.PskIndexOutOfRange,
-            error.InvalidTransportParameters,
-            error.MissingServerName,
-            error.InternalError,
-            error.InvalidCookie,
-            error.DuplicateExtension,
-            error.IllegalCompressionMethods,
-            error.IllegalCipherSuites,
-            error.PskBinderMismatch,
-            => return self.failAlert(err),
-            // PeerFatalAlert / InvalidAlert are alert-layer events that
-            // already manage phase + alert queuing; pass through.
-            else => return err,
+            // PeerFatalAlert / InvalidAlert are alert-layer events that already
+            // manage phase + alert queuing; pass through WITHOUT re-alerting.
+            error.PeerFatalAlert, error.InvalidAlert => return err,
+            // QUAL-393: every other failure — including any future typed
+            // HandshakeError variant — queues the fatal alert that
+            // `alert.fromHandshakeError` maps it to (unmapped -> internal_error)
+            // and re-raises. Previously this was a hand-maintained allowlist
+            // that silently drifted out of sync with `fromHandshakeError`
+            // (e.g. IllegalLegacyVersion / IllegalSessionIdEcho / TooManyExtensions
+            // / TooManyKeyUpdates aborted without ever sending their §4.1.3/§4.6.3
+            // alert). Routing the default through `failAlert` makes the centralized
+            // map the single source of truth and eliminates that drift class.
+            else => return self.failAlert(err),
         };
     }
 
