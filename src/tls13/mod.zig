@@ -69,9 +69,6 @@ pub const Transcript = transcript.Transcript;
 /// Cache of transcript hash digests.
 pub const HashDigestCache = transcript.HashDigestCache;
 
-/// Transcript set for handshake flows.
-pub const TranscriptSet = transcript.TranscriptSet;
-
 // ============================================================================
 // Handshake State Machine
 // ============================================================================

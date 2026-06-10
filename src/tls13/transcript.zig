@@ -482,24 +482,10 @@ pub const HashDigestCache = struct {
     }
 };
 
-/// RFC 8446 §4.4.1: transcripts and cached hashes used across handshake flights.
-pub const TranscriptSet = struct {
-    handshake: Transcript,
-    client_hello_hash: HashDigestCache = .{},
-    finished_hash: HashDigestCache = .{},
-
-    /// Creates a new transcript set with empty transcripts.
-    pub fn init() TranscriptSet {
-        return .{ .handshake = Transcript.init(), .client_hello_hash = .{}, .finished_hash = .{} };
-    }
-
-    /// Resets all transcripts to their initial empty state.
-    pub fn reset(self: *TranscriptSet) void {
-        self.handshake.reset();
-        self.client_hello_hash.clear();
-        self.finished_hash.clear();
-    }
-};
+// QUAL: the canonical TranscriptSet lives in src/tls13/context.zig (it carries
+// the R6-01 `app_secret_hash` snapshot). A duplicate definition previously lived
+// here and was re-exported via mod.zig with zero consumers; removed to prevent
+// the two copies drifting apart.
 
 // ============================================================================
 // Unit Tests
