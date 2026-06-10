@@ -3007,6 +3007,12 @@ pub const Context = struct {
     /// RFC 8446 §4.4.2: Parse and store server Certificate message.
     /// The certificate chain will be validated when CertificateVerify is processed.
     fn handleCertificate(self: *Context, body: []const u8) !void {
+        // NEWGAP-10: RFC 8446 §4.4.2 — in the server-authentication case the
+        // certificate_request_context SHALL be zero length. Validated before
+        // parseAndStoreChain allocates so a violation cannot leak a chain.
+        if (try cert_handlers.certificateRequestContextLen(body) != 0) {
+            return HandshakeError.IllegalCertificateRequestContext;
+        }
         // QUAL-317: delegate parsing to cert_handlers (pure module). Empty chain
         // is NOT allowed on the server-cert path (RFC 8446 §4.4.2) — the module
         // returns HandshakeError.EmptyCertificateChain for us.
@@ -3147,6 +3153,14 @@ pub const Context = struct {
     /// RFC 8446 §4.4.2: Parse and store client Certificate message (server-side mTLS).
     /// Reuses the existing peer_cert_chain storage (role-neutral).
     fn handleClientCertificate(self: *Context, body: []const u8) !void {
+        // NEWGAP-10: RFC 8446 §4.4.2 — the client's certificate_request_context
+        // MUST match the one in the server's CertificateRequest. This server
+        // only ever emits an empty certificate_request_context
+        // (buildCertificateRequest writes a zero-length context), so the echo
+        // MUST be empty. Validated before parseAndStoreChain allocates.
+        if (try cert_handlers.certificateRequestContextLen(body) != 0) {
+            return HandshakeError.IllegalCertificateRequestContext;
+        }
         // QUAL-317: delegate parsing to cert_handlers. Empty chain IS allowed
         // here per RFC 8446 §4.4.2 — the client signals "no cert" with an
         // empty Certificate, and handleClientCertificateVerify infers this

@@ -287,6 +287,12 @@ pub const HandshakeError = error{
     /// RFC 8446 §4.2 MUST abort with `illegal_parameter`.
     ForbiddenExtension,
 
+    /// NEWGAP-10: a Certificate message carried a `certificate_request_context`
+    /// that violated RFC 8446 §4.4.2 — non-zero on the server-auth path, or not
+    /// matching the CertificateRequest context on the mTLS path. Maps to
+    /// `illegal_parameter`.
+    IllegalCertificateRequestContext,
+
     /// SEC-088: ClientHello/ServerHello carried a `legacy_compression_methods`
     /// field that violates RFC 8446 §4.1.2 / §4.1.3 (must be exactly one byte
     /// equal to 0x00 on CH; must equal 0x00 on SH). Maps to TLS alert

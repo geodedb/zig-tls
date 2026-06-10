@@ -83,6 +83,17 @@ pub const ChainParseResult = struct {
     was_empty: bool,
 };
 
+/// NEWGAP-10: extract the `certificate_request_context` length from a
+/// Certificate message body (RFC 8446 §4.4.2: a 1-byte length prefix). Callers
+/// validate it *before* `parseAndStoreChain` allocates, so a context violation
+/// aborts without leaking a freshly-parsed chain. Returns the context length,
+/// or `error.IllegalCertificateRequestContext` if the body is too short to
+/// carry the prefix.
+pub fn certificateRequestContextLen(body: []const u8) !usize {
+    if (body.len < 1) return HandshakeError.IllegalCertificateRequestContext;
+    return body[0];
+}
+
 /// Parse a Certificate handshake message body and allocate a ChainStorage.
 ///
 /// Preserves the PERF-042 single-backing-buffer layout from the original
@@ -530,4 +541,13 @@ test "cert_handlers: validateChainAndLeaf completes leaf-only chain via trusted_
         HandshakeError.CertificateValidationFailed,
         validateChainAndLeaf(std.testing.allocator, leaf_only[0..], now, sni, .secure, null, &wrong_anchor),
     );
+}
+
+test "NEWGAP-10: certificateRequestContextLen reads the §4.4.2 length prefix" {
+    // Empty context (server-auth Certificate).
+    try testing.expectEqual(@as(usize, 0), try certificateRequestContextLen(&[_]u8{ 0x00, 0x00, 0x00, 0x00 }));
+    // Non-empty context (length 4) — handlers reject this per RFC 8446 §4.4.2.
+    try testing.expectEqual(@as(usize, 4), try certificateRequestContextLen(&[_]u8{ 0x04, 0xDE, 0xAD, 0xBE, 0xEF }));
+    // Too short to even carry the length prefix.
+    try testing.expectError(HandshakeError.IllegalCertificateRequestContext, certificateRequestContextLen(&[_]u8{}));
 }
