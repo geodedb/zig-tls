@@ -563,7 +563,6 @@ pub const Context = struct {
     secrets: SecretSchedule = SecretSchedule.init(),
     streams: CryptoStreams = .{},
     state: HandshakeState = HandshakeState.init(),
-    rng: entropy.Reservoir = .{},
     scratch_arena: std.heap.ArenaAllocator,
     flags: HandshakeFlags = .{},
     config: Config,
@@ -3347,35 +3346,13 @@ pub const Context = struct {
         }
     }
 
-    /// Rotate the local application traffic secret and install fresh send keys (RFC 8446 §7.2).
-    ///
-    /// QUAL-317: HKDF-Expand-Label derivation delegated to the pure
-    /// key_update module; this adapter retains secureZero on the OLD secret
-    /// before `slot.store` overwrites in place.
-    pub fn performKeyUpdateSend(self: *Context) !void {
-        const send_slot = self.secrets.slot(.Application, .send);
-        if (!send_slot.valid) return HandshakeError.UnexpectedMessage;
-        const hash = send_slot.hash;
-        const next = key_update_mod.rotatePeerSecret(.update_not_requested, hash, &send_slot.value);
-        // SECURITY: zero OLD secret before overwriting via slot.store.
-        std.crypto.secureZero(u8, &send_slot.value.bytes);
-        send_slot.store(.Application, hash, next);
-    }
-
-    /// Accept a peer initiated key update by rotating the receive traffic secret.
-    ///
-    /// QUAL-317: HKDF-Expand-Label derivation delegated to the pure
-    /// key_update module; this adapter retains secureZero on the OLD secret
-    /// before `slot.store` overwrites in place.
-    pub fn performKeyUpdateRecv(self: *Context) !void {
-        const recv_slot = self.secrets.slot(.Application, .recv);
-        if (!recv_slot.valid) return HandshakeError.UnexpectedMessage;
-        const hash = recv_slot.hash;
-        const next = key_update_mod.rotatePeerSecret(.update_not_requested, hash, &recv_slot.value);
-        // SECURITY: zero OLD secret before overwriting via slot.store.
-        std.crypto.secureZero(u8, &recv_slot.value.bytes);
-        recv_slot.store(.Application, hash, next);
-    }
+    // QUAL-381: removed dead `performKeyUpdateSend`/`performKeyUpdateRecv`.
+    // They had zero callers and diverged from the live KeyUpdate path
+    // (`handleKeyUpdateMessage` -> `installTrafficSecret`): they bypassed the
+    // GAP-0135 exhaustion budget and the QUIC `on_secret_available` callback,
+    // so any consumer wiring them to inbound KeyUpdate would silently lose
+    // both protections. The canonical rotation lives in
+    // `key_update_mod.rotatePeerSecret` + `installTrafficSecret`.
 };
 
 // ============================================================================
