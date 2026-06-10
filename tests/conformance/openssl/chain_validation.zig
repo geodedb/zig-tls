@@ -46,81 +46,95 @@
 const std = @import("std");
 const testing = std.testing;
 const x509 = @import("x509");
+const test_certs = @import("test_certs");
+
+// Real OpenSSL-generated chain (openssl verify => OK): leaf -> intermediate -> root.
+const LEAF = test_certs.leaf;
+const INTERMEDIATE = test_certs.intermediate;
+const ROOT = test_certs.root;
+// A fixed instant inside the leaf validity window (notBefore 2025-11, notAfter 2026-11).
+const NOW_VALID: i64 = 1767225600; // 2026-01-01
+const NOW_EXPIRED: i64 = 1920000000; // ~2030, past notAfter
+
+var g_trust_spki: []const u8 = &[_]u8{};
+fn isTrustedRoot(spki: []const u8) bool {
+    return g_trust_spki.len != 0 and std.mem.eql(u8, spki, g_trust_spki);
+}
+
+/// Install the real root as the trust anchor for the duration of a test.
+fn withRealRootTrusted(alloc: std.mem.Allocator) !x509.Certificate {
+    const root = try x509.parseCert(alloc, ROOT);
+    g_trust_spki = root.spki;
+    x509.setTrustStore(.{ .isTrustedSpki = isTrustedRoot });
+    return root;
+}
+fn clearTrust(root: *x509.Certificate, alloc: std.mem.Allocator) void {
+    x509.setTrustStore(null);
+    g_trust_spki = &[_]u8{};
+    root.deinit(alloc);
+}
 
 // ============================================================================
 // Test 1: Valid 2-Cert Chain (Leaf + Root)
 // ============================================================================
 
-test "Chain validation: valid 2-cert chain (leaf + self-signed root)" {
-    // RFC 5280 §6: Basic path validation
-    //
-    // This test verifies that a simple 2-certificate chain validates correctly:
-    // - Leaf certificate signed by root
-    // - Root is self-signed CA
-    // - All validity periods current
-    // - Proper constraints set
+test "Chain validation: valid 3-cert chain (leaf + intermediate + root)" {
+    // RFC 5280 §6: a well-formed chain that `openssl verify` accepts must also
+    // validate here (real fixtures, real runChainChecks).
+    const alloc = testing.allocator;
+    var root = try withRealRootTrusted(alloc);
+    defer clearTrust(&root, alloc);
+    const chain = [_][]const u8{ LEAF, INTERMEDIATE, ROOT };
+    try x509.validateChain(alloc, &chain, NOW_VALID, "leaf.example.com", .secure, .server_auth);
 
-    // For this test, we verify the validation logic accepts well-formed chains
-    // Implementation note: Full OpenSSL-generated test chains would be added
-    // in integration tests. These conformance tests focus on the validation
-    // logic itself.
-
-    // SEC-077: validateChain with .secure enforces full validation; empty
-    // chain is always rejected regardless of the InsecureValidation variant.
-    var chain = [_][]const u8{};
-    const now = @as(i64, @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_s)));
-
-    // Empty chain is rejected regardless of InsecureValidation variant.
-    const result = x509.validateChain(testing.allocator, &chain, now, "", .secure, .server_auth);
-    try testing.expectError(error.EmptyChain, result);
+    // And an empty chain is still rejected.
+    try testing.expectError(error.EmptyChain, x509.validateChain(alloc, &[_][]const u8{}, NOW_VALID, "", .secure, .server_auth));
 }
 
 // ============================================================================
 // Test 2: Expired Leaf Certificate
 // ============================================================================
 
-test "Chain validation: expired leaf certificate rejected" {
-    // RFC 5280 §4.1.2.5: Validity period must be checked
-    //
-    // When the leaf certificate's notAfter date has passed, validation must fail
-    // with certificate_expired alert.
-
-    // Empty chain for now - full test with actual expired cert would use
-    // OpenSSL-generated certificates with controlled validity periods
-
-    // Verify error handling is in place
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
-    try testing.expectError(error.EmptyChain, result);
+test "Chain validation: expired certificate rejected" {
+    // RFC 5280 §4.1.2.5: validity period must be checked. Validate the real
+    // chain at an instant past notAfter -> Expired.
+    const alloc = testing.allocator;
+    var root = try withRealRootTrusted(alloc);
+    defer clearTrust(&root, alloc);
+    const chain = [_][]const u8{ LEAF, INTERMEDIATE, ROOT };
+    try testing.expectError(error.Expired, x509.validateChain(alloc, &chain, NOW_EXPIRED, "leaf.example.com", .secure, .server_auth));
 }
 
 // ============================================================================
 // Test 3: Expired Intermediate Certificate
 // ============================================================================
 
-test "Chain validation: expired intermediate rejected" {
-    // RFC 5280 §6.1.3(a): Validity period checked for all certificates
-    //
-    // An expired intermediate CA must cause validation failure even if the
-    // leaf and root are valid.
-
-    // Placeholder for OpenSSL-generated chain test
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
-    try testing.expectError(error.EmptyChain, result);
+test "Chain validation: certificate order matters (reversed chain rejected)" {
+    // RFC 5280 §6: the chain is ordered leaf-first. A reversed chain
+    // [root, intermediate, leaf] does not form a valid signing path and must be
+    // rejected (the first cert's issuer is not the next cert).
+    const alloc = testing.allocator;
+    var root = try withRealRootTrusted(alloc);
+    defer clearTrust(&root, alloc);
+    // Reversed: certs[0] is the root (CN=Test Root CA), which fails the leaf
+    // identity check for "leaf.example.com" -> NameMismatch (rejected).
+    const reversed = [_][]const u8{ ROOT, INTERMEDIATE, LEAF };
+    try testing.expectError(error.NameMismatch, x509.validateChain(alloc, &reversed, NOW_VALID, "leaf.example.com", .secure, .server_auth));
 }
 
 // ============================================================================
 // Test 4: Invalid Signature in Chain Link
 // ============================================================================
 
-test "Chain validation: signature verification failure" {
-    // RFC 5280 §6.1.3(a): Signature must be valid for each certificate
-    //
-    // If any certificate in the chain has an invalid signature (not signed by
-    // its claimed issuer), validation must fail.
-
-    // Test error path
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
-    try testing.expectError(error.EmptyChain, result);
+test "Chain validation: signature verification failure (broken chain)" {
+    // RFC 5280 §6.1.3(a): each cert's signature must verify against its issuer.
+    // A chain that omits the intermediate ([leaf, root]) breaks the leaf's
+    // signing link (leaf is signed by intermediate, not root) and must fail.
+    const alloc = testing.allocator;
+    var root = try withRealRootTrusted(alloc);
+    defer clearTrust(&root, alloc);
+    const broken = [_][]const u8{ LEAF, ROOT };
+    try testing.expectError(error.BadSignature, x509.validateChain(alloc, &broken, NOW_VALID, "leaf.example.com", .secure, .server_auth));
 }
 
 // ============================================================================
@@ -138,9 +152,16 @@ test "Chain validation: pathLenConstraint enforcement" {
     //   Root (pathLen=1) -> Intermediate1 -> Intermediate2 -> Leaf
     //   This violates pathLen=1 (2 subordinate CAs instead of 1)
 
-    // Placeholder for constraint violation test
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
-    try testing.expectError(error.EmptyChain, result);
+    // The real intermediate carries pathLenConstraint=0 (may issue end-entity
+    // certs but no subordinate CAs). The valid [leaf, intermediate, root] chain
+    // respects it and must validate; the path-length enforcement code runs on a
+    // real cert here. (A pathLen *violation* needs a 4-cert [leaf, subCA,
+    // intermediate, root] fixture, which the test corpus does not yet ship.)
+    const alloc = testing.allocator;
+    var root = try withRealRootTrusted(alloc);
+    defer clearTrust(&root, alloc);
+    const chain = [_][]const u8{ LEAF, INTERMEDIATE, ROOT };
+    try x509.validateChain(alloc, &chain, NOW_VALID, "leaf.example.com", .secure, .server_auth);
 }
 
 // ============================================================================
@@ -245,69 +266,64 @@ test "Chain validation: unknown CA rejection" {
     // If the root certificate is not in the trust store, validation fails
     // with unknown_ca alert.
 
-    // Define trust store that trusts nothing
-    const TestTrustStore = struct {
+    // Reject-all trust store: the otherwise-valid real chain must fail because
+    // its root is not a trust anchor.
+    const alloc = testing.allocator;
+    const RejectAll = struct {
         fn isTrusted(_: []const u8) bool {
-            return false; // Reject all roots
+            return false;
         }
     };
-
-    const ts = x509.TrustStore{
-        .isTrustedSpki = TestTrustStore.isTrusted,
-    };
-    x509.setTrustStore(ts);
+    x509.setTrustStore(.{ .isTrustedSpki = RejectAll.isTrusted });
     defer x509.setTrustStore(null);
-
-    // Verify trust store rejects all SPKIs
-    const any_spki = [_]u8{0xAA} ++ [_]u8{0x00} ** 31;
-    try testing.expect(!TestTrustStore.isTrusted(&any_spki));
+    const chain = [_][]const u8{ LEAF, INTERMEDIATE, ROOT };
+    try testing.expectError(error.UntrustedRoot, x509.validateChain(alloc, &chain, NOW_VALID, "leaf.example.com", .secure, .server_auth));
 }
 
 // ============================================================================
 // Test 10: Missing CA Flag in Intermediate
 // ============================================================================
 
-test "Chain validation: intermediate without CA flag rejected" {
-    // RFC 5280 §4.2.1.9: Intermediate certificates must assert CA=TRUE
-    //
-    // An intermediate certificate without BasicConstraints CA=TRUE cannot sign
-    // other certificates and must cause validation failure.
-
-    // This is tested by validateChain's BasicConstraints enforcement
-    // Placeholder for full chain test
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
-    try testing.expectError(error.EmptyChain, result);
+test "Chain validation: basic-constraints CA flag enforced (leaf cannot be issuer)" {
+    // RFC 5280 §4.2.1.9: a non-CA cert cannot act as an issuer. A chain that
+    // tries to use the leaf (CA=FALSE) as an intermediate must be rejected by
+    // BasicConstraints enforcement. [leaf, leaf, root] presents the end-entity
+    // leaf in the issuer position.
+    const alloc = testing.allocator;
+    var root = try withRealRootTrusted(alloc);
+    defer clearTrust(&root, alloc);
+    const bad = [_][]const u8{ LEAF, LEAF, ROOT };
+    try testing.expectError(error.BasicConstraints, x509.validateChain(alloc, &bad, NOW_VALID, "leaf.example.com", .secure, .server_auth));
 }
 
 // ============================================================================
 // Test 11: Key Usage Enforcement (Leaf)
 // ============================================================================
 
-test "Chain validation: leaf digitalSignature key usage" {
-    // RFC 5280 §4.2.1.3: KeyUsage digitalSignature required for TLS
-    //
-    // When a leaf certificate includes the KeyUsage extension, it must assert
-    // digitalSignature for use in TLS server authentication.
-
-    // This is enforced by validateChain's KeyUsage check
-    // Placeholder for full test
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
-    try testing.expectError(error.EmptyChain, result);
+test "Chain validation: real leaf+CA key-usage accepted" {
+    // RFC 5280 §4.2.1.3: the real leaf asserts digitalSignature/keyEncipherment
+    // and the CAs assert keyCertSign; the KeyUsage enforcement path must accept
+    // this real chain (exercises the KU checks on real certs).
+    const alloc = testing.allocator;
+    var root = try withRealRootTrusted(alloc);
+    defer clearTrust(&root, alloc);
+    const chain = [_][]const u8{ LEAF, INTERMEDIATE, ROOT };
+    try x509.validateChain(alloc, &chain, NOW_VALID, "leaf.example.com", .secure, .server_auth);
 }
 
 // ============================================================================
 // Test 12: Key Usage Enforcement (CA)
 // ============================================================================
 
-test "Chain validation: CA keyCertSign key usage" {
-    // RFC 5280 §4.2.1.3: CA certificates must assert keyCertSign
-    //
-    // When an intermediate CA includes the KeyUsage extension, it must assert
-    // keyCertSign to be valid for signing other certificates.
-
-    // Tested by validateChain's CA KeyUsage enforcement
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
-    try testing.expectError(error.EmptyChain, result);
+test "Chain validation: EKU mismatch rejected (serverAuth leaf vs clientAuth purpose)" {
+    // RFC 5280 §4.2.1.12: the real leaf carries EKU=serverAuth. Validating it
+    // for the .client_auth purpose must be rejected by the EKU check.
+    const alloc = testing.allocator;
+    var root = try withRealRootTrusted(alloc);
+    defer clearTrust(&root, alloc);
+    const chain = [_][]const u8{ LEAF, INTERMEDIATE, ROOT };
+    try x509.validateChain(alloc, &chain, NOW_VALID, "leaf.example.com", .secure, .server_auth); // server_auth OK
+    try testing.expectError(error.EkuNotAllowed, x509.validateChain(alloc, &chain, NOW_VALID, "leaf.example.com", .secure, .client_auth));
 }
 
 // ============================================================================
@@ -335,10 +351,13 @@ test "Chain validation: self-signed root CA acceptance" {
     x509.setTrustStore(ts);
     defer x509.setTrustStore(null);
 
-    // Placeholder - full test would use actual self-signed cert
-    // For now, verify empty chain is rejected
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
-    try testing.expectError(error.EmptyChain, result);
+    // A single self-signed root, trusted, validates as a chain of length 1
+    // (server_name empty -> skip the leaf identity check; the root is a CA).
+    const alloc = testing.allocator;
+    var root = try withRealRootTrusted(alloc);
+    defer clearTrust(&root, alloc);
+    const just_root = [_][]const u8{ROOT};
+    try x509.validateChain(alloc, &just_root, NOW_VALID, "", .secure, .server_auth);
 }
 
 // ============================================================================
@@ -355,14 +374,13 @@ test "Chain validation: certificate order matters" {
     //
     // Reversed or shuffled chains must be rejected.
 
-    // Test that empty chain fails
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
-    try testing.expectError(error.EmptyChain, result);
-
-    // Full test would generate 3 certs and verify:
-    // - [leaf, intermediate, root] → valid
-    // - [root, intermediate, leaf] → invalid
-    // - [intermediate, leaf, root] → invalid
+    const alloc = testing.allocator;
+    var root = try withRealRootTrusted(alloc);
+    defer clearTrust(&root, alloc);
+    // [leaf, intermediate, root] valid; a shuffle [intermediate, leaf, root]
+    // presents the intermediate as the leaf -> identity mismatch, rejected.
+    try x509.validateChain(alloc, &[_][]const u8{ LEAF, INTERMEDIATE, ROOT }, NOW_VALID, "leaf.example.com", .secure, .server_auth);
+    try testing.expectError(error.NameMismatch, x509.validateChain(alloc, &[_][]const u8{ INTERMEDIATE, LEAF, ROOT }, NOW_VALID, "leaf.example.com", .secure, .server_auth));
 }
 
 // ============================================================================
@@ -377,15 +395,15 @@ test "Chain validation: EKU serverAuth required for TLS" {
     //
     // If EKU is present without serverAuth, validation fails.
 
-    // This is enforced by validateChain's EKU check
-    // Placeholder for full test with actual certificate
-    const result = x509.validateChain(testing.allocator, &[_][]const u8{}, 0, "", .secure, .server_auth);
-    try testing.expectError(error.EmptyChain, result);
-
-    // Full test would verify:
-    // - Cert with EKU=serverAuth → valid
-    // - Cert with EKU=clientAuth only → invalid
-    // - Cert without EKU → valid (no restrictions)
+    // The real leaf includes EKU=serverAuth, so the chain validates for the
+    // .server_auth purpose (positive EKU enforcement on a real cert). The
+    // negative (serverAuth leaf rejected for .client_auth) is covered by the
+    // "EKU mismatch rejected" test above.
+    const alloc = testing.allocator;
+    var root = try withRealRootTrusted(alloc);
+    defer clearTrust(&root, alloc);
+    const chain = [_][]const u8{ LEAF, INTERMEDIATE, ROOT };
+    try x509.validateChain(alloc, &chain, NOW_VALID, "leaf.example.com", .secure, .server_auth);
 }
 
 // ============================================================================

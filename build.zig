@@ -104,6 +104,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/test_utils.zig"),
     });
 
+    // Shared embedded X.509 test-cert fixtures (so nested conformance test
+    // modules can reach tests/test_certs/ despite the module path sandbox).
+    const test_certs_mod = b.addModule("test_certs", .{
+        .root_source_file = b.path("tests/test_certs.zig"),
+    });
+
     // ITU-T X.690: ASN.1 DER encoding/decoding
     // Used for X.509 certificate parsing
     const asn1_mod = b.addModule("asn1", .{
@@ -1154,6 +1160,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "x509", .module = x509_mod },
+                .{ .name = "test_certs", .module = test_certs_mod },
             },
         }),
     });
