@@ -44,11 +44,19 @@ Round 5 (comprehensive whole-codebase sweep) closures:
 | NEWGAP-15 | Low | Malformed-KeyUpdate alert code internal_error not decode_error | Folded into the QUAL-394 decode_error group. |
 | QUAL-391/393/395 | Med/Low | ServerHello compression alert; dispatcher alert-map drift; stale dispatcher comment | Fixed (see round-3/4 rows and QUAL-394). |
 
-Round 6 (convergence sweep) closure:
+Rounds 6-7 (convergence sweeps) — the transcript-binding bug class:
 
 | ID | Sev | Title | Resolution |
 |----|-----|-------|------------|
 | R6-01 | Med | mTLS server derived application/exporter secrets over the wrong transcript (included client Cert/CV) | Snapshot Transcript-Hash(CH...serverFinished) when the server folds its Finished (`TranscriptSet.app_secret_hash`) and derive §7.1/§7.5 secrets from it; the client path already derived at server-Finished arrival. Adds a pure-loopback mTLS regression asserting the peers install matching application secrets (closes the mTLS end-to-end test gap). Sibling of R5-01. |
+| R7-01 | Low | 0-RTT client_early_traffic_secret derived over the binder-truncated ClientHello, not the complete CH (§7.1) | Derive the early secret after folding the binder tail, over Hash(complete ClientHello), matching the server; the truncated hash now feeds only the §4.2.11.2 binder MAC. Adds a 0-RTT resumption loopback asserting client-send == server-recv early secrets. |
+
+After R7-01, all seven secret-derivation sites use the RFC-correct transcript
+input: PSK binder (§4.2.11.2 partial CH), early/0-RTT (§7.1 full CH), handshake
+(§7.1 CH..SH), application (§7.1 CH..serverFinished), exporter (§7.5
+CH..serverFinished), CertificateVerify (§4.4.3 CH..Certificate), Finished
+(§4.4.4 excl. Finished). R5-01/R6-01/R7-01 are the three members of this class
+found and closed this session, each with an end-to-end loopback regression test.
 
 **Deferred / tracked (open, with rationale):**
 
