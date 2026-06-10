@@ -32,6 +32,16 @@ in code comments and the named tests.
 APPSEC-02/03 (GAP-0135 doc inconsistency; already-fixed unknown-ext dup bypass)
 were reconciled in `docs/GAP_ANALYSIS.md` and `docs/SECURITY_REVIEW_NOTES.md`.
 
+Later rounds (3-4) of the same iterative review surfaced and closed adjacent
+RFC-MUST gaps:
+
+| ID | Sev | Title | Resolution |
+|----|-----|-------|------------|
+| QUAL-393 | Med | Dispatcher error→alert allowlist drifted; new typed errors aborted without a fatal alert | `handleHandshakeMessage` now routes all errors through `failAlert` (the authoritative `fromHandshakeError` map) except the alert-layer pass-throughs; eliminates the drift class. |
+| NEWGAP-09 | Med | EncryptedExtensions did not reject forbidden extensions (§4.3.1) | Denylist of CH/SH/HRR/CR-only extension types → `error.ForbiddenExtension` (illegal_parameter). |
+| NEWGAP-10 | Low | `certificate_request_context` not validated (§4.4.2) | `handleCertificate`/`handleClientCertificate` reject a non-empty context → `error.IllegalCertificateRequestContext` (illegal_parameter). |
+| NEWGAP08-N1 | Low | Client cipher-suite rejection used `handshake_failure` not `illegal_parameter` (§4.1.3/§4.1.4) | New `error.IllegalCipherSuiteSelected` (illegal_parameter) for the 5 client selection-rejection sites; server-side `NoCipherSuite`→`handshake_failure` unchanged. |
+
 ---
 
 ## Cycle 9 / Phase 4 Gap Closure (2026-04-27)
