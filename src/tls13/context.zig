@@ -1324,7 +1324,11 @@ pub const Context = struct {
     /// client-role validation, and stash the bytes on the Context.
     fn absorbClientTransportParameters(self: *Context) !void {
         const ch = self.state.clientHello() orelse return;
-        const tp = ch.quic_transport_parameters orelse return;
+        // NEWGAP-11: RFC 9001 §8.2 — an endpoint that receives a ClientHello
+        // WITHOUT the quic_transport_parameters extension MUST abort with
+        // missing_extension. Symmetric with the client-side EE check. An empty
+        // extension body is permitted; only a fully absent extension violates.
+        const tp = ch.quic_transport_parameters orelse return HandshakeError.MissingTransportParameters;
 
         var decoded_tp = transport_params.TransportParameters.decode(tp, self.allocator) catch {
             return HandshakeError.InvalidTransportParameters;

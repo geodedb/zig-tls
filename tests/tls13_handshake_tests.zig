@@ -514,3 +514,34 @@ test "R5-01: secure loopback — client verifies a real server CertificateVerify
     try testing.expect(client.phase == .application_ready);
     try testing.expect(server.phase == .application_ready or server.phase == .keys_installed);
 }
+
+test "NEWGAP-11: server rejects ClientHello missing quic_transport_parameters" {
+    const alloc = testing.allocator;
+    // Client with NO transport parameters -> ClientHello omits the 0x0039
+    // extension entirely (RFC 9001 §8.2 violation).
+    var client = try tls13.Context.init(.{
+        .allocator = alloc,
+        .role = .Client,
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .quic_transport_parameters = null,
+    }, .{});
+    defer client.deinit();
+    try client.startClientHandshake();
+
+    const ch = try client.pollCrypto(alloc, .Initial);
+    defer alloc.free(ch);
+
+    var server = try tls13.Context.init(.{
+        .allocator = alloc,
+        .role = .Server,
+        .supported_cipher_suites = &.{tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256},
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .quic_transport_parameters = &[_]u8{},
+    }, .{});
+    defer server.deinit();
+
+    try testing.expectError(tls13.HandshakeError.MissingTransportParameters, server.processCrypto(.Initial, ch));
+}
