@@ -41,16 +41,21 @@ pub fn validateSupportedVersions(body: []const u8, ext_start: usize, exts_len: u
 
     var found = false;
     var version: u16 = 0;
-    var seen = std.EnumSet(tls13_full.ExtensionType).initEmpty();
+    // NEWGAP-05: raw-u16 tracking rejects duplicate UNKNOWN extension types
+    // too (RFC 8446 §4.2), not just known ones.
+    var seen_extensions: [64]u16 = undefined;
+    var seen_count: usize = 0;
     while (pos + 4 <= exts_end) {
         const etype = readU16(body[pos .. pos + 2]);
         const elen: usize = readU16(body[pos + 2 .. pos + 4]);
         pos += 4;
         if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
-        if (std.enums.fromInt(tls13_full.ExtensionType, etype)) |etag| {
-            if (seen.contains(etag)) return HandshakeError.DuplicateExtension;
-            seen.insert(etag);
+        for (seen_extensions[0..seen_count]) |s| {
+            if (s == etype) return HandshakeError.DuplicateExtension;
         }
+        if (seen_count == seen_extensions.len) return HandshakeError.TooManyExtensions;
+        seen_extensions[seen_count] = etype;
+        seen_count += 1;
         if (etype == @intFromEnum(tls13_full.ExtensionType.supported_versions)) {
             if (elen != 2) return HandshakeError.UnsupportedVersion;
             version = readU16(body[pos .. pos + 2]);
@@ -84,16 +89,21 @@ pub fn parsePskExtension(body: []const u8) !?u16 {
     if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
     const exts_end = pos + exts_len;
     var selected_psk_index: ?u16 = null;
-    var seen = std.EnumSet(tls13_full.ExtensionType).initEmpty();
+    // NEWGAP-05: raw-u16 tracking rejects duplicate UNKNOWN extension types
+    // too (RFC 8446 §4.2), not just known ones.
+    var seen_extensions: [64]u16 = undefined;
+    var seen_count: usize = 0;
     while (pos + 4 <= exts_end) {
         const etype = readU16(body[pos .. pos + 2]);
         const elen: usize = readU16(body[pos + 2 .. pos + 4]);
         pos += 4;
         if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
-        if (std.enums.fromInt(tls13_full.ExtensionType, etype)) |etag| {
-            if (seen.contains(etag)) return HandshakeError.DuplicateExtension;
-            seen.insert(etag);
+        for (seen_extensions[0..seen_count]) |s| {
+            if (s == etype) return HandshakeError.DuplicateExtension;
         }
+        if (seen_count == seen_extensions.len) return HandshakeError.TooManyExtensions;
+        seen_extensions[seen_count] = etype;
+        seen_count += 1;
         if (etype == @intFromEnum(tls13_full.ExtensionType.pre_shared_key)) {
             if (elen != 2) return HandshakeError.UnexpectedMessage;
             selected_psk_index = readU16(body[pos .. pos + 2]);

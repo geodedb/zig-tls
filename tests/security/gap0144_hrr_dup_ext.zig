@@ -96,3 +96,25 @@ test "GAP-0144: HRR with distinct key_share + cookie still parses" {
     try std.testing.expect(parsed.cookie != null);
     try std.testing.expectEqual(@as(usize, 4), parsed.cookie.?.len);
 }
+
+test "NEWGAP-05: HRR with two duplicate UNKNOWN extensions is rejected" {
+    const alloc = std.testing.allocator;
+
+    // A duplicate UNKNOWN extension type (0x8a8a, GREASE-like) must still be
+    // rejected per RFC 8446 §4.2. Pre-fix the EnumSet gate only tracked known
+    // types, so duplicate unknown types bypassed detection (residual of
+    // GAP-0145). Include a valid key_share so the parser reaches the dup.
+    const ks_data = [_]u8{ 0x00, 0x1d }; // x25519
+    const unk_data = [_]u8{ 0xAA, 0xBB };
+
+    var exts = std.ArrayList(u8).empty;
+    defer exts.deinit(alloc);
+    try encodeExt(&exts, alloc, @intFromEnum(tls13_full.ExtensionType.key_share), &ks_data);
+    try encodeExt(&exts, alloc, 0x8a8a, &unk_data);
+    try encodeExt(&exts, alloc, 0x8a8a, &unk_data);
+
+    const body = try buildHrrBody(alloc, exts.items);
+    defer alloc.free(body);
+
+    try std.testing.expectError(error.DuplicateExtension, tls13.parseHelloRetryRequest(body));
+}

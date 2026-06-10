@@ -112,7 +112,10 @@ pub fn parseHelloRetryRequest(body: []const u8) !HrrParsed {
     // the assignment below — letting an off-path peer steer the CH2 echo.
     // Same parse-class as SEC-066 (ClientHello), SEC-092 (EE/SH), and
     // SEC-079 (X.509). Pattern mirrors `encrypted_extensions.zig:220`.
-    var seen = std.EnumSet(tls13_full.ExtensionType).initEmpty();
+    // NEWGAP-05: track raw u16 types (not an EnumSet keyed on known types) so
+    // duplicate UNKNOWN extension types are also rejected per RFC 8446 §4.2.
+    var seen_extensions: [64]u16 = undefined;
+    var seen_count: usize = 0;
 
     while (pos + 4 <= exts_end) {
         const etype = readU16(body[pos .. pos + 2]);
@@ -120,10 +123,12 @@ pub fn parseHelloRetryRequest(body: []const u8) !HrrParsed {
         pos += 4;
         if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
 
-        if (std.enums.fromInt(tls13_full.ExtensionType, etype)) |etag| {
-            if (seen.contains(etag)) return HandshakeError.DuplicateExtension;
-            seen.insert(etag);
+        for (seen_extensions[0..seen_count]) |s| {
+            if (s == etype) return HandshakeError.DuplicateExtension;
         }
+        if (seen_count == seen_extensions.len) return HandshakeError.TooManyExtensions;
+        seen_extensions[seen_count] = etype;
+        seen_count += 1;
 
         // RFC 8446 §4.2.2: cookie extension. The ext_data carries a
         // `Cookie` struct: `opaque cookie<1..2^16-1>` — i.e. a 2-byte

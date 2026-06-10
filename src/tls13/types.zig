@@ -268,6 +268,11 @@ pub const HandshakeError = error{
     /// `error.DecodeError` to align with SEC-066's existing alert mapping).
     DuplicateExtension,
 
+    /// APPSEC-04: an extension block carried more than 64 DISTINCT extension
+    /// types, exceeding the duplicate-detection tracker capacity. Distinct
+    /// from `DuplicateExtension`; maps to TLS alert `decode_error`.
+    TooManyExtensions,
+
     /// SEC-088: ClientHello/ServerHello carried a `legacy_compression_methods`
     /// field that violates RFC 8446 §4.1.2 / §4.1.3 (must be exactly one byte
     /// equal to 0x00 on CH; must equal 0x00 on SH). Maps to TLS alert
