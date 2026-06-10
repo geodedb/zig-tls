@@ -2601,19 +2601,28 @@ pub const Context = struct {
             // offsets). No +4 adjustment required.
             @memcpy(msg[msg_binder_offset..][0..binder_len], binder.slice()[0..binder_len]);
 
+            // Feed the (now binder-patched) tail to the main transcript so it
+            // holds the COMPLETE ClientHello (prefix + binders).
+            self.transcripts.handshake.update(msg[truncated_len..]);
+
             if (self.config.enable_early_data) {
+                // R7-01: RFC 8446 §7.1 — client_early_traffic_secret is derived
+                // over Transcript-Hash(complete ClientHello), INCLUDING the PSK
+                // binders, to match the server (which folds the full CH). The
+                // binder-truncated `transcript_hash` above is only the binder
+                // MAC input (§4.2.11.2), not the early-secret input.
+                var ch_full_view = self.transcripts.handshake.clone();
+                const ch_full_hash = ch_full_view.finalize(self.hash_kind);
                 const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(
                     self.hash_kind,
                     &early_secret,
-                    transcript_hash.slice(),
+                    ch_full_hash.slice(),
                 );
                 try self.installTrafficSecret(.Initial, .send, early_traffic_secret);
                 traceHandshake("Client: Installed 0-RTT early traffic secret for sending\\n", .{});
             }
 
-            // Feed the (now binder-patched) tail to the main transcript
-            // and append the message without a second transcript update.
-            self.transcripts.handshake.update(msg[truncated_len..]);
+            // Append the message without a second transcript update.
             try self.appendOutbound(.Initial, msg, false);
         } else {
             // No PSK; one transcript pass over the whole message.

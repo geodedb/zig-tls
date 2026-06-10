@@ -626,3 +626,47 @@ test "R6-01: mTLS loopback — server derives app secrets over CH..serverFinishe
     try testing.expect(s_recv.valid and c_send.valid);
     try testing.expectEqualSlices(u8, c_send.value.slice(), s_recv.value.slice());
 }
+
+test "R7-01: 0-RTT early traffic secret matches between client (send) and server (recv)" {
+    const alloc = testing.allocator;
+
+    // Client offers a resumption PSK and 0-RTT early data.
+    var client = try tls13.Context.init(.{
+        .allocator = alloc,
+        .role = .Client,
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .enable_early_data = true,
+        .resumption_psk = test_psk,
+        .resumption_ticket = test_ticket,
+        .quic_transport_parameters = &[_]u8{},
+    }, .{});
+    defer client.deinit();
+    try client.startClientHandshake();
+
+    const ch_msg = try client.pollCrypto(alloc, .Initial);
+    defer alloc.free(ch_msg);
+
+    // Server resolves the same PSK and accepts early data (anti-replay window
+    // is NOT preloaded, so this first ClientHello is accepted).
+    var server = try tls13.Context.init(.{
+        .allocator = alloc,
+        .role = .Server,
+        .supported_groups = &.{.x25519},
+        .supported_signature_schemes = &.{.ed25519},
+        .enable_early_data = true,
+        .quic_transport_parameters = &[_]u8{},
+    }, .{ .on_ticket_lookup = lookupTestPsk });
+    defer server.deinit();
+
+    try server.processCrypto(.Initial, ch_msg);
+
+    // Client installed the early SEND secret; server installed the early RECV
+    // secret. RFC 8446 §7.1 derives both over Hash(complete ClientHello), so
+    // they MUST be equal. Pre-R7-01 the client used the binder-truncated hash.
+    const c_send = client.secrets.slot(.Initial, .send);
+    const s_recv = server.secrets.slot(.Initial, .recv);
+    try testing.expect(c_send.valid);
+    try testing.expect(s_recv.valid);
+    try testing.expectEqualSlices(u8, c_send.value.slice(), s_recv.value.slice());
+}
