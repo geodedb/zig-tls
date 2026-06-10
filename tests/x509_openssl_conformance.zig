@@ -260,9 +260,41 @@ test "parseDerTime conformance - GeneralizedTime with OpenSSL" {
 // Certificate Chain Validation Conformance Tests
 // ============================================================================
 
+const ChainTrust = struct {
+    var spki: []const u8 = &[_]u8{};
+    fn isTrusted(s: []const u8) bool {
+        return ChainTrust.spki.len != 0 and std.mem.eql(u8, s, ChainTrust.spki);
+    }
+};
+
 test "validateChain conformance - OpenSSL verification" {
-    // Create a certificate chain and verify it with both our implementation
-    // and OpenSSL's X509_verify_cert, ensuring same results
+    // `openssl verify -CAfile root -untrusted intermediate leaf` => OK, so our
+    // validateChain MUST accept this real chain and reject the negative cases.
+    const alloc = testing.allocator;
+    var root = try x509.parseCert(alloc, TEST_CHAIN_ROOT);
+    defer root.deinit(alloc);
+    ChainTrust.spki = root.spki;
+    x509.setTrustStore(.{ .isTrustedSpki = ChainTrust.isTrusted });
+    defer {
+        x509.setTrustStore(null);
+        ChainTrust.spki = &[_]u8{};
+    }
+
+    const chain = [_][]const u8{ TEST_CHAIN_LEAF, TEST_CHAIN_INTERMEDIATE, TEST_CHAIN_ROOT };
+    const now: i64 = 1767225600; // 2026-01-01, inside the leaf validity window
+
+    // Positive: accept the OpenSSL-valid chain; SAN matches both names.
+    try x509.validateChain(alloc, &chain, now, "leaf.example.com", .secure, .server_auth);
+    try x509.validateChain(alloc, &chain, now, "www.example.com", .secure, .server_auth);
+
+    // Negatives the real runChainChecks path must enforce:
+    try testing.expectError(error.NameMismatch, x509.validateChain(alloc, &chain, now, "evil.example.com", .secure, .server_auth));
+    try testing.expectError(error.Expired, x509.validateChain(alloc, &chain, 1920000000, "leaf.example.com", .secure, .server_auth)); // ~2030, past notAfter
+    try testing.expectError(error.NotYetValid, x509.validateChain(alloc, &chain, 1600000000, "leaf.example.com", .secure, .server_auth)); // 2020, before notBefore
+
+    // Untrusted root: empty trust anchor must abort.
+    ChainTrust.spki = &[_]u8{};
+    try testing.expectError(error.UntrustedRoot, x509.validateChain(alloc, &chain, now, "leaf.example.com", .secure, .server_auth));
 }
 
 test "validateChain conformance - signature verification" {
