@@ -129,6 +129,7 @@ pub fn fromHandshakeError(err: anyerror) AlertDescription {
         error.TooManyExtensions => .decode_error, // APPSEC-04: distinct-extension capacity cap
         error.IllegalSessionIdEcho => .illegal_parameter, // NEWGAP-06 / RFC 8446 §4.1.3
         error.IllegalLegacyVersion => .illegal_parameter, // NEWGAP-06 / RFC 8446 §4.1.3
+        error.ForbiddenExtension => .illegal_parameter, // NEWGAP-09 / RFC 8446 §4.2/§4.3.1
         error.TooManyKeyUpdates => .decode_error, // GAP-0135 / RFC 8446 §4.6.3
         error.IllegalCompressionMethods => .illegal_parameter, // SEC-088 / RFC 8446 §4.1.2
         error.IllegalCipherSuites => .illegal_parameter, // SEC-099 / RFC 8446 §4.1.2

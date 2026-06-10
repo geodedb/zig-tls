@@ -99,3 +99,40 @@ test "SEC-092: EE single ALPN extension is accepted" {
     const ee = try tls13_full.parseEncryptedExtensions(body.items);
     try std.testing.expect(ee.alpn != null);
 }
+
+test "NEWGAP-09: EE with a forbidden key_share extension is rejected" {
+    const alloc = std.testing.allocator;
+    var ext = std.ArrayList(u8).empty;
+    defer ext.deinit(alloc);
+
+    // key_share (0x0033) is a ClientHello/ServerHello/HRR extension and is
+    // forbidden in EncryptedExtensions (RFC 8446 §4.3.1).
+    try ext.appendSlice(alloc, &.{ 0x00, 0x33 });
+    try writeU16(&ext, alloc, 2);
+    try ext.appendSlice(alloc, &.{ 0x00, 0x1d });
+
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(alloc);
+    try writeU16(&body, alloc, @intCast(ext.items.len));
+    try body.appendSlice(alloc, ext.items);
+
+    try std.testing.expectError(error.ForbiddenExtension, tls13_full.parseEncryptedExtensions(body.items));
+}
+
+test "NEWGAP-09: EE with a forbidden supported_versions extension is rejected" {
+    const alloc = std.testing.allocator;
+    var ext = std.ArrayList(u8).empty;
+    defer ext.deinit(alloc);
+
+    // supported_versions (0x002b) belongs in CH/SH/HRR, not EE.
+    try ext.appendSlice(alloc, &.{ 0x00, 0x2b });
+    try writeU16(&ext, alloc, 2);
+    try ext.appendSlice(alloc, &.{ 0x03, 0x04 });
+
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(alloc);
+    try writeU16(&body, alloc, @intCast(ext.items.len));
+    try body.appendSlice(alloc, ext.items);
+
+    try std.testing.expectError(error.ForbiddenExtension, tls13_full.parseEncryptedExtensions(body.items));
+}

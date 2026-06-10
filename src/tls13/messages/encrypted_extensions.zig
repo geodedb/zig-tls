@@ -244,6 +244,26 @@ pub fn parseEncryptedExtensions(body: []const u8) !EncryptedExtensions {
         seen[seen_count] = ext_type;
         seen_count += 1;
 
+        // NEWGAP-09: RFC 8446 §4.3.1 — the client MUST reject any extension in
+        // EncryptedExtensions that is not permitted there. We deny the
+        // extensions defined for ClientHello/ServerHello/HRR/CertificateRequest
+        // (and friends) that have no place in EE; unknown/GREASE types remain
+        // ignorable for forward compatibility (they are not "forbidden").
+        switch (ext_type) {
+            0x000d, // signature_algorithms (CH, CR)
+            0x0029, // pre_shared_key (CH, SH)
+            0x002b, // supported_versions (CH, SH, HRR)
+            0x002c, // cookie (CH, HRR)
+            0x002d, // psk_key_exchange_modes (CH)
+            0x002f, // certificate_authorities (CH, CR)
+            0x0030, // oid_filters (CR)
+            0x0031, // post_handshake_auth (CH)
+            0x0032, // signature_algorithms_cert (CH, CR)
+            0x0033, // key_share (CH, SH, HRR)
+            => return error.ForbiddenExtension,
+            else => {},
+        }
+
         switch (ext_type) {
             // ALPN (0x0010) - RFC 7301
             0x0010 => {

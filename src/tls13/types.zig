@@ -282,6 +282,11 @@ pub const HandshakeError = error{
     /// RFC 8446 §4.1.3 MUST be 0x0303; maps to `illegal_parameter`.
     IllegalLegacyVersion,
 
+    /// NEWGAP-09: a handshake message carried an extension forbidden in that
+    /// message (e.g. key_share / pre_shared_key inside EncryptedExtensions).
+    /// RFC 8446 §4.2 MUST abort with `illegal_parameter`.
+    ForbiddenExtension,
+
     /// SEC-088: ClientHello/ServerHello carried a `legacy_compression_methods`
     /// field that violates RFC 8446 §4.1.2 / §4.1.3 (must be exactly one byte
     /// equal to 0x00 on CH; must equal 0x00 on SH). Maps to TLS alert
