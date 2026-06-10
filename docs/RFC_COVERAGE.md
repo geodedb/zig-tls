@@ -74,19 +74,29 @@ epic (see GAP-0119 / GAP-0120 / GAP-0121). Each gap should add one
 test file under `tests/rfc<NNNN>/section_<clause>_<topic>.zig` and be
 registered in `build.zig`.
 
-## Open hardening cross-refs (Phase 4 / 2026-04-27)
+## Resolved hardening cross-refs (verified 2026-06-10)
 
-These rows are marked `[x]` for impl/test on the matrix but have an
-open hardening sub-finding tracked in `docs/GAP_ANALYSIS.md`:
+These rows are marked `[x]` for impl/test on the matrix. The
+duplicate-extension hardening sub-findings previously tracked here are
+now **implemented and closed** (landed in commit `b2e58ac`, GAP-0145):
 
-- **RFC 8446 §4.4.2 (Certificate)** — GAP-0143 (#339): per-entry
-  duplicate-extension gate missing on `status_request` / `signed_certificate_timestamp`
-  parser at `src/tls13/messages/certificate.zig:217-243`. Twin of
-  SEC-092 (closed). Cross-ref::SEC-094.
-- **RFC 8446 §4.2 (HRR extensions)** — GAP-0144 (#336):
-  duplicate-extension gate missing on `parseHelloRetryRequest`
-  cookie / key_share loop at `src/tls13/context/hello_retry.zig:84-142`.
-  Cross-ref::SEC-093.
+- **RFC 8446 §4.4.2 (Certificate)** — GAP-0143 (#339): **RESOLVED.**
+  Per-entry duplicate-extension gate now present on the Certificate-entry
+  extension loop (`status_request` / `signed_certificate_timestamp`) at
+  `src/tls13/messages/certificate.zig:217-234` — a fixed-size raw-`u16`
+  `seen_extensions` list returns `error.DuplicateExtension` at `:228-230`.
+  Twin of SEC-092 (closed). Cross-ref::SEC-094.
+- **RFC 8446 §4.2 (HRR extensions)** — GAP-0144 (#336): **RESOLVED.**
+  Duplicate-extension gate now present on `parseHelloRetryRequest`'s
+  cookie / key_share loop at `src/tls13/context/hello_retry.zig:109-126`
+  (rejects with `HandshakeError.DuplicateExtension` at `:124`). Tested in
+  `tests/security/gap0144_hrr_dup_ext.zig`. Cross-ref::SEC-093.
+
+The related ClientHello / EncryptedExtensions / CertificateRequest
+duplicate-extension gates (GAP-0145) are likewise implemented at
+`src/tls13/messages/client_hello.zig:359-384`,
+`src/tls13/messages/encrypted_extensions.zig:222-245`, and
+`src/tls13/messages/certificate_request.zig:202-219`.
 
 Open scope-decision items for `[ ]` rows:
 

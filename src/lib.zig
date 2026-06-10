@@ -28,10 +28,11 @@
 //!
 //! // Configure TLS context
 //! const config = ztls.Config{
-//!     .role = .client,
+//!     .allocator = allocator,
+//!     .role = .Client,
 //!     .server_name = "example.com",
 //!     .alpn_protocols = &.{"h3"}, // HTTP/3
-//!     .transport_params = try quic_params.encode(allocator),
+//!     .quic_transport_parameters = try quic_params.encode(allocator),
 //! };
 //!
 //! // Set up callbacks for QUIC integration
@@ -72,11 +73,11 @@
 //!
 //! ```zig
 //! const cert_config = ztls.Config{
-//!     .role = .server,
-//!     .certificates = &.{
-//!         .{ .cert = server_cert_der, .key = private_key_der },
-//!     },
-//!     .verify_peer = true, // Require client certificates
+//!     .allocator = allocator,
+//!     .role = .Server,
+//!     .server_cert_der = server_cert_der,
+//!     .server_key_der = private_key_der,
+//!     .request_client_cert = true, // Require client certificates
 //! };
 //! ```
 //!
@@ -111,7 +112,7 @@
 //!    - QUIC installs keys for packet encryption/decryption at specified level
 //!
 //! 3. **Transport Parameters** (RFC 9001 §8.2):
-//!    - QUIC provides parameters → set `config.transport_params`
+//!    - QUIC provides parameters → set `config.quic_transport_parameters`
 //!    - TLS exchanges them in quic_transport_parameters extension (0x0039)
 //!
 //! 4. **Error Handling** (RFC 9001 §4.8):
@@ -423,7 +424,7 @@ pub const tls13_full = @import("tls13_full");
 ///
 /// Usage:
 /// ```zig
-/// var ctx = try ztls.Context.init(allocator, config, callbacks);
+/// var ctx = try ztls.Context.init(config, callbacks);
 /// defer ctx.deinit();
 /// ```
 pub const Context = tls13.Context;
@@ -431,12 +432,13 @@ pub const Context = tls13.Context;
 /// Configuration for TLS context initialization.
 ///
 /// Fields:
-/// - `role`: `.client` or `.server`
+/// - `allocator`: Allocator for handshake buffers and transcript storage
+/// - `role`: `.Client` or `.Server`
 /// - `server_name`: SNI for certificate validation (client only)
 /// - `alpn_protocols`: Supported application protocols (e.g., "h3" for HTTP/3)
-/// - `transport_params`: QUIC transport parameters (RFC 9001 §8.2)
-/// - `certificates`: Server certificate chain and private key
-/// - `verify_peer`: Whether to require peer certificate validation
+/// - `quic_transport_parameters`: QUIC transport parameters (RFC 9001 §8.2)
+/// - `server_cert_der` / `server_key_der`: Server leaf certificate and private key (server only)
+/// - `request_client_cert`: Whether to request a client certificate (server only)
 pub const Config = tls13.Config;
 
 /// Callback functions for QUIC integration.
@@ -564,12 +566,23 @@ else
 pub const version = std.SemanticVersion{
     .major = 0,
     .minor = 1,
-    .patch = 0,
+    .patch = 7,
 };
 
 test {
     // Run tests for all modules
     std.testing.refAllDecls(@This());
+}
+
+test "version matches build.zig.zon" {
+    // QUAL-385: build.zig.zon is the source of truth for the package version.
+    // Keep this constant in lock-step with the `.version` field there; this
+    // test fails loudly if the exported `version` drifts from the expected
+    // release version.
+    const expected = std.SemanticVersion{ .major = 0, .minor = 1, .patch = 7 };
+    try std.testing.expectEqual(expected.major, version.major);
+    try std.testing.expectEqual(expected.minor, version.minor);
+    try std.testing.expectEqual(expected.patch, version.patch);
 }
 
 // PERF-237b (0.2.0): the previous "parallel re-export is reachable" smoke

@@ -25,7 +25,7 @@
 
 ### Cycle 9 / Phase 4 Net Delta (2026-04-27 gap-issue-tracker sync)
 
-+3 closures: GAP-0106 (Low, bench 0.16 API drift — bench harness rebuilt for Zig 0.16 with `tests/bench.zig:25-37` `nowMonotonicNs` via `clock_gettime` and `:51-60` `perfFence` replacing the removed `@fence`; CI-exercise criterion delegated to PERF-236 / #265); GAP-0110 (Medium, EE 10-level nesting — engine deletion subsumed; current `src/tls13/messages/encrypted_extensions.zig` is 266 LOC with flat per-ext dispatch via `std.EnumSet` at :220, depth ≤3; original `src/tls13/engine.zig:815-848` site is gone via commit `4ae8ac7`); and GAP-0135 (Medium, KeyUpdate budget — rate-limit code confirmed).
++3 closures: GAP-0106 (Low, bench 0.16 API drift — bench harness rebuilt for Zig 0.16 with `tests/bench.zig:25-37` `nowMonotonicNs` via `clock_gettime` and `:51-60` `perfFence` replacing the removed `@fence`; CI-exercise criterion delegated to PERF-236 / #265); GAP-0110 (Medium, EE 10-level nesting — engine deletion subsumed; current `src/tls13/messages/encrypted_extensions.zig` is 266 LOC with flat per-ext dispatch via `std.EnumSet` at :220, depth ≤3; original `src/tls13/engine.zig:815-848` site is gone via commit `4ae8ac7`); and GAP-0135 (Medium, KeyUpdate budget — rate-limit budget confirmed present and enforced; see GAP-0135 detail section, landed in commit `b2e58ac`).
 
 +5 new opens: GAP-0140 (Low, #304 — `HandshakePhase.post_handshake` declared+read but never assigned: variant at `handshake_state.zig:62`, three readers at `context.zig:1268, 1276, 2305`, zero writers); GAP-0141 (Low, #305 — dead `encodeVarint`/`decodeVarint` re-exports at `quic_transport_params.zig:111-112`; sub-of GAP-0137); GAP-0142 (Low Wishlist, #342 — RFC 9001 §5.4 Header Protection formal scope decision missing; same shape as GAP-0136); GAP-0143 (Low, #339 — RFC 8446 §4.4.2 Certificate entry duplicate-extension gate missing at `certificate.zig:217-243`; twin of SEC-092 closed; cross-ref::SEC-094); GAP-0144 (Medium, #336 — RFC 8446 §4.2 HelloRetryRequest duplicate-extension gate missing at `hello_retry.zig:84-142`; cross-ref::SEC-093).
 
@@ -45,7 +45,7 @@ Per-domain tracker conflict resolution: dup-ext family follows the SEC-082/GAP-0
 
 ### Implementation Status
 
-**Closed: 136 findings** - Cycle 9 / Phase 4 gap-issue-tracker sync (2026-04-27) moved GAP-0106 (bench 0.16 API drift — bench harness rebuilt; CI exercise delegated to PERF-236), GAP-0110 (10-level EE nesting — subsumed by engine deletion + flat per-ext dispatch in `src/tls13/messages/encrypted_extensions.zig`), and GAP-0135 (KeyUpdate budget limit — handler `context.zig:3193-3219` confirmed has zero rate-limit code) to the resolved ledger. Cycle 8 / Phase 22 (2026-04-27) closed GAP-0131 (commit 14b73a6), GAP-0138 (commit aa9254b + 8a7f394), GAP-0139 (commit aabbb74). Cycle 3 / Phase 15 (2026-04-20) closed GAP-0104 (delivered via PERF-209 allocator swap, commit 24a275c). Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
+**Closed: 136 findings** - Cycle 9 / Phase 4 gap-issue-tracker sync (2026-04-27) moved GAP-0106 (bench 0.16 API drift — bench harness rebuilt; CI exercise delegated to PERF-236), GAP-0110 (10-level EE nesting — subsumed by engine deletion + flat per-ext dispatch in `src/tls13/messages/encrypted_extensions.zig`), and GAP-0135 (KeyUpdate budget limit — rate-limit budget confirmed present and enforced; `context.zig:3304-3308` increments `peer_key_updates_seen` and returns `HandshakeError.TooManyKeyUpdates` past `config.max_peer_key_updates`, landed in commit `b2e58ac`) to the resolved ledger. Cycle 8 / Phase 22 (2026-04-27) closed GAP-0131 (commit 14b73a6), GAP-0138 (commit aa9254b + 8a7f394), GAP-0139 (commit aabbb74). Cycle 3 / Phase 15 (2026-04-20) closed GAP-0104 (delivered via PERF-209 allocator swap, commit 24a275c). Cycle 2 / Phase 14 (2026-04-20) closed 9 additional GAPs: GAP-0098 (subsumed by GAP-0122, ledger aligned 46a3419), GAP-0102 (delivered via PERF-207), GAP-0103 (delivered via PERF-208), GAP-0105 (delivered via PERF-035 + PERF-211 Won't-Do), GAP-0109 (scoped-down intra-file RSA-PSS dedup, commit 92f8f96), and the four new ledger-only doc-hygiene items GAP-0127/0128/0129/0130 (commits 4bef6d4, 118c3a1, 54ebf35, 301729d). Phase 13 (2026-04-19) previously closed 16 GAPs; Engine deletion (commit 4ae8ac7) remains the keystone change (-2283 LOC net).
 **Won't Do: 7 findings** - GAP-0072 (forbidden by RFC 9001), GAP-0075 (blocked by Zig stdlib), GAP-0076 (by design; OCSP stapling is the chosen alternative), GAP-0077 (will resolve via Engine deprecation), GAP-0092 (issue tracker maintenance, tracked by Issue #133), GAP-0099 (issue tracker maintenance, separate from code), GAP-0093 (2 skipped tests require stdlib features not yet available)
 **Open: 5 findings** - GAP-0132 (Medium, server NewSessionTicket build path + on_session_ticket callback), GAP-0136 (Low Wishlist, RFC 9001 §5.5 Retry integrity scope decision), GAP-0140 (Low, `HandshakePhase.post_handshake` declared+read but never assigned — #304), GAP-0141 (Low, dead `encodeVarint`/`decodeVarint` re-exports — #305, sub-of GAP-0137), GAP-0142 (Low Wishlist, RFC 9001 §5.4 Header Protection scope decision — #342), plus ledger-only GAP-0137 (scope-reduced; tracked via cross-ref::GAP-0141). GAP-0109 cross-file RSA-PSS canonicalization fully closed in Cycle 4 (2026-04-20) via `sig.rsaPssVerifyGeneric` shared core + differential fuzz harness.
 
@@ -1095,16 +1095,17 @@ All 11 remaining open issues from the third review have been implemented:
 - **Issue:** [#273](https://gitlab.com/devnw/zig/tls/-/work_items/273)
 - **Category:** Security
 - **Severity:** Medium
-- **Status:** Open (2026-04-21; evidence refreshed 2026-04-27 — Phase 4 gap-issue-tracker sync) — cross-ref::SEC-082 (still Open in security ledger)
+- **Status:** Closed 2026-05-02 (commit `b2e58ac`, "address GAP-0135/SEC-092") — rate-limit budget confirmed present and enforced; cross-ref::SEC-082
 - **Requirement source:** RFC 8446 §4.6.3; RFC 9001 §6; CWE-400.
-- **Current state (evidence — refreshed 2026-04-27):**
-  - `src/tls13/context/key_update.zig:99-106` — `rotatePeerSecret` still chains HKDF without bookkeeping.
-  - `src/tls13/context/key_update.zig:118-129` — `shouldTriggerKeyUpdate` remains outbound-only; no inbound analog.
-  - `src/tls13/context.zig:3193-3219` — `handleKeyUpdateMessage` rotates and reciprocates with zero rate-limit code; no `peer_key_updates_seen` counter on `Context`.
-- **Why this is a gap:** Malicious peer can force unbounded HKDF derivations by rapid KeyUpdate injection.
+- **Current state (evidence — verified 2026-06-10):**
+  - `src/tls13/config.zig:488` — `max_peer_key_updates: u32 = 32` configurable budget (defaults to 32 inbound KeyUpdates per connection; documented at `:484-488`).
+  - `src/tls13/context.zig:629` — `peer_key_updates_seen: u32 = 0` per-connection counter field on `Context`.
+  - `src/tls13/context.zig:3304-3308` — `handleKeyUpdateMessage` increments `peer_key_updates_seen` and returns `HandshakeError.TooManyKeyUpdates` once it exceeds `config.max_peer_key_updates`, before performing the HKDF rotation.
+  - Regression: `tests/security/gap0135_key_update_exhaustion.zig` (added in `b2e58ac`) injects N+1 KeyUpdates and asserts the Nth succeeds and the (N+1)th errors.
+- **Why this was a gap:** A malicious peer could force unbounded HKDF derivations by rapid KeyUpdate injection.
 - **Impact/Risk:** CPU-amplification DoS; no audit trail; interacts with SEC-067 (#256) TOCTOU.
-- **Recommended fix:** Counter on Context; configurable `max_peer_key_updates_per_window` on Config; error + connection termination on budget exhaustion; warn at 50%.
-- **Acceptance criteria:** Counter + budget plumbed; test injects N+1 KeyUpdates and asserts Nth ok / (N+1)th errors; RFC coverage matrix updated.
+- **Resolution:** Counter on `Context` + configurable `max_peer_key_updates` on `Config`; typed `HandshakeError.TooManyKeyUpdates` returned (routed through the GAP-0138 fatal-alert path) on budget exhaustion, before any further HKDF work.
+- **Acceptance criteria:** Counter + budget plumbed; test injects N+1 KeyUpdates and asserts Nth ok / (N+1)th errors. Met by `tests/security/gap0135_key_update_exhaustion.zig`.
 - **Labels:** `gap`, `rfc::8446`, `type::security`, `priority::medium`, `component::key-update`, `cwe::400`, `cross-ref::SEC-082`
 - **Created:** 2026-04-21
 
@@ -1166,13 +1167,12 @@ All 11 remaining open issues from the third review have been implemented:
 - **Category:** Security
 - **Severity:** Medium
 - **Risk Score:** 36 (CWE-345 / CWE-693)
-- **Status:** Resolved 2026-04-27 — Phase 22 closure pass.
+- **Status:** Resolved 2026-05-02 (commit `b2e58ac`); originally targeted in the Phase 22 closure pass.
 - **Requirement source:** RFC 8446 §4.2 ("There MUST NOT be more than one extension of the same type in a given extension block."). Twin of SEC-092 (closed) on EE/SH paths and SEC-086 (recently closed cookie verification) on the cookie value semantics.
-- **Resolution:** `parseHelloRetryRequest` (`src/tls13/context/hello_retry.zig:84-150`) now keeps a `std.EnumSet(tls13_full.ExtensionType)` of seen types and returns `HandshakeError.DuplicateExtension` on the second occurrence — mirrors the SEC-092 EE/SH pattern at `src/tls13/messages/encrypted_extensions.zig:220-238`. The hello_retry parser is re-exported from `src/tls13/mod.zig` so direct regression tests can call it.
-- **Evidence:**
-  - Source change: `src/tls13/context/hello_retry.zig:106-117` (EnumSet instantiation + dup check inside the inner extension loop, ahead of the cookie/key_share dispatch).
-  - Re-export: `src/tls13/mod.zig:217-228` (`parseHelloRetryRequest`, `HrrParsed`).
-  - Regression suite: `tests/security/gap0144_hrr_dup_ext.zig` — 3 cases (dup cookie, dup key_share, distinct cookie+key_share positive control). All green under `zig build test`.
+- **Resolution:** `parseHelloRetryRequest` (`src/tls13/context/hello_retry.zig:84-150`) now keeps a `std.EnumSet(tls13_full.ExtensionType)` of seen types and returns `HandshakeError.DuplicateExtension` on the second occurrence — mirrors the SEC-092 EE/SH pattern at `src/tls13/messages/encrypted_extensions.zig:222-245`. The hello_retry parser is re-exported from `src/tls13/mod.zig` so direct regression tests can call it.
+- **Evidence (verified 2026-06-10):**
+  - Source change: `src/tls13/context/hello_retry.zig:109-126` (EnumSet instantiation at `:115`, dup check at `:124` inside the inner extension loop, ahead of the cookie/key_share dispatch).
+  - Regression suite: `tests/security/gap0144_hrr_dup_ext.zig` — covers dup cookie, dup key_share, and a distinct cookie+key_share positive control under `zig build test`.
 - **Cross-ref:** SEC-104 (security ledger pointer entry, also closed in this sweep).
 - **Created:** 2026-04-27
 - **Resolved:** 2026-04-27
@@ -1183,19 +1183,18 @@ All 11 remaining open issues from the third review have been implemented:
 - **Category:** Security
 - **Severity:** Low
 - **Risk Score:** 16 (CWE-345 — Insufficient Verification of Data Authenticity)
-- **Status:** Closed
+- **Status:** Closed 2026-05-02 (commit `b2e58ac`, landed with GAP-0145).
 - **Requirement source:** RFC 8446 §4.4.2 — Certificate entry extensions inherit the §4.2 "no duplicates" rule. Twin of SEC-092 (closed) on EE/SH paths.
-- **Current state (evidence):**
-  - `src/tls13/messages/certificate.zig:217-243` — per-cert entry extension loop dispatches `0x0005` (status_request) and `0x0012` (signed_certificate_timestamp) directly into the entry's `ocsp_response` / `sct_list` slots.
-  - `grep 'EnumSet\|seen\|DuplicateExtension' src/tls13/messages/certificate.zig` → 0 hits.
-  - Effect: a duplicate `status_request` (or `signed_certificate_timestamp`) on a single Certificate entry overwrites the first occurrence (last-wins) instead of being rejected.
-- **Why this is a gap:** RFC 8446 §4.4.2 inherits §4.2's "no duplicates" rule. Last-wins violates that and also weakens the OCSP-stapling / SCT integrity story (a benign cert chain author cannot rely on the first response being honored).
-- **Impact/Risk:** Low — staple/SCT integrity is still ultimately verified upstream, but the parser swallow is a hardening regression.
-- **Recommended fix:** Introduce `var entry_seen = std.EnumSet(ExtensionType).initEmpty();` at the top of the inner per-entry loop in `parseCertificateMessage`; reject on duplicate with `error.DuplicateExtension`.
-- **Acceptance criteria:** Parser rejects duplicate `status_request` and duplicate `signed_certificate_timestamp` per Certificate entry; corpus regression test under `tests/security/`; SEC-094 pointer entry tracks the cross-link.
+- **Resolution:** The per-cert-entry extension loop in `parseCertificateMessage` now tracks seen types via a fixed-size raw-`u16` `seen_extensions` list and rejects the second occurrence with `error.DuplicateExtension`, before dispatching `0x0005` (status_request) / `0x0012` (signed_certificate_timestamp). Raw-`u16` tracking (rather than an `EnumSet`) also rejects duplicate *unknown* entry extensions, closing the GAP-0145 evasion on this path.
+- **Evidence (verified 2026-06-10):**
+  - `src/tls13/messages/certificate.zig:217-234` — `seen_extensions: [64]u16` per Certificate entry; duplicate check returns `error.DuplicateExtension` at `:228-230`; distinct capacity guard (`error.TooManyExtensions`) at `:231-232`.
+- **Why this was a gap:** RFC 8446 §4.4.2 inherits §4.2's "no duplicates" rule. The prior last-wins behavior violated that and weakened the OCSP-stapling / SCT integrity story.
+- **Impact/Risk:** Low — staple/SCT integrity is still ultimately verified upstream, but the parser swallow was a hardening regression now closed.
+- **Acceptance criteria:** Parser rejects duplicate `status_request` and duplicate `signed_certificate_timestamp` per Certificate entry. Met (see evidence above); SEC-094 pointer entry tracks the cross-link.
 - **Labels:** `gap`, `rfc::8446`, `severity::low`, `priority::low`, `type::security`, `cwe::345`
 - **Cross-ref:** SEC-094 (security ledger pointer); twin of SEC-092 (closed)
 - **Created:** 2026-04-27
+- **Resolved:** 2026-05-02
 
 ### GAP-0145: Unknown extensions evade duplicate-extension gates (RFC 8446 §4.2) [CLOSED]
 
@@ -1203,18 +1202,21 @@ All 11 remaining open issues from the third review have been implemented:
 - **Category:** Security
 - **Severity:** Medium
 - **Risk Score:** 16 (CWE-345 — Insufficient Verification of Data Authenticity)
-- **Status:** Closed
+- **Status:** Closed 2026-05-02 (commit `b2e58ac`, "address GAP-0135/SEC-092").
 - **Requirement source:** RFC 8446 §4.2 — "There MUST NOT be more than one extension of the same type in a given extension block."
-- **Current state (evidence):**
-  - `src/tls13/messages/client_hello.zig:374-388` — `std.enums.fromInt` filters out unknown extensions before they are added to the `seen_extensions` `EnumSet`.
-  - `src/tls13/messages/encrypted_extensions.zig:235-238` — Unknown extensions bypass the `seen` check entirely.
-  - `src/tls13/messages/certificate_request.zig:212` — Only checks `seen_signature_algorithms` flag, silently permitting duplicate unknown extensions.
-- **Why this is a gap:** An attacker can inject arbitrary identical *unknown* extensions (e.g., `[0x1234, 0x1234]`) to completely evade the duplicate-extension gates. This violates RFC 8446 §4.2.
-- **Impact/Risk:** Medium — Bypassing extension validation can cause interoperability issues, state-machine confusion, or allow fingerprinting/padding evasion.
-- **Recommended fix:** Replace `std.EnumSet(ExtensionType)` with a bounded array of `u16` or a `std.StaticBitSet(65536)` (if stack size permits) to track raw extension types before converting them to enums.
-- **Acceptance criteria:** Parser rejects duplicate unknown extensions; `tests/security/` regression tests explicitly inject duplicate unknown extensions.
+- **Resolution:** All four handshake extension parsers were switched from `std.EnumSet(ExtensionType)` (which only tracked types that mapped to a known enum variant) to a fixed-size raw-`u16` `seen_extensions` list checked *before* enum mapping. Duplicate extension types — known or unknown — now return `error.DuplicateExtension`; a distinct `error.TooManyExtensions` guard covers the >64-distinct-type capacity case (APPSEC-04) so a legitimately large but duplicate-free block is not mislabeled.
+- **Evidence (verified 2026-06-10):**
+  - `src/tls13/messages/client_hello.zig:359-384` — raw-`u16` `seen_extensions`; dup check returns `error.DuplicateExtension` at `:377-379`, ahead of the `std.enums.fromInt` mapping at `:388`.
+  - `src/tls13/messages/encrypted_extensions.zig:222-245` — dup check at `:239-241`.
+  - `src/tls13/messages/certificate_request.zig:202-219` — dup check at `:213-215`.
+  - `src/tls13/messages/certificate.zig:217-234` — per-entry dup check at `:228-230` (also closes GAP-0143).
+  - HelloRetryRequest loop gated via GAP-0144 at `src/tls13/context/hello_retry.zig:109-126`.
+- **Why this was a gap:** An attacker could inject arbitrary identical *unknown* extensions (e.g., `[0x1234, 0x1234]`) to evade the duplicate-extension gates, violating RFC 8446 §4.2.
+- **Impact/Risk:** Medium — bypassing extension validation can cause interoperability issues, state-machine confusion, or fingerprinting/padding evasion. Now closed.
+- **Acceptance criteria:** Parser rejects duplicate unknown extensions. Met (see evidence above).
 - **Labels:** `gap`, `rfc::8446`, `severity::medium`, `priority::medium`, `type::security`, `cwe::345`
 - **Created:** 2026-05-02
+- **Resolved:** 2026-05-02
 
 ### GAP-0142: RFC 9001 §5.4 Header Protection — formal scope decision missing [OPEN / WISHLIST]
 

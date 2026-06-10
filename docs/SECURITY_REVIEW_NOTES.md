@@ -22,10 +22,29 @@
 ### 2. Manual Deep Dive: Core TLS Handshake Parsers
 
 - Investigated parsing boundaries for duplicate extension processing (`RFC 8446 §4.2`).
-- Discovered an architectural bypass in duplicate extension handling in `client_hello.zig`, `encrypted_extensions.zig`, and `certificate_request.zig`.
-  - **Mechanism:** The codebase utilizes `std.EnumSet(core_types.ExtensionType)` to track seen extensions. However, before registering an extension, the parser attempts to map the `u16` raw type to the `core_types.ExtensionType` enum. For unknown extensions, `std.enums.fromInt` returns `null`, and the parsers skip registering the extension type altogether.
-  - **Result:** An attacker can inject arbitrary identical *unknown* extensions (e.g., `[0x1234, 0x1234]`) to completely evade the duplicate-extension gates. This violates RFC 8446 §4.2.
-- **Action:** Created GitLab issue **SEC-101 (#350)**.
+- Originally flagged an architectural bypass in duplicate extension handling in
+  `client_hello.zig`, `encrypted_extensions.zig`, and `certificate_request.zig`.
+  - **Mechanism (historical):** The parsers used `std.EnumSet(core_types.ExtensionType)` to
+    track seen extensions. Because the raw `u16` type was mapped to the
+    `core_types.ExtensionType` enum *before* registration, unknown extensions
+    (`std.enums.fromInt` returns `null`) were never registered, so identical *unknown*
+    extensions (e.g. `[0x1234, 0x1234]`) evaded the duplicate-extension gate, violating
+    RFC 8446 §4.2.
+  - **Status: RESOLVED.** This is already fixed in the current tree. Commit `b2e58ac`
+    ("feat: introduce handshake scratch arena and address GAP-0135/SEC-092", landing
+    GAP-0145) replaced the bypassable `EnumSet` with a fixed-size raw-`u16` seen-list that
+    rejects duplicates *before* enum mapping, so unknown duplicates are now rejected with
+    `error.DuplicateExtension`. Verified at:
+    - `src/tls13/messages/client_hello.zig:359-384` (raw-`u16` `seen_extensions`, dup check at `:377-379`).
+    - `src/tls13/messages/encrypted_extensions.zig:222-245` (dup check at `:239-241`).
+    - `src/tls13/messages/certificate_request.zig:202-219` (dup check at `:213-215`).
+    - `src/tls13/messages/certificate.zig:217-234` (per Certificate-entry, dup check at `:228-230`).
+    - The HelloRetryRequest extension loop is likewise gated (GAP-0144): `src/tls13/context/hello_retry.zig:109-126`, tested in `tests/security/gap0144_hrr_dup_ext.zig`.
+- **Action (doc reconciliation, 2026-06-10):** Marked RESOLVED with the citations above.
+  - **ID collision note:** The "SEC-101 (#350)" identifier recorded for this finding collides
+    with the already-assigned **SEC-101 (#347)** in `docs/SECURITY_GAP_ANALYSIS.md` (the
+    `parseExtSan` dNSName SAN-truncation drift item, still Open). When re-filing, allocate a
+    distinct unused SEC-* ID (e.g. the next free number) instead of reusing SEC-101.
 
 ### 3. CI/CD & Pipeline Review
 
@@ -36,4 +55,4 @@
 
 ## Conclusion
 
-The repository maintains a very strong security posture with deep coverage of known TLS 1.3 protocol flaws (e.g., timing oracles, HRR downgrade attacks, key exhaustion). The primary finding of this review is a novel RFC compliance and protocol state flaw in the handling of unknown extension types.
+The repository maintains a very strong security posture with deep coverage of known TLS 1.3 protocol flaws (e.g., timing oracles, HRR downgrade attacks, key exhaustion). The unknown-extension duplicate-bypass that was originally the primary finding of this review has since been **RESOLVED** in the current tree by commit `b2e58ac` (GAP-0145), which rejects duplicate extension types — known or unknown — before enum mapping in all four handshake parsers and in the HelloRetryRequest loop. No open code-level findings remain from this review; the only outstanding item is the documentation hygiene note on the SEC-101 ID collision above.
