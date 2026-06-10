@@ -371,6 +371,19 @@ pub fn checkEkuPurpose(eku: ExtKeyUsage, purpose: EkuPurpose) bool {
     };
 }
 
+/// Returns true if the certificate asserts `oid_value` (a policyIdentifier OID
+/// value byte string) in its certificatePolicies, or asserts anyPolicy.
+///
+/// NOTE: this is a single-cert presence check, NOT full RFC 5280 §6.1
+/// policy-tree processing (which is intentionally out of scope).
+pub fn certHasPolicy(cert: *const Certificate, oid_value: []const u8) bool {
+    if (cert.certificate_policies) |cp| {
+        if (cp.hasAnyPolicy()) return true;
+        return cp.has(oid_value);
+    }
+    return false;
+}
+
 /// Name Constraints extension restricting valid subject names.
 ///
 /// Represents the id-ce-nameConstraints extension (OID 2.5.29.30) which
@@ -459,6 +472,67 @@ pub const PolicyConstraints = struct {
     inhibit_policy_mapping: ?u32 = null,
 };
 
+/// Certificate Policies extension (OID 2.5.29.32).
+///
+/// Represents the id-ce-certificatePolicies extension (RFC 5280 §4.2.1.4),
+/// a SEQUENCE OF PolicyInformation. Stores each PolicyInformation's
+/// `policyIdentifier` OID *value* bytes (zero-copy slices into the
+/// certificate DER). The special anyPolicy identifier is {2 5 29 32 0},
+/// whose OID value bytes are `55 1D 20 00`.
+///
+/// ## Design Note
+/// PolicyQualifiers are intentionally ignored — only the policy OIDs are
+/// retained. This is a presence model, not full RFC 5280 §6.1 policy-tree
+/// processing.
+pub const CertificatePolicies = struct {
+    /// policyIdentifier OID value bytes for each PolicyInformation.
+    /// Zero-copy slices into the certificate DER; only the array itself is
+    /// allocator-owned.
+    oids: []const []const u8,
+
+    /// Returns true if anyPolicy ({2 5 29 32 0}, value `55 1D 20 00`) is asserted.
+    pub fn hasAnyPolicy(self: CertificatePolicies) bool {
+        const any = [_]u8{ 0x55, 0x1D, 0x20, 0x00 };
+        for (self.oids) |o| if (std.mem.eql(u8, o, &any)) return true;
+        return false;
+    }
+
+    /// Returns true if `oid_value` (policyIdentifier OID value bytes) is asserted.
+    pub fn has(self: CertificatePolicies, oid_value: []const u8) bool {
+        for (self.oids) |o| if (std.mem.eql(u8, o, oid_value)) return true;
+        return false;
+    }
+};
+
+/// CRL Distribution Points extension (OID 2.5.29.31).
+///
+/// Represents the id-ce-cRLDistributionPoints extension (RFC 5280 §4.2.1.13).
+/// Extracts only `fullName [0]` `uniformResourceIdentifier [6]` URIs; the
+/// `nameRelativeToCRLIssuer [1]` form and non-URI GeneralName forms are not
+/// retained. URIs are zero-copy slices into the certificate DER.
+pub const CrlDistributionPoints = struct {
+    /// Distribution-point URIs (zero-copy slices into the certificate DER).
+    /// Only the array itself is allocator-owned.
+    uris: []const []const u8,
+};
+
+/// Authority Information Access extension (OID 1.3.6.1.5.5.7.1.1).
+///
+/// Represents the id-pe-authorityInfoAccess extension (RFC 5280 §4.2.2.1) —
+/// note this is id-pe (1.3.6.1.5.5.7.1.1), NOT id-ce. Buckets each
+/// AccessDescription's `accessLocation` URI by `accessMethod`:
+/// id-ad-ocsp (1.3.6.1.5.5.7.48.1) and id-ad-caIssuers (1.3.6.1.5.5.7.48.2).
+/// Only the `uniformResourceIdentifier [6]` accessLocation form is retained.
+pub const AuthorityInfoAccess = struct {
+    /// OCSP responder URIs (id-ad-ocsp). Zero-copy slices into the cert DER;
+    /// only the array itself is allocator-owned.
+    ocsp_uris: []const []const u8,
+
+    /// CA issuer URIs (id-ad-caIssuers). Zero-copy slices into the cert DER;
+    /// only the array itself is allocator-owned.
+    ca_issuer_uris: []const []const u8,
+};
+
 /// Parsed X.509 certificate with extracted fields for TLS validation.
 ///
 /// Zero-copy view over a DER-encoded X.509 certificate with parsed extension
@@ -527,6 +601,22 @@ pub const Certificate = struct {
     /// RFC 5280 §4.2.1.11 - Constrains policy mapping and explicit policy requirements
     policy_constraints: ?PolicyConstraints = null,
 
+    /// Certificate Policies extension (asserted policy OIDs).
+    /// RFC 5280 §4.2.1.4 - SEQUENCE OF PolicyInformation
+    certificate_policies: ?CertificatePolicies = null,
+
+    /// CRL Distribution Points extension (CRL fetch URIs).
+    /// RFC 5280 §4.2.1.13 - fullName [0] uniformResourceIdentifier [6]
+    crl_distribution_points: ?CrlDistributionPoints = null,
+
+    /// Authority Information Access extension (OCSP / caIssuers URIs).
+    /// RFC 5280 §4.2.2.1 - id-pe-authorityInfoAccess
+    authority_info_access: ?AuthorityInfoAccess = null,
+
+    /// Inhibit anyPolicy extension (SkipCerts value).
+    /// RFC 5280 §4.2.1.14 - inhibitAnyPolicy ::= SkipCerts (INTEGER)
+    inhibit_any_policy: ?u32 = null,
+
     /// Validity period start (Unix timestamp seconds since 1970-01-01T00:00:00Z).
     /// RFC 5280 §4.1.2.5 - notBefore field
     not_before_unix: i64,
@@ -568,6 +658,16 @@ pub const Certificate = struct {
         }
         if (self.policy_mappings) |pm| {
             if (pm.mappings.len > 0) alloc.free(pm.mappings);
+        }
+        if (self.certificate_policies) |cp| {
+            if (cp.oids.len > 0) alloc.free(cp.oids);
+        }
+        if (self.crl_distribution_points) |dp| {
+            if (dp.uris.len > 0) alloc.free(dp.uris);
+        }
+        if (self.authority_info_access) |aia| {
+            if (aia.ocsp_uris.len > 0) alloc.free(aia.ocsp_uris);
+            if (aia.ca_issuer_uris.len > 0) alloc.free(aia.ca_issuer_uris);
         }
     }
 };
@@ -844,6 +944,128 @@ fn parseExtNameConstraints(alloc: std.mem.Allocator, inner: []const u8) !?NameCo
         };
     }
     return null;
+}
+
+/// Parse the certificatePolicies extension value (OID 2.5.29.32).
+///
+/// RFC 5280 §4.2.1.4: certificatePolicies ::= SEQUENCE OF PolicyInformation,
+/// PolicyInformation ::= SEQUENCE { policyIdentifier OID, policyQualifiers ... OPTIONAL }.
+/// Collects each policyIdentifier OID *value* bytes (zero-copy into `inner`),
+/// ignoring policyQualifiers. Returns null when no policies are present.
+fn parseExtCertificatePolicies(alloc: std.mem.Allocator, inner: []const u8) !?CertificatePolicies {
+    var d = asn1.Decoder.init(inner);
+    const seq = d.readSequence() catch return null; // SEQUENCE OF PolicyInformation
+    var it = asn1.Decoder.init(seq);
+    var buf: [32][]const u8 = undefined;
+    var n: usize = 0;
+    while (true) {
+        const pinfo = it.readSequence() catch break; // PolicyInformation SEQUENCE
+        var pd = asn1.Decoder.init(pinfo);
+        const oid = pd.readOID() catch continue; // policyIdentifier
+        if (n < buf.len) {
+            buf[n] = oid;
+            n += 1;
+        }
+        // policyQualifiers OPTIONAL -> intentionally ignored.
+    }
+    if (n == 0) return null;
+    const heap = try alloc.alloc([]const u8, n);
+    @memcpy(heap, buf[0..n]);
+    return CertificatePolicies{ .oids = heap };
+}
+
+/// Parse the cRLDistributionPoints extension value (OID 2.5.29.31).
+///
+/// RFC 5280 §4.2.1.13: SEQUENCE OF DistributionPoint, each
+/// DistributionPoint ::= SEQUENCE { distributionPoint [0] DistributionPointName OPTIONAL, ... }
+/// where DistributionPointName ::= CHOICE { fullName [0] GeneralNames, ... }.
+/// Extracts only fullName [0] uniformResourceIdentifier [6] URIs (zero-copy
+/// into `inner`). Returns null when no URIs are found.
+fn parseExtCrlDistributionPoints(alloc: std.mem.Allocator, inner: []const u8) !?CrlDistributionPoints {
+    var d = asn1.Decoder.init(inner);
+    const seq = d.readSequence() catch return null; // SEQUENCE OF DistributionPoint
+    var it = asn1.Decoder.init(seq);
+    var buf: [32][]const u8 = undefined;
+    var n: usize = 0;
+    while (true) {
+        const dp = it.readTLV() catch break; // DistributionPoint SEQUENCE (tag 0x30)
+        var dpd = asn1.Decoder.init(dp.val);
+        const dp0 = dpd.readTLV() catch continue; // distributionPoint [0] (0xA0) OPTIONAL
+        if (dp0.tag != 0xA0) continue;
+        var nd = asn1.Decoder.init(dp0.val); // DistributionPointName CHOICE
+        const fullname = nd.readTLV() catch continue;
+        if (fullname.tag != 0xA0) continue; // fullName [0]; nameRelativeToCRLIssuer [1] unsupported
+        var gd = asn1.Decoder.init(fullname.val); // GeneralNames
+        while (true) {
+            const gn = gd.readTLV() catch break;
+            if (gn.tag == 0x86 and n < buf.len) { // [6] uniformResourceIdentifier
+                buf[n] = gn.val;
+                n += 1;
+            }
+        }
+    }
+    if (n == 0) return null;
+    const heap = try alloc.alloc([]const u8, n);
+    @memcpy(heap, buf[0..n]);
+    return CrlDistributionPoints{ .uris = heap };
+}
+
+/// Parse the authorityInfoAccess extension value (OID 1.3.6.1.5.5.7.1.1).
+///
+/// RFC 5280 §4.2.2.1: SEQUENCE OF AccessDescription, each
+/// AccessDescription ::= SEQUENCE { accessMethod OID, accessLocation GeneralName }.
+/// Buckets accessLocation [6] URIs by accessMethod (id-ad-ocsp / id-ad-caIssuers),
+/// zero-copy into `inner`. Returns null when neither bucket has any URI.
+fn parseExtAuthorityInfoAccess(alloc: std.mem.Allocator, inner: []const u8) !?AuthorityInfoAccess {
+    const oid_ocsp = [_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01 }; // 1.3.6.1.5.5.7.48.1
+    const oid_caissuers = [_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x02 }; // 1.3.6.1.5.5.7.48.2
+    var d = asn1.Decoder.init(inner);
+    const seq = d.readSequence() catch return null; // SEQUENCE OF AccessDescription
+    var it = asn1.Decoder.init(seq);
+    var ob: [16][]const u8 = undefined;
+    var on: usize = 0;
+    var cb: [16][]const u8 = undefined;
+    var cn: usize = 0;
+    while (true) {
+        const ad = it.readSequence() catch break; // AccessDescription SEQUENCE
+        var add = asn1.Decoder.init(ad);
+        const method = add.readOID() catch continue; // accessMethod
+        const loc = add.readTLV() catch continue; // accessLocation GeneralName
+        if (loc.tag == 0x86) { // uniformResourceIdentifier
+            if (std.mem.eql(u8, method, &oid_ocsp) and on < ob.len) {
+                ob[on] = loc.val;
+                on += 1;
+            } else if (std.mem.eql(u8, method, &oid_caissuers) and cn < cb.len) {
+                cb[cn] = loc.val;
+                cn += 1;
+            }
+        }
+    }
+    if (on == 0 and cn == 0) return null;
+    var oheap: []const []const u8 = &[_][]const u8{};
+    if (on > 0) {
+        const h = try alloc.alloc([]const u8, on);
+        @memcpy(h, ob[0..on]);
+        oheap = h;
+    }
+    errdefer if (on > 0) alloc.free(oheap);
+    var cheap: []const []const u8 = &[_][]const u8{};
+    if (cn > 0) {
+        const h = try alloc.alloc([]const u8, cn);
+        @memcpy(h, cb[0..cn]);
+        cheap = h;
+    }
+    return AuthorityInfoAccess{ .ocsp_uris = oheap, .ca_issuer_uris = cheap };
+}
+
+/// Parse the inhibitAnyPolicy extension value (OID 2.5.29.54).
+///
+/// RFC 5280 §4.2.1.14: inhibitAnyPolicy ::= SkipCerts (INTEGER). Returns the
+/// SkipCerts value (clamped to u32) or null on a malformed/oversized integer.
+fn parseExtInhibitAnyPolicy(inner: []const u8) ?u32 {
+    var d = asn1.Decoder.init(inner);
+    const v = d.readInteger() catch return null;
+    return std.math.cast(u32, v);
 }
 
 /// Parse Policy Constraints (OID 2.5.29.36) and Policy Mappings (OID 2.5.29.33).
@@ -1149,6 +1371,10 @@ const ParsedExtensions = struct {
     name_constraints: ?NameConstraints,
     policy_mappings: ?PolicyMappings,
     policy_constraints: ?PolicyConstraints,
+    certificate_policies: ?CertificatePolicies,
+    crl_distribution_points: ?CrlDistributionPoints,
+    authority_info_access: ?AuthorityInfoAccess,
+    inhibit_any_policy: ?u32,
 };
 
 /// Parse the optional Extensions block ([3] EXPLICIT SEQUENCE OF Extension)
@@ -1180,6 +1406,10 @@ fn parseExtensionsBlock(alloc: std.mem.Allocator, ti: *asn1.Decoder) !ParsedExte
         .name_constraints = null,
         .policy_mappings = null,
         .policy_constraints = null,
+        .certificate_policies = null,
+        .crl_distribution_points = null,
+        .authority_info_access = null,
+        .inhibit_any_policy = null,
     };
 
     // The dup-detection gate guarantees these slots are written at most
@@ -1195,6 +1425,16 @@ fn parseExtensionsBlock(alloc: std.mem.Allocator, ti: *asn1.Decoder) !ParsedExte
     };
     errdefer if (out.policy_mappings) |pm| {
         if (pm.mappings.len > 0) alloc.free(pm.mappings);
+    };
+    errdefer if (out.certificate_policies) |cp| {
+        if (cp.oids.len > 0) alloc.free(cp.oids);
+    };
+    errdefer if (out.crl_distribution_points) |dp| {
+        if (dp.uris.len > 0) alloc.free(dp.uris);
+    };
+    errdefer if (out.authority_info_access) |aia| {
+        if (aia.ocsp_uris.len > 0) alloc.free(aia.ocsp_uris);
+        if (aia.ca_issuer_uris.len > 0) alloc.free(aia.ca_issuer_uris);
     };
 
     // SEC-079: track every OID encountered in this Extensions block to
@@ -1291,8 +1531,24 @@ fn parseExtensionsBlock(alloc: std.mem.Allocator, ti: *asn1.Decoder) !ParsedExte
                         out.policy_constraints = parseExtPolicyConstraints(inner);
                         handled = true;
                     },
+                    0x20 => {
+                        out.certificate_policies = try parseExtCertificatePolicies(alloc, inner);
+                        handled = true;
+                    },
+                    0x1f => {
+                        out.crl_distribution_points = try parseExtCrlDistributionPoints(alloc, inner);
+                        handled = true;
+                    },
+                    0x36 => {
+                        out.inhibit_any_policy = parseExtInhibitAnyPolicy(inner);
+                        handled = true;
+                    },
                     else => {},
                 }
+            } else if (oid.len == 8 and std.mem.eql(u8, oid, &[_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x01 })) {
+                // id-pe-authorityInfoAccess (1.3.6.1.5.5.7.1.1) — id-pe, not id-ce.
+                out.authority_info_access = try parseExtAuthorityInfoAccess(alloc, inner);
+                handled = true;
             }
 
             // SEC-075: RFC 5280 §4.2 MUST reject critical unknown extensions.
@@ -1371,6 +1627,10 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
         .name_constraints = ext.name_constraints,
         .policy_mappings = ext.policy_mappings,
         .policy_constraints = ext.policy_constraints,
+        .certificate_policies = ext.certificate_policies,
+        .crl_distribution_points = ext.crl_distribution_points,
+        .authority_info_access = ext.authority_info_access,
+        .inhibit_any_policy = ext.inhibit_any_policy,
         .not_before_unix = iv_info.not_before_unix,
         .not_after_unix = iv_info.not_after_unix,
         .spki = spki_bytes,
@@ -2520,4 +2780,151 @@ test "SEC-079: parseExtensionsBlock accepts distinct extensions (regression guar
     if (parsed.policy_mappings) |pm| {
         if (pm.mappings.len > 0) alloc.free(pm.mappings);
     }
+}
+
+// ============================================================================
+// RFC 5280 extension parser tests: certificatePolicies (§4.2.1.4),
+// cRLDistributionPoints (§4.2.1.13), authorityInfoAccess (§4.2.2.1),
+// inhibitAnyPolicy (§4.2.1.14). Hand-built DER fixtures; the testing
+// allocator asserts no leaks across the heap-array ownership path.
+// ============================================================================
+
+test "parseExtCertificatePolicies: extracts policy OIDs incl anyPolicy" {
+    const a = std.testing.allocator;
+    // SEQUENCE {
+    //   PolicyInformation { OID anyPolicy 2.5.29.32.0 = 55 1D 20 00 },
+    //   PolicyInformation { OID 1.3.6.1.4.1.99999.1 = 2B 06 01 04 01 86 8D 1F 01 }
+    // }
+    // zig fmt: off
+    const inner = [_]u8{
+        0x30, 0x15,
+        0x30, 0x06, 0x06, 0x04, 0x55, 0x1D, 0x20, 0x00,
+        0x30, 0x0B, 0x06, 0x09, 0x2B, 0x06, 0x01, 0x04, 0x01, 0x86, 0x8D, 0x1F, 0x01,
+    };
+    // zig fmt: on
+    const cp = (try parseExtCertificatePolicies(a, &inner)).?;
+    defer a.free(cp.oids);
+    try std.testing.expectEqual(@as(usize, 2), cp.oids.len);
+    try std.testing.expect(cp.hasAnyPolicy());
+    const custom = [_]u8{ 0x2B, 0x06, 0x01, 0x04, 0x01, 0x86, 0x8D, 0x1F, 0x01 };
+    try std.testing.expect(cp.has(&custom));
+    const absent = [_]u8{ 0x2A, 0x86, 0x48 };
+    try std.testing.expect(!cp.has(&absent));
+}
+
+test "parseExtCrlDistributionPoints: extracts fullName [0] [6] URI" {
+    const a = std.testing.allocator;
+    // SEQUENCE { DistributionPoint { [0] { [0] { [6] "http://crl.example/a.crl" } } } }
+    // zig fmt: off
+    const inner = [_]u8{
+        0x30, 0x20, 0x30, 0x1E, 0xA0, 0x1C, 0xA0, 0x1A, 0x86, 0x18,
+        0x68, 0x74, 0x74, 0x70, 0x3A, 0x2F, 0x2F, 0x63, 0x72, 0x6C, 0x2E, 0x65,
+        0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, 0x2F, 0x61, 0x2E, 0x63, 0x72, 0x6C,
+    };
+    // zig fmt: on
+    const dp = (try parseExtCrlDistributionPoints(a, &inner)).?;
+    defer a.free(dp.uris);
+    try std.testing.expectEqual(@as(usize, 1), dp.uris.len);
+    try std.testing.expectEqualStrings("http://crl.example/a.crl", dp.uris[0]);
+}
+
+test "parseExtAuthorityInfoAccess: buckets OCSP and caIssuers URIs" {
+    const a = std.testing.allocator;
+    // SEQUENCE {
+    //   AccessDescription { OID id-ad-ocsp, [6] "http://ocsp.example/" },
+    //   AccessDescription { OID id-ad-caIssuers, [6] "http://ca.example/x.der" }
+    // }
+    // zig fmt: off
+    const inner = [_]u8{
+        0x30, 0x47,
+        0x30, 0x20, 0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01,
+        0x86, 0x14, 0x68, 0x74, 0x74, 0x70, 0x3A, 0x2F, 0x2F, 0x6F, 0x63, 0x73,
+        0x70, 0x2E, 0x65, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, 0x2F,
+        0x30, 0x23, 0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x02,
+        0x86, 0x17, 0x68, 0x74, 0x74, 0x70, 0x3A, 0x2F, 0x2F, 0x63, 0x61, 0x2E,
+        0x65, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, 0x2F, 0x78, 0x2E, 0x64, 0x65, 0x72,
+    };
+    // zig fmt: on
+    const aia = (try parseExtAuthorityInfoAccess(a, &inner)).?;
+    defer {
+        if (aia.ocsp_uris.len > 0) a.free(aia.ocsp_uris);
+        if (aia.ca_issuer_uris.len > 0) a.free(aia.ca_issuer_uris);
+    }
+    try std.testing.expectEqual(@as(usize, 1), aia.ocsp_uris.len);
+    try std.testing.expectEqual(@as(usize, 1), aia.ca_issuer_uris.len);
+    try std.testing.expectEqualStrings("http://ocsp.example/", aia.ocsp_uris[0]);
+    try std.testing.expectEqualStrings("http://ca.example/x.der", aia.ca_issuer_uris[0]);
+}
+
+test "parseExtInhibitAnyPolicy: decodes SkipCerts INTEGER" {
+    const zero = [_]u8{ 0x02, 0x01, 0x00 };
+    const five = [_]u8{ 0x02, 0x01, 0x05 };
+    try std.testing.expectEqual(@as(?u32, 0), parseExtInhibitAnyPolicy(&zero));
+    try std.testing.expectEqual(@as(?u32, 5), parseExtInhibitAnyPolicy(&five));
+}
+
+test "parseExtensionsBlock: dispatches certificatePolicies, CRLDP, AIA, inhibitAnyPolicy" {
+    const alloc = std.testing.allocator;
+
+    // certificatePolicies: SEQ{ PolicyInformation{ OID anyPolicy } }
+    const cp_value = [_]u8{ 0x30, 0x08, 0x30, 0x06, 0x06, 0x04, 0x55, 0x1D, 0x20, 0x00 };
+    const id_ce_certpol = [_]u8{ 0x55, 0x1d, 0x20 };
+
+    // cRLDistributionPoints: SEQ{ DP{ [0]{ [0]{ [6] "http://c/a" } } } }
+    const crldp_value = [_]u8{
+        0x30, 0x12, 0x30, 0x10, 0xA0, 0x0E, 0xA0, 0x0C, 0x86, 0x0A,
+        'h',  't',  't',  'p',  ':',  '/',  '/',  'c',  '/',  'a',
+    };
+    const id_ce_crldp = [_]u8{ 0x55, 0x1d, 0x1f };
+
+    // authorityInfoAccess (id-pe): SEQ{ AccessDescription{ OID id-ad-ocsp, [6] "http://o" } }
+    const aia_value = [_]u8{
+        0x30, 0x18, 0x30, 0x16, 0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01,
+        0x86, 0x0A, 'h',  't',  't',  'p',  ':',  '/',  '/',  'o',  'c',  's',
+    };
+    const id_pe_aia = [_]u8{ 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x01 };
+
+    // inhibitAnyPolicy: SkipCerts INTEGER 3
+    const inhibit_value = [_]u8{ 0x02, 0x01, 0x03 };
+    const id_ce_inhibit = [_]u8{ 0x55, 0x1d, 0x36 };
+
+    const e_cp = try buildExtension(alloc, &id_ce_certpol, &cp_value);
+    defer alloc.free(e_cp);
+    const e_crldp = try buildExtension(alloc, &id_ce_crldp, &crldp_value);
+    defer alloc.free(e_crldp);
+    const e_aia = try buildExtension(alloc, &id_pe_aia, &aia_value);
+    defer alloc.free(e_aia);
+    const e_inhibit = try buildExtension(alloc, &id_ce_inhibit, &inhibit_value);
+    defer alloc.free(e_inhibit);
+
+    var entries = std.ArrayList(u8).empty;
+    defer entries.deinit(alloc);
+    try entries.appendSlice(alloc, e_cp);
+    try entries.appendSlice(alloc, e_crldp);
+    try entries.appendSlice(alloc, e_aia);
+    try entries.appendSlice(alloc, e_inhibit);
+
+    const block = try buildExtensionsBlock(alloc, entries.items);
+    defer alloc.free(block);
+
+    var ti = asn1.Decoder.init(block);
+    const parsed = try parseExtensionsBlock(alloc, &ti);
+    defer {
+        if (parsed.certificate_policies) |cp| if (cp.oids.len > 0) alloc.free(cp.oids);
+        if (parsed.crl_distribution_points) |dp| if (dp.uris.len > 0) alloc.free(dp.uris);
+        if (parsed.authority_info_access) |aia| {
+            if (aia.ocsp_uris.len > 0) alloc.free(aia.ocsp_uris);
+            if (aia.ca_issuer_uris.len > 0) alloc.free(aia.ca_issuer_uris);
+        }
+    }
+
+    try std.testing.expect(parsed.certificate_policies != null);
+    try std.testing.expect(parsed.certificate_policies.?.hasAnyPolicy());
+    try std.testing.expect(parsed.crl_distribution_points != null);
+    try std.testing.expectEqual(@as(usize, 1), parsed.crl_distribution_points.?.uris.len);
+    try std.testing.expectEqualStrings("http://c/a", parsed.crl_distribution_points.?.uris[0]);
+    try std.testing.expect(parsed.authority_info_access != null);
+    try std.testing.expectEqual(@as(usize, 1), parsed.authority_info_access.?.ocsp_uris.len);
+    try std.testing.expectEqualStrings("http://ocs", parsed.authority_info_access.?.ocsp_uris[0]);
+    try std.testing.expectEqual(@as(?u32, 3), parsed.inhibit_any_policy);
 }
