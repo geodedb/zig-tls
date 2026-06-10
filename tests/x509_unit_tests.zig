@@ -688,16 +688,19 @@ test "matchesNameConstraint - subdomain constraint with leading dot" {
     try testing.expect(!x509.matchesNameConstraint("www.example.org", ".example.com"));
 }
 
-test "matchesNameConstraint - exact match constraint" {
-    // Constraint "example.com" requires exact match
+test "matchesNameConstraint - dotless constraint is a subtree (apex + subdomains)" {
+    // RFC 5280 §4.2.1.10: a dotless dNSName constraint "example.com" matches the
+    // apex AND any name with labels added to the left across a dot boundary.
     try testing.expect(x509.matchesNameConstraint("example.com", "example.com"));
 
-    // Does NOT match subdomains
-    try testing.expect(!x509.matchesNameConstraint("www.example.com", "example.com"));
-    try testing.expect(!x509.matchesNameConstraint("api.example.com", "example.com"));
+    // Matches subdomains (RFC 5280 subtree semantics)
+    try testing.expect(x509.matchesNameConstraint("www.example.com", "example.com"));
+    try testing.expect(x509.matchesNameConstraint("api.example.com", "example.com"));
 
     // Does NOT match different domains
     try testing.expect(!x509.matchesNameConstraint("example.org", "example.com"));
+    // Does NOT match a suffix without a dot boundary
+    try testing.expect(!x509.matchesNameConstraint("notexample.com", "example.com"));
 }
 
 test "checkNameConstraints - permitted subtrees only" {
@@ -760,17 +763,20 @@ test "checkNameConstraints - no constraints (everything allowed)" {
     try testing.expect(x509.checkNameConstraints("foo.bar.baz", constraints));
 }
 
-test "checkNameConstraints - exact match in permitted" {
+test "checkNameConstraints - dotless permitted subtree (apex + subdomains)" {
     const constraints = x509.NameConstraints{
-        .permitted_dns = &.{"example.com"}, // No leading dot = exact match
+        .permitted_dns = &.{"example.com"}, // No leading dot = subtree (RFC 5280 §4.2.1.10)
         .excluded_dns = &.{},
     };
 
-    // Exact match should pass
+    // Apex should pass
     try testing.expect(x509.checkNameConstraints("example.com", constraints));
 
-    // Subdomains should fail
-    try testing.expect(!x509.checkNameConstraints("www.example.com", constraints));
+    // Subdomains should pass (RFC 5280 subtree semantics)
+    try testing.expect(x509.checkNameConstraints("www.example.com", constraints));
+
+    // Unrelated suffix without a dot boundary should fail
+    try testing.expect(!x509.checkNameConstraints("notexample.com", constraints));
 }
 
 // ============================================================================
@@ -840,6 +846,35 @@ test "SEC-033: matchesNameConstraint still rejects non-matching" {
     // Case-insensitive matching should not cause false positives
     try testing.expect(!x509.matchesNameConstraint("www.other.com", ".example.com"));
     try testing.expect(!x509.matchesNameConstraint("OTHER.COM", "example.com"));
+}
+
+// ============================================================================
+// RFC 5280 §4.2.1.10: dotless dNSName constraint = subtree (apex + subdomains)
+// ============================================================================
+
+test "RFC 5280 §4.2.1.10: dotless dNSName constraint matches apex and subdomains" {
+    // apex
+    try std.testing.expect(x509.matchesNameConstraint("example.com", "example.com"));
+    // subdomain (THE BUG: currently false, must become true)
+    try std.testing.expect(x509.matchesNameConstraint("host.example.com", "example.com"));
+    try std.testing.expect(x509.matchesNameConstraint("a.b.example.com", "example.com"));
+    // NOT a suffix-without-dot-boundary
+    try std.testing.expect(!x509.matchesNameConstraint("notexample.com", "example.com"));
+    // NOT a different domain that merely contains the constraint
+    try std.testing.expect(!x509.matchesNameConstraint("example.com.evil.test", "example.com"));
+}
+
+test "RFC 5280 §4.2.1.10: leading-dot constraint still excludes the apex (unchanged)" {
+    try std.testing.expect(x509.matchesNameConstraint("host.example.com", ".example.com"));
+    try std.testing.expect(!x509.matchesNameConstraint("example.com", ".example.com"));
+    try std.testing.expect(!x509.matchesNameConstraint("evil.test", ".example.com"));
+}
+
+test "RFC 5280 §4.2.1.10: dotless EXCLUDED subtree rejects subdomains (no bypass)" {
+    const nc = x509.NameConstraints{ .permitted_dns = &.{}, .excluded_dns = &.{"example.com"} };
+    try std.testing.expect(!x509.checkNameConstraints("evil.example.com", nc)); // excluded → false
+    try std.testing.expect(!x509.checkNameConstraints("example.com", nc)); // excluded apex → false
+    try std.testing.expect(x509.checkNameConstraints("other.test", nc)); // unrelated → allowed
 }
 
 // ============================================================================

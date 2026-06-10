@@ -1477,8 +1477,9 @@ fn wildcardMatch(host: []const u8, pattern: []const u8) bool {
 /// ```zig
 /// matchesNameConstraint("www.example.com", ".example.com") // true
 /// matchesNameConstraint("example.com", ".example.com")     // false (no subdomain)
-/// matchesNameConstraint("example.com", "example.com")      // true (exact match)
-/// matchesNameConstraint("sub.example.com", "example.com")  // false (exact match required)
+/// matchesNameConstraint("example.com", "example.com")      // true (apex)
+/// matchesNameConstraint("sub.example.com", "example.com")  // true (subdomain, RFC 5280 subtree)
+/// matchesNameConstraint("notexample.com", "example.com")   // false (no dot boundary)
 /// ```
 pub fn matchesNameConstraint(name: []const u8, constraint: []const u8) bool {
     // Constraint with leading dot: subdomain matching
@@ -1491,8 +1492,17 @@ pub fn matchesNameConstraint(name: []const u8, constraint: []const u8) bool {
         const suffix = name[name.len - constraint.len ..];
         return eqlAsciiCI(suffix, constraint);
     } else {
-        // Constraint without leading dot: exact match required (case-insensitive)
-        return eqlAsciiCI(name, constraint);
+        // RFC 5280 §4.2.1.10: dotless dNSName constraint matches the apex and
+        // any subdomain (label added to the left across a dot boundary), but
+        // NOT a name that merely shares a suffix without a dot boundary
+        // (e.g. "notexample.com" vs "example.com").
+        if (constraint.len == 0) return true; // empty constraint matches all names (RFC 5280)
+        if (eqlAsciiCI(name, constraint)) return true; // apex
+        if (name.len > constraint.len + 1 and name[name.len - constraint.len - 1] == '.') {
+            const suffix = name[name.len - constraint.len ..];
+            return eqlAsciiCI(suffix, constraint);
+        }
+        return false;
     }
 }
 
