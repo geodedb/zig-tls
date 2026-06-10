@@ -84,3 +84,54 @@ test "crl conformance - revoked serial matches OpenSSL (0x1000)" {
     const serial_0x1000 = [_]u8{ 0x10, 0x00 };
     try testing.expect(cl.isRevoked(&serial_0x1000));
 }
+
+test "crl conformance - CRL issuer must match cert issuer (CrlIssuerMismatch, F1)" {
+    // F1 confused-deputy (RFC 5280 §6.3.3): a validly-signed CRL from one CA must
+    // NOT be applied to a certificate issued by a different CA. Here `other` is
+    // test_certs.leaf (issuer CN=Test Intermediate CA), whose issuer Name differs
+    // from the CRL's issuer (CN=CRL Test CA). Even though we pass the CRL's true
+    // signer `ca` as the key, the issuer-Name binding must fail closed first.
+    const a = testing.allocator;
+    var cl = try crl.CertificateList.parse(a, test_certs.crl_with_revoked);
+    defer cl.deinit(a);
+    var ca = try x509.parseCert(a, test_certs.crl_ca);
+    defer ca.deinit(a);
+    var other = try x509.parseCert(a, test_certs.leaf); // issued by a DIFFERENT CA
+    defer other.deinit(a);
+    try testing.expectError(
+        crl.CheckError.CrlIssuerMismatch,
+        crl.checkRevocation(a, &other, &cl, &ca, NOW),
+    );
+}
+
+test "crl conformance - matching cert issuer passes the F1 binding (still revoked)" {
+    // Positive control for F1: crl_leaf IS issued by crl_ca, so the issuer-Name
+    // binding holds and the existing revoked outcome is preserved.
+    const a = testing.allocator;
+    var cl = try crl.CertificateList.parse(a, test_certs.crl_with_revoked);
+    defer cl.deinit(a);
+    var ca = try x509.parseCert(a, test_certs.crl_ca);
+    defer ca.deinit(a);
+    var leaf = try x509.parseCert(a, test_certs.crl_leaf);
+    defer leaf.deinit(a);
+    try testing.expectEqual(
+        crl.RevocationStatus.revoked,
+        try crl.checkRevocation(a, &leaf, &cl, &ca, NOW),
+    );
+}
+
+test "crl conformance - now past nextUpdate yields CrlExpired (F2)" {
+    // F2: a CRL whose nextUpdate has passed must be rejected as expired.
+    // crl_with_revoked's nextUpdate is ~2036; 2_200_000_000 (~2039) is past it.
+    const a = testing.allocator;
+    var cl = try crl.CertificateList.parse(a, test_certs.crl_with_revoked);
+    defer cl.deinit(a);
+    var ca = try x509.parseCert(a, test_certs.crl_ca);
+    defer ca.deinit(a);
+    var leaf = try x509.parseCert(a, test_certs.crl_leaf);
+    defer leaf.deinit(a);
+    try testing.expectError(
+        crl.CheckError.CrlExpired,
+        crl.checkRevocation(a, &leaf, &cl, &ca, 2_200_000_000),
+    );
+}

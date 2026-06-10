@@ -194,9 +194,9 @@ pub const CertificateList = struct {
     }
 
     /// Returns true if `serial` (raw INTEGER content bytes) is listed as revoked.
-    /// Serials are compared after stripping a single DER sign byte so that the
-    /// caller's `cert.serial_number` and the CRL entry's serial match regardless
-    /// of a leading 0x00.
+    /// Serials are compared after stripping ALL leading 0x00 DER sign/padding
+    /// bytes so that the caller's `cert.serial_number` and the CRL entry's serial
+    /// match regardless of non-minimal encodings (consistent with OCSP).
     pub fn isRevoked(self: CertificateList, serial: []const u8) bool {
         const want = normalizeSerial(serial);
         for (self.revoked) |r| {
@@ -233,11 +233,15 @@ fn parseRevoked(alloc: std.mem.Allocator, seq_content: []const u8, out: *std.Arr
     }
 }
 
-/// Strip a single leading 0x00 DER sign byte from an INTEGER content slice so
-/// that two encodings of the same serial compare equal.
+/// Strip ALL leading 0x00 DER sign/padding bytes from an INTEGER content slice
+/// (keeping at least one byte so serial 0 is preserved) so that two encodings of
+/// the same serial compare equal. Mirrors `ocsp.normalizeInteger` exactly so the
+/// CRL and OCSP revocation engines never disagree on a non-minimal serial
+/// (CWE-1025); stripping only one zero would let a revoked serial be MISSED.
 fn normalizeSerial(s: []const u8) []const u8 {
-    if (s.len > 1 and s[0] == 0x00) return s[1..];
-    return s;
+    var i: usize = 0;
+    while (i + 1 < s.len and s[i] == 0x00) i += 1;
+    return s[i..];
 }
 
 /// True if `tag` is a DER Time: UTCTime (0x17) or GeneralizedTime (0x18).
@@ -257,13 +261,29 @@ pub fn verifySignedBy(alloc: std.mem.Allocator, cl: *const CertificateList, issu
 pub const RevocationStatus = enum { good, revoked };
 
 /// Errors that block a revocation decision.
-pub const CheckError = error{ CrlBadSignature, CrlExpired };
+pub const CheckError = error{ CrlBadSignature, CrlExpired, CrlIssuerMismatch, CrlStale };
+
+/// Maximum tolerated clock skew when judging a CRL's `thisUpdate` to be
+/// implausibly future-dated (RFC 5280 §5.1.2.4). 5 minutes.
+const max_clock_skew_secs: i64 = 300;
 
 /// Check a cert against a PROVIDED CRL.
 ///
-/// 1. Verify the CRL is signed by `issuer` (else `CrlBadSignature`).
-/// 2. Reject CRLs past their `nextUpdate` at `now_unix` (else `CrlExpired`).
-/// 3. Return `.revoked` if the cert serial is listed, else `.good`.
+/// Decision order is strictly fail-closed:
+///   1. Issuer-Name binding (RFC 5280 §6.3.3): the CRL's issuer `Name` MUST
+///      equal the certificate's issuer `Name`; otherwise `CrlIssuerMismatch`.
+///      This prevents a confused-deputy bypass where a validly-signed CRL from
+///      one trusted CA is applied to a certificate issued by a different CA
+///      (CWE-441 / CWE-863).
+///   2. Signature: the CRL MUST be signed by `issuer` (else `CrlBadSignature`).
+///   3. Freshness (RFC 5280 §5.1.2.4-5):
+///        - reject a `thisUpdate` more than `max_clock_skew_secs` in the future
+///          (`CrlStale`);
+///        - if `nextUpdate` is present, reject `now_unix > nextUpdate`
+///          (`CrlExpired`);
+///        - if `nextUpdate` is ABSENT, the CRL's staleness cannot be bounded, so
+///          it is rejected as `CrlStale` rather than trusted with unbounded age.
+///   4. Status: return `.revoked` if the cert serial is listed, else `.good`.
 ///
 /// Network fetching of CRLs (via the cert's CRLDistributionPoints) is
 /// intentionally NOT performed here — that is the application / QUIC layer's
@@ -276,10 +296,23 @@ pub fn checkRevocation(
     issuer: *const x509.Certificate,
     now_unix: i64,
 ) CheckError!RevocationStatus {
+    // RFC 5280 §6.3.3: the CRL applies only when its issuer Name matches the
+    // certificate's issuer Name. Bind first, fail closed (CWE-441/CWE-863).
+    if (!std.mem.eql(u8, cl.issuer_der, cert.issuer_der)) return CheckError.CrlIssuerMismatch;
+
     if (!verifySignedBy(alloc, cl, issuer)) return CheckError.CrlBadSignature;
+
+    // Freshness. Reject implausibly future-dated CRLs (clock-skew tolerant).
+    if (cl.this_update_unix > now_unix + max_clock_skew_secs) return CheckError.CrlStale;
     if (cl.next_update_unix) |nu| {
         if (now_unix > nu) return CheckError.CrlExpired;
+    } else {
+        // RFC 5280 §5.1.2.5 makes nextUpdate OPTIONAL; without it we cannot bound
+        // staleness, so treat the CRL as stale (fail-closed) rather than trusting
+        // an unbounded-age list.
+        return CheckError.CrlStale;
     }
+
     return if (cl.isRevoked(cert.serial_number)) .revoked else .good;
 }
 
@@ -290,11 +323,26 @@ pub fn checkRevocation(
 const testing = std.testing;
 const test_certs = @import("test_certs");
 
-test "normalizeSerial strips a single leading zero sign byte" {
+test "normalizeSerial strips ALL leading zero sign bytes (matches OCSP)" {
     try testing.expectEqualSlices(u8, &[_]u8{ 0x10, 0x00 }, normalizeSerial(&[_]u8{ 0x10, 0x00 }));
     try testing.expectEqualSlices(u8, &[_]u8{ 0xFF, 0x01 }, normalizeSerial(&[_]u8{ 0x00, 0xFF, 0x01 }));
     // A lone 0x00 (serial == 0) is preserved.
     try testing.expectEqualSlices(u8, &[_]u8{0x00}, normalizeSerial(&[_]u8{0x00}));
+    // F3: non-minimal encodings with >=2 leading zeros must be fully stripped,
+    // matching ocsp.normalizeInteger so the two revocation engines agree.
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x10, 0x00 }, normalizeSerial(&[_]u8{ 0x00, 0x00, 0x10, 0x00 }));
+    try testing.expectEqualSlices(u8, &[_]u8{0x00}, normalizeSerial(&[_]u8{ 0x00, 0x00, 0x00 })); // serial 0 preserved
+    try testing.expectEqualSlices(u8, &[_]u8{0xFF}, normalizeSerial(&[_]u8{ 0x00, 0xFF }));
+}
+
+test "isRevoked matches across non-minimal serial encodings (F3)" {
+    const a = testing.allocator;
+    var cl = try CertificateList.parse(a, test_certs.crl_with_revoked);
+    defer cl.deinit(a);
+    // The CRL lists serial 0x1000 minimally; a cert serial padded with extra
+    // leading zeros must still be recognised as revoked.
+    const padded = [_]u8{ 0x00, 0x00, 0x10, 0x00 };
+    try testing.expect(cl.isRevoked(&padded));
 }
 
 test "crl parse: revoked CRL exposes issuer, thisUpdate, one revoked serial" {
@@ -334,4 +382,34 @@ test "crl verifySignedBy: revoked CRL verifies under issuing CA SPKI" {
     defer ca.deinit(a);
 
     try testing.expect(verifySignedBy(a, &cl, &ca));
+}
+
+test "checkRevocation: missing nextUpdate is fail-closed (CrlStale) (F2)" {
+    const a = testing.allocator;
+    var cl = try CertificateList.parse(a, test_certs.crl_with_revoked);
+    defer cl.deinit(a);
+    var ca = try x509.parseCert(a, test_certs.crl_ca);
+    defer ca.deinit(a);
+    var leaf = try x509.parseCert(a, test_certs.crl_leaf);
+    defer leaf.deinit(a);
+
+    // The signature still verifies (we kept tbs/sig fields), but a CRL with no
+    // nextUpdate cannot bound its staleness and must be rejected fail-closed.
+    cl.next_update_unix = null;
+    const now: i64 = 1812585600; // inside thisUpdate window
+    try testing.expectError(CheckError.CrlStale, checkRevocation(a, &leaf, &cl, &ca, now));
+}
+
+test "checkRevocation: future-dated thisUpdate beyond skew is rejected (CrlStale) (F2)" {
+    const a = testing.allocator;
+    var cl = try CertificateList.parse(a, test_certs.crl_with_revoked);
+    defer cl.deinit(a);
+    var ca = try x509.parseCert(a, test_certs.crl_ca);
+    defer ca.deinit(a);
+    var leaf = try x509.parseCert(a, test_certs.crl_leaf);
+    defer leaf.deinit(a);
+
+    // now well before thisUpdate (more than 5 min skew) => implausibly future CRL.
+    const now: i64 = cl.this_update_unix - 3600;
+    try testing.expectError(CheckError.CrlStale, checkRevocation(a, &leaf, &cl, &ca, now));
 }
