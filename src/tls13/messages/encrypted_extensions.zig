@@ -219,7 +219,7 @@ pub fn parseEncryptedExtensions(body: []const u8) !EncryptedExtensions {
     // by overwriting it with a second copy.
     // We use a fixed-size array of raw u16 types to ensure unknown extensions are
     // also tracked and rejected if duplicated, preventing GAP-0145 evasion.
-    var seen: [64]u16 = undefined;
+    var seen: [core_types.MAX_EXTENSION_TYPES]u16 = undefined;
     var seen_count: usize = 0;
 
     while (offset < ext_end) {

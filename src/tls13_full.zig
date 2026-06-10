@@ -108,6 +108,7 @@ pub const ExtensionType = core_types.ExtensionType;
 pub const NamedGroup = core_types.NamedGroup;
 pub const SignatureScheme = core_types.SignatureScheme;
 pub const CipherSuite = core_types.CipherSuite;
+pub const MAX_EXTENSION_TYPES = core_types.MAX_EXTENSION_TYPES;
 
 // Re-export helper functions for backward compatibility
 pub const readU16 = helpers_mod.readU16;

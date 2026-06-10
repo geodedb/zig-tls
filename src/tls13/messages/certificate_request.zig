@@ -199,7 +199,7 @@ pub fn parseCertificateRequest(
     // SEC-071 / GAP-0145: Reject duplicate extensions (RFC 8446 §4.2).
     // We track all extension types using a fixed-size array of raw u16s to ensure
     // unknown extensions are also tracked and rejected if duplicated.
-    var seen_extensions: [64]u16 = undefined;
+    var seen_extensions: [core_types.MAX_EXTENSION_TYPES]u16 = undefined;
     var seen_count: usize = 0;
 
     while (pos + 4 <= ext_end) {

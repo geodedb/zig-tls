@@ -207,24 +207,12 @@ pub fn verifyCertVerifySignature(
     if (!verified) return HandshakeError.InvalidSignature;
 }
 
-/// QUAL-357: Wraps `x509.validateChainReturnParsed` and normalizes the error
-/// to `HandshakeError.CertificateValidationFailed` for consistency with the
-/// TLS alert dispatcher.
-///
-/// RFC 5280 §6: Perform full chain validation — validity period checks,
-/// hostname (SNI) verification, Extended Key Usage (server_auth), basic
-/// constraints, and signature verification along the chain.
-/// PERF-207: validate + parse leaf in one pass (avoids re-parsing chain[0]).
-/// PERF-016: Uses cached trust store to avoid RwLock contention.
-/// SEC-077: When `insecure == .testing_only_i_know_what_i_am_doing`, the
-/// underlying x509 call short-circuits chain validation but STILL returns a
-/// parsed leaf (needed for downstream CertificateVerify signature checks).
-/// Per-connection trust anchors for the duration of one synchronous
-/// `validateChainAndLeaf` call. The chain validator's `TrustStore` callback is
-/// a bare (stateless) function pointer, so we publish the anchor SPKIs through
+/// GAP-0838: per-connection trust anchors for the duration of one synchronous
+/// chain-validation call. The chain validator's `TrustStore` callback is a
+/// bare (stateless) function pointer, so we publish the anchor SPKIs through
 /// a thread-local that `anchorTrustStoreIsTrusted` reads. Safe because TLS
 /// handshake certificate validation runs synchronously on one connection's
-/// thread and never re-enters `validateChainAndLeaf`. Always saved/restored.
+/// thread and never re-enters chain validation. Always saved/restored.
 threadlocal var tl_trusted_anchor_spkis: []const []const u8 = &.{};
 
 fn anchorTrustStoreIsTrusted(spki_der: []const u8) bool {
@@ -234,6 +222,9 @@ fn anchorTrustStoreIsTrusted(spki_der: []const u8) bool {
     return false;
 }
 
+/// GAP-0838: leaf-only wrapper over `validateChainLeafAndIssuer` — validates
+/// the chain (honoring per-connection `trusted_ca_der` anchors) and returns
+/// just the parsed leaf.
 pub fn validateChainAndLeaf(
     alloc: std.mem.Allocator,
     chain: [][]const u8,
@@ -243,9 +234,46 @@ pub fn validateChainAndLeaf(
     trust_store_override: ?x509.TrustStore,
     trusted_ca_der: []const []const u8,
 ) !x509.Certificate {
+    var parsed = try validateChainLeafAndIssuer(
+        alloc,
+        chain,
+        now_unix,
+        server_name,
+        insecure,
+        trust_store_override,
+        trusted_ca_der,
+    );
+    if (parsed.issuer) |*iss| iss.deinit(alloc);
+    return parsed.leaf;
+}
+
+/// QUAL-357 / PERF-262: Validates the chain and returns the parsed leaf AND
+/// issuer (`chain[1]`), normalizing errors to
+/// `HandshakeError.CertificateValidationFailed` for the alert dispatcher.
+///
+/// RFC 5280 §6: full chain validation — validity, hostname (SNI), EKU
+/// (server_auth), basic constraints, and signature verification along the
+/// chain. PERF-207: validate + parse leaf in one pass. PERF-016: cached trust
+/// store avoids RwLock contention. SEC-077: in insecure testing mode the
+/// underlying x509 call short-circuits validation but STILL returns the parsed
+/// leaf (needed for downstream CertificateVerify).
+///
+/// GAP-0838: when `trusted_ca_der` is non-empty, validation is pinned to those
+/// caller-provided anchors — (a) each anchor's SPKI becomes the trust root,
+/// and (b) anchors the peer did not present are appended, so a server that
+/// sends only its leaf still chains up to a trusted, self-signed CA.
+pub fn validateChainLeafAndIssuer(
+    alloc: std.mem.Allocator,
+    chain: [][]const u8,
+    now_unix: i64,
+    server_name: []const u8,
+    insecure: x509.InsecureValidation,
+    trust_store_override: ?x509.TrustStore,
+    trusted_ca_der: []const []const u8,
+) !x509.LeafAndIssuer {
     // Fast path: no per-connection anchors — preserve prior behavior exactly.
     if (trusted_ca_der.len == 0) {
-        return x509.validateChainReturnParsed(
+        return x509.validateChainReturnLeafAndIssuer(
             alloc,
             chain,
             now_unix,
@@ -297,7 +325,7 @@ pub fn validateChainAndLeaf(
     defer tl_trusted_anchor_spkis = prev;
 
     const anchor_ts = x509.TrustStore{ .isTrustedSpki = anchorTrustStoreIsTrusted };
-    return x509.validateChainReturnParsed(
+    return x509.validateChainReturnLeafAndIssuer(
         alloc,
         effective.items,
         now_unix,
@@ -305,27 +333,6 @@ pub fn validateChainAndLeaf(
         insecure,
         .server_auth,
         anchor_ts,
-    ) catch return HandshakeError.CertificateValidationFailed;
-}
-
-/// PERF-262: Like `validateChainAndLeaf`, but also returns the parsed issuer
-/// (`chain[1]`) so `validateOcspStaple` can reuse it instead of re-parsing.
-pub fn validateChainLeafAndIssuer(
-    alloc: std.mem.Allocator,
-    chain: [][]const u8,
-    now_unix: i64,
-    server_name: []const u8,
-    insecure: x509.InsecureValidation,
-    trust_store_override: ?x509.TrustStore,
-) !x509.LeafAndIssuer {
-    return x509.validateChainReturnLeafAndIssuer(
-        alloc,
-        chain,
-        now_unix,
-        server_name,
-        insecure,
-        .server_auth,
-        trust_store_override,
     ) catch return HandshakeError.CertificateValidationFailed;
 }
 

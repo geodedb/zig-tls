@@ -2652,7 +2652,7 @@ pub const Context = struct {
         // extension types so duplicates are rejected per RFC 8446 §4.2 —
         // including duplicate UNKNOWN types (a known-types-only EnumSet let
         // those bypass the gate). Matches server_hello_parsers.zig.
-        var sh_seen: [64]u16 = undefined;
+        var sh_seen: [tls13_full.MAX_EXTENSION_TYPES]u16 = undefined;
         var sh_seen_count: usize = 0;
         while (pos + 4 <= exts_end) {
             const etype = readU16(body[pos .. pos + 2]);

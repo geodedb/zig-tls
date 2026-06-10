@@ -36,6 +36,7 @@
 
 const std = @import("std");
 const helpers = @import("helpers.zig");
+const core_types = @import("core_types.zig");
 
 /// Parsed TLS 1.3 Certificate message with per-entry extension data (RFC 8446 §4.4.2).
 ///
@@ -214,7 +215,7 @@ pub fn parseCertificate(
         var sct_list: ?[]const u8 = null;
 
         // GAP-0143: Reject duplicate extensions per certificate entry.
-        var seen_extensions: [64]u16 = undefined;
+        var seen_extensions: [core_types.MAX_EXTENSION_TYPES]u16 = undefined;
         var seen_count: usize = 0;
 
         var ext_pos: usize = 0;

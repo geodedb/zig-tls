@@ -356,7 +356,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     // of the same type in a given extension block."
     // We use a fixed-size array of raw u16 types to ensure unknown extensions are
     // also tracked and rejected if duplicated, preventing GAP-0145 evasion.
-    var seen_extensions: [64]u16 = undefined;
+    var seen_extensions: [core_types.MAX_EXTENSION_TYPES]u16 = undefined;
     var seen_count: usize = 0;
 
     // QUAL-339: ParseCtx threads ch + allocator into per-extension handlers.

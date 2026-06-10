@@ -39,6 +39,12 @@
 /// - pre_shared_key MUST be last extension in ClientHello (RFC 8446 §4.2.11)
 /// - Extension order in ServerHello affects transcript hash (critical for interop)
 /// - signed_certificate_timestamp provides OCSP stapling transparency
+/// QUAL-390: shared cap for the per-block duplicate-extension trackers
+/// (RFC 8446 §4.2 — at most one extension of each type per block). Exceeding
+/// this many DISTINCT types in one block yields `error.TooManyExtensions`
+/// (APPSEC-04). 64 comfortably exceeds any realistic extension count.
+pub const MAX_EXTENSION_TYPES: usize = 64;
+
 pub const ExtensionType = enum(u16) {
     server_name = 0x0000, // RFC 6066 §3: Server Name Indication (SNI)
     max_fragment_length = 0x0001, // RFC 6066 §4: Maximum fragment length negotiation

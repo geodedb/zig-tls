@@ -453,6 +453,10 @@ pub fn rsaPssVerifyGeneric(
 /// 1024-/2048-/3072-/4096-bit moduli. Returns `true` on a valid signature,
 /// `false` on any verification failure; propagates allocator errors from
 /// `parseRsaSpki`.
+///
+/// QUAL-389: the SPKI modulus/exponent prep + size guards + inline modulus-len
+/// switch below are intentionally parallel to `rsaPssVerifyGeneric`; keep the
+/// two in sync (only the stdlib verifier — PKCS1v1_5 vs PSS — differs).
 pub fn rsaPkcs1VerifyGeneric(
     comptime Hash: type,
     pubkey_spki_der: []const u8,

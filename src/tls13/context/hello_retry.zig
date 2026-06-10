@@ -114,7 +114,7 @@ pub fn parseHelloRetryRequest(body: []const u8) !HrrParsed {
     // SEC-079 (X.509). Pattern mirrors `encrypted_extensions.zig:220`.
     // NEWGAP-05: track raw u16 types (not an EnumSet keyed on known types) so
     // duplicate UNKNOWN extension types are also rejected per RFC 8446 §4.2.
-    var seen_extensions: [64]u16 = undefined;
+    var seen_extensions: [tls13_full.MAX_EXTENSION_TYPES]u16 = undefined;
     var seen_count: usize = 0;
 
     while (pos + 4 <= exts_end) {

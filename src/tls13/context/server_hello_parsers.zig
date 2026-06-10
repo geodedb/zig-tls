@@ -22,9 +22,13 @@ const ExtensionType = tls13_full.ExtensionType;
 /// RFC 8446 Section 4.2.1: The ServerHello MUST contain a supported_versions
 /// extension with the selected version set to 0x0304 (TLS 1.3).
 ///
-/// This function is used by tests to validate the same logic implemented
-/// inline in Context.handleServerHello. It scans the extensions starting at
-/// the given offset within the body and checks:
+/// TEST-ONLY MIRROR: this function has NO production caller — the live
+/// ServerHello path is `Context.handleServerHello` (which carries the
+/// authoritative supported_versions + raw-u16 duplicate-extension logic).
+/// This helper exists only as a focused, directly-drivable fixture for the
+/// SEC-092 regression tests below; keep its dedup logic in sync with
+/// `handleServerHello`. It scans the extensions starting at the given offset
+/// within the body and checks:
 ///   - The supported_versions extension (0x002B) is present
 ///   - Its data is exactly 2 bytes (selected version)
 ///   - The selected version is 0x0304 (TLS 1.3)
@@ -43,7 +47,7 @@ pub fn validateSupportedVersions(body: []const u8, ext_start: usize, exts_len: u
     var version: u16 = 0;
     // NEWGAP-05: raw-u16 tracking rejects duplicate UNKNOWN extension types
     // too (RFC 8446 §4.2), not just known ones.
-    var seen_extensions: [64]u16 = undefined;
+    var seen_extensions: [tls13_full.MAX_EXTENSION_TYPES]u16 = undefined;
     var seen_count: usize = 0;
     while (pos + 4 <= exts_end) {
         const etype = readU16(body[pos .. pos + 2]);
@@ -91,7 +95,7 @@ pub fn parsePskExtension(body: []const u8) !?u16 {
     var selected_psk_index: ?u16 = null;
     // NEWGAP-05: raw-u16 tracking rejects duplicate UNKNOWN extension types
     // too (RFC 8446 §4.2), not just known ones.
-    var seen_extensions: [64]u16 = undefined;
+    var seen_extensions: [tls13_full.MAX_EXTENSION_TYPES]u16 = undefined;
     var seen_count: usize = 0;
     while (pos + 4 <= exts_end) {
         const etype = readU16(body[pos .. pos + 2]);
