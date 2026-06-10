@@ -1372,6 +1372,11 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/conformance/openssl/ocsp_validation.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "ocsp", .module = ocsp_mod },
+                .{ .name = "test_certs", .module = test_certs_mod },
+            },
         }),
     });
     const run_ocsp_validation_conformance_test = b.addRunArtifact(ocsp_validation_conformance_test);

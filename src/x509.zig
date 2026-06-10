@@ -1025,14 +1025,33 @@ const IssuerValidityInfo = struct {
 
 /// Parse the issuer Name SEQUENCE and the Validity SEQUENCE (notBefore,
 /// notAfter). Leaves `ti` positioned at the subject Name SEQUENCE.
-fn parseIssuerValidity(ti: *asn1.Decoder) !IssuerValidityInfo {
-    const issuer_seq = try ti.readSequence();
+///
+/// `issuer_der` captures the FULL Name TLV (tag + length + content), not just
+/// the SEQUENCE content. RFC 6960 §4.1.1 defines the OCSP CertID
+/// `issuerNameHash` as the hash of the DER-encoded issuer Name *including* its
+/// outer SEQUENCE header; returning only the content bytes here previously
+/// produced a wrong hash and broke OCSP CertID matching (every SingleResponse
+/// was skipped → MissingSingleResponse). Mirrors `parseSpki`'s full-DER capture.
+fn parseIssuerValidity(ti: *asn1.Decoder, tbs_seq: []const u8) !IssuerValidityInfo {
+    const name_hdr = try ti.nextHeader();
+    if (asn1.tagClass(name_hdr.tag) != .universal or asn1.tagNumber(name_hdr.tag) != 16) {
+        return error.UnexpectedTag;
+    }
+    const name_start = ti.off - name_hdr.hdr_len;
+    // APPSEC-2026-06-10-01: bound the attacker-controlled length against the
+    // remaining bytes before the `off + len` add, which would otherwise wrap
+    // and bypass the `> tbs_seq.len` guard (inverted-slice OOB / panic).
+    if (name_hdr.len > tbs_seq.len - ti.off) return error.Truncated;
+    const name_end = ti.off + name_hdr.len;
+    const issuer_full = tbs_seq[name_start..name_end];
+    ti.off = name_end;
+
     const validity_seq = try ti.readSequence();
     var vd = asn1.Decoder.init(validity_seq);
     const not_before_tlv = try vd.readTLV();
     const not_after_tlv = try vd.readTLV();
     return .{
-        .issuer_der = issuer_seq,
+        .issuer_der = issuer_full,
         .not_before_unix = try parseDerTime(not_before_tlv.val),
         .not_after_unix = try parseDerTime(not_after_tlv.val),
     };
@@ -1045,8 +1064,24 @@ const SubjectInfo = struct {
 
 /// Parse the subject Name SEQUENCE and extract the Common Name attribute
 /// value (OID 2.5.4.3) if present. Leaves `ti` positioned at the SPKI.
-fn parseSubjectAndCN(ti: *asn1.Decoder) !SubjectInfo {
-    const subject_seq = try ti.readSequence();
+///
+/// `subject_der` captures the FULL Name TLV (tag + length + content) to stay
+/// consistent with `issuer_der` (see `parseIssuerValidity`); the self-signed
+/// detection in `validateChain` compares the two and must use the same
+/// encoding on both sides.
+fn parseSubjectAndCN(ti: *asn1.Decoder, tbs_seq: []const u8) !SubjectInfo {
+    const subj_hdr = try ti.nextHeader();
+    if (asn1.tagClass(subj_hdr.tag) != .universal or asn1.tagNumber(subj_hdr.tag) != 16) {
+        return error.UnexpectedTag;
+    }
+    const subj_start = ti.off - subj_hdr.hdr_len;
+    // APPSEC-2026-06-10-01: bound the attacker-controlled length against the
+    // remaining bytes before the `off + len` add (inverted-slice OOB / panic).
+    if (subj_hdr.len > tbs_seq.len - ti.off) return error.Truncated;
+    const subj_end = ti.off + subj_hdr.len;
+    const subject_full = tbs_seq[subj_start..subj_end];
+    const subject_seq = tbs_seq[ti.off..subj_end];
+    ti.off = subj_end;
 
     // RFC 5280 §4.1.2.6 - Name ::= SEQUENCE OF RelativeDistinguishedName
     // RelativeDistinguishedName ::= SET OF AttributeTypeAndValue
@@ -1083,7 +1118,7 @@ fn parseSubjectAndCN(ti: *asn1.Decoder) !SubjectInfo {
         if (subj_cn != null) break;
     }
 
-    return .{ .subject_der = subject_seq, .cn = subj_cn };
+    return .{ .subject_der = subject_full, .cn = subj_cn };
 }
 
 /// Parse the SubjectPublicKeyInfo SEQUENCE and return its full DER
@@ -1318,8 +1353,8 @@ pub fn parseCert(alloc: std.mem.Allocator, der: []const u8) !Certificate {
     var ti = asn1.Decoder.init(tbs_seq);
 
     const hdr_info = try parseTbsHeader(&ti);
-    const iv_info = try parseIssuerValidity(&ti);
-    const subj_info = try parseSubjectAndCN(&ti);
+    const iv_info = try parseIssuerValidity(&ti, tbs_seq);
+    const subj_info = try parseSubjectAndCN(&ti, tbs_seq);
     const spki_bytes = try parseSpki(&ti, tbs_seq);
     const ext = try parseExtensionsBlock(alloc, &ti);
 

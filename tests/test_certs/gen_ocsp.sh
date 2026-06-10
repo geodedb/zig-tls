@@ -58,8 +58,10 @@ printf 'V\t%s\t\t%s\tunknown\t%s\n' "$EXPIRY" "1010" "$SUBJECT_DN" > "$WORK/inde
 printf 'R\t%s\t%s\t%s\tunknown\t%s\n' "$EXPIRY" "$REVOKED_TIME" "1010" "$SUBJECT_DN" > "$WORK/index_revoked.txt"
 
 # --- Build a single OCSP request for the leaf --------------------------------
-# Note: the digest flag (-sha1) must precede -cert.
-openssl ocsp -issuer "$WORK/ca.pem" -sha1 -cert "$WORK/leaf.pem" \
+# Note: the digest flag (-sha256) must precede -cert. SHA-256 CertID is REQUIRED:
+# the library deliberately rejects SHA-1 CertIDs (CWE-328), so OpenSSL's default
+# SHA-1 would cause every SingleResponse to be skipped (MissingSingleResponse).
+openssl ocsp -issuer "$WORK/ca.pem" -sha256 -cert "$WORK/leaf.pem" \
     -reqout "$WORK/req.der" -no_nonce
 
 # --- Produce GOOD response (rsigner = CA) ------------------------------------
