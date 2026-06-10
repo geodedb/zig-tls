@@ -2601,9 +2601,15 @@ pub const Context = struct {
         if (tls13_full.containsDowngradeSentinel(random)) {
             return HandshakeError.DowngradeAttempt;
         }
+        // NEWGAP-06: RFC 8446 §4.1.3 — legacy_version MUST be 0x0303.
+        if (body[0] != 0x03 or body[1] != 0x03) return HandshakeError.IllegalLegacyVersion;
         var pos: usize = 2 + 32; // after legacy_version+random
         if (pos >= body.len) return HandshakeError.UnexpectedMessage;
         const sid_len: usize = body[pos];
+        // NEWGAP-06: RFC 8446 §4.1.3 — legacy_session_id_echo MUST equal the
+        // client's legacy_session_id. This client always sends an EMPTY
+        // session_id, so any non-empty echo MUST abort with illegal_parameter.
+        if (sid_len != 0) return HandshakeError.IllegalSessionIdEcho;
         pos += 1 + sid_len;
         if (pos + 2 + 1 > body.len) return HandshakeError.UnexpectedMessage;
         const suite_value: u16 = readU16(body[pos .. pos + 2]);
@@ -2642,18 +2648,23 @@ pub const Context = struct {
         var server_pub: ?[32]u8 = null;
         var found_supported_versions = false;
         var server_selected_psk_index: ?u16 = null;
-        // SEC-092 (subsumes SEC-078): track extension types so duplicates are
-        // rejected per RFC 8446 §4.2.
-        var sh_seen = std.EnumSet(tls13_full.ExtensionType).initEmpty();
+        // SEC-092 (subsumes SEC-078) / NEWGAP-07 (= QUAL-387): track raw u16
+        // extension types so duplicates are rejected per RFC 8446 §4.2 —
+        // including duplicate UNKNOWN types (a known-types-only EnumSet let
+        // those bypass the gate). Matches server_hello_parsers.zig.
+        var sh_seen: [64]u16 = undefined;
+        var sh_seen_count: usize = 0;
         while (pos + 4 <= exts_end) {
             const etype = readU16(body[pos .. pos + 2]);
             const elen: usize = readU16(body[pos + 2 .. pos + 4]);
             pos += 4;
             if (pos + elen > exts_end) return HandshakeError.UnexpectedMessage;
-            if (std.enums.fromInt(tls13_full.ExtensionType, etype)) |etag| {
-                if (sh_seen.contains(etag)) return HandshakeError.DuplicateExtension;
-                sh_seen.insert(etag);
+            for (sh_seen[0..sh_seen_count]) |s| {
+                if (s == etype) return HandshakeError.DuplicateExtension;
             }
+            if (sh_seen_count == sh_seen.len) return HandshakeError.TooManyExtensions;
+            sh_seen[sh_seen_count] = etype;
+            sh_seen_count += 1;
             if (etype == @intFromEnum(tls13_full.ExtensionType.supported_versions)) {
                 // RFC 8446 §4.2.1: In ServerHello, supported_versions contains
                 // the single selected version (2 bytes). Must be 0x0304 (TLS 1.3).

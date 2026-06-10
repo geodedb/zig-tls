@@ -398,6 +398,16 @@ pub fn build(b: *std.Build) void {
             },
         },
         .{
+            // NEWGAP-06 / NEWGAP-07: client ServerHello hardening — duplicate
+            // unknown-extension rejection + legacy_session_id_echo check.
+            .name = "newgap06_07_serverhello_hardening",
+            .source = "tests/security/newgap06_07_serverhello_hardening.zig",
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        },
+        .{
             .name = "sec066_clienthello_dup_ext",
             .source = "tests/security/sec066_clienthello_dup_ext.zig",
             .imports = &.{

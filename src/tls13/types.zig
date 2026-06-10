@@ -273,6 +273,15 @@ pub const HandshakeError = error{
     /// from `DuplicateExtension`; maps to TLS alert `decode_error`.
     TooManyExtensions,
 
+    /// NEWGAP-06: ServerHello.legacy_session_id_echo did not match the
+    /// (empty) legacy_session_id the client sent. RFC 8446 §4.1.3 MUST abort
+    /// with `illegal_parameter`.
+    IllegalSessionIdEcho,
+
+    /// NEWGAP-06 (minor): ServerHello.legacy_version was not 0x0303.
+    /// RFC 8446 §4.1.3 MUST be 0x0303; maps to `illegal_parameter`.
+    IllegalLegacyVersion,
+
     /// SEC-088: ClientHello/ServerHello carried a `legacy_compression_methods`
     /// field that violates RFC 8446 §4.1.2 / §4.1.3 (must be exactly one byte
     /// equal to 0x00 on CH; must equal 0x00 on SH). Maps to TLS alert
