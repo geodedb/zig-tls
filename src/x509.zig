@@ -2237,6 +2237,78 @@ pub fn validateChainReturnParsed(
     return leaf;
 }
 
+/// PERF-262: parsed leaf + issuer returned together. Owned by the caller.
+pub const LeafAndIssuer = struct {
+    leaf: Certificate,
+    /// Parsed `chain_der[1]`; present iff the chain had >= 2 certificates.
+    issuer: ?Certificate,
+
+    pub fn deinit(self: *LeafAndIssuer, alloc: std.mem.Allocator) void {
+        self.leaf.deinit(alloc);
+        if (self.issuer) |*iss| iss.deinit(alloc);
+    }
+};
+
+/// PERF-262: Like `validateChainReturnParsed`, but also hands back the parsed
+/// issuer (`chain_der[1]`) so the OCSP-staple validator does not re-parse it
+/// (`validateChainReturnParsed` parses and then frees every intermediate).
+///
+/// On success the caller owns the returned `LeafAndIssuer` and must call
+/// `deinit(alloc)`. On error, all internal parses are freed. Mirrors the
+/// SEC-073 ownership state machine of `validateChainReturnParsed`, except that
+/// BOTH `certs[0]` (leaf) and, when present, `certs[1]` (issuer) transfer to
+/// the caller; `certs[2..]` are freed before returning.
+pub fn validateChainReturnLeafAndIssuer(
+    alloc: std.mem.Allocator,
+    chain_der: []const []const u8,
+    now_unix: i64,
+    server_name: []const u8,
+    insecure: InsecureValidation,
+    eku_purpose: EkuPurpose,
+    trust_store_override: ?TrustStore,
+) !LeafAndIssuer {
+    enforceInsecureBuildGate(insecure);
+    if (chain_der.len == 0) return error.EmptyChain;
+
+    const max_chain_depth = 10;
+    if (chain_der.len > max_chain_depth) return error.PathLenExceeded;
+
+    var certs = try alloc.alloc(Certificate, chain_der.len);
+    defer alloc.free(certs);
+
+    var parsed_count: usize = 0;
+    errdefer {
+        for (certs[0..parsed_count]) |c| c.deinit(alloc);
+    }
+
+    {
+        var i: usize = 0;
+        while (i < chain_der.len) : (i += 1) {
+            certs[i] = try parseCert(alloc, chain_der[i]);
+            parsed_count += 1;
+        }
+    }
+
+    if (insecure == .secure) {
+        try runChainChecks(alloc, certs, chain_der, now_unix, server_name, eku_purpose, trust_store_override);
+    }
+
+    // Success: transfer leaf (and issuer, if any) to the caller; free the rest.
+    const leaf = certs[0];
+    const issuer: ?Certificate = if (parsed_count >= 2) certs[1] else null;
+    {
+        var i: usize = if (parsed_count >= 2) 2 else 1;
+        while (i < parsed_count) : (i += 1) {
+            certs[i].deinit(alloc);
+        }
+    }
+    // SEC-073 B -> C: ownership of the transferred entries has moved to the
+    // caller; the errdefer above is now a no-op.
+    parsed_count = 0;
+
+    return .{ .leaf = leaf, .issuer = issuer };
+}
+
 // ============================================================================
 // SEC-079: parseExtensionsBlock duplicate-extension regression tests
 // ============================================================================

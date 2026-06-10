@@ -3079,7 +3079,9 @@ pub const Context = struct {
         const server_name = if (self.config.server_name) |sni| sni else "";
 
         // QUAL-357 step 1: chain validation + leaf parse (PERF-207: one pass).
-        var leaf_parsed = try cert_handlers.validateChainAndLeaf(
+        // PERF-262: also keep the parsed issuer (chain[1]) so the OCSP-staple
+        // validator reuses it instead of re-parsing.
+        var chain_parsed = try cert_handlers.validateChainLeafAndIssuer(
             self.allocator,
             chain,
             now_unix,
@@ -3088,7 +3090,8 @@ pub const Context = struct {
             self.cached_trust_store,
             self.config.trusted_ca_der orelse &.{},
         );
-        defer leaf_parsed.deinit(self.allocator);
+        defer chain_parsed.deinit(self.allocator);
+        const leaf_parsed = &chain_parsed.leaf;
 
         // SEC-077: In insecure testing mode, skip OCSP / SCT / CV-sig. The
         // leaf was still parsed above so Context state remains coherent.
@@ -3099,13 +3102,15 @@ pub const Context = struct {
 
         // QUAL-357 step 2: OCSP stapled-response validation (RFC 6960 +
         // RFC 8446 §4.4.2.1). PERF-037: reuses leaf_parsed from step 1.
+        // PERF-262: reuses the issuer parsed in step 1.
         try cert_handlers.validateOcspStaple(
             self.allocator,
             self.peer_ocsp_response,
-            &leaf_parsed,
+            leaf_parsed,
             chain,
             now_unix,
             self.config.require_ocsp,
+            if (chain_parsed.issuer) |*iss| iss else null,
         );
 
         // QUAL-357 step 3: SCT list validation (RFC 6962 + RFC 8446 §4.4.2.1).

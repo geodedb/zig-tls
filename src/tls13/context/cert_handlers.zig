@@ -308,6 +308,27 @@ pub fn validateChainAndLeaf(
     ) catch return HandshakeError.CertificateValidationFailed;
 }
 
+/// PERF-262: Like `validateChainAndLeaf`, but also returns the parsed issuer
+/// (`chain[1]`) so `validateOcspStaple` can reuse it instead of re-parsing.
+pub fn validateChainLeafAndIssuer(
+    alloc: std.mem.Allocator,
+    chain: [][]const u8,
+    now_unix: i64,
+    server_name: []const u8,
+    insecure: x509.InsecureValidation,
+    trust_store_override: ?x509.TrustStore,
+) !x509.LeafAndIssuer {
+    return x509.validateChainReturnLeafAndIssuer(
+        alloc,
+        chain,
+        now_unix,
+        server_name,
+        insecure,
+        .server_auth,
+        trust_store_override,
+    ) catch return HandshakeError.CertificateValidationFailed;
+}
+
 /// QUAL-357: Validates an OCSP stapled response against the leaf certificate.
 ///
 /// Behavior matrix:
@@ -325,20 +346,30 @@ pub fn validateOcspStaple(
     chain: [][]const u8,
     now_unix: i64,
     require_ocsp: bool,
+    /// PERF-262: pre-parsed issuer (`chain[1]`) from the chain-validation pass.
+    /// When non-null and the chain has >= 2 certs, it is reused instead of
+    /// re-parsing `chain[1]` here.
+    issuer_parsed: ?*x509.Certificate,
 ) !void {
     if (ocsp_bytes == null) {
         if (require_ocsp) return HandshakeError.MissingOcspResponse;
         return;
     }
 
-    var issuer_parsed: x509.Certificate = undefined;
-    var has_issuer = false;
+    // PERF-262: reuse the issuer parsed during chain validation when available;
+    // only fall back to a fresh parse if the caller did not supply it.
+    var owned_issuer: x509.Certificate = undefined;
+    var owns_issuer = false;
+    defer if (owns_issuer) owned_issuer.deinit(alloc);
+
     const issuer_info: ?ocsp.IssuerInfo = if (chain.len >= 2) blk: {
-        issuer_parsed = try x509.parseCert(alloc, chain[1]);
-        has_issuer = true;
-        break :blk ocsp.IssuerInfo{ .cert = &issuer_parsed, .der = chain[1] };
+        const issuer_ptr: *x509.Certificate = if (issuer_parsed) |iss| iss else inner: {
+            owned_issuer = try x509.parseCert(alloc, chain[1]);
+            owns_issuer = true;
+            break :inner &owned_issuer;
+        };
+        break :blk ocsp.IssuerInfo{ .cert = issuer_ptr, .der = chain[1] };
     } else null;
-    defer if (has_issuer) issuer_parsed.deinit(alloc);
 
     ocsp.validateStapledResponse(
         alloc,
