@@ -983,3 +983,35 @@ test "SEC-032: parseDerTime accepts valid boundary values" {
     const gt_valid = try x509.parseDerTime("20251231235959Z");
     try testing.expect(gt_valid > 0);
 }
+
+test "NEWGAP-01: verifyCertificateSignedBy accepts RSA PKCS#1 v1.5 (sha256WithRSAEncryption)" {
+    // tests/test_certs/rsa2048_cert.der is a self-signed RSA-2048 certificate
+    // whose CA signature uses sha256WithRSAEncryption (RSASSA-PKCS#1 v1.5).
+    // RFC 8446 §4.2.3 prohibits PKCS#1 v1.5 only for the CertificateVerify
+    // handshake message; it is the dominant algorithm for signatures ON
+    // certificates in the chain (RFC 5280 §6) and MUST be verifiable. A
+    // self-signed cert verifies against its own SPKI.
+    const cert_der = @embedFile("test_certs/rsa2048_cert.der");
+
+    const cert = try x509.parseCert(testing.allocator, cert_der);
+    defer cert.deinit(testing.allocator);
+
+    const ok = x509.verifyCertificateSignedBy(&cert, cert_der, &cert, testing.allocator);
+    try testing.expect(ok);
+}
+
+test "NEWGAP-01: RSA PKCS#1 v1.5 verify rejects wrong issuer key" {
+    // Same RSA leaf, but verified against an unrelated issuer SPKI (the
+    // self-signed Ed25519 fixture). The PKCS#1 v1.5 path must return false
+    // rather than accepting the signature.
+    const rsa_der = @embedFile("test_certs/rsa2048_cert.der");
+    const ed_der = @embedFile("test_certs/ed25519_cert.der");
+
+    const rsa_cert = try x509.parseCert(testing.allocator, rsa_der);
+    defer rsa_cert.deinit(testing.allocator);
+    const ed_cert = try x509.parseCert(testing.allocator, ed_der);
+    defer ed_cert.deinit(testing.allocator);
+
+    const ok = x509.verifyCertificateSignedBy(&rsa_cert, rsa_der, &ed_cert, testing.allocator);
+    try testing.expect(!ok);
+}

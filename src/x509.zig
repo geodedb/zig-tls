@@ -1670,6 +1670,21 @@ fn oidIsRsaPss(oid: []const u8) bool {
     const expected = [_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A };
     return std.mem.eql(u8, oid, &expected);
 }
+fn oidIsRsaPkcs1Sha256(oid: []const u8) bool {
+    // sha256WithRSAEncryption 1.2.840.113549.1.1.11
+    const expected = [_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B };
+    return std.mem.eql(u8, oid, &expected);
+}
+fn oidIsRsaPkcs1Sha384(oid: []const u8) bool {
+    // sha384WithRSAEncryption 1.2.840.113549.1.1.12
+    const expected = [_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0C };
+    return std.mem.eql(u8, oid, &expected);
+}
+fn oidIsRsaPkcs1Sha512(oid: []const u8) bool {
+    // sha512WithRSAEncryption 1.2.840.113549.1.1.13
+    const expected = [_]u8{ 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0D };
+    return std.mem.eql(u8, oid, &expected);
+}
 fn oidIsEd25519(oid: []const u8) bool {
     // Ed25519 1.3.101.112
     const expected = [_]u8{ 0x2B, 0x65, 0x70 };
@@ -1699,6 +1714,18 @@ fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const
         // Constrain to SHA-256 and saltLen=32. Verify TBSCertificate directly (no TLS context).
         // Note: We reuse the RSA-PSS verifier from sig.zig by providing the raw TBS as message.
         return sigmod.verifyCertificateVerify(.rsa_pss_sha256, issuer_spki_der, sig_der, "", tbs, alloc) catch false;
+    }
+    // NEWGAP-01: RSASSA-PKCS#1 v1.5 certificate signatures (RFC 5280 §6;
+    // RFC 8446 §4.2.3 bans these only for the CertificateVerify handshake
+    // message, not for signatures on certificates). Dominant in the Web PKI.
+    if (oidIsRsaPkcs1Sha256(algo_oid)) {
+        return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha256, issuer_spki_der, tbs, sig_der, alloc) catch false;
+    }
+    if (oidIsRsaPkcs1Sha384(algo_oid)) {
+        return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha384, issuer_spki_der, tbs, sig_der, alloc) catch false;
+    }
+    if (oidIsRsaPkcs1Sha512(algo_oid)) {
+        return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha512, issuer_spki_der, tbs, sig_der, alloc) catch false;
     }
     if (oidIsEd25519(algo_oid)) {
         // Ed25519 signature verification using std.crypto

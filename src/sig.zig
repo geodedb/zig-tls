@@ -378,6 +378,7 @@ fn der_decode_ecdsa_sig(sig_der: []const u8, r_out: []u8, s_out: []u8) !void {
 
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const Sha384 = std.crypto.hash.sha2.Sha384;
+const Sha512 = std.crypto.hash.sha2.Sha512;
 
 /// Stdlib RSA module with constant-time operations.
 const rsa = std.crypto.Certificate.rsa;
@@ -431,6 +432,60 @@ pub fn rsaPssVerifyGeneric(
             const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch
                 return false;
             rsa.PSSSignature.verify(modulus_len, sig[0..modulus_len].*, msg_signed_content, public_key, Hash) catch
+                return false;
+            return true;
+        },
+        else => return false,
+    }
+}
+
+/// Generic RSASSA-PKCS#1 v1.5 verification over any `std.crypto.hash` type.
+///
+/// NEWGAP-01: Used for verifying signatures ON certificates (and OCSP
+/// responses) signed with `sha256/384/512WithRSAEncryption`. RFC 8446 §4.2.3
+/// bans PKCS#1 v1.5 only for the TLS 1.3 CertificateVerify *handshake*
+/// message; it remains the dominant algorithm for certificate-chain
+/// signatures (RFC 5280 §6) and MUST be verifiable for Web-PKI interop.
+///
+/// Delegates to `std.crypto.Certificate.rsa.PKCS1v1_5Signature.verify`, which
+/// performs the full EMSA-PKCS1-v1_5 DigestInfo re-encode-and-compare in
+/// constant time (no Bleichenbacher-style padding shortcut). Supports
+/// 1024-/2048-/3072-/4096-bit moduli. Returns `true` on a valid signature,
+/// `false` on any verification failure; propagates allocator errors from
+/// `parseRsaSpki`.
+pub fn rsaPkcs1VerifyGeneric(
+    comptime Hash: type,
+    pubkey_spki_der: []const u8,
+    msg_signed_content: []const u8,
+    sig: []const u8,
+    alloc: std.mem.Allocator,
+) !bool {
+    var spki = try parseRsaSpki(pubkey_spki_der, alloc);
+    defer spki.deinit();
+
+    // Strip ASN.1 INTEGER leading sign byte; the crypto API needs the raw
+    // big-endian magnitude (mirrors rsaPssVerifyGeneric).
+    const modulus_raw = spki.modulus;
+    const modulus_offset = for (modulus_raw, 0..) |byte, i| {
+        if (byte != 0) break i;
+    } else modulus_raw.len;
+    const modulus = modulus_raw[modulus_offset..];
+
+    var exp_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &exp_buf, spki.exponent, .big);
+    const exp_offset = for (exp_buf, 0..) |byte, i| {
+        if (byte != 0) break i;
+    } else exp_buf.len - 1;
+    const exponent = exp_buf[exp_offset..];
+
+    if (exponent.len > modulus.len) return false;
+    if (sig.len != modulus.len) return false;
+
+    switch (modulus.len) {
+        inline 128, 256, 384, 512 => |modulus_len| {
+            const public_key = rsa.PublicKey.fromBytes(exponent, modulus) catch
+                return false;
+            rsa.PKCS1v1_5Signature.verify(modulus_len, sig[0..modulus_len].*, msg_signed_content, public_key, Hash) catch
                 return false;
             return true;
         },
