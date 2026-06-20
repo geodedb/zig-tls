@@ -77,6 +77,11 @@ test "NEWGAP-08: well-formed HRR still parses" {
 }
 
 fn clientCtx() !tls13.Context {
+    // Standalone-X25519 client config: not FIPS-approved, so the live
+    // handshake fails closed under -Dfips=true. The live-HRR tests using this
+    // helper skip in FIPS mode (the byte-level HRR-field tests above do not
+    // start a handshake and run in both modes).
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     const cfg = tls13.Config{
         .allocator = testing.allocator,
         .role = .Client,

@@ -472,6 +472,10 @@ test "HRR-server: CH2 with x25519 after HRR is accepted (parser does not reject)
     // negotiation" — the full server flight (Cert + CV + Finished) is
     // exercised by integration tests under tests/conformance/. Here we
     // verify the parser+validator+orchestrator reach a known-good state.
+    //
+    // Under -Dfips=true standalone X25519 is rejected (not FIPS-approved), so
+    // the server cannot "proceed past the X25519 gate"; skip in FIPS mode.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     var server_ctx = try makeServerCtx();
     defer server_ctx.deinit();
 

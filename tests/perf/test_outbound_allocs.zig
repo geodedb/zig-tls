@@ -24,6 +24,9 @@ const counting = @import("counting_allocator");
 const tls13 = @import("tls13");
 
 test "PERF-249: client handshake outbound has at most 2 reallocs" {
+    // Standalone X25519 is not FIPS-approved; the client handshake fails
+    // closed under -Dfips=true, so this std-X25519 alloc-count test skips.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     var ca = counting.CountingAllocator.init(std.testing.allocator);
     const alloc = ca.allocator();
 

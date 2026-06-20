@@ -533,6 +533,9 @@ test "[TLS-HRR] HRR emission still fires diagnostic for non-X25519 CH1" {
 // log can now unambiguously bracket the QUIC<->TLS boundary.
 
 test "[TLS-HS] handshake send secret install fires success-path diagnostic" {
+    // Drives a full standalone-X25519 negotiation to install handshake
+    // secrets; X25519 is not FIPS-approved, so skip under -Dfips=true.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     // A direct X25519 ClientHello drives the orchestrator past the HRR gate
     // and into `emitServerFlight`, which calls
     // `installHandshakeTrafficPair(server_hs, client_hs)` BEFORE the cert
@@ -578,6 +581,8 @@ test "[TLS-HS] handshake send secret install fires success-path diagnostic" {
 }
 
 test "[TLS-HS] handshake recv secret install also fires diagnostic" {
+    // Standalone-X25519 secret-install path; not FIPS-approved, skip under fips.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     // Companion to the send test. The QUIC layer's boundary check inspects
     // BOTH directions (zig-quic conn.hs_server / conn.hs_client), so both
     // install events must be observable from the TLS side. The atomic
@@ -612,6 +617,8 @@ test "[TLS-HS] handshake recv secret install also fires diagnostic" {
 }
 
 test "[TLS-HS] secret install records on_secret_available callback state" {
+    // Standalone-X25519 secret-install path; not FIPS-approved, skip under fips.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     // The diagnostic must distinguish "callback fired" (the embedding QUIC
     // stack was notified that secrets are now usable) from "callback
     // not_registered" (TLS installed the slot but no one is listening).
@@ -650,6 +657,8 @@ test "[TLS-HS] secret install records on_secret_available callback state" {
 }
 
 test "[TLS-HS] secret install reports on_secret_available=fired when callback wired" {
+    // Standalone-X25519 secret-install path; not FIPS-approved, skip under fips.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     // Counterpart to the not_registered test: when a callback IS registered,
     // the diagnostic must read `on_secret_available=fired` so the QUIC team
     // can see in the log that the boundary notification actually delivered.

@@ -665,6 +665,16 @@ pub const Context = struct {
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) !Context {
+        // FIPS startup self-test (spec §3.1): assert the validated OpenSSL
+        // FIPS provider is loaded and has passed its module self-test (KATs)
+        // before any TLS context does crypto. Context.init is the library
+        // entry point every consumer (quic/wireguard/ai/otel/http3) hits, so
+        // wiring the self-test here guarantees a -Dfips=true consumer triggers
+        // the mandated provider self-test through normal library use; it
+        // hard-fails (panics) if the provider is absent or not self-tested.
+        // Under -Dfips=false this is a comptime no-op (std_shim.assertActive).
+        fips_cb.assertActive();
+
         // GAP-0080: Validate that config.supported_groups only contains
         // implemented groups. x25519 is the classical ECDHE group; under
         // -Dfips=true the X25519MLKEM768 hybrid is also accepted in the
@@ -1813,6 +1823,14 @@ pub const Context = struct {
             return HandshakeError.UnsupportedKeyShareGroup;
         }
 
+        // FIPS strict-enforcement (spec §5): standalone X25519 is not a
+        // FIPS-approved key-agreement; the X25519 keygen below runs on bare
+        // std.crypto. Under -Dfips=true reject rather than silently use it.
+        // Comptime-dead under -Dfips=false.
+        if (comptime fips_cb.fips_enabled) {
+            return HandshakeError.UnsupportedKeyShareGroup;
+        }
+
         // SEC-036: Securely zeroize old private key before generating new one.
         // Prevents stale key material from remaining in memory on HRR rekey.
         if (self.client_priv) |*priv| {
@@ -2172,6 +2190,23 @@ pub const Context = struct {
                 );
                 return HandshakeError.InvalidCookie;
             }
+        }
+
+        // FIPS strict-enforcement (spec §5): standalone X25519 is NOT a
+        // FIPS-approved key-agreement (only ECDH P-256/384/521 and the
+        // X25519MLKEM768 hybrid are). The X25519 recoverPublicKey/scalarmult
+        // below run on bare std.crypto, not the FIPS provider, so under
+        // -Dfips=true this non-approved key exchange MUST fail closed rather
+        // than silently negotiate. Placed AFTER the RFC 8446 §4.2.2 cookie
+        // verification so the cookie security control still runs first.
+        // Comptime-dead under -Dfips=false.
+        if (comptime fips_cb.fips_enabled) {
+            logger.err(
+                "[TLS-FIPS] reject standalone X25519 key_share under -Dfips=true: " ++
+                    "not a FIPS-approved key-agreement (raw_group_code=0x{x:0>4})",
+                .{ch_view.key_share.raw_group_code},
+            );
+            return HandshakeError.UnsupportedKeyShareGroup;
         }
 
         var server_random: [32]u8 = undefined;
@@ -2546,6 +2581,16 @@ pub const Context = struct {
         if (self.config.supported_cipher_suites.len != 0) {
             self.hash_kind = cipherSuiteHash(self.config.supported_cipher_suites[0]);
         }
+        // FIPS strict-enforcement (spec §5): the client key_share below is a
+        // standalone X25519 share generated on bare std.crypto. Standalone
+        // X25519 is not a FIPS-approved key-agreement (only ECDH P-256/384/521
+        // and the X25519MLKEM768 hybrid are), and the hybrid offer is gated on
+        // the documented Kem.KeyPair.publicBytes contract boundary. Under
+        // -Dfips=true fail closed rather than silently offer non-approved
+        // X25519. Comptime-dead under -Dfips=false.
+        if (comptime fips_cb.fips_enabled) {
+            return HandshakeError.UnsupportedKeyShareGroup;
+        }
         // Generate X25519 key pair
         var priv: [32]u8 = undefined;
         // SEC-050: Zero stack-local private key on all exit paths (error or success).
@@ -2831,6 +2876,14 @@ pub const Context = struct {
                     return HandshakeError.UnsupportedKeyShareGroup;
                 }
                 if (group != 0x001d or klen != 32 or pos + 4 + 32 > pos + elen) return HandshakeError.UnsupportedKeyShareGroup;
+                // FIPS strict-enforcement (spec §5): a standalone X25519
+                // ServerHello key_share leads to the std.crypto X25519
+                // scalarmult below, which is not FIPS-approved. The client
+                // never offers X25519 under -Dfips=true, so reject this
+                // server-selected group defensively. Comptime-dead off-fips.
+                if (comptime fips_cb.fips_enabled) {
+                    return HandshakeError.UnsupportedKeyShareGroup;
+                }
                 var kp: [32]u8 = undefined;
                 @memcpy(&kp, body[pos + 4 .. pos + 4 + 32]);
                 server_pub = kp;

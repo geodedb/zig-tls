@@ -17,6 +17,10 @@ const tls13 = @import("tls13");
 const tls13_full = @import("tls13_full");
 
 fn clientCtx() !tls13.Context {
+    // Standalone-X25519 client config: not FIPS-approved, so the handshake
+    // fails closed under -Dfips=true. These ServerHello-hardening tests
+    // exercise the std-X25519 client path; skip them in FIPS mode.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     const client_config = tls13.Config{
         .allocator = testing.allocator,
         .role = .Client,

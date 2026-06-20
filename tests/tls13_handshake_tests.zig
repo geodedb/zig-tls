@@ -129,6 +129,8 @@ test "TLS 1.3 handshake completion check" {
 // ============================================================================
 
 test "TLS 1.3 server rejects 0-RTT replay (no early secret installed)" {
+    // Standalone X25519 handshake; not FIPS-approved, skip under -Dfips=true.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     const client_callbacks = tls13.Callbacks{};
     const client_config = tls13.Config{
         .allocator = testing.allocator,
@@ -176,6 +178,8 @@ test "TLS 1.3 server rejects 0-RTT replay (no early secret installed)" {
 }
 
 test "TLS 1.3 server rejects SHA-384 PSK binder trailing mismatch" {
+    // Standalone X25519 handshake; not FIPS-approved, skip under -Dfips=true.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     const client_callbacks = tls13.Callbacks{};
     const client_config = tls13.Config{
         .allocator = testing.allocator,
@@ -259,6 +263,8 @@ test "TLS 1.3 encryption levels match QUIC requirements" {
 // ============================================================================
 
 test "TLS 1.3 PSK without ticket returns MissingResumptionTicket error" {
+    // Standalone X25519 handshake; not FIPS-approved, skip under -Dfips=true.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     // GAP-003: resumption_psk set but resumption_ticket null must return error,
     // not fall back to a hardcoded identity string that no server recognizes.
     const client_callbacks = tls13.Callbacks{};
@@ -287,6 +293,8 @@ test "TLS 1.3 PSK without ticket returns MissingResumptionTicket error" {
 // ============================================================================
 
 test "SEC-028: client rejects unoffered cipher suite from ServerHello" {
+    // Standalone X25519 handshake; not FIPS-approved, skip under -Dfips=true.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     // Create client offering ONLY TLS_AES_128_GCM_SHA256 (0x1301)
     const client_callbacks = tls13.Callbacks{};
     const client_config = tls13.Config{
@@ -407,6 +415,8 @@ test "SEC-029: client with null server_name and allow_insecure succeeds init" {
 }
 
 test "TLS 1.3 PSK with ticket succeeds" {
+    // Standalone X25519 handshake; not FIPS-approved, skip under -Dfips=true.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     // Complementary test: when both resumption_psk and resumption_ticket are set,
     // startClientHandshake should succeed.
     const client_callbacks = tls13.Callbacks{};
@@ -448,6 +458,8 @@ const R5Trust = struct {
 };
 
 test "R5-01: secure loopback — client verifies a real server CertificateVerify" {
+    // Standalone X25519 loopback handshake; not FIPS-approved, skip under fips.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     const alloc = testing.allocator;
     const cert_der = @embedFile("test_certs/ed25519_cert.der");
     const key_der = @embedFile("test_certs/ed25519_key.der");
@@ -516,6 +528,8 @@ test "R5-01: secure loopback — client verifies a real server CertificateVerify
 }
 
 test "NEWGAP-11: server rejects ClientHello missing quic_transport_parameters" {
+    // Standalone X25519 loopback handshake; not FIPS-approved, skip under fips.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     const alloc = testing.allocator;
     // Client with NO transport parameters -> ClientHello omits the 0x0039
     // extension entirely (RFC 9001 §8.2 violation).
@@ -547,6 +561,8 @@ test "NEWGAP-11: server rejects ClientHello missing quic_transport_parameters" {
 }
 
 test "R6-01: mTLS loopback — server derives app secrets over CH..serverFinished (not client Cert/CV)" {
+    // Standalone X25519 loopback handshake; not FIPS-approved, skip under fips.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     const alloc = testing.allocator;
     const cert_der = @embedFile("test_certs/ed25519_cert.der");
     const key_der = @embedFile("test_certs/ed25519_key.der");
@@ -628,6 +644,8 @@ test "R6-01: mTLS loopback — server derives app secrets over CH..serverFinishe
 }
 
 test "R7-01: 0-RTT early traffic secret matches between client (send) and server (recv)" {
+    // Standalone X25519 loopback handshake; not FIPS-approved, skip under fips.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     const alloc = testing.allocator;
 
     // Client offers a resumption PSK and 0-RTT early data.

@@ -64,6 +64,10 @@ fn findKeyShareGroupOffset(msg: []const u8) ?usize {
 
 /// Create a client context with standard test configuration.
 fn makeClientCtx() !tls13.Context {
+    // This helper configures a standalone-X25519 client. Standalone X25519 is
+    // not a FIPS-approved key-agreement, so under -Dfips=true the handshake
+    // fails closed; these X25519-config tests skip in that mode.
+    if (comptime tls13.fips_enabled) return error.SkipZigTest;
     return tls13.Context.init(.{
         .allocator = testing.allocator,
         .role = .Client,

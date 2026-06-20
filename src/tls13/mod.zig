@@ -45,6 +45,13 @@
 
 const types = @import("types.zig");
 
+/// FIPS build flag, re-exported from the crypto_backend seam so consumers and
+/// tests can gate on the active backend without wiring `crypto_backend`
+/// directly. `true` under `-Dfips=true`, `false` otherwise. Standalone X25519
+/// key-agreement is rejected when this is `true` (not FIPS-approved), so
+/// std-X25519-only handshake tests gate on it with `error.SkipZigTest`.
+pub const fips_enabled = @import("crypto_backend").fips_enabled;
+
 /// TLS endpoint role (Client or Server).
 pub const Role = types.Role;
 

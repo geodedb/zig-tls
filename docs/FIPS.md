@@ -70,12 +70,13 @@ plus a tag) is the git+https lazy dep documented inline in `build.zig.zon`:
 | Area | Non-FIPS (default) | Under `-Dfips=true` |
 |------|--------------------|---------------------|
 | Record AEAD | AES-128/256-GCM **+ ChaCha20-Poly1305** | **AES-GCM only**; ChaCha is rejected at `AeadCipher.init` (`RecordError.UnsupportedCipherSuite`) and dropped from the default cipher-suite list |
-| Named groups | `[x25519]` | `[x25519_mlkem768, x25519]` — the X25519MLKEM768 post-quantum hybrid is preferred |
+| Named groups | `[x25519]` | `[x25519_mlkem768, x25519]` — the X25519MLKEM768 post-quantum hybrid is preferred. **Standalone X25519 key-agreement is rejected at runtime** (`HandshakeError.UnsupportedKeyShareGroup`) on both client and server because standalone X25519 is not FIPS-approved (only ECDH P-256/384/521 and the hybrid are); see §6 for the hybrid's contract boundary |
 | HKDF-Expand-Label | std `HkdfShaXXX.expand` | OpenSSL EVP_KDF "HKDF" `MODE=EXPAND_ONLY` via `Kdf.hkdfExpand` |
 | HKDF-Extract / HMAC | std | OpenSSL HMAC / HKDF |
 | CSPRNG (`entropy.fillRandom`) | platform `randomSecure` | SP 800-90A DRBG via `Csprng.bytes` (fail-closed) |
-| CertificateVerify sigs | std table | classical (Ed25519/ECDSA/RSA-PSS) routed through `cb.Sig` via `fromPublicBytes`/`fromPrivateBytes`; **ML-DSA** handshake sigs available |
-| X.509 cert chains | Ed25519/ECDSA/RSA | adds **ML-DSA** certificate-chain verification (`fromPublicBytes`) |
+| CertificateVerify sigs (handshake) | std table | classical (Ed25519/ECDSA/RSA-PSS) routed through `cb.Sig` via `fromPublicBytes`/`fromPrivateBytes`; **ML-DSA** handshake sigs available |
+| X.509 cert-CHAIN sigs (`verifyCertSig`) | std.crypto (Ed25519/ECDSA/RSA-PKCS#1/RSA-PSS) | classical cert-chain verification routed through the FIPS provider for the canonical (curve/hash) pairings (see §8); residual off-diagonal combos stay on std.crypto with `// fips-exempt` annotations; **ML-DSA** cert-chain verification via `fromPublicBytes` |
+| Startup self-test | n/a | `Context.init` calls `cb.assertActive()` → the OpenSSL FIPS provider module self-test (KATs); hard-fails (panic) if the provider is absent or not self-tested (spec §3.1) |
 
 All swaps are covered by dual-mode tests (both `-Dfips=false` and
 `-Dfips=true` are green).
@@ -105,10 +106,11 @@ PQC (ML-DSA/SLH-DSA, ML-KEM/hybrid KEMs).
 `tls` keeps full **RSA/ECDSA/Ed25519 certificate verification** in `-Dfips=false`
 by **NOT routing those through `std_shim`**: classical verification stays on the
 in-tree std-backed paths in `src/sig.zig` / `src/x509.zig` under
-`cb.fips_enabled == false`. Only the FIPS path is pure-`crypto_backend`. This
-keeps the non-FIPS path RSA-capable with **no `fips` dependency** and no OpenSSL
-link. (`src/std_shim.zig` is canonical/copy-verbatim and is never edited for
-this.)
+`cb.fips_enabled == false`. Under `-Dfips=true` those same paths instead route
+through the FIPS provider — see §8 for the cert-CHAIN routing details and the
+exact (curve/hash) combinations that remain on `std.crypto`. This keeps the
+non-FIPS path RSA-capable with **no `fips` dependency** and no OpenSSL link.
+(`src/std_shim.zig` is canonical/copy-verbatim and is never edited for this.)
 
 ## 6. Documented foundation-contract boundary (X25519MLKEM768 on-wire exchange)
 
@@ -151,5 +153,40 @@ in `src/tls13/context.zig`. This is tracked as a foundation-plan dependency.
 provider via its `make deps` target (always-latest OpenSSL + `enable-fips` +
 `fipsinstall`, installed to `OPENSSL_PREFIX`, default `/usr/local/ssl`). The
 FIPS provider must be loaded and self-tested at runtime; `fips.assertActive()`
-hard-fails otherwise. CI wires `make deps` through the ci-catalog
-`zig-fips-build` component before the `test-fips` job (see `.gitlab-ci.yml`).
+hard-fails otherwise. `tls` invokes this self-test from `Context.init` (the
+library entry point every consumer reaches), so a `-Dfips=true` consumer
+triggers the mandated provider self-test through normal library use. CI wires
+`make deps` through the ci-catalog `zig-fips-build` component before the
+`test-fips` job (see `.gitlab-ci.yml`).
+
+## 8. Classical certificate-CHAIN signature verification under `-Dfips=true`
+
+`x509.verifyCertSig` (reached via `validateChain` on every TLS handshake)
+verifies the signature on each certificate in the chain. Under `-Dfips=true` it
+routes the classical ECDSA / RSA-PKCS#1 / RSA-PSS / Ed25519 cert-chain
+verification through the OpenSSL FIPS provider (the `crypto_backend` seam,
+`fipsVerifyCertSig`), **not** bare `std.crypto`. ML-DSA cert-chain verification
+is likewise provider-routed.
+
+The seam's `Sig.verify` pins exactly one digest per `policy.SigAlg`:
+
+| Cert signatureAlgorithm | Routed under `-Dfips=true`? | Notes |
+|-------------------------|-----------------------------|-------|
+| ECDSA P-256 + SHA-256 | ✅ FIPS provider | `policy.ecdsa_p256` |
+| ECDSA P-384 + SHA-384 | ✅ FIPS provider | `policy.ecdsa_p384` |
+| RSA-PSS (SHA-256) | ✅ FIPS provider | `policy.rsa_pss` |
+| RSA-PKCS#1 + SHA-256 | ✅ FIPS provider | `policy.rsa_pkcs1` |
+| Ed25519 | ✅ FIPS provider | `policy.ed25519` (pure) |
+| ML-DSA-44/65/87 | ✅ FIPS provider | `fromPublicBytes` raw SPKI key |
+| ECDSA off-diagonal (e.g. P-384 key + SHA-256 sig) and ECDSA + SHA-512 | ⚠️ `std.crypto` | `// fips-exempt` — the seam couples one digest per curve and cannot express these; ECDSA + SHA-2 are still FIPS-approved *algorithms* |
+| RSA-PKCS#1 + SHA-384 / SHA-512 | ⚠️ `std.crypto` | `// fips-exempt` — the seam pins `rsa_pkcs1`↔SHA-256 only; RSA + SHA-2 are still FIPS-approved |
+
+The two `// fips-exempt`-annotated rows are a foundation-contract limitation
+(the published `Sig.verify` does not take a digest selector), not unvetted
+crypto: the underlying algorithm families (ECDSA, RSA, SHA-2) are
+FIPS-approved; only the exact `(curve/key, digest)` pairing is not expressible
+through the seam today. They are explicitly annotated at the call sites in
+`src/x509.zig` rather than silently using `std.crypto`. The handshake
+`CertificateVerify` path (`sig.zig` `verifyCertificateVerify` /
+`signCertificateVerify`) is fully seam-routed and has no such off-diagonal
+cases (TLS 1.3 fixes one digest per scheme).
