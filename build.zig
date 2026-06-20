@@ -24,14 +24,64 @@ pub fn build(b: *std.Build) void {
     // otel/scripts/verify-consumer-noop.sh).
     const with_otel = false; // 2026-05-02: hardcoded after removing the lazy otel dep — see build.zig.zon header note.
 
+    // -Dfips: route security crypto through the linked OpenSSL FIPS-140-3
+    // provider. OFF by default; when off the fips dependency is never
+    // resolved and the seam collapses to the std_shim backend (zero
+    // OpenSSL link, zero overhead). Mirrors -Dwith_otel.
+    const fips = b.option(bool, "fips", "Route security crypto through the linked FIPS-140-3 provider (off by default; zero overhead when off)") orelse false;
+    const openssl_path = b.option([]const u8, "openssl_path", "OpenSSL install prefix for non-standard installs (e.g. /usr/local/ssl)");
+    const link = @import("src/link.zig");
+
     const build_options = b.addOptions();
     build_options.addOption(bool, "tls_insecure_testing", tls_insecure_testing);
     build_options.addOption(bool, "with_otel", with_otel);
+    build_options.addOption(bool, "fips", fips);
     // Materialize ONE shared `build_options` module. Each consumer module
     // imports the SAME module instance via `addImport` to avoid Zig 0.16's
     // "file exists in modules X and X0" error when two independent
     // `addOptions` modules end up sharing a transitive file path.
     const build_options_mod = build_options.createModule();
+
+    // std_shim backend (always available; std.crypto-backed; no OpenSSL
+    // link). Shared NAMED module so it is reached via one module identity.
+    // It imports its sibling policy.zig via @import("policy.zig") (a
+    // path-relative import, NOT a named module), so the canonical
+    // non-fips backend is self-contained — no policy module wiring and no
+    // fips dependency. Zig resolves @import("policy.zig") relative to
+    // src/std_shim.zig, so policy.zig needs no addModule entry here.
+    const std_shim_mod = b.addModule("std_shim", .{
+        .root_source_file = b.path("src/std_shim.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // The crypto seam is a SHARED NAMED MODULE so every consumer resolves
+    // the same crypto_backend.zig source via one module identity.
+    const crypto_backend_mod = b.addModule("crypto_backend", .{
+        .root_source_file = b.path("src/crypto_backend.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options_mod },
+            .{ .name = "std_shim", .module = std_shim_mod },
+        },
+    });
+
+    // fips backend: resolved LAZILY only when -Dfips=true so the disabled
+    // build never fetches OpenSSL-linked code. In production this resolves
+    // the git+https lazy dep declared in build.zig.zon; in this workspace
+    // the dep is a LOCAL PATH dep (no remote yet — see build.zig.zon).
+    if (fips) {
+        if (b.lazyDependency("fips", .{ .target = target, .optimize = optimize })) |fips_dep| {
+            const fips_mod = fips_dep.module("fips");
+            crypto_backend_mod.addImport("fips", fips_mod);
+            link.linkOpenssl(b, fips_mod, openssl_path);
+            // Any compile unit that pulls crypto_backend transitively
+            // links OpenSSL; link it onto the seam module too so the
+            // symbols resolve in test/lib roots.
+            link.linkOpenssl(b, crypto_backend_mod, openssl_path);
+        }
+    }
 
     // Observability seam (otel). Declared as a SHARED NAMED MODULE so
     // every consumer (lib + test roots that exercise the seam) resolves
@@ -706,6 +756,21 @@ pub fn build(b: *std.Build) void {
     });
     const run_lib_test = b.addRunArtifact(lib_test);
     test_step.dependOn(&run_lib_test.step);
+
+    // FIPS seam test: proves the crypto_backend module resolves and the
+    // approved API surface works in BOTH -Dfips modes.
+    const fips_seam_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fips_seam_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
+            },
+        }),
+    });
+    const run_fips_seam_test = b.addRunArtifact(fips_seam_test);
+    test_step.dependOn(&run_fips_seam_test.step);
 
     // ========================================================================
     // RFC 8446 Test Vectors
