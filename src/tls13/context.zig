@@ -60,6 +60,7 @@
 
 const std = @import("std");
 const ks = @import("quic_tls");
+const fips_cb = @import("crypto_backend");
 const x509 = @import("x509");
 const sig = @import("sig");
 const tls13_full = @import("tls13_full");
@@ -127,6 +128,30 @@ const encodeHandshake = messages_mod.encodeHandshake;
 const encodeHandshakeBuf = messages_mod.encodeHandshakeBuf;
 const HsType = messages_mod.HsType;
 const deriveHandshakeTraffic = key_derivation_mod.deriveHandshakeTraffic;
+
+/// X25519MLKEM768 hybrid KEM integration into the TLS 1.3 key schedule
+/// (draft-kwiatkowski-tls-ecdhe-mlkem). Under -Dfips=true the negotiated
+/// hybrid group derives a 64-byte shared secret = X25519_shared (32) ||
+/// ML-KEM-768_shared (32), concatenated in ECDH-first order, which is fed
+/// to `deriveHandshakeTraffic` exactly like the 32-byte X25519 secret.
+///
+/// This is the KEM-into-key-schedule integration point; the full on-wire
+/// `key_share` parse/serialize is implemented in Task 7. The whole branch
+/// is comptime-dead under -Dfips=false (cb.fips_enabled == false), so the
+/// non-fips control flow is unchanged.
+const HybridKem = struct {
+    /// ECDH-first concatenation order per draft §3: X25519 leg then ML-KEM.
+    const x25519_share_len: usize = 32;
+    const mlkem_share_len: usize = 32;
+    const hybrid_shared_len: usize = x25519_share_len + mlkem_share_len; // 64
+
+    /// True only when the active backend is FIPS and the negotiated group is
+    /// the X25519MLKEM768 hybrid. Comptime-dead branch when fips is off.
+    fn isHybrid(group: tls13_full.NamedGroup) bool {
+        return fips_cb.fips_enabled and group == .x25519_mlkem768;
+    }
+};
+
 const parseKeyUpdate = messages_mod.parseKeyUpdate;
 const KeyUpdateRequest = messages_mod.KeyUpdateRequest;
 // Note: TrafficDirection, BidirSecrets, CryptoBuffer are defined below; SecretSlot is imported from secrets.zig (QUAL-118)

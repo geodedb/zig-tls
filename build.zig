@@ -336,6 +336,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "sct", .module = sct_mod },
             .{ .name = "entropy", .module = entropy_mod },
             .{ .name = "build_options", .module = build_options_mod },
+            .{ .name = "crypto_backend", .module = crypto_backend_mod },
             // Observability seam: handshake span call sites live in
             // src/tls13/context.zig. Every emit collapses to a no-op
             // when -Dwith_otel=false.
@@ -761,6 +762,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "sct", .module = sct_mod },
                 .{ .name = "entropy", .module = entropy_mod },
                 .{ .name = "build_options", .module = build_options_mod },
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
                 // Observability seam: context.zig calls into the seam.
                 .{ .name = "observability", .module = observability_mod },
             },
@@ -790,6 +792,24 @@ pub fn build(b: *std.Build) void {
     });
     const run_fips_seam_test = b.addRunArtifact(fips_seam_test);
     test_step.dependOn(&run_fips_seam_test.step);
+
+    // FIPS hybrid KEM test: proves the X25519MLKEM768 shared secret feeds
+    // the TLS 1.3 key schedule (encap/decap agree; derived handshake
+    // secret matches). fips-only (skips under -Dfips=false).
+    const fips_hybrid_kem_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fips_hybrid_kem_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        }),
+    });
+    const run_fips_hybrid_kem_test = b.addRunArtifact(fips_hybrid_kem_test);
+    test_step.dependOn(&run_fips_hybrid_kem_test.step);
 
     // ========================================================================
     // RFC 8446 Test Vectors

@@ -124,6 +124,10 @@ pub const NamedGroup = enum(u16) {
     ffdhe4096 = 0x0102, // RFC 7919: 4096-bit MODP group (152-bit security)
     ffdhe6144 = 0x0103, // RFC 7919: 6144-bit MODP group (176-bit security)
     ffdhe8192 = 0x0104, // RFC 7919: 8192-bit MODP group (192-bit security)
+    // Post-quantum hybrid key exchange (IANA-assigned, RFC 9794 /
+    // draft-kwiatkowski-tls-ecdhe-mlkem). X25519 ECDHE concatenated with
+    // ML-KEM-768. Offered/selected only under -Dfips=true. Additive.
+    x25519_mlkem768 = 0x11ec,
 };
 
 /// TLS 1.3 Signature Algorithms (RFC 8446 §4.2.3, Appendix B.3.1.3).
