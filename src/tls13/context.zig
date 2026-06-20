@@ -665,10 +665,14 @@ pub const Context = struct {
 
     /// Initializes a new TLS 1.3 context with the specified configuration and callbacks.
     pub fn init(config: Config, callbacks: Callbacks) !Context {
-        // GAP-0080: Validate that config.supported_groups only contains implemented groups.
-        // Currently only x25519 is implemented for ECDHE key exchange.
+        // GAP-0080: Validate that config.supported_groups only contains
+        // implemented groups. x25519 is the classical ECDHE group; under
+        // -Dfips=true the X25519MLKEM768 hybrid is also accepted in the
+        // config (its on-wire key_share is handled by the hybrid path,
+        // Task 7). Both are recognized; everything else is rejected.
         for (config.supported_groups) |group| {
-            if (group != .x25519) return HandshakeError.UnsupportedKeyShareGroup;
+            const ok = group == .x25519 or (fips_cb.fips_enabled and group == .x25519_mlkem768);
+            if (!ok) return HandshakeError.UnsupportedKeyShareGroup;
         }
 
         // PERF-002: Only allocate anti-replay window for servers with 0-RTT enabled.

@@ -29,6 +29,7 @@
 
 const std = @import("std");
 const tls13_full = @import("tls13_full");
+const cb = @import("crypto_backend");
 const sct = @import("sct");
 const zero_rtt = @import("zero_rtt");
 const x509 = @import("x509");
@@ -87,8 +88,13 @@ pub const Config = struct {
     ///
     /// Negotiation: First match between client offer and server preference wins.
     ///
-    /// **Default:** [TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256]
-    supported_cipher_suites: []const tls13_full.CipherSuite = &.{
+    /// **Default (non-fips):** [TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
+    /// TLS_CHACHA20_POLY1305_SHA256]. **Default (-Dfips=true):** ChaCha is
+    /// dropped (FIPS-140-3 allows only AES-GCM record protection).
+    supported_cipher_suites: []const tls13_full.CipherSuite = if (cb.fips_enabled) &.{
+        tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256,
+        tls13_full.CipherSuite.TLS_AES_256_GCM_SHA384,
+    } else &.{
         tls13_full.CipherSuite.TLS_AES_128_GCM_SHA256,
         tls13_full.CipherSuite.TLS_AES_256_GCM_SHA384,
         tls13_full.CipherSuite.TLS_CHACHA20_POLY1305_SHA256,
@@ -104,8 +110,13 @@ pub const Config = struct {
     ///
     /// Negotiation: Client sends key_share for preferred groups; server selects one.
     ///
-    /// **Default:** [x25519]
-    supported_groups: []const tls13_full.NamedGroup = &.{tls13_full.NamedGroup.x25519},
+    /// **Default (non-fips):** [x25519]. **Default (-Dfips=true):**
+    /// [x25519_mlkem768, x25519] — the post-quantum hybrid group is
+    /// preferred, with classical X25519 as fallback.
+    supported_groups: []const tls13_full.NamedGroup = if (cb.fips_enabled)
+        &.{ tls13_full.NamedGroup.x25519_mlkem768, tls13_full.NamedGroup.x25519 }
+    else
+        &.{tls13_full.NamedGroup.x25519},
 
     /// Signature algorithms allowed for certificate authentication (RFC 8446 §4.2.3).
     /// Sent in signature_algorithms extension, used to verify CertificateVerify.
@@ -504,3 +515,17 @@ pub const Config = struct {
     /// **Default:** 32 KeyUpdates per connection.
     max_peer_key_updates: u32 = 32,
 };
+
+test "FIPS config defaults exclude ChaCha and prefer hybrid group" {
+    const cb_local = @import("crypto_backend");
+    const cfg = Config{ .allocator = std.testing.allocator, .role = .Client };
+    if (comptime cb_local.fips_enabled) {
+        for (cfg.supported_cipher_suites) |s|
+            try std.testing.expect(s != .TLS_CHACHA20_POLY1305_SHA256);
+        try std.testing.expectEqual(tls13_full.NamedGroup.x25519_mlkem768, cfg.supported_groups[0]);
+    } else {
+        // default behavior preserved when fips off
+        try std.testing.expect(cfg.supported_cipher_suites.len == 3);
+        try std.testing.expectEqual(tls13_full.NamedGroup.x25519, cfg.supported_groups[0]);
+    }
+}

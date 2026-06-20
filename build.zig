@@ -137,6 +137,10 @@ pub fn build(b: *std.Build) void {
     const entropy_mod = b.addModule("entropy", .{
         .root_source_file = b.path("src/entropy.zig"),
         .target = target,
+        .imports = &.{
+            .{ .name = "crypto_backend", .module = crypto_backend_mod },
+            .{ .name = "build_options", .module = build_options_mod },
+        },
     });
 
     // PERF-024: Test-only allocator wrapper that tracks allocation counts
@@ -411,6 +415,14 @@ pub fn build(b: *std.Build) void {
     const tests = [_]TestInfo{
         .{ .name = "alert", .source = "src/alert.zig", .imports = &.{} },
         .{ .name = "asn1", .source = "src/asn1.zig", .imports = &.{} },
+        .{
+            .name = "entropy",
+            .source = "src/entropy.zig",
+            .imports = &.{
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        },
         .{
             .name = "key_schedule",
             .source = "src/key_schedule.zig",

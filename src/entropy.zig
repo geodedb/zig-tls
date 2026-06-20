@@ -33,8 +33,17 @@
 //! Closes SEC-081.
 
 const std = @import("std");
+const cb = @import("crypto_backend");
 
 pub fn fillRandom(buf: []u8) void {
+    if (comptime cb.fips_enabled) {
+        // FIPS: route through the SP 800-90A DRBG (OpenSSL RAND_bytes under
+        // the FIPS provider). Fail-closed if the validated DRBG is
+        // unavailable — never fall back to non-FIPS entropy.
+        cb.Csprng.bytes(buf) catch |err|
+            std.debug.panic("TLS RNG fail-closed: FIPS DRBG unavailable ({t})", .{err});
+        return;
+    }
     std.Io.Threaded.global_single_threaded.io().randomSecure(buf) catch |err| {
         // SEC-074: Actual fail-closed point. randomSecure returns
         // error.EntropyUnavailable on seccomp/ENOSYS/EINTR-unresolvable
@@ -43,4 +52,14 @@ pub fn fillRandom(buf: []u8) void {
         // panic with TLS-specific context so operators can diagnose.
         std.debug.panic("TLS RNG fail-closed: entropy unavailable ({t})", .{err});
     };
+}
+
+test "fillRandom yields non-zero bytes via active backend" {
+    var buf: [32]u8 = .{0} ** 32;
+    fillRandom(&buf);
+    var all_zero = true;
+    for (buf) |b| if (b != 0) {
+        all_zero = false;
+    };
+    try @import("std").testing.expect(!all_zero);
 }
