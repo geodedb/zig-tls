@@ -172,6 +172,10 @@ pub fn build(b: *std.Build) void {
     const key_schedule_mod = b.addModule("quic_tls", .{
         .root_source_file = b.path("src/key_schedule.zig"),
         .target = target,
+        .imports = &.{
+            .{ .name = "crypto_backend", .module = crypto_backend_mod },
+            .{ .name = "build_options", .module = build_options_mod },
+        },
     });
 
     // Logging utilities for QUIC-TLS debugging
@@ -402,7 +406,14 @@ pub fn build(b: *std.Build) void {
     const tests = [_]TestInfo{
         .{ .name = "alert", .source = "src/alert.zig", .imports = &.{} },
         .{ .name = "asn1", .source = "src/asn1.zig", .imports = &.{} },
-        .{ .name = "key_schedule", .source = "src/key_schedule.zig", .imports = &.{} },
+        .{
+            .name = "key_schedule",
+            .source = "src/key_schedule.zig",
+            .imports = &.{
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        },
         .{ .name = "quic_logger", .source = "src/quic_logger.zig", .imports = &.{} },
         .{
             .name = "quic_transport_params",

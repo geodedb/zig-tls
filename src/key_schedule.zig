@@ -120,6 +120,16 @@ fn hkdfModule(hash: Hash) type {
     };
 }
 
+const cb = @import("crypto_backend");
+
+/// Map the key-schedule's two-variant Hash to the seam's policy.Hash.
+fn policyHash(hash: Hash) cb.policy.Hash {
+    return switch (hash) {
+        .sha256 => .sha256,
+        .sha384 => .sha384,
+    };
+}
+
 fn secretFromSlice(hash: Hash, slice: []const u8) Secret {
     return Secret.fromSlice(hash, slice);
 }
@@ -164,6 +174,15 @@ pub fn zeroSecret(hash: Hash) Secret {
 /// - RFC 5869 §2.2 - HKDF-Extract
 pub fn extractHash(hash: Hash, salt: ?[]const u8, ikm: []const u8) Secret {
     const actual_salt = salt orelse &[_]u8{};
+    if (comptime cb.fips_enabled) {
+        // HKDF-Extract == HMAC(salt_or_zeros, ikm) (RFC 5869 §2.2).
+        var out = Secret.empty();
+        out.len = @intCast(digestLength(hash));
+        const zeros = [_]u8{0} ** max_digest_length;
+        const eff_salt = if (actual_salt.len == 0) zeros[0..digestLength(hash)] else actual_salt;
+        _ = cb.Mac.hmac(policyHash(hash), eff_salt, ikm, out.sliceMut()) catch unreachable;
+        return out;
+    }
     return switch (hash) {
         .sha256 => secretFromSlice(hash, HkdfSha256.extract(actual_salt, ikm)[0..]),
         .sha384 => secretFromSlice(hash, HkdfSha384.extract(actual_salt, ikm)[0..]),
@@ -204,6 +223,18 @@ pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, contex
     defer std.crypto.secureZero(u8, &label_buf);
 
     const prk_slice = prk.slice();
+    if (comptime cb.fips_enabled) {
+        // TLS 1.3 HKDF-Expand-Label is HKDF-Expand-only (RFC 5869 §2.3):
+        // the PRK is already extracted, so we MUST NOT re-run Extract.
+        // The seam's Kdf.hkdfExpand (foundation contract) is exactly the
+        // expand-only variant — EVP_KDF "HKDF" with
+        // OSSL_KDF_PARAM_MODE = EVP_KDF_HKDF_MODE_EXPAND_ONLY, the PRK as
+        // OSSL_KDF_PARAM_KEY, and `info` as OSSL_KDF_PARAM_INFO (no salt).
+        // `info` is the encoded HkdfLabel built just above; `out.len` is
+        // the requested length L.
+        cb.Kdf.hkdfExpand(policyHash(hash), prk_slice, info, out) catch unreachable;
+        return;
+    }
     switch (hash) {
         .sha256 => {
             var arr: [Sha256.digest_length]u8 = undefined;
@@ -268,6 +299,12 @@ pub fn deriveSecretHash(hash: Hash, secret: *const Secret, label: []const u8, co
 /// - RFC 8446 §4.4.4 - Finished verify_data uses HMAC(finished_key, ...)
 /// - RFC 2104 - HMAC construction
 pub fn hmacHash(hash: Hash, key: []const u8, data: []const u8) Secret {
+    if (comptime cb.fips_enabled) {
+        var out = Secret.empty();
+        out.len = @intCast(digestLength(hash));
+        _ = cb.Mac.hmac(policyHash(hash), key, data, out.sliceMut()) catch unreachable;
+        return out;
+    }
     return switch (hash) {
         .sha256 => blk: {
             var out: [Sha256.digest_length]u8 = undefined;
@@ -1099,4 +1136,16 @@ test "HKDF label - tls13 prefix is applied" {
 
     // If prefix weren't added, these would be the same, but they should differ
     try testing.expect(!std.mem.eql(u8, &out1, &out2));
+}
+
+// FIPS dual-mode: HKDF-Expand-Label output must be identical whether the
+// seam routes through std.crypto (off) or the OpenSSL FIPS provider (on).
+// This pins the RFC 9001 A.1 client key under the active backend so the
+// -Dfips=true build is exercised against the same vector.
+test "FIPS seam - RFC 9001 A.1 client key via active backend" {
+    const initial_secret = deriveInitialSecretV1(&test_dcid);
+    const secrets = deriveClientServerInitial(initial_secret);
+    const keys = deriveKeyIvHp(secrets.client);
+    try testing.expectEqualSlices(u8, &expected_client_key, &keys.key);
+    try testing.expectEqualSlices(u8, &expected_client_iv, &keys.iv);
 }
