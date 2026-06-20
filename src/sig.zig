@@ -969,6 +969,139 @@ pub fn parseEd25519Spki(spki_der: []const u8) ![32]u8 {
     return result;
 }
 
+// ML-DSA X.509 identifiers (draft-ietf-lamps-dilithium-certificates). The
+// SPKI `algorithm` OID and the certificate `signatureAlgorithm` OID are the
+// same per level. OID body bytes (the content after the OID tag+length):
+//   ML-DSA-44 = 2.16.840.1.101.3.4.3.17 -> 60 86 48 01 65 03 04 03 11
+//   ML-DSA-65 = 2.16.840.1.101.3.4.3.18 -> 60 86 48 01 65 03 04 03 12
+//   ML-DSA-87 = 2.16.840.1.101.3.4.3.19 -> 60 86 48 01 65 03 04 03 13
+const ml_dsa_44_oid = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x11 };
+const ml_dsa_65_oid = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12 };
+const ml_dsa_87_oid = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x13 };
+
+/// ML-DSA raw public-key sizes (FIPS 204): 44=1312, 65=1952, 87=2592.
+fn mlDsaPubKeyLen(alg: SigAlg) usize {
+    return switch (alg) {
+        .ml_dsa_44 => 1312,
+        .ml_dsa_65 => 1952,
+        .ml_dsa_87 => 2592,
+        else => unreachable,
+    };
+}
+
+/// Return the ML-DSA level for a `signatureAlgorithm`/SPKI OID body, or null.
+/// Used by x509.verifyCertSig / inferSignatureAlgorithm.
+pub fn oidIsMlDsa(oid: []const u8) ?SigAlg {
+    if (std.mem.eql(u8, oid, &ml_dsa_44_oid)) return .ml_dsa_44;
+    if (std.mem.eql(u8, oid, &ml_dsa_65_oid)) return .ml_dsa_65;
+    if (std.mem.eql(u8, oid, &ml_dsa_87_oid)) return .ml_dsa_87;
+    return null;
+}
+
+/// Parse an ML-DSA SubjectPublicKeyInfo. Mirrors `parseEd25519Spki`: read
+/// the outer SEQUENCE -> AlgorithmIdentifier SEQUENCE -> OID (matched
+/// against the three ML-DSA OIDs), then the subjectPublicKey BIT STRING
+/// (the raw ML-DSA public key, 1312/1952/2592 bytes). The returned
+/// `raw_pubkey` slice references `spki_der` (no allocation). Returns
+/// `error.UnexpectedAlgorithm` for a non-ML-DSA SPKI so callers can chain.
+pub fn parseMlDsaSpki(spki_der: []const u8) !struct { alg: SigAlg, raw_pubkey: []const u8 } {
+    var d = asn1.Decoder.init(spki_der);
+    const seq = try d.readSequence();
+    var s1 = asn1.Decoder.init(seq);
+    const algo_seq = try s1.readSequence();
+    var a1 = asn1.Decoder.init(algo_seq);
+    const algo_oid = try a1.readOID();
+    const alg = oidIsMlDsa(algo_oid) orelse return error.UnexpectedAlgorithm;
+    const bitstr = try s1.readBitString();
+    if (bitstr.len != mlDsaPubKeyLen(alg)) return error.InvalidPublicKey;
+    return .{ .alg = alg, .raw_pubkey = bitstr };
+}
+
+/// Wrap an ML-DSA raw public key (exported from a cb.Sig.KeyPair) as a DER
+/// SubjectPublicKeyInfo: SEQUENCE { SEQUENCE { OID }, BIT STRING(00 || key) }.
+/// Writes into `out` and returns the SPKI slice. Test/helper use (x509
+/// ML-DSA round-trip); no std_shim support (PQC is fips-only).
+pub fn exportMlDsaSpki(kp: *cb.Sig.KeyPair, out: []u8) ![]u8 {
+    // Export the raw provider public key.
+    var raw_buf: [4096]u8 = undefined;
+    const raw_len = try kp.publicBytes(&raw_buf);
+    const raw = raw_buf[0..raw_len];
+    // Determine the level by the exported key length.
+    const oid: []const u8 = switch (raw_len) {
+        1312 => &ml_dsa_44_oid,
+        1952 => &ml_dsa_65_oid,
+        2592 => &ml_dsa_87_oid,
+        else => return error.InvalidPublicKey,
+    };
+    // BIT STRING value = 0x00 (unused bits) || raw key.
+    // AlgorithmIdentifier SEQUENCE = 30 len (06 09 <oid>).
+    const algid_len = 2 + oid.len; // OID TLV
+    const bitstr_content_len = 1 + raw.len;
+    const bitstr_tlv_len = 1 + derLenSize(bitstr_content_len) + bitstr_content_len;
+    const algid_tlv_len = 1 + derLenSize(algid_len) + algid_len;
+    const seq_content_len = algid_tlv_len + bitstr_tlv_len;
+    const total = 1 + derLenSize(seq_content_len) + seq_content_len;
+    if (out.len < total) return error.BufferTooSmall;
+    var w = DerWriter{ .buf = out, .pos = 0 };
+    try w.tag(0x30);
+    try w.len(seq_content_len);
+    // AlgorithmIdentifier
+    try w.tag(0x30);
+    try w.len(algid_len);
+    try w.tag(0x06);
+    try w.len(oid.len);
+    try w.bytes(oid);
+    // subjectPublicKey BIT STRING
+    try w.tag(0x03);
+    try w.len(bitstr_content_len);
+    try w.byte(0x00);
+    try w.bytes(raw);
+    return out[0..w.pos];
+}
+
+/// Number of bytes a DER definite length encoding occupies for `n`.
+fn derLenSize(n: usize) usize {
+    if (n < 0x80) return 1;
+    if (n <= 0xff) return 2;
+    if (n <= 0xffff) return 3;
+    return 4;
+}
+
+const DerWriter = struct {
+    buf: []u8,
+    pos: usize,
+    fn tag(self: *DerWriter, t: u8) !void {
+        return self.byte(t);
+    }
+    fn byte(self: *DerWriter, b: u8) !void {
+        if (self.pos >= self.buf.len) return error.BufferTooSmall;
+        self.buf[self.pos] = b;
+        self.pos += 1;
+    }
+    fn bytes(self: *DerWriter, b: []const u8) !void {
+        if (self.pos + b.len > self.buf.len) return error.BufferTooSmall;
+        @memcpy(self.buf[self.pos .. self.pos + b.len], b);
+        self.pos += b.len;
+    }
+    fn len(self: *DerWriter, n: usize) !void {
+        if (n < 0x80) {
+            try self.byte(@intCast(n));
+        } else if (n <= 0xff) {
+            try self.byte(0x81);
+            try self.byte(@intCast(n));
+        } else if (n <= 0xffff) {
+            try self.byte(0x82);
+            try self.byte(@intCast(n >> 8));
+            try self.byte(@intCast(n & 0xff));
+        } else {
+            try self.byte(0x83);
+            try self.byte(@intCast(n >> 16));
+            try self.byte(@intCast((n >> 8) & 0xff));
+            try self.byte(@intCast(n & 0xff));
+        }
+    }
+};
+
 /// Parse Ed25519 private key (seed) from PKCS#8 (returns 32-byte seed)
 fn parsePkcs8Ed25519PrivateKey(der: []const u8) ![32]u8 {
     var d = asn1.Decoder.init(der);
@@ -1180,4 +1313,39 @@ test "FIPS seam - classical Ed25519 CertificateVerify sign+verify parity" {
     bad[0] ^= 0xFF;
     const bad_ok = try verifyCertificateVerify(.ed25519, &spki, bad, ctx, &th, alloc);
     try std.testing.expect(!bad_ok);
+}
+
+// Task 8: ML-DSA SPKI parsing is backend-agnostic (pure DER), so it runs
+// in BOTH modes. Under std_shim, hand-roll an ML-DSA-65 SPKI with a zero
+// 1952-byte key; under fips, the provider-export round-trip is covered by
+// the x509 test, so skip here.
+test "parseMlDsaSpki extracts level + raw public key" {
+    const cb_local = @import("crypto_backend");
+    if (comptime cb_local.fips_enabled) return error.SkipZigTest;
+    // ML-DSA-65 SPKI: SEQUENCE { SEQUENCE { OID ml-dsa-65 }, BIT STRING { 00 || 1952 zero bytes } }.
+    const oid = ml_dsa_65_oid; // 9 bytes
+    const algid_content_len: usize = 2 + oid.len; // 06 09 <oid>  => 11
+    const key_len: usize = 1952;
+    const bitstr_content_len: usize = 1 + key_len; // 1953
+    var spki: [2048]u8 = undefined;
+    var w = DerWriter{ .buf = &spki, .pos = 0 };
+    // outer SEQUENCE
+    const bitstr_tlv_len = 1 + derLenSize(bitstr_content_len) + bitstr_content_len;
+    const algid_tlv_len = 1 + derLenSize(algid_content_len) + algid_content_len;
+    const seq_content_len = algid_tlv_len + bitstr_tlv_len;
+    try w.tag(0x30);
+    try w.len(seq_content_len);
+    try w.tag(0x30);
+    try w.len(algid_content_len);
+    try w.tag(0x06);
+    try w.len(oid.len);
+    try w.bytes(&oid);
+    try w.tag(0x03);
+    try w.len(bitstr_content_len);
+    try w.byte(0x00);
+    var i: usize = 0;
+    while (i < key_len) : (i += 1) try w.byte(0x00);
+    const parsed = try parseMlDsaSpki(spki[0..w.pos]);
+    try std.testing.expectEqual(SigAlg.ml_dsa_65, parsed.alg);
+    try std.testing.expectEqual(@as(usize, 1952), parsed.raw_pubkey.len);
 }

@@ -87,6 +87,7 @@ const std = @import("std");
 const asn1 = @import("asn1");
 const sigmod = @import("sig");
 const build_options = @import("build_options");
+const fips_cb = @import("crypto_backend");
 const Ed25519 = std.crypto.sign.Ed25519;
 
 /// SEC-077: Replaces the raw `allow_insecure: bool` flag with a
@@ -1673,6 +1674,16 @@ pub fn inferSignatureAlgorithm(cert_der: []const u8, alloc: std.mem.Allocator) !
         else => return err,
     }
 
+    // ML-DSA SPKI (draft-ietf-lamps-dilithium-certificates). The parse is
+    // backend-agnostic (pure DER); only verification (Task 8 verifyCertSig)
+    // is fips-only. Reachable when a server presents an ML-DSA certificate.
+    if (sigmod.parseMlDsaSpki(cert.spki)) |parsed| {
+        return parsed.alg;
+    } else |err| switch (err) {
+        error.UnexpectedAlgorithm => {},
+        else => return err,
+    }
+
     return error.UnsupportedKeyAlgorithm;
 }
 
@@ -2073,6 +2084,17 @@ pub fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []c
         @memcpy(&sig_arr, sig_der[0..64]);
         const signature = Ed25519.Signature.fromBytes(sig_arr);
         signature.verify(tbs, pubkey) catch return false;
+        return true;
+    }
+    if (sigmod.oidIsMlDsa(algo_oid)) |alg| {
+        // ML-DSA certificate-signature verification (fips-only; std has no
+        // ML-DSA). Parse the issuer ML-DSA SPKI to its raw public key, build
+        // a cb.Sig.KeyPair via fromPublicBytes, and verify the TBS bytes.
+        if (comptime !fips_cb.fips_enabled) return false;
+        const parsed = sigmod.parseMlDsaSpki(issuer_spki_der) catch return false;
+        var kp = fips_cb.Sig.KeyPair.fromPublicBytes(sigmod.policySigAlg(alg), parsed.raw_pubkey) catch return false;
+        defer kp.deinit();
+        fips_cb.Sig.verify(sigmod.policySigAlg(alg), &kp, tbs, sig_der) catch return false;
         return true;
     }
     return false;
@@ -2937,4 +2959,24 @@ test "parseExtensionsBlock: dispatches certificatePolicies, CRLDP, AIA, inhibitA
     try std.testing.expectEqual(@as(usize, 1), parsed.authority_info_access.?.ocsp_uris.len);
     try std.testing.expectEqualStrings("http://ocs", parsed.authority_info_access.?.ocsp_uris[0]);
     try std.testing.expectEqual(@as(?u32, 3), parsed.inhibit_any_policy);
+}
+
+test "verifyCertSig accepts a valid ML-DSA-65 signature (fips)" {
+    const cb_local = @import("crypto_backend");
+    if (comptime !cb_local.fips_enabled) return error.SkipZigTest;
+    // Generate ML-DSA-65 keypair, sign a synthetic TBS, wrap the public key
+    // as an SPKI via the provider, and assert verifyCertSig returns true,
+    // and false after tampering one TBS byte.
+    var kp = try cb_local.Sig.generate(.ml_dsa_65);
+    defer kp.deinit();
+    var spki_buf: [4096]u8 = undefined;
+    const spki = try sigmod.exportMlDsaSpki(&kp, &spki_buf);
+    var tbs: [128]u8 = undefined;
+    @memset(&tbs, 0x33);
+    var sig_buf: [5120]u8 = undefined;
+    const n = try cb_local.Sig.sign(.ml_dsa_65, &kp, &tbs, &sig_buf);
+    const ml_dsa_65_oid_body = [_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12 };
+    try std.testing.expect(verifyCertSig(spki, &tbs, &ml_dsa_65_oid_body, sig_buf[0..n], std.testing.allocator));
+    tbs[0] ^= 0xFF;
+    try std.testing.expect(!verifyCertSig(spki, &tbs, &ml_dsa_65_oid_body, sig_buf[0..n], std.testing.allocator));
 }

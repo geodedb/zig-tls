@@ -242,6 +242,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "asn1", .module = asn1_mod },
             .{ .name = "sig", .module = sig_mod },
             .{ .name = "build_options", .module = build_options_mod },
+            .{ .name = "crypto_backend", .module = crypto_backend_mod },
         },
     });
 
@@ -454,7 +455,9 @@ pub fn build(b: *std.Build) void {
             .source = "src/x509.zig",
             .imports = &.{
                 .{ .name = "asn1", .module = asn1_mod },
+                .{ .name = "sig", .module = sig_mod },
                 .{ .name = "build_options", .module = build_options_mod },
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
             },
         },
         .{
