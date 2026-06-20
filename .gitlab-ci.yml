@@ -134,6 +134,37 @@ test:
   needs:
     - build
 
+# FIPS-140-3 / PQC dual-mode gate. Builds + tests BOTH -Dfips=false (the
+# default std_shim backend, no OpenSSL link) AND -Dfips=true (the linked
+# OpenSSL FIPS provider) via `make test-dual`. The FIPS provider is built
+# by the fips package's `make deps` (latest OpenSSL 3.x + enable-fips),
+# wired here through the ci-catalog `zig-fips-build` component whose setup
+# runs `make deps` before this job. Linux-required; macOS/Windows gated
+# like the existing cross-OS rules.
+#
+# NOTE: until the ci-catalog `zig-fips-build` / `fips-deps` component is
+# published + the fips package has a git remote, this job is allow-failure
+# so the pipeline stays green; flip allow_failure to false once the
+# component lands.
+test-fips:
+  stage: test
+  image: debian:bookworm-slim
+  timeout: 45m
+  <<: *cache-zig
+  before_script:
+    - *install-zig
+    # ci-catalog component setup runs `make deps` (latest OpenSSL + FIPS
+    # provider) and installs it to OPENSSL_PREFIX (default /usr/local/ssl).
+    - export OPENSSL_PREFIX="${OPENSSL_PREFIX:-/usr/local/ssl}"
+  script:
+    - make test-dual OPENSSL_PREFIX="${OPENSSL_PREFIX}"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  allow_failure: true
+  needs:
+    - build
+
 # Release optimization tests
 test-release-safe:
   stage: test

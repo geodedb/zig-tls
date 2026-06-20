@@ -7,7 +7,13 @@
 #   make clean        - Clean build artifacts
 #   make help         - Show this help message
 
-.PHONY: all build test test-unit test-vectors test-conformance conformance clean check fmt help install-deps
+.PHONY: all build test test-unit test-vectors test-conformance conformance clean check fmt help install-deps test-dual
+
+# OpenSSL FIPS install prefix used by the -Dfips=true build (override with
+# OPENSSL_PREFIX=...). The FIPS provider built by `make deps` in the fips
+# package lives at /usr/local/ssl by default.
+OPENSSL_PREFIX ?= /usr/local/ssl
+ZIG ?= zig
 
 # Default target - build and run all tests (excluding conformance which requires OpenSSL)
 all: build test-unit test-vectors test-conformance
@@ -26,6 +32,18 @@ build:
 test: test-unit test-vectors
 	@echo ""
 	@echo "✅ Standard tests completed"
+
+# FIPS dual-mode gate: build+test BOTH -Dfips=false (default std_shim
+# backend) AND -Dfips=true (linked OpenSSL FIPS provider). The FIPS run
+# needs OPENSSL_CONF pointed at the FIPS-activated openssl.cnf produced by
+# the fips package's `make deps`.
+test-dual:
+	@echo "🧪 FIPS dual-mode: -Dfips=false (std_shim)..."
+	$(ZIG) build test --summary all
+	@echo "🔐 FIPS dual-mode: -Dfips=true (OpenSSL FIPS provider)..."
+	OPENSSL_CONF=$(OPENSSL_PREFIX)/ssl/openssl.cnf $(ZIG) build test -Dfips=true -Dopenssl_path=$(OPENSSL_PREFIX) --summary all
+	@echo ""
+	@echo "✅ FIPS dual-mode tests completed"
 
 # Run unit tests for all modules
 test-unit:

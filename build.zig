@@ -393,6 +393,9 @@ pub fn build(b: *std.Build) void {
             // disabled/enabled invariants through the public root.
             .{ .name = "observability", .module = observability_mod },
             .{ .name = "build_options", .module = build_options_mod },
+            // FIPS seam: the public root carries crypto_backend transitively
+            // so consumers that opt into -Dfips resolve one module identity.
+            .{ .name = "crypto_backend", .module = crypto_backend_mod },
         },
     });
     // PERF-237b: parallel module removed in 0.2.0; no addImport here.
