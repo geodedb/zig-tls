@@ -127,6 +127,10 @@ pub const RecordError = error{
     BufferTooSmall,
     /// Memory allocation failed
     OutOfMemory,
+    /// Cipher suite is not permitted under the active backend (e.g.
+    /// ChaCha20-Poly1305 is forbidden under -Dfips=true; FIPS-140-3
+    /// allows only AES-GCM record protection).
+    UnsupportedCipherSuite,
 };
 
 /// Lightweight view over a TLSPlaintext record (RFC 8446 §5.1).

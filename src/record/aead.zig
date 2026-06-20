@@ -50,6 +50,7 @@ const std = @import("std");
 const crypto = std.crypto;
 const math = std.math;
 const plaintext_mod = @import("plaintext.zig");
+const cb = @import("crypto_backend");
 
 const AuthenticationError = crypto.errors.AuthenticationError;
 const Aes128Gcm = crypto.aead.aes_gcm.Aes128Gcm;
@@ -200,6 +201,13 @@ pub const AeadCipher = struct {
         limits_override: ?AeadUsageLimits,
     ) RecordError!AeadCipher {
         const spec = suiteSpec(suite);
+        // SEC/FIPS: ChaCha20-Poly1305 record protection is forbidden under
+        // -Dfips=true (FIPS-140-3 allows only AES-GCM). Task 6 also removes
+        // it from the default cipher-suite offer list; this is the
+        // defense-in-depth check so the suite can never be activated.
+        if (comptime cb.fips_enabled) {
+            if (suite == .TLS_CHACHA20_POLY1305_SHA256) return RecordError.UnsupportedCipherSuite;
+        }
         if (key.len != spec.key_len) return RecordError.InvalidKeyLength;
         if (iv.len != spec.nonce_len or spec.nonce_len < 8 or spec.nonce_len > MaxNonceLength)
             return RecordError.InvalidIvLength;
@@ -293,18 +301,30 @@ pub const AeadCipher = struct {
         // RFC 5116 - AEAD encryption: ciphertext || tag = AEAD-Encrypt(key, nonce, plaintext, aad)
         switch (self.key_material) {
             .aes128 => |key| {
-                var nonce_arr: [Aes128Gcm.nonce_length]u8 = undefined;
-                @memcpy(nonce_arr[0..], nonce_full[0..Aes128Gcm.nonce_length]);
-                var tag_arr: [Aes128Gcm.tag_length]u8 = undefined;
-                Aes128Gcm.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
-                @memcpy(tag_slice, tag_arr[0..tag_len]);
+                if (comptime cb.fips_enabled) {
+                    var tag_arr: [Aes128Gcm.tag_length]u8 = undefined;
+                    cb.Aead.seal(.aes_128_gcm, &key, nonce_full[0..Aes128Gcm.nonce_length], aad, plaintext, ct, &tag_arr) catch unreachable;
+                    @memcpy(tag_slice, tag_arr[0..tag_len]);
+                } else {
+                    var nonce_arr: [Aes128Gcm.nonce_length]u8 = undefined;
+                    @memcpy(nonce_arr[0..], nonce_full[0..Aes128Gcm.nonce_length]);
+                    var tag_arr: [Aes128Gcm.tag_length]u8 = undefined;
+                    Aes128Gcm.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
+                    @memcpy(tag_slice, tag_arr[0..tag_len]);
+                }
             },
             .aes256 => |key| {
-                var nonce_arr: [Aes256Gcm.nonce_length]u8 = undefined;
-                @memcpy(nonce_arr[0..], nonce_full[0..Aes256Gcm.nonce_length]);
-                var tag_arr: [Aes256Gcm.tag_length]u8 = undefined;
-                Aes256Gcm.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
-                @memcpy(tag_slice, tag_arr[0..tag_len]);
+                if (comptime cb.fips_enabled) {
+                    var tag_arr: [Aes256Gcm.tag_length]u8 = undefined;
+                    cb.Aead.seal(.aes_256_gcm, &key, nonce_full[0..Aes256Gcm.nonce_length], aad, plaintext, ct, &tag_arr) catch unreachable;
+                    @memcpy(tag_slice, tag_arr[0..tag_len]);
+                } else {
+                    var nonce_arr: [Aes256Gcm.nonce_length]u8 = undefined;
+                    @memcpy(nonce_arr[0..], nonce_full[0..Aes256Gcm.nonce_length]);
+                    var tag_arr: [Aes256Gcm.tag_length]u8 = undefined;
+                    Aes256Gcm.encrypt(ct, &tag_arr, plaintext, aad, nonce_arr, key);
+                    @memcpy(tag_slice, tag_arr[0..tag_len]);
+                }
             },
             .chacha20 => |key| {
                 var nonce_arr: [ChaCha20Poly1305.nonce_length]u8 = undefined;
@@ -432,27 +452,41 @@ pub const AeadCipher = struct {
         // RFC 5116 - AEAD decryption: plaintext = AEAD-Decrypt(key, nonce, ciphertext, tag, aad)
         switch (self.key_material) {
             .aes128 => |key| {
-                var nonce_arr: [Aes128Gcm.nonce_length]u8 = undefined;
-                @memcpy(nonce_arr[0..], nonce_full[0..Aes128Gcm.nonce_length]);
-                var tag_arr: [Aes128Gcm.tag_length]u8 = undefined;
-                @memcpy(tag_arr[0..], tag_buf[0..Aes128Gcm.tag_length]);
-                Aes128Gcm.decrypt(pt_out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
-                    switch (err) {
-                        // RFC 8446 §5.2 - Authentication failure indicates tampering
-                        AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
-                    }
-                };
+                if (comptime cb.fips_enabled) {
+                    cb.Aead.open(.aes_128_gcm, &key, nonce_full[0..Aes128Gcm.nonce_length], aad, ct, tag_buf[0..Aes128Gcm.tag_length], pt_out) catch |err| switch (err) {
+                        error.AuthFailed => return self.onAuthFailure(),
+                        else => unreachable,
+                    };
+                } else {
+                    var nonce_arr: [Aes128Gcm.nonce_length]u8 = undefined;
+                    @memcpy(nonce_arr[0..], nonce_full[0..Aes128Gcm.nonce_length]);
+                    var tag_arr: [Aes128Gcm.tag_length]u8 = undefined;
+                    @memcpy(tag_arr[0..], tag_buf[0..Aes128Gcm.tag_length]);
+                    Aes128Gcm.decrypt(pt_out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
+                        switch (err) {
+                            // RFC 8446 §5.2 - Authentication failure indicates tampering
+                            AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
+                        }
+                    };
+                }
             },
             .aes256 => |key| {
-                var nonce_arr: [Aes256Gcm.nonce_length]u8 = undefined;
-                @memcpy(nonce_arr[0..], nonce_full[0..Aes256Gcm.nonce_length]);
-                var tag_arr: [Aes256Gcm.tag_length]u8 = undefined;
-                @memcpy(tag_arr[0..], tag_buf[0..Aes256Gcm.tag_length]);
-                Aes256Gcm.decrypt(pt_out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
-                    switch (err) {
-                        AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
-                    }
-                };
+                if (comptime cb.fips_enabled) {
+                    cb.Aead.open(.aes_256_gcm, &key, nonce_full[0..Aes256Gcm.nonce_length], aad, ct, tag_buf[0..Aes256Gcm.tag_length], pt_out) catch |err| switch (err) {
+                        error.AuthFailed => return self.onAuthFailure(),
+                        else => unreachable,
+                    };
+                } else {
+                    var nonce_arr: [Aes256Gcm.nonce_length]u8 = undefined;
+                    @memcpy(nonce_arr[0..], nonce_full[0..Aes256Gcm.nonce_length]);
+                    var tag_arr: [Aes256Gcm.tag_length]u8 = undefined;
+                    @memcpy(tag_arr[0..], tag_buf[0..Aes256Gcm.tag_length]);
+                    Aes256Gcm.decrypt(pt_out, ct, tag_arr, aad, nonce_arr, key) catch |err| {
+                        switch (err) {
+                            AuthenticationError.AuthenticationFailed => return self.onAuthFailure(),
+                        }
+                    };
+                }
             },
             .chacha20 => |key| {
                 var nonce_arr: [ChaCha20Poly1305.nonce_length]u8 = undefined;
@@ -1036,11 +1070,15 @@ test "default limits from RFC 8446" {
     try testing.expectEqual(@as(u64, 1) << 24, aes256.usage.limits.confidentiality);
     try testing.expectEqual(@as(u64, 1) << 36, aes256.usage.limits.integrity);
 
-    // ChaCha20-Poly1305: 2^32 confidentiality, 2^36 integrity
-    var chacha = try AeadCipher.init(.TLS_CHACHA20_POLY1305_SHA256, &key32, &iv, null);
-    defer chacha.wipe();
-    try testing.expectEqual(@as(u64, 1) << 32, chacha.usage.limits.confidentiality);
-    try testing.expectEqual(@as(u64, 1) << 36, chacha.usage.limits.integrity);
+    // ChaCha20-Poly1305: 2^32 confidentiality, 2^36 integrity.
+    // FIPS forbids ChaCha; init rejects the suite under -Dfips=true, so the
+    // AES-GCM limits above are the only ones asserted in fips mode.
+    if (comptime !cb.fips_enabled) {
+        var chacha = try AeadCipher.init(.TLS_CHACHA20_POLY1305_SHA256, &key32, &iv, null);
+        defer chacha.wipe();
+        try testing.expectEqual(@as(u64, 1) << 32, chacha.usage.limits.confidentiality);
+        try testing.expectEqual(@as(u64, 1) << 36, chacha.usage.limits.integrity);
+    }
 }
 
 test "integration - limit tracking through seal operations" {
@@ -1130,6 +1168,8 @@ test "sealBuf - AES-256-GCM round-trip with openBuf" {
 }
 
 test "sealBuf - ChaCha20-Poly1305 round-trip with openBuf" {
+    // FIPS forbids ChaCha20-Poly1305; init rejects it under -Dfips=true.
+    if (comptime cb.fips_enabled) return error.SkipZigTest;
     const key = [_]u8{0x42} ** 32;
     const iv = [_]u8{0x13} ** 12;
     var cipher = try AeadCipher.init(.TLS_CHACHA20_POLY1305_SHA256, &key, &iv, null);

@@ -305,6 +305,9 @@ test "RFC 8446 §5.2 - AES-256-GCM seal/open round-trip" {
 
 // RFC 8446 §5.2: AEAD ChaCha20-Poly1305 seal/open round-trip
 test "RFC 8446 §5.2 - ChaCha20-Poly1305 seal/open round-trip" {
+    // FIPS forbids ChaCha20-Poly1305 record protection; AeadCipher.init
+    // rejects the suite under -Dfips=true (covered by the FIPS-reject test).
+    if (comptime @import("crypto_backend").fips_enabled) return error.SkipZigTest;
     const allocator = testing.allocator;
     const key: [32]u8 = [_]u8{0x55} ** 32;
     const iv: [12]u8 = [_]u8{0x66} ** 12;
@@ -534,4 +537,27 @@ test "AEAD open - ciphertext too short" {
 
     const short_ct = [_]u8{ 0x01, 0x02, 0x03 }; // Less than 16 bytes (tag length)
     try expectError(RecordError.CiphertextTooShort, cipher.open(allocator, 0, "", &short_ct));
+}
+
+// FIPS dual-mode: AES-256-GCM seal/open round-trips identically on both
+// backends; ChaCha20-Poly1305 is rejected under fips (SEC: FIPS forbids it).
+test "FIPS seam - AES-256-GCM round trip via active backend" {
+    const allocator = std.testing.allocator;
+    var key: [32]u8 = .{0x42} ** 32;
+    var iv: [12]u8 = .{0x24} ** 12;
+    var cipher = try AeadCipher.init(.TLS_AES_256_GCM_SHA384, &key, &iv, null);
+    const aad = "header";
+    const pt = "fips record payload";
+    const sealed = try cipher.seal(allocator, 0, aad, pt);
+    defer allocator.free(sealed);
+    const opened = try cipher.open(allocator, 0, aad, sealed);
+    defer allocator.free(opened);
+    try std.testing.expectEqualSlices(u8, pt, opened);
+}
+test "FIPS seam - ChaCha20-Poly1305 rejected when fips enabled" {
+    const cb = @import("crypto_backend");
+    if (comptime !cb.fips_enabled) return error.SkipZigTest;
+    var key: [32]u8 = .{0} ** 32;
+    var iv: [12]u8 = .{0} ** 12;
+    try std.testing.expectError(RecordError.UnsupportedCipherSuite, AeadCipher.init(.TLS_CHACHA20_POLY1305_SHA256, &key, &iv, null));
 }

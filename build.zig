@@ -269,6 +269,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{
             .{ .name = "quic_tls", .module = key_schedule_mod },
+            .{ .name = "crypto_backend", .module = crypto_backend_mod },
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
 
@@ -452,6 +454,8 @@ pub fn build(b: *std.Build) void {
             .source = "src/record.zig",
             .imports = &.{
                 .{ .name = "quic_tls", .module = key_schedule_mod },
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
+                .{ .name = "build_options", .module = build_options_mod },
             },
         },
         .{
