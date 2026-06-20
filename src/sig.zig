@@ -96,6 +96,7 @@
 //! - Hardware-backed signature generation via PKCS#11 or similar
 const std = @import("std");
 const asn1 = @import("asn1");
+const cb = @import("crypto_backend");
 
 // Use standard library crypto
 // https://ziglang.org/documentation/master/std/#std.crypto.sign.Ed25519
@@ -161,6 +162,11 @@ pub const SigAlg = enum {
     rsa_pss_sha256,
     /// Ed25519 pure signature (RFC 8446 §4.2.3, value 0x0807)
     ed25519,
+    // PQC (draft-ietf-tls-mldsa); fips-only. Additive — existing variants
+    // and their order are unchanged so quic/x509 callers compile.
+    ml_dsa_44,
+    ml_dsa_65,
+    ml_dsa_87,
 };
 
 /// Convert from TLS 1.3 SignatureScheme (raw u16 value) to SigAlg.
@@ -183,6 +189,10 @@ pub fn fromTls13SignatureScheme(scheme: anytype) !SigAlg {
         0x0503 => SigAlg.ecdsa_secp384r1_sha384,
         0x0804 => SigAlg.rsa_pss_sha256,
         0x0807 => SigAlg.ed25519,
+        // ML-DSA IANA-assigned codepoints (draft-ietf-tls-mldsa). fips-only.
+        0x0904 => SigAlg.ml_dsa_44,
+        0x0905 => SigAlg.ml_dsa_65,
+        0x0906 => SigAlg.ml_dsa_87,
         else => error.UnsupportedSignatureScheme,
     };
 }
@@ -591,16 +601,101 @@ pub fn rsa_pss_verify_sha256(pubkey_spki_der: []const u8, msg_signed_content: []
 /// );
 /// if (!ok) return error.BadCertificateVerify;
 /// ```
+fn isMlDsa(alg: SigAlg) bool {
+    return switch (alg) {
+        .ml_dsa_44, .ml_dsa_65, .ml_dsa_87 => true,
+        else => false,
+    };
+}
+
+/// Map this module's SigAlg to the seam's policy.SigAlg. The seam's
+/// policy.SigAlg names are published by the foundation contract
+/// (ecdsa_p256, ecdsa_p384, rsa_pss, ed25519, ml_dsa_44/65/87).
+/// `pub` so x509.zig (Task 8) can reuse it for ML-DSA cert verification.
+pub fn policySigAlg(alg: SigAlg) cb.policy.SigAlg {
+    return switch (alg) {
+        .ecdsa_secp256r1_sha256 => .ecdsa_p256,
+        .ecdsa_secp384r1_sha384 => .ecdsa_p384,
+        .rsa_pss_sha256 => .rsa_pss,
+        .ed25519 => .ed25519,
+        .ml_dsa_44 => .ml_dsa_44,
+        .ml_dsa_65 => .ml_dsa_65,
+        .ml_dsa_87 => .ml_dsa_87,
+    };
+}
+
 pub fn verifyCertificateVerify(alg: SigAlg, pubkey_spki_der: []const u8, sig: []const u8, context: []const u8, transcript_hash: []const u8, alloc: std.mem.Allocator) !bool {
-    // QUAL-341: Table-driven dispatch over SigAlg. Bit-exact RFC 8446 §4.2.3
-    // behaviour preserved — each per-scheme verifier contains the same
-    // steps that previously lived in the inline switch arms.
+    // Under -Dfips=false, ML-DSA is never offered in the handshake (the
+    // fips-only sig list excludes it) and std_shim has no ML-DSA; reject
+    // defensively so the std table's `unreachable` scan is never reached.
+    if (!cb.fips_enabled and isMlDsa(alg)) return error.Unsupported;
+    if (comptime cb.fips_enabled) {
+        // Reconstruct the signed content (64*0x20 || context || 0x00 ||
+        // transcript_hash) exactly as the std path does.
+        var sc_buf: [512]u8 = undefined;
+        const sc = tls13_build_context_and_hash(alg, context, transcript_hash, &sc_buf);
+        // Build the public key in the encoding fromPublicBytes wants per
+        // family: Ed25519 = raw 32 bytes (parsed out of the SPKI BIT
+        // STRING); ECDSA/RSA = the full SPKI DER (OSSL_DECODER/d2i_PUBKEY);
+        // ML-DSA = raw provider public-key bytes.
+        var kp = switch (alg) {
+            .ed25519 => blk: {
+                const raw = parseEd25519Spki(pubkey_spki_der) catch return false;
+                break :blk cb.Sig.KeyPair.fromPublicBytes(.ed25519, &raw) catch return false;
+            },
+            .ecdsa_secp256r1_sha256 => cb.Sig.KeyPair.fromPublicBytes(.ecdsa_p256, pubkey_spki_der) catch return false,
+            .ecdsa_secp384r1_sha384 => cb.Sig.KeyPair.fromPublicBytes(.ecdsa_p384, pubkey_spki_der) catch return false,
+            .rsa_pss_sha256 => cb.Sig.KeyPair.fromPublicBytes(.rsa_pss, pubkey_spki_der) catch return false,
+            // ML-DSA CertificateVerify with a peer public key off the wire
+            // (raw ML-DSA public key bytes) routes here too; cert-chain SPKI
+            // parsing is Task 8 (ML-DSA X.509 certificate-chain verification).
+            .ml_dsa_44 => cb.Sig.KeyPair.fromPublicBytes(.ml_dsa_44, pubkey_spki_der) catch return false,
+            .ml_dsa_65 => cb.Sig.KeyPair.fromPublicBytes(.ml_dsa_65, pubkey_spki_der) catch return false,
+            .ml_dsa_87 => cb.Sig.KeyPair.fromPublicBytes(.ml_dsa_87, pubkey_spki_der) catch return false,
+        };
+        defer kp.deinit();
+        cb.Sig.verify(policySigAlg(alg), &kp, sc, sig) catch |err| switch (err) {
+            error.VerifyFailed => return false,
+            else => return err,
+        };
+        return true;
+    }
+    // QUAL-341: std-backed table dispatch (unchanged when fips off).
     const entry = schemeEntry(alg);
     return entry.verify(pubkey_spki_der, sig, context, transcript_hash, alloc);
 }
 
 /// Sign a TLS 1.3 CertificateVerify for given algorithm using a DER private key blob (currently supports raw PKCS#8 EC for P-256 and Ed25519) and transcript hash.
 pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []const u8, transcript_hash: []const u8, alloc: std.mem.Allocator) ![]u8 {
+    if (!cb.fips_enabled and isMlDsa(alg)) return error.Unsupported;
+    if (comptime cb.fips_enabled) {
+        var ts_buf: [512]u8 = undefined;
+        const to_sign = tls13_build_context_and_hash(alg, context, transcript_hash, &ts_buf);
+        var kp = switch (alg) {
+            .ed25519 => blk: {
+                var seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
+                defer std.crypto.secureZero(u8, &seed);
+                break :blk try cb.Sig.KeyPair.fromPrivateBytes(.ed25519, &seed);
+            },
+            // ECDSA/RSA private keys are the DER PKCS#8 blob; ML-DSA is the
+            // FIPS provider raw private-key encoding.
+            .ecdsa_secp256r1_sha256 => try cb.Sig.KeyPair.fromPrivateBytes(.ecdsa_p256, privkey_der),
+            .ecdsa_secp384r1_sha384 => try cb.Sig.KeyPair.fromPrivateBytes(.ecdsa_p384, privkey_der),
+            .rsa_pss_sha256 => try cb.Sig.KeyPair.fromPrivateBytes(.rsa_pss, privkey_der),
+            .ml_dsa_44 => try cb.Sig.KeyPair.fromPrivateBytes(.ml_dsa_44, privkey_der),
+            .ml_dsa_65 => try cb.Sig.KeyPair.fromPrivateBytes(.ml_dsa_65, privkey_der),
+            .ml_dsa_87 => try cb.Sig.KeyPair.fromPrivateBytes(.ml_dsa_87, privkey_der),
+        };
+        defer kp.deinit();
+        // Two-call pattern: size then fill. cb.Sig.sign writes into a caller
+        // buffer and returns the length. ML-DSA-87 sigs are up to ~4627
+        // bytes, so size for the largest possible.
+        var sig_buf: [5120]u8 = undefined;
+        const n = try cb.Sig.sign(policySigAlg(alg), &kp, to_sign, &sig_buf);
+        const out = try alloc.alloc(u8, n);
+        @memcpy(out, sig_buf[0..n]);
+        return out;
+    }
     // QUAL-341: Table-driven dispatch over SigAlg. Schemes without a
     // signer (RSA-PSS, ECDSA P-384) surface error.Unsupported exactly as
     // the prior inline switch's default arm did.
@@ -1006,4 +1101,83 @@ fn parsePkcs8EcdsaP256PrivateKey(der: []const u8, out: *[32]u8) !void {
     @memcpy(out[0..], pk_oct[j .. j + sk_len]);
     // success
     return;
+}
+
+// ---- FIPS dual-mode CertificateVerify tests (Task 4) -------------------------
+//
+// Ed25519 test fixtures: a deterministic keypair built from a fixed seed,
+// wrapped as PKCS#8 (private) and SPKI (public) so both the std-table path
+// (-Dfips=false) and the cb.Sig path (-Dfips=true) sign/verify the SAME
+// vector. Hoisted to file scope so future tests can share them.
+const ed25519_test_seed: [32]u8 = .{
+    0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfe, 0xbf, 0x5e, 0x9b, 0x0c, 0x0d, 0x4f, 0x8a, 0x7f, 0x5d, 0x2e,
+    0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfe, 0xbf, 0x5e, 0x9b, 0x0c, 0x0d, 0x4f, 0x8a, 0x7f, 0x5d, 0x2e,
+};
+
+// SPKI header: SEQUENCE { AlgorithmIdentifier { id-Ed25519 }, BIT STRING }.
+// 30 2a 30 05 06 03 2b 65 70 03 21 00 precedes the 32-byte public key.
+const ed25519_spki_header = [_]u8{
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+};
+
+/// Build the 44-byte Ed25519 SPKI for the deterministic test key at RUNTIME
+/// (comptime key derivation exceeds Zig's backwards-branch budget).
+fn ed25519TestSpki() [44]u8 {
+    const kp = Ed25519.KeyPair.generateDeterministic(ed25519_test_seed) catch unreachable;
+    var out: [44]u8 = undefined;
+    @memcpy(out[0..12], &ed25519_spki_header);
+    const pk = kp.public_key.toBytes();
+    @memcpy(out[12..44], &pk);
+    return out;
+}
+
+// PKCS#8 PrivateKeyInfo for Ed25519:
+// 30 2e 02 01 00 30 05 06 03 2b 65 70 04 22 04 20 || 32-byte seed.
+const ed25519_test_pkcs8: [48]u8 = .{
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+} ++ ed25519_test_seed;
+
+// ML-DSA-65 handshake signature: sign the CertificateVerify content and
+// verify it round-trips. PQC sigs are fips-only; skip under std_shim.
+test "FIPS seam - ML-DSA-65 CertificateVerify round trip" {
+    const cb_local = @import("crypto_backend");
+    if (comptime !cb_local.fips_enabled) return error.SkipZigTest;
+    var kp = try cb_local.Sig.generate(.ml_dsa_65);
+    defer kp.deinit();
+    // CertificateVerify content = 64*0x20 || context || 0x00 || transcript_hash.
+    var content: [64 + 33 + 1 + 32]u8 = undefined;
+    @memset(content[0..64], 0x20);
+    const ctx = "TLS 1.3, server CertificateVerify";
+    @memcpy(content[64 .. 64 + ctx.len], ctx);
+    content[64 + ctx.len] = 0x00;
+    @memset(content[64 + ctx.len + 1 ..], 0xAB);
+    var sig_buf: [5120]u8 = undefined;
+    const n = try cb_local.Sig.sign(.ml_dsa_65, &kp, &content, &sig_buf);
+    try cb_local.Sig.verify(.ml_dsa_65, &kp, &content, sig_buf[0..n]);
+    try std.testing.expectError(error.VerifyFailed, cb_local.Sig.verify(.ml_dsa_65, &kp, content[0 .. content.len - 1], sig_buf[0..n]));
+}
+
+test "FIPS seam - SigAlg gains ML-DSA variants" {
+    try std.testing.expectEqual(SigAlg.ml_dsa_65, try fromTls13SignatureScheme(@as(u16, 0x0905)));
+}
+
+// Classical Ed25519 CertificateVerify routed through cb.Sig under fips
+// (and the std table when off): sign with a real PKCS#8 key, then verify
+// against its SPKI. Same vector exercises BOTH backends.
+test "FIPS seam - classical Ed25519 CertificateVerify sign+verify parity" {
+    const alloc = std.testing.allocator;
+    const ctx = "TLS 1.3, server CertificateVerify";
+    var th: [32]u8 = undefined;
+    @memset(&th, 0x5A);
+    const spki = ed25519TestSpki();
+    const signature = try signCertificateVerify(.ed25519, &ed25519_test_pkcs8, ctx, &th, alloc);
+    defer alloc.free(signature);
+    const ok = try verifyCertificateVerify(.ed25519, &spki, signature, ctx, &th, alloc);
+    try std.testing.expect(ok);
+    // tamper -> reject
+    var bad = try alloc.dupe(u8, signature);
+    defer alloc.free(bad);
+    bad[0] ^= 0xFF;
+    const bad_ok = try verifyCertificateVerify(.ed25519, &spki, bad, ctx, &th, alloc);
+    try std.testing.expect(!bad_ok);
 }
