@@ -109,6 +109,12 @@ pub const NamedGroup = core_types.NamedGroup;
 pub const SignatureScheme = core_types.SignatureScheme;
 pub const CipherSuite = core_types.CipherSuite;
 pub const MAX_EXTENSION_TYPES = core_types.MAX_EXTENSION_TYPES;
+// draft-kwiatkowski-tls-ecdhe-mlkem hybrid X25519MLKEM768 key_share sizes.
+pub const x25519_mlkem768_ch_keyshare_len = core_types.x25519_mlkem768_ch_keyshare_len;
+pub const x25519_mlkem768_sh_keyshare_len = core_types.x25519_mlkem768_sh_keyshare_len;
+pub const x25519_len = core_types.x25519_len;
+pub const mlkem768_encap_key_len = core_types.mlkem768_encap_key_len;
+pub const mlkem768_ciphertext_len = core_types.mlkem768_ciphertext_len;
 
 // Re-export helper functions for backward compatibility
 pub const readU16 = helpers_mod.readU16;

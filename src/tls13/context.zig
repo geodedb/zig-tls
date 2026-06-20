@@ -2068,6 +2068,36 @@ pub const Context = struct {
             return HandshakeError.NoSignatureScheme;
         };
 
+        // draft-kwiatkowski-tls-ecdhe-mlkem: server accept of the
+        // X25519MLKEM768 hybrid key_share (fips-only). Split + length-
+        // validate the inbound 1216-byte client share (X25519 pub [0..32]
+        // || ML-KEM-768 encap key [32..1216]) so malformed hybrid shares
+        // are rejected, then hit the documented contract boundary.
+        if (HybridKem.isHybrid(ch_view.key_share.group)) {
+            const ks_bytes = ch_view.key_share.key;
+            if (ks_bytes.len != tls13_full.x25519_mlkem768_ch_keyshare_len) {
+                logger.err(
+                    "[TLS-HYBRID] negotiate UnsupportedKeyShareGroup (hybrid_bad_len): " ++
+                        "x25519_mlkem768 key.len={d} (expected {d}, raw_group_code=0x{x:0>4})",
+                    .{ ks_bytes.len, tls13_full.x25519_mlkem768_ch_keyshare_len, ch_view.key_share.raw_group_code },
+                );
+                return HandshakeError.UnsupportedKeyShareGroup;
+            }
+            // Wire split (validated): x25519 leg + ML-KEM-768 encap key.
+            const client_x25519_pub = ks_bytes[0..tls13_full.x25519_len];
+            const client_mlkem_encap = ks_bytes[tls13_full.x25519_len..tls13_full.x25519_mlkem768_ch_keyshare_len];
+            _ = client_x25519_pub;
+            _ = client_mlkem_encap;
+            // CONTRACT-BOUNDARY: encapsulating against the client's encap
+            // key needs foundation Kem.KeyPair.fromPublicBytes(
+            //   .x25519_ml_kem_768, raw) (EVP_PKEY_new_raw_public_key_ex
+            //   under "fips=yes"), which the corrected contract does not yet
+            //   publish. The wire-format constants, split, and length
+            //   validation above are exercised now; the encapsulate arm is
+            //   gated until the contract entry lands (see docs/FIPS.md).
+            return HandshakeError.UnsupportedKeyShareGroup;
+        }
+
         // RFC 8446 §4.1.4: Check if client's key_share group is supported
         if (ch_view.key_share.group != .x25519) {
             if (self.hrr_sent) {
@@ -2554,6 +2584,21 @@ pub const Context = struct {
                 (self.config.resumption_ticket orelse return HandshakeError.MissingResumptionTicket);
         } else null;
 
+        // draft-kwiatkowski-tls-ecdhe-mlkem: when -Dfips=true the default
+        // supported_groups prefers x25519_mlkem768. Offering the hybrid
+        // group's key_share requires the 1216-byte
+        // (X25519 pub || ML-KEM-768 encap key) blob.
+        //
+        // CONTRACT-BOUNDARY: exporting the client's ML-KEM encapsulation key
+        // to bytes for the offer needs foundation
+        // Kem.KeyPair.publicBytes(self, out) (EVP_PKEY_get_raw_public_key),
+        // which the corrected contract does not yet publish. Until it lands,
+        // the client offers the classical X25519 key_share for the first
+        // group; the hybrid encap-key fill arm is gated (see docs/FIPS.md).
+        // The wire-format constants + the server-side split/validation
+        // (negotiateCipherAndKeys above) and the local encapsulate/
+        // decapsulate round-trip (fips_hybrid_keyshare_test) are exercised.
+
         // QUAL-096: Use shared ClientHello builder.
         // PERF-208: Request a framed ClientHello so the 4-byte handshake
         // header is reserved inside the same buffer as the body. This
@@ -2764,9 +2809,27 @@ pub const Context = struct {
             } else if (etype == @intFromEnum(tls13_full.ExtensionType.key_share)) {
                 // RFC 8446 §4.2.8: ServerHello key_share contains the selected
                 // group and the server's ECDHE public key.
-                if (elen < 4 + 32) return HandshakeError.MissingKeyShare;
+                if (elen < 4) return HandshakeError.MissingKeyShare;
                 const group = readU16(body[pos .. pos + 2]);
                 const klen = readU16(body[pos + 2 .. pos + 4]);
+                // draft-kwiatkowski-tls-ecdhe-mlkem: accept the
+                // X25519MLKEM768 hybrid ServerHello key_share (fips-only):
+                // group=0x11ec, klen=1120 (X25519 pub || ML-KEM-768
+                // ciphertext, provider-concatenated). Length-validated here.
+                if (fips_cb.fips_enabled and group == @intFromEnum(tls13_full.NamedGroup.x25519_mlkem768)) {
+                    if (klen != tls13_full.x25519_mlkem768_sh_keyshare_len or pos + 4 + klen > pos + elen) {
+                        return HandshakeError.UnsupportedKeyShareGroup;
+                    }
+                    // CONTRACT-BOUNDARY: recovering the hybrid shared secret
+                    // via cb.Kem.decapsulate needs the client's stored hybrid
+                    // KEM KeyPair, which in turn needs the encap-key export
+                    // (Kem.KeyPair.publicBytes) to have been sent in the
+                    // offer — not yet on the published contract. decapsulate
+                    // itself is on the contract; this arm activates once the
+                    // offer can be sent (see docs/FIPS.md). The 1120-byte
+                    // length validation + split happen now.
+                    return HandshakeError.UnsupportedKeyShareGroup;
+                }
                 if (group != 0x001d or klen != 32 or pos + 4 + 32 > pos + elen) return HandshakeError.UnsupportedKeyShareGroup;
                 var kp: [32]u8 = undefined;
                 @memcpy(&kp, body[pos + 4 .. pos + 4 + 32]);

@@ -316,6 +316,17 @@ pub fn buildServerHello(
     quic_params: ?[]const u8,
     selected_psk_index: ?u16,
 ) ![]u8 {
+    // draft-kwiatkowski-tls-ecdhe-mlkem: for the X25519MLKEM768 hybrid
+    // group the ServerHello key_share is exactly
+    // x25519_mlkem768_sh_keyshare_len (1120) bytes
+    // (X25519 pub || ML-KEM-768 ciphertext, provider-concatenated). The
+    // encoder already writes key_exchange as a length-prefixed opaque blob,
+    // so a 1120-byte slice serializes unchanged; this assertion guards
+    // against a malformed hybrid key_share reaching the wire.
+    if (key_share_group == .x25519_mlkem768) {
+        std.debug.assert(key_share_data.len == core_types.x25519_mlkem768_sh_keyshare_len);
+    }
+
     // PERF-007: Pre-allocate with typical ServerHello size (~128 bytes body).
     var msg = try std.ArrayList(u8).initCapacity(allocator, 128);
     defer msg.deinit(allocator);

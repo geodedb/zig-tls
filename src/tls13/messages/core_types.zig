@@ -130,6 +130,14 @@ pub const NamedGroup = enum(u16) {
     x25519_mlkem768 = 0x11ec,
 };
 
+/// draft-kwiatkowski-tls-ecdhe-mlkem §3 hybrid X25519MLKEM768 sizes.
+/// Concatenation order is ECDH share THEN ML-KEM.
+pub const x25519_mlkem768_ch_keyshare_len: usize = 32 + 1184; // X25519 pub || ML-KEM-768 encap key
+pub const x25519_mlkem768_sh_keyshare_len: usize = 32 + 1088; // X25519 pub || ML-KEM-768 ciphertext
+pub const x25519_len: usize = 32;
+pub const mlkem768_encap_key_len: usize = 1184;
+pub const mlkem768_ciphertext_len: usize = 1088;
+
 /// TLS 1.3 Signature Algorithms (RFC 8446 §4.2.3, Appendix B.3.1.3).
 ///
 /// Signature schemes specify the algorithm used to sign TLS handshake messages,

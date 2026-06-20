@@ -823,6 +823,25 @@ pub fn build(b: *std.Build) void {
     const run_fips_hybrid_kem_test = b.addRunArtifact(fips_hybrid_kem_test);
     test_step.dependOn(&run_fips_hybrid_kem_test.step);
 
+    // FIPS hybrid key_share wire-format test: proves the draft-fixed sizes
+    // (1216 CH / 1120 SH), the ECDH-first concat order, the pinned
+    // Kem.EncapResult named return type, and a local-keypair
+    // encapsulate/decapsulate round-trip. fips-only.
+    const fips_hybrid_keyshare_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fips_hybrid_keyshare_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+                .{ .name = "build_options", .module = build_options_mod },
+            },
+        }),
+    });
+    const run_fips_hybrid_keyshare_test = b.addRunArtifact(fips_hybrid_keyshare_test);
+    test_step.dependOn(&run_fips_hybrid_keyshare_test.step);
+
     // ========================================================================
     // RFC 8446 Test Vectors
     // ========================================================================
