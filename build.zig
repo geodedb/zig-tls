@@ -72,7 +72,20 @@ pub fn build(b: *std.Build) void {
     // the git+https lazy dep declared in build.zig.zon; in this workspace
     // the dep is a LOCAL PATH dep (no remote yet — see build.zig.zon).
     if (fips) {
-        if (b.lazyDependency("fips", .{ .target = target, .optimize = optimize })) |fips_dep| {
+        // Forward openssl_path INTO the fips dependency options so the
+        // option-set hash matches the one a PARENT package (e.g. quic) uses
+        // when it ALSO resolves this same fips path dep. Zig 0.16 dedups
+        // dependency instances by (package, options-hash); if the parent
+        // passed `.openssl_path` but this child did not, the two would
+        // become distinct fips module instances ("fips" vs "fips0") and the
+        // shared fips root source would trip the GAP-0020 "file exists in
+        // modules X and Y" diamond error. Passing the identical option set
+        // collapses both to a SINGLE shared fips instance.
+        if (b.lazyDependency("fips", .{
+            .target = target,
+            .optimize = optimize,
+            .openssl_path = openssl_path orelse "/usr/local/ssl",
+        })) |fips_dep| {
             const fips_mod = fips_dep.module("fips");
             crypto_backend_mod.addImport("fips", fips_mod);
             link.linkOpenssl(b, fips_mod, openssl_path);
