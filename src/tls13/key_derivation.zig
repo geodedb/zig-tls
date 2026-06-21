@@ -60,6 +60,8 @@
 const std = @import("std");
 const logger = @import("quic_logger");
 const ks = @import("quic_tls");
+// fips-exempt: non-security — secure memory zeroization, not a crypto algorithm.
+const secureZero = std.crypto.secureZero;
 
 pub const Hash = ks.Hash;
 pub const Secret = ks.Secret;
@@ -71,18 +73,23 @@ pub const Secret = ks.Secret;
 const empty_hash_sha256: Secret = computeEmptyHash(.sha256);
 const empty_hash_sha384: Secret = computeEmptyHash(.sha384);
 
+// fips-exempt: non-security — comptime computation of the PUBLIC constant
+// Transcript-Hash("") = Hash(""), a NIST known-answer value. This runs at
+// compile time (PERF-009 precompute) where the runtime crypto_backend seam is
+// not evaluable; the bytes are identical to what any conformant SHA-2/the FIPS
+// provider produces, and no key material is involved.
 fn computeEmptyHash(comptime hash: Hash) Secret {
     const digest = switch (hash) {
         .sha256 => blk: {
             @setEvalBranchQuota(10000);
-            var out: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-            std.crypto.hash.sha2.Sha256.hash(&[_]u8{}, &out, .{});
+            var out: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined; // fips-exempt: non-security — compile-time digest size
+            std.crypto.hash.sha2.Sha256.hash(&[_]u8{}, &out, .{}); // fips-exempt: non-security — comptime hash of public empty string
             break :blk out;
         },
         .sha384 => blk: {
             @setEvalBranchQuota(10000);
-            var out: [std.crypto.hash.sha2.Sha384.digest_length]u8 = undefined;
-            std.crypto.hash.sha2.Sha384.hash(&[_]u8{}, &out, .{});
+            var out: [std.crypto.hash.sha2.Sha384.digest_length]u8 = undefined; // fips-exempt: non-security — compile-time digest size
+            std.crypto.hash.sha2.Sha384.hash(&[_]u8{}, &out, .{}); // fips-exempt: non-security — comptime hash of public empty string
             break :blk out;
         },
     };
@@ -217,7 +224,7 @@ pub fn deriveHandshakeTraffic(hash: Hash, ecdhe_secret: []const u8, transcript_h
 
     const eh = emptyHash(hash);
     var derived = ks.deriveSecretHash(hash, early_secret, "derived", eh.slice());
-    defer std.crypto.secureZero(u8, &derived.bytes);
+    defer secureZero(u8, &derived.bytes);
     const handshake_secret = ks.extractHash(hash, derived.slice(), ecdhe_secret);
     const client_hs = ks.deriveSecretHash(hash, &handshake_secret, "c hs traffic", transcript_hash.slice());
     const server_hs = ks.deriveSecretHash(hash, &handshake_secret, "s hs traffic", transcript_hash.slice());
@@ -340,7 +347,7 @@ pub fn deriveApplicationTraffic(hash: Hash, handshake_secret: *const Secret, tra
 
     const eh = emptyHash(hash);
     var derived = ks.deriveSecretHash(hash, handshake_secret, "derived", eh.slice());
-    defer std.crypto.secureZero(u8, &derived.bytes);
+    defer secureZero(u8, &derived.bytes);
     // RFC 8446 §7.1: IKM is Hash.length zeros (32 for SHA-256, 48 for SHA-384)
     const zero_ikm = ks.zeroSecret(hash);
     if (secret_trace_enabled) {
@@ -348,7 +355,7 @@ pub fn deriveApplicationTraffic(hash: Hash, handshake_secret: *const Secret, tra
         traceSecrets("[TLS_APP_KEYS] IKM for master secret (zeros): len={} first_byte={} last_byte={}\n", .{ zslice.len, zslice[0], zslice[zslice.len - 1] });
     }
     var master = ks.extractHash(hash, derived.slice(), zero_ikm.slice());
-    defer std.crypto.secureZero(u8, &master.bytes);
+    defer secureZero(u8, &master.bytes);
     const client_app = ks.deriveSecretHash(hash, &master, "c ap traffic", transcript_hash.slice());
     const server_app = ks.deriveSecretHash(hash, &master, "s ap traffic", transcript_hash.slice());
     const exporter_master = ks.deriveSecretHash(hash, &master, "exp master", transcript_hash.slice());

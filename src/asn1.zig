@@ -105,7 +105,7 @@
 //! - RFC 5280: X.509 Certificate Profile
 //! - RFC 5911: ASN.1 Modules for X.509
 const std = @import("std");
-const std_asn1 = std.crypto.codecs.asn1;
+const std_asn1 = std.crypto.codecs.asn1; // fips-exempt: non-security — ASN.1 DER codec, not a crypto algorithm
 
 /// ASN.1 tag class categories for DER TLV headers.
 ///

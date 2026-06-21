@@ -226,6 +226,13 @@ pub fn computeCertificateVerifySignature(
         return error.InvalidPrivateKey;
     }
 
+    // fips-exempt: consumer-owned escape hatch — Ed25519-only convenience helper
+    // with no production caller (the real signer is sig.signCertificateVerify).
+    // The seam has no deterministic Ed25519-from-32-byte-seed keygen: std_shim's
+    // Sig.KeyPair.fromPrivateBytes(.ed25519) expects a 64-byte secret while the
+    // FIPS backend expects the 32-byte raw seed, so a single seam call cannot be
+    // byte-identical across both modes. Editing std_shim.zig is out of scope, so
+    // this seed-based helper stays on bare std.crypto. See route-tls-report.md.
     const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(private_key[0..32].*);
     const signature = try kp.sign(&msg, null);
 

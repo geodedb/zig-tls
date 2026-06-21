@@ -46,3 +46,4 @@ docs/superpowers/
 
 # ignore mac files
 .DS_Store
+.zigci-lint-cache/

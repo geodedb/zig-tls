@@ -309,6 +309,7 @@ pub fn AntiReplayWindowSized(comptime size: usize) type {
             var i: usize = 0;
             while (i < limit) : (i += 1) {
                 // Constant-time comparison - always check all entries to avoid timing leak
+                // fips-exempt: non-security — constant-time byte comparison, not a crypto algorithm
                 const match = std.crypto.timing_safe.eql([32]u8, self.randoms[i], random);
                 found = found or match;
             }

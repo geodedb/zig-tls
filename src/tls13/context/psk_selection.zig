@@ -19,10 +19,13 @@
 
 const std = @import("std");
 const ks = @import("quic_tls");
+const backend = @import("crypto_backend");
 const types = @import("../types.zig");
 const key_derivation_mod = @import("../key_derivation.zig");
 const handshake_state_mod = @import("../handshake_state.zig");
 const messages_mod = @import("../messages.zig");
+// fips-exempt: non-security — constant-time comparison primitives, not crypto algorithms.
+const timing_safe = std.crypto.timing_safe;
 
 const HandshakeError = types.HandshakeError;
 const HsType = messages_mod.HsType;
@@ -79,24 +82,20 @@ pub const PskOutput = struct {
 /// Ported verbatim from src/tls13/context.zig (pre-QUAL-317): the original
 /// was already pure (no `self` references), so no renames were required.
 pub fn computeBinderTranscriptHash(hash: Hash, header: *const [4]u8, truncated_body: []const u8) Secret {
-    return switch (hash) {
-        .sha256 => blk: {
-            var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-            hasher.update(header);
-            hasher.update(truncated_body);
-            var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-            hasher.final(&digest);
-            break :blk ks.Secret.fromSlice(hash, &digest);
-        },
-        .sha384 => blk: {
-            var hasher = std.crypto.hash.sha2.Sha384.init(.{});
-            hasher.update(header);
-            hasher.update(truncated_body);
-            var digest: [std.crypto.hash.sha2.Sha384.digest_length]u8 = undefined;
-            hasher.final(&digest);
-            break :blk ks.Secret.fromSlice(hash, &digest);
-        },
+    // Incremental Transcript-Hash(header || truncated_body) routed through the
+    // seam's streaming Hash API (byte-identical to the prior std init/update/
+    // final under -Dfips=false; validated provider under -Dfips=true).
+    const alg: backend.policy.Hash = switch (hash) {
+        .sha256 => .sha256,
+        .sha384 => .sha384,
     };
+    var hasher = backend.HashStream.init(alg) catch unreachable;
+    defer hasher.deinit();
+    hasher.update(header);
+    hasher.update(truncated_body);
+    var digest: [ks.max_digest_length]u8 = undefined;
+    const n = hasher.final(digest[0..]) catch unreachable;
+    return ks.Secret.fromSlice(hash, digest[0..n]);
 }
 
 /// Select a PSK identity from the ClientHello offered PSKs (RFC 8446 §4.2.11)
@@ -125,8 +124,8 @@ pub fn computeBinderTranscriptHash(hash: Hash, header: *const [4]u8, truncated_b
 ///   ch_view.psk_key_exchange_modes     → input.psk_key_exchange_modes
 ///   ch_view.raw                        → input.ch_raw
 ///
-/// CRITICAL: the `std.crypto.timing_safe.compare` identity comparison (SEC-046)
-/// and `std.crypto.timing_safe.eql` binder comparison (RFC 8446 §4.2.11.2)
+/// CRITICAL: the `timing_safe.compare` identity comparison (SEC-046)
+/// and `timing_safe.eql` binder comparison (RFC 8446 §4.2.11.2)
 /// are preserved verbatim. Do NOT replace them with `std.mem.eql` or similar.
 pub fn selectPsk(input: PskInput) !?PskOutput {
     if (input.offered_identities.len == 0) return null;
@@ -175,7 +174,7 @@ pub fn selectPsk(input: PskInput) !?PskOutput {
         const is_external_psk = input.external_psk != null and
             input.external_psk_identity != null and
             ident.identity.len == input.external_psk_identity.?.len and
-            std.crypto.timing_safe.compare(u8, ident.identity, input.external_psk_identity.?, .big) == .eq;
+            timing_safe.compare(u8, ident.identity, input.external_psk_identity.?, .big) == .eq;
         const psk_bytes_opt: ?[]const u8 = if (is_external_psk)
             input.external_psk
         else if (input.ticket_lookup) |cb|
@@ -251,12 +250,12 @@ pub fn selectPsk(input: PskInput) !?PskOutput {
                 .sha256 => blk: {
                     const received_bytes: *const [32]u8 = received_binder[0..32];
                     const expected_bytes: *const [32]u8 = expected_binder.bytes[0..32];
-                    break :blk std.crypto.timing_safe.eql([32]u8, received_bytes.*, expected_bytes.*);
+                    break :blk timing_safe.eql([32]u8, received_bytes.*, expected_bytes.*);
                 },
                 .sha384 => blk: {
                     const received_bytes: *const [48]u8 = received_binder[0..48];
                     const expected_bytes: *const [48]u8 = expected_binder.bytes[0..48];
-                    break :blk std.crypto.timing_safe.eql([48]u8, received_bytes.*, expected_bytes.*);
+                    break :blk timing_safe.eql([48]u8, received_bytes.*, expected_bytes.*);
                 },
             };
             if (!binder_ok) {

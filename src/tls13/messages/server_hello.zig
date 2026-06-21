@@ -41,6 +41,7 @@
 //! - Downgrade protection via random sentinel (not implemented in this function)
 
 const std = @import("std");
+const backend = @import("crypto_backend");
 const core_types = @import("core_types.zig");
 const helpers = @import("helpers.zig");
 
@@ -672,11 +673,9 @@ test "HRR random value correctness" {
 
     try testing.expectEqualSlices(u8, &expected, &HELLO_RETRY_REQUEST_RANDOM);
 
-    // Verify it's actually SHA-256 of "HelloRetryRequest"
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    hasher.update("HelloRetryRequest");
+    // Verify it's actually SHA-256 of "HelloRetryRequest" (routed via the seam)
     var actual: [32]u8 = undefined;
-    hasher.final(&actual);
+    _ = backend.Hash.digest(.sha256, "HelloRetryRequest", &actual) catch unreachable;
 
     try testing.expectEqualSlices(u8, &actual, &HELLO_RETRY_REQUEST_RANDOM);
 }

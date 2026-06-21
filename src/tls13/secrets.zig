@@ -20,6 +20,8 @@
 
 const std = @import("std");
 const ks = @import("quic_tls");
+// fips-exempt: non-security — secure memory zeroization, not a crypto algorithm.
+const secureZero = std.crypto.secureZero;
 const handshake_state = @import("handshake_state.zig");
 
 const Hash = ks.Hash;
@@ -77,7 +79,7 @@ pub const SecretSlot = struct {
     /// Security: Uses secureZero to prevent compiler from optimizing away
     /// the zeroization of sensitive key material (CWE-226).
     pub fn clear(self: *Self) void {
-        std.crypto.secureZero(u8, &self.value.bytes);
+        secureZero(u8, &self.value.bytes);
         self.value = Secret.empty();
         self.hash = .sha256;
         self.valid = false;
@@ -97,7 +99,7 @@ pub const SecretSlot = struct {
         // `clear()` (which runs only on reset paths), widening the window
         // for accidental disclosure via coredump or heap inspection
         // (CWE-226).
-        std.crypto.secureZero(u8, &self.value.bytes);
+        secureZero(u8, &self.value.bytes);
         self.value = secret;
         self.hash = hash;
         self.valid = true;

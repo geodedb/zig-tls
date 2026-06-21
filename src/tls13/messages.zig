@@ -13,6 +13,13 @@
 const std = @import("std");
 const entropy = @import("entropy");
 const logger = @import("quic_logger");
+// fips-exempt: non-security — secure memory zeroization, not a crypto algorithm.
+const secureZero = std.crypto.secureZero;
+// fips-exempt: standalone X25519 is NOT a FIPS-approved key-agreement and the
+// seam has no raw X25519 DH primitive. This helper is only consumed by tests
+// and the public re-export; the FIPS handshake path uses the fail-closed,
+// comptime-guarded code in tls13/context.zig (consumer-owned escape hatch).
+const X25519 = std.crypto.dh.X25519;
 
 /// Debug tracing for handshake messages.
 const handshake_trace_enabled = false;
@@ -222,7 +229,7 @@ pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
 ///
 /// # Security Considerations (CWE-226)
 /// The caller is responsible for zeroizing the returned priv_key after use
-/// via `std.crypto.secureZero(u8, &keys.priv_key)`. Private keys should not
+/// via `secureZero(u8, &keys.priv_key)`. Private keys should not
 /// be stored longer than necessary and must be zeroized before the memory
 /// is released or goes out of scope.
 ///
@@ -230,11 +237,11 @@ pub fn parseHandshakeOne(data: []const u8) !?HandshakeMessage {
 /// ```zig
 /// // Generate keypair only
 /// var keys = try x25519KeypairAndShared(null);
-/// defer std.crypto.secureZero(u8, &keys.priv_key);
+/// defer secureZero(u8, &keys.priv_key);
 ///
 /// // Generate keypair and compute shared secret
 /// var keys = try x25519KeypairAndShared(peer_public_key);
-/// defer std.crypto.secureZero(u8, &keys.priv_key);
+/// defer secureZero(u8, &keys.priv_key);
 /// if (keys.shared) |secret| {
 ///     // Use secret for key derivation
 /// }
@@ -250,17 +257,17 @@ pub const X25519Error = error{
 
 pub fn x25519KeypairAndShared(peer_pub_opt: ?[32]u8) X25519Error!X25519Result {
     var sk: [32]u8 = undefined;
-    defer std.crypto.secureZero(u8, &sk);
+    defer secureZero(u8, &sk);
     // SEC-074: fail-closed entropy (shared helper; replaces local cryptoRandom).
     entropy.fillRandom(&sk);
     // SAFETY: recoverPublicKey only fails when the private key is the all-zero point (producing
     // a weak public key). Since sk is filled from entropy.fillRandom, the probability of
     // generating an all-zero 32-byte key is ~2^-256, which is cryptographically negligible.
-    const pk = std.crypto.dh.X25519.recoverPublicKey(sk) catch unreachable;
+    const pk = X25519.recoverPublicKey(sk) catch unreachable;
     var shared: ?[32]u8 = null;
     if (peer_pub_opt) |peer_pub| {
         // Zig 0.15.1 API: scalarmult returns the shared secret directly
-        const sh = std.crypto.dh.X25519.scalarmult(sk, peer_pub) catch {
+        const sh = X25519.scalarmult(sk, peer_pub) catch {
             // SEC-009: Return an error instead of silently returning zeroed keys.
             // The caller can decide how to handle a weak peer public key.
             return X25519Error.WeakPublicKey;
@@ -677,7 +684,7 @@ test "PERF-013: encodeHandshakeBuf exact-fit buffer" {
 test "SEC-009: x25519KeypairAndShared returns error union — keypair-only succeeds" {
     // Generating a keypair without a peer key should always succeed.
     var result = try x25519KeypairAndShared(null);
-    defer std.crypto.secureZero(u8, &result.priv_key);
+    defer secureZero(u8, &result.priv_key);
     // shared must be null when no peer key provided
     try std.testing.expect(result.shared == null);
     // public key must not be all zeros (vanishingly unlikely from random)
@@ -695,13 +702,13 @@ test "SEC-009: x25519KeypairAndShared returns WeakPublicKey on all-zero peer key
 test "SEC-009: x25519KeypairAndShared computes shared secret with valid peer key" {
     // Generate two keypairs and verify they can derive a shared secret.
     var alice = try x25519KeypairAndShared(null);
-    defer std.crypto.secureZero(u8, &alice.priv_key);
+    defer secureZero(u8, &alice.priv_key);
     var bob = try x25519KeypairAndShared(null);
-    defer std.crypto.secureZero(u8, &bob.priv_key);
+    defer secureZero(u8, &bob.priv_key);
 
     // Alice computes shared secret using Bob's public key
     var alice_shared = try x25519KeypairAndShared(bob.pub_key);
-    defer std.crypto.secureZero(u8, &alice_shared.priv_key);
+    defer secureZero(u8, &alice_shared.priv_key);
 
     try std.testing.expect(alice_shared.shared != null);
 }

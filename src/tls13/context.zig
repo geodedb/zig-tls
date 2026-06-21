@@ -164,8 +164,14 @@ const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const Hash = ks.Hash;
 const Secret = ks.Secret;
 const max_digest_length = ks.max_digest_length;
-const Sha256 = std.crypto.hash.sha2.Sha256;
-const Sha384 = std.crypto.hash.sha2.Sha384;
+// fips-exempt: non-security — secure memory zeroization, not a crypto algorithm.
+const secureZero = std.crypto.secureZero;
+// fips-exempt: non-security — constant-time comparison primitive, not a crypto algorithm.
+const timing_safe = std.crypto.timing_safe;
+// fips-exempt: standalone X25519 is NOT FIPS-approved; every call site below is
+// guarded by `if (comptime fips_cb.fips_enabled) return ...` and fails closed
+// under -Dfips=true (the seam has no raw X25519 DH — consumer-owned escape hatch).
+const X25519 = std.crypto.dh.X25519;
 
 // Debug tracing (disabled in production).
 // QUAL-082: Per-file trace constants are intentionally NOT extracted to a shared
@@ -411,6 +417,15 @@ pub const TranscriptSet = struct {
     /// Resets all transcripts to their initial empty state.
     pub fn reset(self: *TranscriptSet) void {
         self.handshake.reset();
+        self.client_hello_hash.clear();
+        self.finished_hash.clear();
+        self.app_secret_hash.clear();
+    }
+
+    /// Releases the underlying hash-stream state on final teardown. No-op
+    /// under the std backend; frees the OpenSSL contexts under FIPS.
+    pub fn deinit(self: *TranscriptSet) void {
+        self.handshake.deinit();
         self.client_hello_hash.clear();
         self.finished_hash.clear();
         self.app_secret_hash.clear();
@@ -785,7 +800,9 @@ pub const Context = struct {
 
         self.streams.deinit(self.allocator);
         self.secrets.reset();
-        self.transcripts.reset();
+        // Final teardown: release (do not re-init) the transcript hash state
+        // so the FIPS backend's OpenSSL contexts are freed rather than leaked.
+        self.transcripts.deinit();
         self.flags.reset();
         self.state.reset(self.allocator);
         if (self.local_transport_parameters) |buf| {
@@ -836,15 +853,15 @@ pub const Context = struct {
         // CWE-226: Zeroize sensitive keying material before freeing
         // Use secureZero to prevent compiler from optimizing away the zeroization
         if (self.handshake_secret) |*hs| {
-            std.crypto.secureZero(u8, hs.bytes[0..hs.len]);
+            secureZero(u8, hs.bytes[0..hs.len]);
         }
         self.handshake_secret = null;
         if (self.client_priv) |*priv| {
-            std.crypto.secureZero(u8, priv);
+            secureZero(u8, priv);
         }
         self.client_priv = null;
         if (self.server_secret_generated) |*ssg| {
-            std.crypto.secureZero(u8, ssg);
+            secureZero(u8, ssg);
         }
         self.server_secret_generated = null;
         // SEC-086: zeroize CH1 transcript hash on teardown so it cannot
@@ -852,7 +869,7 @@ pub const Context = struct {
         // the hash itself isn't secret but the size/contents reveal
         // negotiated cipher suite).
         if (self.ch1_transcript_hash) |*h| {
-            std.crypto.secureZero(u8, h.bytes[0..h.len]);
+            secureZero(u8, h.bytes[0..h.len]);
         }
         self.ch1_transcript_hash = null;
         self.hash_kind = .sha256;
@@ -1550,8 +1567,10 @@ pub const Context = struct {
 
         // RFC 8446 §4.4.4: Compute expected verify_data over transcript BEFORE Finished
         // Transcript includes all messages up to (but not including) Finished
-        var transcript_snapshot = self.transcripts.handshake;
-        const transcript_hash = transcript_snapshot.finalize(slot.hash);
+        // finalize() does not consume the running state (it finalizes on an
+        // independent clone), so call it directly on the live transcript; this
+        // also avoids a shallow heap-aliasing copy under the FIPS backend.
+        const transcript_hash = self.transcripts.handshake.finalize(slot.hash);
         const expected = deriveFinishedVerifyData(slot.hash, &slot.value, transcript_hash);
 
         // Constant-time comparison to prevent timing attacks (RFC 8446 §4.4.4)
@@ -1560,12 +1579,12 @@ pub const Context = struct {
             .sha256 => blk: {
                 const expected_bytes: *const [32]u8 = expected.slice()[0..32];
                 const verify_bytes: *const [32]u8 = verify_data[0..32];
-                break :blk std.crypto.timing_safe.eql([32]u8, expected_bytes.*, verify_bytes.*);
+                break :blk timing_safe.eql([32]u8, expected_bytes.*, verify_bytes.*);
             },
             .sha384 => blk: {
                 const expected_bytes: *const [48]u8 = expected.slice()[0..48];
                 const verify_bytes: *const [48]u8 = verify_data[0..48];
-                break :blk std.crypto.timing_safe.eql([48]u8, expected_bytes.*, verify_bytes.*);
+                break :blk timing_safe.eql([48]u8, expected_bytes.*, verify_bytes.*);
             },
         };
         if (!verified) return HandshakeError.FinishedVerifyFailed;
@@ -1634,10 +1653,10 @@ pub const Context = struct {
         // the time the client Finished arrives), so fall back to live only when
         // no snapshot exists (e.g. the client path).
         if (secret_trace_enabled) std.debug.print("[ensureApplicationSecrets] About to finalize transcript for role={}\n", .{self.config.role});
-        const transcript_hash = self.transcripts.app_secret_hash.get(self.hash_kind) orelse blk: {
-            var transcript_snapshot = self.transcripts.handshake;
-            break :blk transcript_snapshot.finalize(self.hash_kind);
-        };
+        const transcript_hash = self.transcripts.app_secret_hash.get(self.hash_kind) orelse
+            // finalize() does not consume the running state; call it directly on
+            // the live transcript (avoids a shallow heap-aliasing copy under FIPS).
+            self.transcripts.handshake.finalize(self.hash_kind);
         if (secret_trace_enabled) {
             std.debug.print("[ensureApplicationSecrets] Finalized transcript hash: ", .{});
             for (transcript_hash.slice()) |b| std.debug.print("{X:0>2}", .{b});
@@ -1834,14 +1853,14 @@ pub const Context = struct {
         // SEC-036: Securely zeroize old private key before generating new one.
         // Prevents stale key material from remaining in memory on HRR rekey.
         if (self.client_priv) |*priv| {
-            std.crypto.secureZero(u8, priv);
+            secureZero(u8, priv);
             self.client_priv = null;
         }
 
         var priv: [32]u8 = undefined;
         // SEC-050: Zero stack-local private key on all exit paths (error or success).
         // After copying to self.client_priv, this stack copy is no longer needed.
-        defer std.crypto.secureZero(u8, &priv);
+        defer secureZero(u8, &priv);
         // SEC-074: fail-closed entropy (replaces unchecked getrandom).
         entropy.fillRandom(&priv);
         // SEC-037: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
@@ -1850,7 +1869,7 @@ pub const Context = struct {
         priv[0] &= 248;
         priv[31] &= 127;
         priv[31] |= 64;
-        const pub_key = std.crypto.dh.X25519.recoverPublicKey(priv) catch {
+        const pub_key = X25519.recoverPublicKey(priv) catch {
             return HandshakeError.UnsupportedKeyShareGroup;
         };
 
@@ -2214,7 +2233,7 @@ pub const Context = struct {
         entropy.fillRandom(&server_random);
 
         var server_priv: [32]u8 = undefined;
-        defer std.crypto.secureZero(u8, &server_priv);
+        defer secureZero(u8, &server_priv);
         // SEC-074: fail-closed entropy (replaces unchecked getrandom).
         entropy.fillRandom(&server_priv);
         // SEC-048: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
@@ -2225,14 +2244,14 @@ pub const Context = struct {
         server_priv[31] &= 127;
         server_priv[31] |= 64;
 
-        const server_pub = std.crypto.dh.X25519.recoverPublicKey(server_priv) catch {
+        const server_pub = X25519.recoverPublicKey(server_priv) catch {
             return HandshakeError.UnsupportedKeyShareGroup;
         };
 
         var client_pub: [32]u8 = undefined;
         @memcpy(&client_pub, ch_view.key_share.key[0..32]);
 
-        const shared = std.crypto.dh.X25519.scalarmult(server_priv, client_pub) catch {
+        const shared = X25519.scalarmult(server_priv, client_pub) catch {
             return HandshakeError.UnsupportedKeyShareGroup;
         };
 
@@ -2448,7 +2467,7 @@ pub const Context = struct {
         if (self.secrets.handshake.send.valid) return;
 
         var neg = try self.negotiateCipherAndKeys() orelse return; // HRR sent
-        defer std.crypto.secureZero(u8, &neg.shared);
+        defer secureZero(u8, &neg.shared);
         try self.emitServerFlight(&neg);
     }
 
@@ -2595,7 +2614,7 @@ pub const Context = struct {
         var priv: [32]u8 = undefined;
         // SEC-050: Zero stack-local private key on all exit paths (error or success).
         // After copying to self.client_priv, this stack copy is no longer needed.
-        defer std.crypto.secureZero(u8, &priv);
+        defer secureZero(u8, &priv);
         // SEC-074: fail-closed entropy (replaces unchecked getrandom).
         entropy.fillRandom(&priv);
         // SEC-040: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
@@ -2605,7 +2624,7 @@ pub const Context = struct {
         priv[0] &= 248;
         priv[31] &= 127;
         priv[31] |= 64;
-        const client_pubkey = std.crypto.dh.X25519.recoverPublicKey(priv) catch return HandshakeError.UnsupportedKeyShareGroup;
+        const client_pubkey = X25519.recoverPublicKey(priv) catch return HandshakeError.UnsupportedKeyShareGroup;
         self.client_priv = priv;
         self.client_pub = client_pubkey;
 
@@ -2712,6 +2731,7 @@ pub const Context = struct {
             // re-hashing.
             self.transcripts.handshake.update(msg[0..truncated_len]);
             var binder_view = self.transcripts.handshake.clone();
+            defer binder_view.deinit();
             const transcript_hash = binder_view.finalize(self.hash_kind);
 
             const binder = finished_mod.deriveFinishedVerifyData(self.hash_kind, &binder_key, transcript_hash);
@@ -2731,6 +2751,7 @@ pub const Context = struct {
                 // binder-truncated `transcript_hash` above is only the binder
                 // MAC input (§4.2.11.2), not the early-secret input.
                 var ch_full_view = self.transcripts.handshake.clone();
+                defer ch_full_view.deinit();
                 const ch_full_hash = ch_full_view.finalize(self.hash_kind);
                 const early_traffic_secret = key_derivation_mod.deriveEarlyTraffic(
                     self.hash_kind,
@@ -2926,12 +2947,12 @@ pub const Context = struct {
         };
 
         // SAFETY: server_pub null case returns MissingKeyShare at the guard above (line: `if (server_pub == null)`).
-        var shared = std.crypto.dh.X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
-        defer std.crypto.secureZero(u8, &shared);
+        var shared = X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
+        defer secureZero(u8, &shared);
         // SEC-055: Zero client_priv after DH computation completes.
         // The scalarmult already copied the key internally, so the field
         // is no longer needed and should not linger in memory.
-        if (self.client_priv) |*p| std.crypto.secureZero(u8, p);
+        if (self.client_priv) |*p| secureZero(u8, p);
         self.client_priv = null;
         const sh_snapshot = self.transcripts.handshake.finalize(self.hash_kind);
         const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], sh_snapshot, &early_secret);
@@ -3111,7 +3132,7 @@ pub const Context = struct {
         // installTrafficSecret overwrites in place via slot.store; doing the
         // secureZero up-front guarantees CWE-226 compliance even if the next
         // call errors out partway through.
-        std.crypto.secureZero(u8, &send_slot.value.bytes);
+        secureZero(u8, &send_slot.value.bytes);
 
         // Install new sending secret via callback (QUIC layer updates packet protection)
         try self.installTrafficSecret(.Application, .send, result.new_secret);
@@ -3567,7 +3588,7 @@ pub const Context = struct {
         const next_secret = key_update_mod.rotatePeerSecret(request, recv_slot.hash, &recv_slot.value);
 
         // SECURITY: zero the OLD recv secret before installing the new one.
-        std.crypto.secureZero(u8, &recv_slot.value.bytes);
+        secureZero(u8, &recv_slot.value.bytes);
 
         // Install new receiving secret
         try self.installTrafficSecret(.Application, .recv, next_secret);

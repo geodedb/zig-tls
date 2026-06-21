@@ -75,6 +75,14 @@
 //! ```
 
 const std = @import("std");
+const backend = @import("crypto_backend");
+// fips-exempt: non-security — constant-time comparison primitive, not a crypto algorithm.
+const timing_safe = std.crypto.timing_safe;
+
+/// Maximum length of the HMAC input message: client_random(32) +
+/// transcript_hash(<=48 for SHA-384) + timestamp(8). Sized to the largest
+/// supported transcript hash so the concatenation fits on the stack.
+const max_cookie_mac_input = 32 + 48 + 8;
 
 /// Zig 0.16 compat: milliTimestamp() was removed; use Io clock.
 fn milliTimestamp() i64 {
@@ -260,12 +268,18 @@ pub fn generateCookie(
     const timestamp = milliTimestamp();
     std.mem.writeInt(i64, cookie[32..40], timestamp, .big);
 
-    // Compute HMAC over: client_random || transcript_hash || timestamp
-    var hmac = std.crypto.auth.hmac.sha2.HmacSha256.init(server_secret);
-    hmac.update(&client_random);
-    hmac.update(transcript_hash);
-    hmac.update(cookie[32..40]); // timestamp bytes
-    hmac.final(cookie[0..32]);
+    // Compute HMAC-SHA256 over: client_random || transcript_hash || timestamp.
+    // Routed through the seam (one-shot over the concatenation); byte-identical
+    // to the prior incremental HmacSha256 init/update*/final.
+    var mac_input: [max_cookie_mac_input]u8 = undefined;
+    var off: usize = 0;
+    @memcpy(mac_input[off..][0..32], &client_random);
+    off += 32;
+    @memcpy(mac_input[off..][0..transcript_hash.len], transcript_hash);
+    off += transcript_hash.len;
+    @memcpy(mac_input[off..][0..8], cookie[32..40]); // timestamp bytes
+    off += 8;
+    _ = backend.Mac.hmac(.sha256, server_secret, mac_input[0..off], cookie[0..32]) catch unreachable;
 
     return cookie;
 }
@@ -323,17 +337,21 @@ pub fn verifyCookie(
     const age_ms = now - timestamp;
     if (age_ms < 0 or age_ms > max_age_seconds * 1000) return false;
 
-    // Recompute HMAC
+    // Recompute HMAC-SHA256 over the same concatenation, via the seam.
     var expected_hmac: [32]u8 = undefined;
-    var hmac = std.crypto.auth.hmac.sha2.HmacSha256.init(server_secret);
-    hmac.update(&client_random);
-    hmac.update(transcript_hash);
-    hmac.update(cookie[32..40]); // timestamp bytes
-    hmac.final(&expected_hmac);
+    var mac_input: [max_cookie_mac_input]u8 = undefined;
+    var off: usize = 0;
+    @memcpy(mac_input[off..][0..32], &client_random);
+    off += 32;
+    @memcpy(mac_input[off..][0..transcript_hash.len], transcript_hash);
+    off += transcript_hash.len;
+    @memcpy(mac_input[off..][0..8], cookie[32..40]); // timestamp bytes
+    off += 8;
+    _ = backend.Mac.hmac(.sha256, server_secret, mac_input[0..off], &expected_hmac) catch unreachable;
 
     // Constant-time comparison (critical for security)
     const actual_hmac: *const [32]u8 = cookie[0..32];
-    return std.crypto.timing_safe.eql([32]u8, expected_hmac, actual_hmac.*);
+    return timing_safe.eql([32]u8, expected_hmac, actual_hmac.*);
 }
 
 // ============================================================================

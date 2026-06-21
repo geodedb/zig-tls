@@ -58,11 +58,14 @@
 const std = @import("std");
 const logger = @import("quic_logger");
 const ks = @import("quic_tls");
+const backend = @import("crypto_backend");
 
 const Hash = ks.Hash;
 const Secret = ks.Secret;
-const Sha256 = std.crypto.hash.sha2.Sha256;
-const Sha384 = std.crypto.hash.sha2.Sha384;
+// fips-exempt: non-security — compile-time digest sizes only (no crypto ops
+// route through these; incremental hashing goes via backend.HashStream below).
+const SHA256_DIGEST_LEN = std.crypto.hash.sha2.Sha256.digest_length; // fips-exempt: non-security — compile-time digest size
+const SHA384_DIGEST_LEN = std.crypto.hash.sha2.Sha384.digest_length; // fips-exempt: non-security — compile-time digest size
 
 /// RFC 8446 §4.4.1: Synthetic message type for HelloRetryRequest transcript.
 ///
@@ -120,8 +123,8 @@ inline fn traceSecrets(comptime fmt: []const u8, args: anytype) void {
 /// to skip updates to the unused hash algorithm. This avoids wasting cycles on
 /// the hash that will never be finalized (PERF-004).
 pub const Transcript = struct {
-    sha256: Sha256,
-    sha384: Sha384,
+    sha256: backend.HashStream,
+    sha384: backend.HashStream,
     /// After cipher suite negotiation selects a hash, this field is set so that
     /// `update()` skips the unused algorithm.  Before negotiation (pre-ServerHello)
     /// this is `null` and both hashes are updated.
@@ -130,9 +133,12 @@ pub const Transcript = struct {
     /// Initialize a new transcript hash helper.
     /// RFC 8446 §4.4.1: Transcript hash begins empty
     pub fn init() Transcript {
+        // .sha256/.sha384 are always-valid policy.Hash variants, so the
+        // seam's HashStream.init cannot fail for them; assert via catch
+        // unreachable to keep the infallible constructor signature.
         return .{
-            .sha256 = Sha256.init(.{}),
-            .sha384 = Sha384.init(.{}),
+            .sha256 = backend.HashStream.init(.sha256) catch unreachable,
+            .sha384 = backend.HashStream.init(.sha384) catch unreachable,
             .locked_hash = null,
         };
     }
@@ -150,8 +156,8 @@ pub const Transcript = struct {
     /// finalize one algorithm.
     pub fn initLocked(hash: Hash) Transcript {
         return .{
-            .sha256 = Sha256.init(.{}),
-            .sha384 = Sha384.init(.{}),
+            .sha256 = backend.HashStream.init(.sha256) catch unreachable,
+            .sha384 = backend.HashStream.init(.sha384) catch unreachable,
             .locked_hash = hash,
         };
     }
@@ -179,7 +185,16 @@ pub const Transcript = struct {
     /// `clone()` and then `update(delta)` instead of seeding a fresh
     /// `initLocked()` and re-feeding the full message.
     pub fn clone(self: *const Transcript) Transcript {
-        return self.*;
+        // Route through the seam's clone() so each hash state is an
+        // independent snapshot. A shallow struct copy is sufficient for the
+        // std backend (plain-struct state) but would alias heap state under
+        // the FIPS backend; HashStream.clone() handles both correctly.
+        var mut = self.*;
+        return .{
+            .sha256 = mut.sha256.clone() catch unreachable,
+            .sha384 = mut.sha384.clone() catch unreachable,
+            .locked_hash = self.locked_hash,
+        };
     }
 
     /// Update transcript with raw bytes (handshake messages).
@@ -235,16 +250,20 @@ pub const Transcript = struct {
     }
 
     fn finalizeSha256(self: *Transcript) Secret {
-        var tmp = self.sha256;
-        var out: [Sha256.digest_length]u8 = undefined;
-        tmp.final(&out);
+        // Finalize on an independent clone so the running transcript state
+        // is not consumed (callers finalize at multiple handshake points).
+        var tmp = self.sha256.clone() catch unreachable;
+        defer tmp.deinit();
+        var out: [SHA256_DIGEST_LEN]u8 = undefined;
+        _ = tmp.final(out[0..]) catch unreachable;
         return Secret.fromSlice(.sha256, out[0..]);
     }
 
     fn finalizeSha384(self: *Transcript) Secret {
-        var tmp = self.sha384;
-        var out: [Sha384.digest_length]u8 = undefined;
-        tmp.final(&out);
+        var tmp = self.sha384.clone() catch unreachable;
+        defer tmp.deinit();
+        var out: [SHA384_DIGEST_LEN]u8 = undefined;
+        _ = tmp.final(out[0..]) catch unreachable;
         return Secret.fromSlice(.sha384, out[0..]);
     }
 
@@ -300,9 +319,19 @@ pub const Transcript = struct {
     /// Reset transcript to initial empty state.
     /// Also clears `locked_hash` so both hashes resume being updated.
     pub fn reset(self: *Transcript) void {
-        self.sha256 = Sha256.init(.{});
-        self.sha384 = Sha384.init(.{});
+        self.sha256.deinit();
+        self.sha384.deinit();
+        self.sha256 = backend.HashStream.init(.sha256) catch unreachable;
+        self.sha384 = backend.HashStream.init(.sha384) catch unreachable;
         self.locked_hash = null;
+    }
+
+    /// Release the underlying hash-stream state without re-initialising.
+    /// No-op under the std backend (plain-struct state); frees the OpenSSL
+    /// contexts under the FIPS backend. Call once on final teardown.
+    pub fn deinit(self: *Transcript) void {
+        self.sha256.deinit();
+        self.sha384.deinit();
     }
 
     /// Handle HelloRetryRequest by replacing transcript with synthetic message_hash.
