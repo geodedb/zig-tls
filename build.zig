@@ -267,6 +267,8 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "asn1", .module = asn1_mod },
             .{ .name = "x509", .module = x509_mod },
+            // FIPS seam: OCSP CertID digests route through crypto_backend.
+            .{ .name = "crypto_backend", .module = crypto_backend_mod },
         },
     });
 

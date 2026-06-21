@@ -606,7 +606,10 @@ pub const Context = struct {
     phase: HandshakePhase = .initial,
     hash_kind: Hash = .sha256,
     allocator: std.mem.Allocator,
-    transcripts: TranscriptSet = TranscriptSet.init(),
+    // No comptime default: under the FIPS backend HashStream.init performs
+    // OpenSSL calls that are not comptime-evaluable, so the transcript streams
+    // MUST be constructed at runtime. Context.init sets this explicitly.
+    transcripts: TranscriptSet,
     secrets: SecretSchedule = SecretSchedule.init(),
     streams: CryptoStreams = .{},
     state: HandshakeState = HandshakeState.init(),

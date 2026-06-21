@@ -18,6 +18,9 @@
 //! (client-driven OCSP) are out of scope.
 const std = @import("std");
 const asn1 = @import("asn1");
+const backend = @import("crypto_backend");
+// fips-exempt: non-security — constant-time comparison primitive, not a crypto algorithm.
+const timing_safe = std.crypto.timing_safe;
 
 const ocsp_trace_enabled = false;
 
@@ -100,23 +103,21 @@ pub fn computeDigest(alg: HashAlg, data: []const u8, out: *[64]u8) ComputeDigest
             if (ocsp_trace_enabled) std.debug.print("[OCSP] SHA-1 hash algorithm encountered in OCSP response — rejected (CWE-328). Server should use SHA-256 per RFC 6960 §4.3.\n", .{});
             return ComputeDigestError.Sha1NotSupported;
         },
+        // OCSP CertID digests routed through the crypto_backend seam. Byte-
+        // identical to the prior std init/update/final under -Dfips=false;
+        // validated provider under -Dfips=true. The seam's one-shot returns
+        // the digest length, which equals the output-slice length we return.
         .sha256 => {
-            var h = std.crypto.hash.sha2.Sha256.init(.{});
-            h.update(data);
-            h.final(out[0..std.crypto.hash.sha2.Sha256.digest_length]);
-            return out[0..std.crypto.hash.sha2.Sha256.digest_length];
+            const n = backend.Hash.digest(.sha256, data, out[0..]) catch unreachable;
+            return out[0..n];
         },
         .sha384 => {
-            var h = std.crypto.hash.sha2.Sha384.init(.{});
-            h.update(data);
-            h.final(out[0..std.crypto.hash.sha2.Sha384.digest_length]);
-            return out[0..std.crypto.hash.sha2.Sha384.digest_length];
+            const n = backend.Hash.digest(.sha384, data, out[0..]) catch unreachable;
+            return out[0..n];
         },
         .sha512 => {
-            var h = std.crypto.hash.sha2.Sha512.init(.{});
-            h.update(data);
-            h.final(out[0..std.crypto.hash.sha2.Sha512.digest_length]);
-            return out[0..std.crypto.hash.sha2.Sha512.digest_length];
+            const n = backend.Hash.digest(.sha512, data, out[0..]) catch unreachable;
+            return out[0..n];
         },
     }
 }
@@ -160,7 +161,7 @@ pub fn compareSlices(expected: []const u8, actual: []const u8) bool {
     // Length difference is safe to check early -- lengths are not secret
     // and timing_safe.compare requires same-length slices.
     if (expected.len != actual.len) return false;
-    return std.crypto.timing_safe.compare(u8, expected, actual, .big) == .eq;
+    return timing_safe.compare(u8, expected, actual, .big) == .eq;
 }
 
 /// Validate a stapled OCSP response for the provided certificate chain.

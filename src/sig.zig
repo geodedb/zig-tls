@@ -98,8 +98,14 @@ const std = @import("std");
 const asn1 = @import("asn1");
 const cb = @import("crypto_backend");
 
-// Use standard library crypto
-// https://ziglang.org/documentation/master/std/#std.crypto.sign.Ed25519
+// fips-exempt: non-security — secure memory zeroization, not a crypto algorithm.
+const secureZero = std.crypto.secureZero;
+
+// fips-exempt: consumer-owned escape hatch — Ed25519 via std.crypto for the
+// NON-fips signature path only. Under -Dfips=true every sign/verify routes
+// through cb.Sig (see signCertificateVerify/verifyCertificateVerify); these
+// std primitives drive the `else` branch the seam's std_shim does not own in
+// the repo's chosen verbatim-impl design. See route-tls-report.md.
 const Ed25519 = std.crypto.sign.Ed25519;
 
 /// Debug tracing for signature operations.
@@ -386,11 +392,17 @@ fn der_decode_ecdsa_sig(sig_der: []const u8, r_out: []u8, s_out: []u8) !void {
 // - Variable-time comparison via std.mem.eql for hash verification
 // - ~60-100x slower performance than stdlib Montgomery multiplication
 
-const Sha256 = std.crypto.hash.sha2.Sha256;
-const Sha384 = std.crypto.hash.sha2.Sha384;
-const Sha512 = std.crypto.hash.sha2.Sha512;
+// fips-exempt: consumer-owned escape hatch — these std hash types parameterise
+// the NON-fips RSA-PSS/PKCS1 and ECDSA verifiers below (and supply digest
+// sizes). The FIPS path uses cb.Sig.* with the validated provider's hashes.
+const Sha256 = std.crypto.hash.sha2.Sha256; // fips-exempt: non-fips RSA/ECDSA hash param
+const Sha384 = std.crypto.hash.sha2.Sha384; // fips-exempt: non-fips RSA/ECDSA hash param
+const Sha512 = std.crypto.hash.sha2.Sha512; // fips-exempt: non-fips RSA hash param
 
 /// Stdlib RSA module with constant-time operations.
+/// fips-exempt: consumer-owned escape hatch — RSA verify for the NON-fips path
+/// (the seam's std_shim returns Unsupported for RSA; under -Dfips=true RSA
+/// routes through cb.Sig with the FIPS provider). Do NOT edit std_shim.zig.
 const rsa = std.crypto.Certificate.rsa;
 
 /// Generic RSA-PSS verification over any `std.crypto.hash` type.
@@ -674,7 +686,7 @@ pub fn signCertificateVerify(alg: SigAlg, privkey_der: []const u8, context: []co
         var kp = switch (alg) {
             .ed25519 => blk: {
                 var seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
-                defer std.crypto.secureZero(u8, &seed);
+                defer secureZero(u8, &seed);
                 break :blk try cb.Sig.KeyPair.fromPrivateBytes(.ed25519, &seed);
             },
             // ECDSA/RSA private keys are the DER PKCS#8 blob; ML-DSA is the
@@ -799,7 +811,7 @@ fn verifyEcdsaP256Sha256(
     var spki = try parseEcdsaSpki(pubkey_spki_der, alloc);
     defer spki.deinit();
     if (!spki.curve_p256) return false;
-    const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
+    const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256); // fips-exempt: consumer-owned escape hatch — non-fips ECDSA P-256 (fips path uses cb.Sig)
     const signature = Ecdsa.Signature.fromDer(sig) catch return false;
     const pubkey = Ecdsa.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
     var sc_buf: [512]u8 = undefined;
@@ -819,7 +831,7 @@ fn verifyEcdsaP384Sha384(
     var spki = try parseEcdsaSpki(pubkey_spki_der, alloc);
     defer spki.deinit();
     if (spki.curve_p256) return false; // expect P-384
-    const Ecdsa384 = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, Sha384);
+    const Ecdsa384 = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, Sha384); // fips-exempt: consumer-owned escape hatch — non-fips ECDSA P-384 (fips path uses cb.Sig)
     const signature = Ecdsa384.Signature.fromDer(sig) catch return false;
     const pubkey = Ecdsa384.PublicKey.fromSec1(spki.sec1_uncompressed) catch return false;
     var sc_buf: [512]u8 = undefined;
@@ -838,10 +850,10 @@ fn signEd25519(
 ) anyerror![]u8 {
     // Parse Ed25519 private key from PKCS#8
     var seed = try parsePkcs8Ed25519PrivateKey(privkey_der);
-    defer std.crypto.secureZero(u8, &seed);
+    defer secureZero(u8, &seed);
     // Use standard library Ed25519 - generate keypair from seed
     var kp = try Ed25519.KeyPair.generateDeterministic(seed);
-    defer std.crypto.secureZero(u8, &kp.secret_key.bytes);
+    defer secureZero(u8, &kp.secret_key.bytes);
     // Build TLS 1.3 signed content
     var ts_buf: [512]u8 = undefined;
     const to_sign = tls13_build_context_and_hash(.ed25519, context, transcript_hash, &ts_buf);
@@ -861,7 +873,7 @@ fn signEcdsaP256Sha256(
 ) anyerror![]u8 {
     // Preferred: parse PKCS#8 -> ECPrivateKey -> scalar. Fallback to legacy pattern scan.
     var sk: [32]u8 = undefined;
-    defer std.crypto.secureZero(u8, &sk);
+    defer secureZero(u8, &sk);
     traceSig("[SIG] Starting ECDSA P-256 signature, privkey_der len={d}\n", .{privkey_der.len});
     if (parsePkcs8EcdsaP256PrivateKey(privkey_der, &sk)) |ok| {
         _ = ok; // already written into sk
@@ -882,7 +894,7 @@ fn signEcdsaP256Sha256(
             @memcpy(sk[0..], privkey_der[off .. off + 32]);
         },
     }
-    const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256);
+    const Ecdsa = std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, Sha256); // fips-exempt: consumer-owned escape hatch — non-fips ECDSA P-256 (fips path uses cb.Sig)
     // Build signing context content
     var ts_buf: [512]u8 = undefined;
     const to_sign = tls13_build_context_and_hash(.ecdsa_secp256r1_sha256, context, transcript_hash, &ts_buf);

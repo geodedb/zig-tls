@@ -88,6 +88,9 @@ const asn1 = @import("asn1");
 const sigmod = @import("sig");
 const build_options = @import("build_options");
 const fips_cb = @import("crypto_backend");
+// fips-exempt: consumer-owned escape hatch — Ed25519 cert-chain verify via
+// std.crypto runs ONLY under -Dfips=false; under -Dfips=true Ed25519 routes
+// through the FIPS provider in fipsVerifyCertSig.
 const Ed25519 = std.crypto.sign.Ed25519;
 
 /// SEC-077: Replaces the raw `allow_insecure: bool` flag with a
@@ -1998,6 +2001,9 @@ fn oidIsEcdsaSha512(oid: []const u8) bool {
 /// may sign with ecdsa-with-SHA256). Conflating them rejects valid certs that
 /// OpenSSL accepts.
 fn verifyEcdsaWith(comptime Curve: type, comptime Hash: type, sec1_uncompressed: []const u8, tbs: []const u8, sig_der: []const u8) bool {
+    // fips-exempt: consumer-owned escape hatch — only the non-canonical
+    // (curve,hash) ECDSA cert-chain combos reach here under -Dfips=true; the
+    // canonical pairings route through the FIPS provider in fipsVerifyCertSig.
     const E = std.crypto.sign.ecdsa.Ecdsa(Curve, Hash);
     const signature = E.Signature.fromDer(sig_der) catch return false;
     const pubkey = E.PublicKey.fromSec1(sec1_uncompressed) catch return false;
@@ -2147,11 +2153,11 @@ pub fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []c
     if (ecdsa_hash) |h| {
         var spki = sigmod.parseEcdsaSpki(issuer_spki_der, alloc) catch return false;
         defer spki.deinit();
-        const P256 = std.crypto.ecc.P256;
-        const P384 = std.crypto.ecc.P384;
-        const Sha256 = std.crypto.hash.sha2.Sha256;
-        const Sha384 = std.crypto.hash.sha2.Sha384;
-        const Sha512 = std.crypto.hash.sha2.Sha512;
+        const P256 = std.crypto.ecc.P256; // fips-exempt: non-canonical ECDSA cert-chain combo (seam pins one digest/curve)
+        const P384 = std.crypto.ecc.P384; // fips-exempt: non-canonical ECDSA cert-chain combo (seam pins one digest/curve)
+        const Sha256 = std.crypto.hash.sha2.Sha256; // fips-exempt: non-canonical ECDSA cert-chain hash param
+        const Sha384 = std.crypto.hash.sha2.Sha384; // fips-exempt: non-canonical ECDSA cert-chain hash param
+        const Sha512 = std.crypto.hash.sha2.Sha512; // fips-exempt: non-canonical ECDSA cert-chain hash param
         const sec1 = spki.sec1_uncompressed;
         return switch (h) {
             .sha256 => if (spki.curve_p256) verifyEcdsaWith(P256, Sha256, sec1, tbs, sig_der) else verifyEcdsaWith(P384, Sha256, sec1, tbs, sig_der),
@@ -2168,6 +2174,8 @@ pub fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []c
     // RFC 8446 §4.2.3 bans these only for the CertificateVerify handshake
     // message, not for signatures on certificates). Dominant in the Web PKI.
     if (oidIsRsaPkcs1Sha256(algo_oid)) {
+        // fips-exempt: under -Dfips=true rsa_pkcs1↔SHA-256 already routed via
+        // fipsVerifyCertSig above; this std arm runs only under -Dfips=false.
         return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha256, issuer_spki_der, tbs, sig_der, alloc) catch false;
     }
     // fips-exempt: RSA-PKCS#1 v1.5 cert sigs with SHA-384/512. Under
@@ -2177,10 +2185,10 @@ pub fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []c
     // seam and stay on std.crypto's constant-time RSA verifier (RSA + SHA-2
     // remain FIPS-approved; only the digest selector is a seam-contract gap).
     if (oidIsRsaPkcs1Sha384(algo_oid)) {
-        return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha384, issuer_spki_der, tbs, sig_der, alloc) catch false;
+        return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha384, issuer_spki_der, tbs, sig_der, alloc) catch false; // fips-exempt: RSA-PKCS#1 SHA-384 cert sig (seam pins rsa_pkcs1↔SHA-256)
     }
     if (oidIsRsaPkcs1Sha512(algo_oid)) {
-        return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha512, issuer_spki_der, tbs, sig_der, alloc) catch false;
+        return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha512, issuer_spki_der, tbs, sig_der, alloc) catch false; // fips-exempt: RSA-PKCS#1 SHA-512 cert sig (seam pins rsa_pkcs1↔SHA-256)
     }
     if (oidIsEd25519(algo_oid)) {
         // fips-exempt: unreachable under -Dfips=true — Ed25519 cert-chain
