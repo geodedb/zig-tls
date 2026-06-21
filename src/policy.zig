@@ -39,6 +39,11 @@ pub const SigAlg = enum {
     slh_dsa_shake_256s,
     slh_dsa_shake_256f,
 };
+/// RSA signature padding scheme, selected explicitly for verify paths
+/// that route a classical RSA signature through the seam with a chosen
+/// digest (rather than the digest pinned by `SigAlg`). `pkcs1` is
+/// RSASSA-PKCS1-v1_5; `pss` is RSASSA-PSS (MGF1 with the same digest).
+pub const RsaScheme = enum { pkcs1, pss };
 pub const KemAlg = enum {
     ml_kem_512,
     ml_kem_768,

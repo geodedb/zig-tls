@@ -278,6 +278,22 @@ pub const Sig = struct {
                 else => error.Unsupported,
             };
         }
+
+        /// RSA SPKI import is fips-only (std has no RSA). Present for API
+        /// parity with the fips backend; consumers needing RSA in non-fips
+        /// mode swap in their own backend (see SEAM_CONTRACT.md).
+        pub fn fromRsaSpki(der: []const u8) Error!KeyPair {
+            _ = der;
+            return error.Unsupported;
+        }
+
+        /// RSA (n,e) import is fips-only (std has no RSA). Present for API
+        /// parity with the fips backend.
+        pub fn fromRsaComponents(n: []const u8, e: []const u8) Error!KeyPair {
+            _ = n;
+            _ = e;
+            return error.Unsupported;
+        }
     };
 
     pub fn generate(alg: policy.SigAlg) Error!KeyPair {
@@ -311,6 +327,71 @@ pub const Sig = struct {
             .p384 => |k| try verifyEc(P384, k.public_key, msg, sig),
             .p384_pub => |pk| try verifyEc(P384, pk, msg, sig),
         }
+    }
+
+    /// Classical RSA verify with an explicit digest. std has no RSA, so
+    /// this is fips-only: consumers keep their own RSA implementation
+    /// behind the non-fips branch (see SEAM_CONTRACT.md). Mirrors the fips
+    /// backend signature EXACTLY so call sites compile under both -Dfips.
+    pub fn verifyRsa(
+        scheme: policy.RsaScheme,
+        digest: policy.Hash,
+        kp: *KeyPair,
+        msg: []const u8,
+        sig: []const u8,
+    ) Error!void {
+        _ = scheme;
+        _ = digest;
+        _ = kp;
+        _ = msg;
+        _ = sig;
+        return error.Unsupported;
+    }
+
+    /// ECDSA verify with an explicit (curve, digest), so off-diagonal
+    /// combos (e.g. P-256 with SHA-384) route. std covers P-256/P-384 with
+    /// SHA-256/384/512; P-521, SHA-3, and non-EC algs are fips-only and
+    /// return error.Unsupported here, matching the fips backend surface.
+    pub fn verifyEcdsa(
+        alg: policy.SigAlg,
+        digest: policy.Hash,
+        kp: *KeyPair,
+        msg: []const u8,
+        sig: []const u8,
+    ) Error!void {
+        // Recover the stored public key as SEC1 so it can be re-parsed
+        // under the off-diagonal (curve, hash) scheme. std's PublicKey is
+        // hash-parametric only in name; the underlying curve point is the
+        // same, and SEC1 is the stable bridge between the two wrappers.
+        var sec1: [65]u8 = undefined;
+        const pk_len: usize = switch (kp.inner) {
+            .p256, .p256_pub => if (alg == .ecdsa_p256) try kp.publicBytes(&sec1) else return error.Unsupported,
+            .p384, .p384_pub => if (alg == .ecdsa_p384) try kp.publicBytes(&sec1) else return error.Unsupported,
+            else => return error.Unsupported,
+        };
+        const sec1_pk = sec1[0..pk_len];
+        switch (alg) {
+            .ecdsa_p256 => switch (digest) {
+                .sha256 => return verifyEcExplicit(std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, std.crypto.hash.sha2.Sha256), sec1_pk, msg, sig),
+                .sha384 => return verifyEcExplicit(std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, std.crypto.hash.sha2.Sha384), sec1_pk, msg, sig),
+                .sha512 => return verifyEcExplicit(std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P256, std.crypto.hash.sha2.Sha512), sec1_pk, msg, sig),
+                else => return error.Unsupported,
+            },
+            .ecdsa_p384 => switch (digest) {
+                .sha256 => return verifyEcExplicit(std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, std.crypto.hash.sha2.Sha256), sec1_pk, msg, sig),
+                .sha384 => return verifyEcExplicit(std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, std.crypto.hash.sha2.Sha384), sec1_pk, msg, sig),
+                .sha512 => return verifyEcExplicit(std.crypto.sign.ecdsa.Ecdsa(std.crypto.ecc.P384, std.crypto.hash.sha2.Sha512), sec1_pk, msg, sig),
+                else => return error.Unsupported,
+            },
+            else => return error.Unsupported,
+        }
+    }
+
+    fn verifyEcExplicit(comptime S: type, sec1_pk: []const u8, msg: []const u8, sig: []const u8) Error!void {
+        const pk = S.PublicKey.fromSec1(sec1_pk) catch return error.OpensslFailure;
+        if (sig.len != S.Signature.encoded_length) return error.VerifyFailed;
+        const s = S.Signature.fromBytes(sig[0..S.Signature.encoded_length].*);
+        s.verify(msg, pk) catch return error.VerifyFailed;
     }
 
     fn verifyEd(pk: Ed25519.PublicKey, msg: []const u8, sig: []const u8) Error!void {

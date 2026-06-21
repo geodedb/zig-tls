@@ -34,6 +34,7 @@ const std = @import("std");
 const ks = @import("quic_tls");
 const H = ks.H; // SHA-256
 const core_types = @import("core_types.zig");
+const cb = @import("crypto_backend");
 
 /// Build CertificateVerify message (RFC 8446 §4.4.3).
 ///
@@ -226,13 +227,24 @@ pub fn computeCertificateVerifySignature(
         return error.InvalidPrivateKey;
     }
 
-    // fips-exempt: consumer-owned escape hatch — Ed25519-only convenience helper
-    // with no production caller (the real signer is sig.signCertificateVerify).
-    // The seam has no deterministic Ed25519-from-32-byte-seed keygen: std_shim's
-    // Sig.KeyPair.fromPrivateBytes(.ed25519) expects a 64-byte secret while the
-    // FIPS backend expects the 32-byte raw seed, so a single seam call cannot be
-    // byte-identical across both modes. Editing std_shim.zig is out of scope, so
-    // this seed-based helper stays on bare std.crypto. See route-tls-report.md.
+    // Under -Dfips=true this convenience helper MUST NOT touch bare
+    // std.crypto: the FIPS Ed25519 backend accepts the raw 32-byte seed as
+    // its private key (EVP_PKEY_new_raw_private_key ED25519), so route the
+    // sign through the crypto_backend seam. std_shim's
+    // Sig.KeyPair.fromPrivateBytes(.ed25519) expects a 64-byte expanded
+    // secret rather than a 32-byte seed, so the non-fips path keeps the
+    // existing deterministic std keygen behind the comptime guard.
+    if (comptime cb.fips_enabled) {
+        var kp = try cb.Sig.KeyPair.fromPrivateBytes(.ed25519, private_key[0..32]);
+        defer kp.deinit();
+        var sig_buf: [64]u8 = undefined;
+        const n = try cb.Sig.sign(.ed25519, &kp, &msg, &sig_buf);
+        if (n != 64) return error.InvalidSignature;
+        return sig_buf;
+    }
+    // fips-exempt: -Dfips=false ONLY — deterministic Ed25519 from a 32-byte
+    // seed via std. Under -Dfips=true this helper routes through the seam
+    // above and this arm is never compiled into the security path.
     const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(private_key[0..32].*);
     const signature = try kp.sign(&msg, null);
 

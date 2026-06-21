@@ -2042,15 +2042,21 @@ fn oidIsEd25519(oid: []const u8) bool {
 /// bare std.crypto under -Dfips=true (security primitives MUST route through
 /// the seam). Returns:
 ///   - `true`/`false`  : the provider's verification verdict for a routed combo
-///   - `null`          : the seam's fixed-digest verify cannot express this
-///                       exact (algorithm, hash) pairing — the caller falls
-///                       through to the `// fips-exempt`-annotated std arms.
+///   - `null`          : the OID is unknown / unsupported by this dispatch;
+///                       the caller reaches its final `return false` (under
+///                       -Dfips=true NO classical std.crypto arm executes —
+///                       every known (alg,hash) combo is routed below).
 ///
-/// The seam's `Sig.verify` pins one digest per `policy.SigAlg`
-/// (ecdsa_p256↔SHA-256, ecdsa_p384↔SHA-384, ecdsa_p521↔SHA-512,
-/// rsa_pss↔SHA-256, rsa_pkcs1↔SHA-256, ed25519 pure). All standard Web-PKI
-/// signatureAlgorithm OIDs hit one of those pairings and route through the
-/// provider here.
+/// The extended seam exposes digest-aware verifies — `Sig.verifyEcdsa(alg,
+/// digest, ...)` for any (curve ∈ {P-256,P-384}, digest ∈ {SHA-256/384/512})
+/// pairing, and `Sig.verifyRsa(scheme, digest, ...)` for RSASSA-PKCS1-v1_5 /
+/// RSASSA-PSS with an explicit digest — so the off-diagonal (curve,hash) and
+/// RSA-PKCS#1 SHA-384/512 combinations that previously fell through to
+/// std.crypto now route through the FIPS module. Ed25519 and the canonical
+/// pinned-digest pairings route through `Sig.verify`. The only curves tls
+/// parses are P-256 and P-384 (P-521 -> error.UnsupportedCurve -> false), so
+/// every reachable classical cert-chain combo is FIPS-routed here; nothing
+/// falls back to std under fips.
 fn fipsVerifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []const u8, sig_der: []const u8, alloc: std.mem.Allocator) ?bool {
     // ML-DSA (PQC): provider-only; raw SPKI public key.
     if (sigmod.oidIsMlDsa(algo_oid)) |alg| {
@@ -2060,42 +2066,42 @@ fn fipsVerifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []c
         fips_cb.Sig.verify(sigmod.policySigAlg(alg), &kp, tbs, sig_der) catch return false;
         return true;
     }
-    // ECDSA: route the canonical (curve, hash) pairings the provider can
-    // express; defer the off-diagonal combos (e.g. P-384 key + SHA-256 sig)
-    // to the std arm.
-    const ecdsa_alg: ?sigmod.SigAlg = blk: {
-        var spki = sigmod.parseEcdsaSpki(issuer_spki_der, alloc) catch break :blk null;
+    // ECDSA: the digest comes from the signatureAlgorithm OID and the curve
+    // from the issuer SPKI — these are INDEPENDENT (a P-384 key may sign with
+    // ecdsa-with-SHA256). Route the explicit (curve, digest) pair through
+    // `Sig.verifyEcdsa`, which selects the EVP_MD under fips=yes, so the
+    // off-diagonal combinations no longer fall back to std.crypto.
+    const ecdsa_digest: ?fips_cb.policy.Hash =
+        if (oidIsEcdsaSha256(algo_oid)) .sha256 else if (oidIsEcdsaSha384(algo_oid)) .sha384 else if (oidIsEcdsaSha512(algo_oid)) .sha512 else null;
+    if (ecdsa_digest) |digest| {
+        var spki = sigmod.parseEcdsaSpki(issuer_spki_der, alloc) catch return false;
         defer spki.deinit();
-        if (oidIsEcdsaSha256(algo_oid) and spki.curve_p256) break :blk .ecdsa_secp256r1_sha256;
-        if (oidIsEcdsaSha384(algo_oid) and !spki.curve_p256) break :blk .ecdsa_secp384r1_sha384;
-        break :blk null;
-    };
-    if (ecdsa_alg) |alg| {
-        var kp = fips_cb.Sig.KeyPair.fromPublicBytes(sigmod.policySigAlg(alg), issuer_spki_der) catch return false;
+        // tls parses only P-256 and P-384 (P-521 -> UnsupportedCurve above).
+        const curve_alg: fips_cb.policy.SigAlg = if (spki.curve_p256) .ecdsa_p256 else .ecdsa_p384;
+        var kp = fips_cb.Sig.KeyPair.fromPublicBytes(curve_alg, issuer_spki_der) catch return false;
         defer kp.deinit();
-        fips_cb.Sig.verify(sigmod.policySigAlg(alg), &kp, tbs, sig_der) catch return false;
+        fips_cb.Sig.verifyEcdsa(curve_alg, digest, &kp, tbs, sig_der) catch return false;
         return true;
     }
-    // Any other ECDSA OID (SHA-512, or an off-diagonal curve/hash pairing) is
-    // not expressible via the seam's fixed digest — defer to the std arm.
-    if (oidIsEcdsaSha256(algo_oid) or oidIsEcdsaSha384(algo_oid) or oidIsEcdsaSha512(algo_oid)) return null;
-    // RSA-PSS (constrained to SHA-256 by the std verifier) -> provider rsa_pss.
+    // RSA-PSS (constrained to SHA-256 by the OID dispatch) -> provider rsa_pss.
     if (oidIsRsaPss(algo_oid)) {
         var kp = fips_cb.Sig.KeyPair.fromPublicBytes(.rsa_pss, issuer_spki_der) catch return false;
         defer kp.deinit();
         fips_cb.Sig.verify(.rsa_pss, &kp, tbs, sig_der) catch return false;
         return true;
     }
-    // RSA-PKCS#1 v1.5 with SHA-256 -> provider rsa_pkcs1 (also SHA-256).
-    if (oidIsRsaPkcs1Sha256(algo_oid)) {
-        var kp = fips_cb.Sig.KeyPair.fromPublicBytes(.rsa_pkcs1, issuer_spki_der) catch return false;
+    // RSA-PKCS#1 v1.5: route the explicit digest (SHA-256/384/512) through
+    // `Sig.verifyRsa(.pkcs1, digest, ...)`, so SHA-384/512 — which the pinned
+    // `Sig.verify` could not express — now route through the FIPS module
+    // instead of falling back to std.crypto's RSA verifier.
+    const rsa_pkcs1_digest: ?fips_cb.policy.Hash =
+        if (oidIsRsaPkcs1Sha256(algo_oid)) .sha256 else if (oidIsRsaPkcs1Sha384(algo_oid)) .sha384 else if (oidIsRsaPkcs1Sha512(algo_oid)) .sha512 else null;
+    if (rsa_pkcs1_digest) |digest| {
+        var kp = fips_cb.Sig.KeyPair.fromRsaSpki(issuer_spki_der) catch return false;
         defer kp.deinit();
-        fips_cb.Sig.verify(.rsa_pkcs1, &kp, tbs, sig_der) catch return false;
+        fips_cb.Sig.verifyRsa(.pkcs1, digest, &kp, tbs, sig_der) catch return false;
         return true;
     }
-    // RSA-PKCS#1 with SHA-384/512: the seam pins rsa_pkcs1↔SHA-256, so it
-    // cannot express these — defer to the std arm.
-    if (oidIsRsaPkcs1Sha384(algo_oid) or oidIsRsaPkcs1Sha512(algo_oid)) return null;
     // Ed25519 (pure) -> provider ed25519.
     if (oidIsEd25519(algo_oid)) {
         const pubkey_bytes = sigmod.parseEd25519Spki(issuer_spki_der) catch return false;
@@ -2129,24 +2135,24 @@ pub fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []c
         if (fipsVerifyCertSig(issuer_spki_der, tbs, algo_oid, sig_der, alloc)) |routed| {
             return routed;
         }
-        // null => the seam's fixed-digest verify cannot express this exact
-        // (alg, hash) combination; fall through to the std arms, which carry
-        // explicit `// fips-exempt` annotations documenting the foundation
-        // contract gap.
+        // null => the algorithm OID is unknown / unsupported by the FIPS
+        // dispatch. FAIL CLOSED: under -Dfips=true NO std.crypto signature
+        // arm may execute in this security path, so reject the certificate
+        // rather than falling through to the std verifiers below (which run
+        // only under -Dfips=false).
+        return false;
     }
     // ECDSA: the hash comes from the signatureAlgorithm OID; the curve comes
     // from the issuer's SubjectPublicKeyInfo. Dispatch on the (curve, hash)
     // pair rather than assuming P-256↔SHA-256 / P-384↔SHA-384 (a P-384 key
     // signing with ecdsa-with-SHA256 is valid and accepted by OpenSSL).
     //
-    // fips-exempt: non-canonical ECDSA cert-chain combos only. Under
-    // -Dfips=true the canonical pairings (P-256↔SHA-256, P-384↔SHA-384) and
-    // ML-DSA are already routed through the FIPS provider by fipsVerifyCertSig
-    // above; only the off-diagonal pairings (e.g. P-384 key + SHA-256 sig) and
-    // ECDSA-with-SHA-512 reach here, because the foundation seam's Sig.verify
-    // pins one digest per curve and cannot express them. These remain on
-    // std.crypto's constant-time ECDSA (the algorithm is still FIPS-approved;
-    // only the (curve,hash) coupling is a seam-contract limitation).
+    // fips-exempt: -Dfips=false ONLY. Under -Dfips=true EVERY (curve, hash)
+    // ECDSA cert-chain combination — including the off-diagonal pairings
+    // (e.g. P-384 key + SHA-256 sig) and ECDSA-with-SHA-512 — is routed
+    // through the FIPS provider by fipsVerifyCertSig above via the digest-
+    // aware Sig.verifyEcdsa seam, and the fips branch returns before reaching
+    // here. These std.crypto arms run only when fips is compiled out.
     const EcdsaHash = enum { sha256, sha384, sha512 };
     const ecdsa_hash: ?EcdsaHash =
         if (oidIsEcdsaSha256(algo_oid)) .sha256 else if (oidIsEcdsaSha384(algo_oid)) .sha384 else if (oidIsEcdsaSha512(algo_oid)) .sha512 else null;
@@ -2174,21 +2180,19 @@ pub fn verifyCertSig(issuer_spki_der: []const u8, tbs: []const u8, algo_oid: []c
     // RFC 8446 §4.2.3 bans these only for the CertificateVerify handshake
     // message, not for signatures on certificates). Dominant in the Web PKI.
     if (oidIsRsaPkcs1Sha256(algo_oid)) {
-        // fips-exempt: under -Dfips=true rsa_pkcs1↔SHA-256 already routed via
-        // fipsVerifyCertSig above; this std arm runs only under -Dfips=false.
+        // fips-exempt: -Dfips=false ONLY. Under -Dfips=true rsa_pkcs1↔SHA-256
+        // routes through Sig.verifyRsa(.pkcs1, .sha256) in fipsVerifyCertSig.
         return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha256, issuer_spki_der, tbs, sig_der, alloc) catch false;
     }
-    // fips-exempt: RSA-PKCS#1 v1.5 cert sigs with SHA-384/512. Under
-    // -Dfips=true the SHA-256 variant routes through the FIPS provider
-    // (fipsVerifyCertSig, rsa_pkcs1↔SHA-256); the foundation seam pins
-    // rsa_pkcs1 to SHA-256 only, so SHA-384/512 cannot be expressed via the
-    // seam and stay on std.crypto's constant-time RSA verifier (RSA + SHA-2
-    // remain FIPS-approved; only the digest selector is a seam-contract gap).
+    // fips-exempt: RSA-PKCS#1 v1.5 cert sigs with SHA-384/512, -Dfips=false
+    // ONLY. Under -Dfips=true all three digests (SHA-256/384/512) route
+    // through the digest-aware Sig.verifyRsa(.pkcs1, digest) seam in
+    // fipsVerifyCertSig, and the fips branch returns before reaching here.
     if (oidIsRsaPkcs1Sha384(algo_oid)) {
-        return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha384, issuer_spki_der, tbs, sig_der, alloc) catch false; // fips-exempt: RSA-PKCS#1 SHA-384 cert sig (seam pins rsa_pkcs1↔SHA-256)
+        return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha384, issuer_spki_der, tbs, sig_der, alloc) catch false; // fips-exempt: RSA-PKCS#1 SHA-384 cert sig (-Dfips=false only)
     }
     if (oidIsRsaPkcs1Sha512(algo_oid)) {
-        return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha512, issuer_spki_der, tbs, sig_der, alloc) catch false; // fips-exempt: RSA-PKCS#1 SHA-512 cert sig (seam pins rsa_pkcs1↔SHA-256)
+        return sigmod.rsaPkcs1VerifyGeneric(std.crypto.hash.sha2.Sha512, issuer_spki_der, tbs, sig_der, alloc) catch false; // fips-exempt: RSA-PKCS#1 SHA-512 cert sig (-Dfips=false only)
     }
     if (oidIsEd25519(algo_oid)) {
         // fips-exempt: unreachable under -Dfips=true — Ed25519 cert-chain
