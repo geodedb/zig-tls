@@ -40,6 +40,7 @@ pub fn build(b: *std.Build) void {
     // imports the SAME module instance via `addImport` to avoid Zig 0.16's
     // "file exists in modules X and X0" error when two independent
     // `addOptions` modules end up sharing a transitive file path.
+    build_options.addOption([]const u8, "package_name", "tls");
     const build_options_mod = build_options.createModule();
 
     // std_shim backend (always available; std.crypto-backed; no OpenSSL
