@@ -86,7 +86,7 @@ pub const Hash = struct {
             } };
         }
 
-        pub fn update(self: *Stream, bytes: []const u8) void {
+        pub fn update(self: *Stream, bytes: []const u8) Error!void {
             switch (self.state) {
                 inline else => |*h| h.update(bytes),
             }

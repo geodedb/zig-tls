@@ -205,12 +205,12 @@ pub const Transcript = struct {
     pub fn update(self: *Transcript, msg: []const u8) void {
         if (self.locked_hash) |h| {
             switch (h) {
-                .sha256 => self.sha256.update(msg),
-                .sha384 => self.sha384.update(msg),
+                .sha256 => self.sha256.update(msg) catch unreachable,
+                .sha384 => self.sha384.update(msg) catch unreachable,
             }
         } else {
-            self.sha256.update(msg);
-            self.sha384.update(msg);
+            self.sha256.update(msg) catch unreachable;
+            self.sha384.update(msg) catch unreachable;
         }
 
         // Debug: log what's being added to transcript

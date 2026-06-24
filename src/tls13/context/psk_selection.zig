@@ -91,8 +91,8 @@ pub fn computeBinderTranscriptHash(hash: Hash, header: *const [4]u8, truncated_b
     };
     var hasher = backend.HashStream.init(alg) catch unreachable;
     defer hasher.deinit();
-    hasher.update(header);
-    hasher.update(truncated_body);
+    hasher.update(header) catch unreachable;
+    hasher.update(truncated_body) catch unreachable;
     var digest: [ks.max_digest_length]u8 = undefined;
     const n = hasher.final(digest[0..]) catch unreachable;
     return ks.Secret.fromSlice(hash, digest[0..n]);
