@@ -458,6 +458,11 @@ pub const Callbacks = tls13.Callbacks;
 /// TLS role: client or server.
 pub const Role = tls13.Role;
 
+/// Transport mode for the TLS 1.3 handshake: `.quic` (default, RFC 9001 §8.2
+/// mandatory transport parameters) or `.tls` (RFC 8446 plain TLS over TCP,
+/// transport parameters optional/absent). See `Config.transport_mode`.
+pub const TransportMode = tls13.TransportMode;
+
 /// QUIC encryption levels (RFC 9001 §4.1).
 ///
 /// Values:

@@ -1335,7 +1335,13 @@ pub const Context = struct {
         // WITHOUT the quic_transport_parameters extension MUST abort with
         // missing_extension. Symmetric with the client-side EE check. An empty
         // extension body is permitted; only a fully absent extension violates.
-        const tp = ch.quic_transport_parameters orelse return HandshakeError.MissingTransportParameters;
+        const tp = ch.quic_transport_parameters orelse {
+            // RFC 8446 plain TLS: peer transport parameters are optional; a
+            // ClientHello without the 0x0039 extension is valid. (.quic mode
+            // still requires it below — RFC 9001 §8.2.)
+            if (self.config.transport_mode == .tls) return;
+            return HandshakeError.MissingTransportParameters;
+        };
 
         var decoded_tp = transport_params.TransportParameters.decode(tp, self.allocator) catch {
             return HandshakeError.InvalidTransportParameters;
@@ -2181,7 +2187,11 @@ pub const Context = struct {
     /// stateful pre-work (ensureLocalTransportParameters, selectServerAlpn,
     /// notifyMetadata), then delegates the byte encoding.
     fn buildEncryptedExtensionsMsg(self: *Context, ch_view: ClientHelloView) ![]u8 {
-        const server_tp = try self.ensureLocalTransportParameters();
+        // .tls mode: emit EE with no quic_transport_parameters extension.
+        const server_tp: ?[]const u8 = if (self.config.transport_mode == .tls)
+            null
+        else
+            try self.ensureLocalTransportParameters();
         const selected_alpn = try self.selectServerAlpn(ch_view);
         self.notifyMetadata();
         return server_flight_builders.buildEncryptedExtensionsMsg(self.scratch_arena.allocator(), .{
@@ -3333,8 +3343,11 @@ pub const Context = struct {
             }
             self.peer_quic_transport_parameters = tp_copy;
         } else {
-            // RFC 9001 §8.2: Transport parameters are mandatory for QUIC
-            return HandshakeError.MissingTransportParameters;
+            // RFC 8446 plain TLS: server EncryptedExtensions may omit transport
+            // parameters. (.quic mode requires them — RFC 9001 §8.2.)
+            if (self.config.transport_mode != .tls) {
+                return HandshakeError.MissingTransportParameters;
+            }
         }
 
         // RFC 7301: Store negotiated ALPN

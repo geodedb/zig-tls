@@ -36,6 +36,7 @@ const x509 = @import("x509");
 // Import types from modularized tls13 package
 const types = @import("types.zig");
 pub const Role = types.Role;
+pub const TransportMode = types.TransportMode;
 
 /// TLS 1.3 Configuration
 ///
@@ -144,6 +145,18 @@ pub const Config = struct {
     ///
     /// **Default:** null (no transport parameters; will cause handshake failure in QUIC).
     quic_transport_parameters: ?[]const u8 = null,
+
+    /// Transport mode (RFC 8446 plain TLS vs RFC 9001 QUIC). See `TransportMode`.
+    ///
+    /// **Default `.quic`** preserves the historical mandatory-transport-parameters
+    /// behavior for every existing QUIC consumer byte-for-byte. Set `.tls` for a
+    /// pure-TCP TLS 1.3 endpoint: peer `quic_transport_parameters` become optional
+    /// and this endpoint emits none.
+    ///
+    /// **Role:** Both.
+    /// **Interactions:** In `.tls` mode `quic_transport_parameters` is ignored for
+    /// emission (no 0x0039 extension is sent) and a peer that omits it is accepted.
+    transport_mode: TransportMode = .quic,
 
     /// Enable receipt and processing of 0-RTT early data (RFC 8446 §4.2.10).
     /// When true, server accepts early_data extension and processes 0-RTT packets.

@@ -33,6 +33,18 @@ pub const Role = enum {
     Server,
 };
 
+/// Transport mode for the TLS 1.3 handshake.
+///
+/// - `.quic` (default): RFC 9001 §8.2 — `quic_transport_parameters` (extension
+///   0x0039) is MANDATORY on both peers; a ClientHello or EncryptedExtensions
+///   that omits it aborts the handshake with `HandshakeError.MissingTransportParameters`.
+///   This is the historical behavior and is unchanged for every existing QUIC consumer.
+/// - `.tls`: RFC 8446 plain TLS 1.3 over a reliable byte stream (TCP). Peer
+///   transport parameters are OPTIONAL (absent or omitted is accepted), and this
+///   endpoint emits no `quic_transport_parameters` extension. Use this for a
+///   non-QUIC TLS client/server (e.g. an HTTPS fetch over TCP).
+pub const TransportMode = enum { quic, tls };
+
 /// View of negotiated handshake metadata surfaced to the QUIC connection layer.
 ///
 /// This structure provides read-only access to negotiated parameters after
