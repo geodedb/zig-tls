@@ -18,21 +18,21 @@ include:
   # commit that updates SHA + comment together.
   #
   # Security scanning
-  - component: gitlab.com/devnw/ci-catalog/security-sast@41983cfbddfe06a5e6e3c126a7f16404d36c7ef9  # was v1.7.1 (2026-04-19)
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@41983cfbddfe06a5e6e3c126a7f16404d36c7ef9  # was v1.7.1 (2026-04-19)
-  - component: gitlab.com/devnw/ci-catalog/security-secrets@41983cfbddfe06a5e6e3c126a7f16404d36c7ef9  # was v1.7.1 (2026-04-19)
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@41983cfbddfe06a5e6e3c126a7f16404d36c7ef9  # was v1.7.1 (2026-04-19)
+  - component: gitlab.com/devnw/ci-catalog/security-sast@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/security-secrets@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
 
   # Code quality
-  - component: gitlab.com/devnw/ci-catalog/zig-format@d421e26e2e02e8449b295e1f2f047ec58128f1a5  # was v1.2.1 (2026-04-19)
+  - component: gitlab.com/devnw/ci-catalog/zig-format@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
 
   # SBOM
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@41983cfbddfe06a5e6e3c126a7f16404d36c7ef9  # was v1.7.1 (2026-04-19)
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@41983cfbddfe06a5e6e3c126a7f16404d36c7ef9  # was v1.7.1 (2026-04-19)
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
 
   # Release
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@41983cfbddfe06a5e6e3c126a7f16404d36c7ef9  # was v1.7.1 (2026-04-19)
-  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.27.0
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.55.8
 
 variables:
   ZIG_VERSION: "0.16.0"
@@ -163,7 +163,8 @@ test-fips:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   allow_failure: true
   needs:
-    - build
+    - job: build
+      optional: true
 
 # Release optimization tests
 test-release-safe:
@@ -298,7 +299,8 @@ fuzz:
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
   needs:
-    - build
+    - job: build
+      optional: true
 
 # SEC-074 regression guard: block re-introduction of raw
 # `std.os.linux.getrandom` in src/. The cross-platform, fail-closed wrapper
