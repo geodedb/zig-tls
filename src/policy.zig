@@ -13,6 +13,11 @@
 const std = @import("std");
 
 pub const Hash = enum { sha256, sha384, sha512, sha3_256, sha3_384, sha3_512 };
+// `Mac`, `Kdf`, and `kdfName` (below) enumerate the FIPS-approved MAC/KDF
+// taxonomy for spec completeness in this copy-verbatim canonical file. The
+// seam wrappers (`Mac.hmac`, `Kdf.hkdf`/`pbkdf2`) select the digest via
+// `policy.Hash`, so these decls are intentionally not referenced by the
+// wrappers; they mirror the approved-algorithm table for consumers/tooling.
 pub const Mac = enum { hmac_sha256, hmac_sha384, hmac_sha512 };
 pub const Kdf = enum { hkdf, pbkdf2 };
 pub const Aead = enum { aes_128_gcm, aes_256_gcm };
@@ -110,6 +115,16 @@ pub fn kemName(a: KemAlg) [:0]const u8 {
     };
 }
 
+// FIPS-approved fetch-name allow-list used by `isApproved` for comptime
+// gating of consumer call sites and by the zlint ZL109 rule. This list is
+// intentionally a SUPERSET of the algorithms that have dedicated typed
+// wrappers in this seam. For example, `AES-256-CBC` is FIPS-approved for
+// CBC+HMAC constructions that a consumer may build directly via EVP; however,
+// this seam ships only AEAD GCM wrappers (`Aead`) and does NOT expose a CBC
+// wrapper (resolving GAP-0028 by documentation rather than a spurious CBC
+// AEAD type). Consumers that need CBC+HMAC must build that construction
+// themselves using the raw OpenSSL EVP API after verifying the name with
+// `policy.isApproved("AES-256-CBC")`.
 const approved_names = [_][]const u8{
     "SHA2-256",           "SHA2-384",           "SHA2-512",           "SHA3-256",           "SHA3-384",           "SHA3-512",
     "HMAC",               "HKDF",               "PBKDF2",             "AES-128-GCM",        "AES-256-GCM",        "AES-256-CBC",

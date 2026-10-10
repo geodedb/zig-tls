@@ -34,8 +34,8 @@
     .dependencies = .{
         // thread-pool: bounded thread pool with work-stealing scheduler
         .thread_pool = .{
-            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.7#54a2ddda1a356c32ba2e4df70691459570fb6339",
-            .hash = "thread_pool-0.2.7-11B1BvRneQBnMkDnRbKd76THvZn4ZhDhmlWQw-aziWQm",
+            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.8#2161d8e77beb6f9d6d8664b4406c739ef3a6cc81",
+            .hash = "thread_pool-0.2.8-11B1BrrSeQD3WHNJ-oyNkrfcHLp5AOW1Zgr4QTGu7pb4",
         },
         // FIPS backend: resolved only when a build reaches
         // b.lazyDependency("fips", ...) under -Dfips=true. With the flag
@@ -51,8 +51,8 @@
         // PRODUCTION (eventual git+https lazy form, once the fips repo has a
         // remote + tag):
         //   .fips = .{
-        //       .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.1#4041d9cfdeadcab665644b3f4d3362c276f94bb7",
-        //       .hash = "fips-0.1.1-1wf3na01BwC3voljVu61_0g6DXp6BCedXrq4QMuMeQBq",
+        //       .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.2#2db29e0add6e2e6111b1f27c0fa72afd366f9092",
+        //       .hash = "fips-0.1.2-1wf3naNnBwDb429FDp9qyF1irQ7otgjMxUafGKxjYTMG",
         //       .lazy = true,
         //   },
         // Path is relative to the build root. The build root resolves to the
@@ -60,8 +60,8 @@
         // ../fips in the logical workspace. Zig requires path deps to be
         // expressed relative to the (realpath) build root.
         .fips = .{
-            .url = "git+https://gitlab.com/devnw/zig/fips.git#v0.1.1",
-            .hash = "fips-0.1.1-1wf3na01BwC3voljVu61_0g6DXp6BCedXrq4QMuMeQBq",
+            .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.2#2db29e0add6e2e6111b1f27c0fa72afd366f9092",
+            .hash = "fips-0.1.2-1wf3naNnBwDb429FDp9qyF1irQ7otgjMxUafGKxjYTMG",
             .lazy = true,
         },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
