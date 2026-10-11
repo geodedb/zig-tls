@@ -13,10 +13,103 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 ZIG = os.environ.get("ZIG", "zig")
 FIPS_ENTRY = re.compile(r"        \.fips = \.\{.*?\n        \},", re.DOTALL)
+
+
+def tracked_files(root):
+    # CI may mount a checkout owned by a different user. Trust only this
+    # canonical checkout for this read; never persist or use wildcard trust.
+    root = root.resolve()
+    return (
+        subprocess.check_output(
+            ["git", "-c", f"safe.directory={root}", "ls-files", "-z"], cwd=root
+        )
+        .decode()
+        .split("\0")[:-1]
+    )
+
+
+class CheckoutFilesTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="tls-checkout-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.global_config = self.root / "gitconfig"
+        self.global_config.write_text("# Must remain unchanged.\n")
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
+        env.update(
+            HOME=str(self.root),
+            GIT_CONFIG_GLOBAL=str(self.global_config),
+            GIT_CONFIG_NOSYSTEM="1",
+            GIT_TEST_ASSUME_DIFFERENT_OWNER="1",
+        )
+        patch = mock.patch.dict(os.environ, env, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.repo = self.make_repo("runner checkout")
+        self.sibling = self.make_repo("unrelated checkout")
+
+    def make_repo(self, name):
+        repo = self.root / name
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        for filename in ["tracked fixture.txt", "line\nbreak.txt", "untracked.txt"]:
+            (repo / filename).write_text("fixture\n")
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                f"safe.directory={repo.resolve()}",
+                "add",
+                "--",
+                "tracked fixture.txt",
+                "line\nbreak.txt",
+            ],
+            cwd=repo,
+            check=True,
+        )
+        return repo
+
+    def assert_untrusted(self, repo):
+        result = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=repo, capture_output=True, check=False
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"dubious ownership", result.stderr)
+
+    def test_different_owner_checkout_lists_only_tracked_files(self):
+        self.assert_untrusted(self.repo)
+        self.assertCountEqual(
+            tracked_files(self.repo), ["tracked fixture.txt", "line\nbreak.txt"]
+        )
+
+    def test_checkout_trust_does_not_persist_or_trust_siblings(self):
+        before = (
+            self.global_config.read_bytes(),
+            (self.repo / ".git/config").read_bytes(),
+        )
+        self.assertTrue(tracked_files(self.repo))
+        self.assert_untrusted(self.repo)
+        self.assert_untrusted(self.sibling)
+        self.assertEqual(
+            before,
+            (self.global_config.read_bytes(), (self.repo / ".git/config").read_bytes()),
+        )
+
+    def test_checkout_path_is_canonicalized(self):
+        alias = self.root / "checkout alias"
+        alias.symlink_to(self.repo, target_is_directory=True)
+        self.assertCountEqual(
+            tracked_files(alias), ["tracked fixture.txt", "line\nbreak.txt"]
+        )
 
 
 class ProvisioningTests(unittest.TestCase):
@@ -45,11 +138,7 @@ class ProvisioningTests(unittest.TestCase):
         # Zig 0.16 materializes packages in the build root's zig-pkg directory;
         # --global-cache-dir controls compilation/download metadata, not this.
         cls.package = ROOT / "zig-pkg" / expected_hash
-        cls.files = (
-            subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT)
-            .decode()
-            .split("\0")
-        )
+        cls.files = tracked_files(ROOT)
 
     def setUp(self):
         self.case = self.root / self.id().rsplit(".", 1)[-1]
