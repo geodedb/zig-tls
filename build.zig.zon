@@ -37,31 +37,13 @@
             .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.8#2161d8e77beb6f9d6d8664b4406c739ef3a6cc81",
             .hash = "thread_pool-0.2.8-11B1BrrSeQD3WHNJ-oyNkrfcHLp5AOW1Zgr4QTGu7pb4",
         },
-        // FIPS backend: resolved only when a build reaches
-        // b.lazyDependency("fips", ...) under -Dfips=true. With the flag
-        // off the dependency is never resolved and the produced artifact
-        // links no OpenSSL and contains zero fips symbols.
-        //
-        // LOCAL PATH dep: the fips package has no git remote yet, so it is
-        // referenced by absolute path. `.lazy = true` keeps it out of the
-        // -Dfips=false build entirely (lazyDependency only resolves it when
-        // the flag is on). A `.path` dep's hash is irrelevant and not
-        // computed.
-        //
-        // PRODUCTION (eventual git+https lazy form, once the fips repo has a
-        // remote + tag):
-        //   .fips = .{
-        //       .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.2#2db29e0add6e2e6111b1f27c0fa72afd366f9092",
-        //       .hash = "fips-0.1.2-1wf3naNnBwDb429FDp9qyF1irQ7otgjMxUafGKxjYTMG",
-        //       .lazy = true,
-        //   },
-        // Path is relative to the build root. The build root resolves to the
-        // realpath of this repo; the fips package sits at the sibling
-        // ../fips in the logical workspace. Zig requires path deps to be
-        // expressed relative to the (realpath) build root.
+        // FIPS is resolved only under -Dfips=true. Keep this exact commit/hash
+        // aligned with QUIC so both consumers share one provider module.
+        // Includes the verified release-signature and algorithm-policy fixes
+        // required by SONNY-4779, SONNY-4781 and SONNY-4782.
         .fips = .{
-            .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.2#2db29e0add6e2e6111b1f27c0fa72afd366f9092",
-            .hash = "fips-0.1.2-1wf3naNnBwDb429FDp9qyF1irQ7otgjMxUafGKxjYTMG",
+            .url = "git+https://gitlab.com/devnw/zig/fips.git#571f09ca5277dbdfab0d103450eb1b0353e0c810",
+            .hash = "fips-0.1.2-1wf3naAACABLDDJ-ZoCElXmeDwwT-TU6zlj68xSWQ6Qi",
             .lazy = true,
         },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.

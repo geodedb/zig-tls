@@ -560,7 +560,7 @@ test "NEWGAP-11: server rejects ClientHello missing quic_transport_parameters" {
     try testing.expectError(tls13.HandshakeError.MissingTransportParameters, server.processCrypto(.Initial, ch));
 }
 
-test "TLS-MODE: client<->server complete a plain TLS 1.3 handshake with NO transport params" {
+test "TLS-MODE: plain TLS handshake preserves key-share policy without transport params" {
     const alloc = testing.allocator;
     const cert_der = @embedFile("test_certs/ed25519_cert.der");
     const key_der = @embedFile("test_certs/ed25519_key.der");
@@ -580,7 +580,7 @@ test "TLS-MODE: client<->server complete a plain TLS 1.3 handshake with NO trans
         .supported_signature_schemes = &.{.ed25519},
         .server_cert_der = cert_der,
         .server_key_der = key_der,
-        .transport_mode = .tls, // <-- the patch
+        .transport_mode = .tls,
     }, .{});
     defer server.deinit();
 
@@ -591,9 +591,24 @@ test "TLS-MODE: client<->server complete a plain TLS 1.3 handshake with NO trans
         .supported_groups = &.{.x25519},
         .supported_signature_schemes = &.{.ed25519},
         .server_name = "ed25519.example.com",
-        .transport_mode = .tls, // <-- the patch
+        .transport_mode = .tls,
     }, .{});
     defer client.deinit();
+
+    if (comptime tls13.fips_enabled) {
+        // Plain TLS must enforce the same strict FIPS policy as QUIC: the
+        // standalone X25519 offer is rejected before emitting a ClientHello.
+        // Retrying must not turn the rejected attempt into a started handshake.
+        for (0..2) |_| {
+            try testing.expectError(tls13.HandshakeError.UnsupportedKeyShareGroup, client.startClientHandshake());
+            try testing.expect(!client.handshakeComplete());
+            try testing.expect(client.phase == .initial);
+            for ([_]tls13.EncryptionLevel{ .Initial, .Handshake, .Application }) |level| {
+                try testing.expectError(error.NothingToRead, client.pollCrypto(alloc, level));
+            }
+        }
+        return;
+    }
 
     try client.startClientHandshake();
 
