@@ -2,6 +2,21 @@
 # GitLab CI/CD Pipeline for tls
 # SPDX-License-Identifier: Apache-2.0
 
+# Prefer the MR pipeline once a feature branch has an open MR. Preserve
+# default-branch/tag releases and scheduled, API, and triggered pipelines.
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - when: always
+
+# Jobs without rules default to except:merge_requests. Every verification
+# gate must opt in so a green MR pipeline includes the same checks as push.
+.verification:
+  rules: &verification-rules
+    - when: on_success
+
 # Require BOTH `company` and `linux` tags to exclude the macOS Lab runner
 # (which has `company` but not `linux`, is a shell executor ignoring
 # `image:`, and has no apt-get / GNU sha256sum). The Debian-based
@@ -105,6 +120,7 @@ stages:
 # Override zig-format component to use the project's ZIG_VERSION.
 # The v1.2.1 component defaults to 0.14.0 and does not accept a version input.
 zig-format:
+  rules: *verification-rules
   <<: *cache-zig
   timeout: 15m
   before_script:
@@ -112,6 +128,7 @@ zig-format:
 
 # Build job
 build:
+  rules: *verification-rules
   stage: build
   image: debian:bookworm-slim
   timeout: 30m
@@ -123,6 +140,7 @@ build:
 
 # Unit tests
 test:
+  rules: *verification-rules
   stage: test
   image: debian:bookworm-slim
   timeout: 30m
@@ -168,6 +186,7 @@ test-fips:
 
 # Release optimization tests
 test-release-safe:
+  rules: *verification-rules
   stage: test
   image: debian:bookworm-slim
   timeout: 45m
@@ -181,6 +200,7 @@ test-release-safe:
 
 # ReleaseFast tests
 test-release-fast:
+  rules: *verification-rules
   stage: test
   image: debian:bookworm-slim
   timeout: 45m
@@ -194,6 +214,7 @@ test-release-fast:
 
 # ReleaseSmall tests
 test-release-small:
+  rules: *verification-rules
   stage: test
   image: debian:bookworm-slim
   timeout: 45m
@@ -212,6 +233,7 @@ test-release-small:
 # complementary flag (=true) so the insecure-gated tests actually execute and
 # the sentinel enum paths get non-zero coverage on every MR.
 test-insecure-flag:
+  rules: *verification-rules
   stage: test
   image: debian:bookworm-slim
   timeout: 30m
@@ -231,6 +253,7 @@ test-insecure-flag:
 # pkg-config; install lives in before_script so a missing dev package fails
 # the job loudly rather than silently skipping.
 test-conformance:
+  rules: *verification-rules
   stage: test
   image: debian:bookworm-slim
   timeout: 45m
@@ -309,6 +332,7 @@ fuzz:
 # that reaches for the Linux syscall directly bypasses the SEC-074 fix and
 # the SEC-081 portability fix simultaneously — fail the pipeline.
 no-raw-getrandom:
+  rules: *verification-rules
   stage: test
   image: debian:bookworm-slim
   timeout: 5m
@@ -328,6 +352,7 @@ no-raw-getrandom:
 # CWE-345 psk_seen ordering invariants all still hold after any future
 # ClientHello parser/builder change.
 client_hello_oracle:
+  rules: *verification-rules
   stage: test
   image: debian:bookworm-slim
   timeout: 10m
@@ -359,6 +384,7 @@ client_hello_oracle:
 # handshake behavior (RFC 8446 §4/§7.2, SEC-054 errdefer, CWE-226 KU
 # secret zeroization, PSK binder timing_safe, HRR transcript hash).
 context_decomp_oracle:
+  rules: *verification-rules
   stage: test
   image: debian:bookworm-slim
   timeout: 15m
@@ -381,3 +407,14 @@ context_decomp_oracle:
       fi
   needs:
     - build
+
+# These component jobs have no rules of their own. Opt both SBOM jobs in
+# together so sbom-scan retains its required artifact dependency.
+security-gitleaks:
+  rules: *verification-rules
+
+sbom-generate:
+  rules: *verification-rules
+
+sbom-scan:
+  rules: *verification-rules
