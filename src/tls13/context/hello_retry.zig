@@ -67,15 +67,18 @@ const readU16 = tls13_full.readU16;
 ///
 /// `cookie` is a borrowed slice into the original HRR body; it remains valid
 /// as long as the caller-owned body buffer remains valid. `selected_group`
-/// is never null — an absent or malformed key_share causes the parser to
-/// return `HandshakeError.MissingKeyShare`.
+/// is required by this legacy parser. Context uses parseHrrMessage for
+/// cookie-only retries as well.
 pub const HrrParsed = struct {
     selected_group: tls13_full.NamedGroup,
     cookie: ?[]const u8,
-    /// NEWGAP-08: raw legacy `cipher_suite` codepoint from the HRR. The caller
-    /// (`handleHelloRetryRequest`) validates it against the offered list and
-    /// asserts the subsequent ServerHello selects the same suite (RFC 8446
-    /// §4.1.4).
+    cipher_suite: u16,
+};
+
+pub const HrrMessage = struct {
+    selected_group: ?tls13_full.NamedGroup,
+    cookie: ?[]const u8,
+    supported_version: ?u16,
     cipher_suite: u16,
 };
 
@@ -87,6 +90,17 @@ pub const HrrParsed = struct {
 ///
 /// Does NOT allocate — cookie is a borrow into `body`.
 pub fn parseHelloRetryRequest(body: []const u8) !HrrParsed {
+    const parsed = try parseHrrMessage(body);
+    return .{
+        .selected_group = parsed.selected_group orelse return HandshakeError.MissingKeyShare,
+        .cookie = parsed.cookie,
+        .cipher_suite = parsed.cipher_suite,
+    };
+}
+
+/// Context parser also accepts a cookie-only retry; the legacy public parser
+/// above retains its non-null selected_group API for callers needing a rekey.
+pub fn parseHrrMessage(body: []const u8) !HrrMessage {
     // Minimum HRR body: legacy_version(2) + random(32) + session_id_len(1) = 35.
     if (body.len < 2 + 32 + 1) return HandshakeError.UnexpectedMessage;
 
@@ -120,6 +134,7 @@ pub fn parseHelloRetryRequest(body: []const u8) !HrrParsed {
 
     const exts_end = pos + exts_len;
     var cookie: ?[]const u8 = null;
+    var supported_version: ?u16 = null;
     var selected_group: ?tls13_full.NamedGroup = null;
 
     // GAP-0144 / SEC-104 (cross-ref): RFC 8446 §4.2 forbids more than one
@@ -152,26 +167,31 @@ pub fn parseHelloRetryRequest(body: []const u8) !HrrParsed {
         if (etype == @intFromEnum(tls13_full.ExtensionType.cookie)) {
             if (elen < 2) return HandshakeError.UnexpectedMessage;
             const ck_len: usize = readU16(body[pos .. pos + 2]);
-            if (2 + ck_len > elen) return HandshakeError.UnexpectedMessage;
+            if (ck_len == 0 or 2 + ck_len != elen) return HandshakeError.UnexpectedMessage;
             cookie = body[pos + 2 .. pos + 2 + ck_len];
         }
         // RFC 8446 §4.2.8: key_share HRR variant — 2-byte selected_group.
         else if (etype == @intFromEnum(tls13_full.ExtensionType.key_share)) {
-            if (elen == 2) {
-                const group_val = readU16(body[pos .. pos + 2]);
-                selected_group = std.enums.fromInt(tls13_full.NamedGroup, group_val);
-            }
+            if (elen != 2) return HandshakeError.MissingKeyShare;
+            const group_val = readU16(body[pos .. pos + 2]);
+            selected_group = std.enums.fromInt(tls13_full.NamedGroup, group_val) orelse
+                return HandshakeError.UnsupportedKeyShareGroup;
+        } else if (etype == @intFromEnum(tls13_full.ExtensionType.supported_versions)) {
+            if (elen != 2) return HandshakeError.UnsupportedVersion;
+            supported_version = readU16(body[pos .. pos + 2]);
         }
 
         pos += elen;
     }
 
-    // Cookie is optional in HRR, but selected_group is required.
-    const group = selected_group orelse return HandshakeError.MissingKeyShare;
+    if (pos != exts_end or exts_end != body.len) return HandshakeError.UnexpectedMessage;
+    // A cookie-only HRR leaves the existing key share unchanged (§4.1.2).
+    if (selected_group == null and cookie == null) return HandshakeError.MissingKeyShare;
 
-    return HrrParsed{
-        .selected_group = group,
+    return HrrMessage{
+        .selected_group = selected_group,
         .cookie = cookie,
+        .supported_version = supported_version,
         .cipher_suite = cipher_suite,
     };
 }
@@ -261,6 +281,7 @@ pub fn buildClientHello2Body(
 /// Inputs to `buildHrrBody` (server-side). All slices / bytes are borrowed;
 /// caller guarantees lifetime until the call returns.
 pub const HrrBuildInput = struct {
+    cipher_suite: tls13_full.CipherSuite = .TLS_AES_128_GCM_SHA256,
     /// Server secret used to HMAC the cookie (RFC 8446 §4.2.2).
     server_secret: []const u8,
     /// Client random from CH1 (used as additional authenticated data on the
@@ -313,6 +334,10 @@ pub fn buildHrrBody(
         sid,
     );
 
+    // The compatibility builder defaults to AES-128; Context must echo the
+    // negotiated suite in HRR and retain it for the final ServerHello.
+    const suite_offset = 35 + (if (sid) |value| value.len else @as(usize, 0));
+    std.mem.writeInt(u16, body[suite_offset..][0..2], @intFromEnum(input.cipher_suite), .big);
     return HrrBuildResult{
         .body = body,
         .cookie_len = cookie.len,

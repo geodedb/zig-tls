@@ -279,7 +279,11 @@ pub const ClientHelloInfo = struct {
     /// Parse ClientHello message body and allocate owned copies.
     /// Callers must call deinit() to free allocated memory.
     pub fn parse(allocator: std.mem.Allocator, body: []const u8) !ClientHelloInfo {
-        var parsed = try tls13_full.parseClientHello(allocator, body);
+        return parseForGroup(allocator, body, .x25519);
+    }
+
+    pub fn parseForGroup(allocator: std.mem.Allocator, body: []const u8, preferred_group: tls13_full.NamedGroup) !ClientHelloInfo {
+        var parsed = try tls13_full.parseClientHelloForGroup(allocator, body, preferred_group);
         errdefer freeParsedClientHello(allocator, &parsed);
 
         const HandshakeError = error{
@@ -300,6 +304,13 @@ pub const ClientHelloInfo = struct {
         // gate made the HRR path unreachable for quic-go / mvfst clients
         // (see docs/QUIC_INTEROP_HRR_ISSUE.md).
         const key_share = parsed.key_share orelse return HandshakeError.MissingKeyShare;
+        // A FIPS server may select or request the hybrid only when the peer
+        // advertised it. Never invent support from a key_share alone.
+        if (preferred_group == .x25519_mlkem768) {
+            const groups = parsed.supported_groups orelse return error.UnsupportedKeyShareGroup;
+            if (std.mem.indexOfScalar(tls13_full.NamedGroup, groups, preferred_group) == null)
+                return error.UnsupportedKeyShareGroup;
+        }
 
         // PERF-201: Own `raw` once and reslice views to it instead of duping every field.
         const raw_copy = try allocator.dupe(u8, body);
@@ -505,9 +516,13 @@ pub const HandshakeState = struct {
     /// Store parsed ClientHello for parameter negotiation (server role).
     /// Returns error if ClientHello already received.
     pub fn setClientHello(self: *HandshakeState, allocator: std.mem.Allocator, body: []const u8) !void {
+        return self.setClientHelloForGroup(allocator, body, .x25519);
+    }
+
+    pub fn setClientHelloForGroup(self: *HandshakeState, allocator: std.mem.Allocator, body: []const u8, preferred_group: tls13_full.NamedGroup) !void {
         const HandshakeError = error{DuplicateClientHello};
         if (self.client_hello != null) return HandshakeError.DuplicateClientHello;
-        const info = try ClientHelloInfo.parse(allocator, body);
+        const info = try ClientHelloInfo.parseForGroup(allocator, body, preferred_group);
         errdefer {
             var info_copy = info;
             info_copy.deinit(allocator);

@@ -1067,6 +1067,24 @@ pub fn build(b: *std.Build) void {
     // TLS 1.3 Handshake Integration Tests
     // ========================================================================
 
+    const hybrid_handshake_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fips_hybrid_handshake_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "crypto_backend", .module = crypto_backend_mod },
+            },
+        }),
+    });
+    const run_hybrid_handshake_test = b.addRunArtifact(hybrid_handshake_test);
+    test_step.dependOn(&run_hybrid_handshake_test.step);
+    const hybrid_handshake_step = b.step("test-hybrid-handshake", "Run hybrid TLS handshake and rejection regressions");
+    hybrid_handshake_step.dependOn(&run_hybrid_handshake_test.step);
+
     const tls13_handshake_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/tls13_handshake_tests.zig"),

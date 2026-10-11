@@ -33,6 +33,9 @@ const std = @import("std");
 const testing = std.testing;
 const tls13 = @import("tls13");
 const tls13_full = @import("tls13_full");
+const active_group: tls13_full.NamedGroup = if (tls13.fips_enabled) .x25519_mlkem768 else .x25519;
+const active_code: u16 = @intFromEnum(active_group);
+const share_len = if (tls13.fips_enabled) 1216 else 32;
 
 // ============================================================================
 // Helpers
@@ -92,7 +95,7 @@ fn buildFramedClientHelloWithGroup(
     try exts.append(allocator, @intCast(sg_list_len & 0xff));
     try exts.append(allocator, @intCast(group_code >> 8));
     try exts.append(allocator, @intCast(group_code & 0xff));
-    try exts.appendSlice(allocator, &[_]u8{ 0x00, 0x1d }); // x25519
+    try exts.appendSlice(allocator, &.{ @intCast(active_code >> 8), @intCast(active_code & 0xff) }); // active group
 
     // signature_algorithms: [ed25519] for the test ed25519 cert path.
     try exts.appendSlice(allocator, &[_]u8{
@@ -155,7 +158,7 @@ fn makeServerCtx() !tls13.Context {
     return tls13.Context.init(.{
         .allocator = testing.allocator,
         .role = .Server,
-        .supported_groups = &.{.x25519},
+        .supported_groups = &.{active_group},
         .supported_signature_schemes = &.{.ed25519},
         .quic_transport_parameters = &[_]u8{},
     }, .{});
@@ -265,8 +268,7 @@ test "HRR-server: CH1 with secp256r1 key_share triggers HRR (no error)" {
     // The HRR's key_share must request x25519 (0x001d).
     const grp_off = findHrrSelectedGroupOffset(hrr_msg) orelse
         return error.TestExpectedKeyShareInHrr;
-    try testing.expectEqual(@as(u8, 0x00), hrr_msg[grp_off]);
-    try testing.expectEqual(@as(u8, 0x1d), hrr_msg[grp_off + 1]);
+    try testing.expectEqual(active_code, std.mem.readInt(u16, hrr_msg[grp_off..][0..2], .big));
 }
 
 // ============================================================================
@@ -302,8 +304,7 @@ test "HRR-server: CH1 with x25519_kyber768_draft00 key_share triggers HRR" {
 
     const grp_off = findHrrSelectedGroupOffset(hrr_msg) orelse
         return error.TestExpectedKeyShareInHrr;
-    try testing.expectEqual(@as(u8, 0x00), hrr_msg[grp_off]);
-    try testing.expectEqual(@as(u8, 0x1d), hrr_msg[grp_off + 1]);
+    try testing.expectEqual(active_code, std.mem.readInt(u16, hrr_msg[grp_off..][0..2], .big));
 }
 
 // ============================================================================
@@ -578,11 +579,11 @@ test "HRR-server: CH2 with a forged cookie is rejected (SEC-086)" {
     defer testing.allocator.free(forged);
     forged[0] ^= 0x80;
 
-    var x25519_key: [32]u8 = undefined;
+    var x25519_key: [share_len]u8 = undefined;
     @memset(&x25519_key, 0x77);
     const ch2 = try buildFramedClientHelloWithGroup(
         testing.allocator,
-        0x001d,
+        active_code,
         &x25519_key,
         forged,
     );
@@ -620,11 +621,11 @@ test "HRR-server: CH2 without a cookie ext is rejected (SEC-086)" {
     const hrr_msg = try server_ctx.pollCrypto(testing.allocator, .Initial);
     defer testing.allocator.free(hrr_msg);
 
-    var x25519_key: [32]u8 = undefined;
+    var x25519_key: [share_len]u8 = undefined;
     @memset(&x25519_key, 0x77);
     const ch2 = try buildFramedClientHelloWithGroup(
         testing.allocator,
-        0x001d,
+        active_code,
         &x25519_key,
         null, // no cookie echo — RFC violation
     );

@@ -62,7 +62,11 @@ pub const PskInput = struct {
     ticket_lookup: ?TicketLookupFn,
     /// Opaque context pointer forwarded to `ticket_lookup`.
     ticket_lookup_ctx: ?*anyopaque,
+    /// RFC 8446 §4.2.11.2: CH2 binders cover message_hash(CH1) || HRR.
+    hrr_prefix: ?HrrPrefix = null,
 };
+
+pub const HrrPrefix = struct { ch1_hash: Secret, hrr_framed: []const u8 };
 
 /// Output of `selectPsk` — mirrors the former private `PskSelection` struct
 /// inside context.zig.
@@ -82,6 +86,10 @@ pub const PskOutput = struct {
 /// Ported verbatim from src/tls13/context.zig (pre-QUAL-317): the original
 /// was already pure (no `self` references), so no renames were required.
 pub fn computeBinderTranscriptHash(hash: Hash, header: *const [4]u8, truncated_body: []const u8) Secret {
+    return computeBinderTranscriptHashWithPrefix(hash, header, truncated_body, null);
+}
+
+fn computeBinderTranscriptHashWithPrefix(hash: Hash, header: *const [4]u8, truncated_body: []const u8, prefix: ?HrrPrefix) Secret {
     // Incremental Transcript-Hash(header || truncated_body) routed through the
     // seam's streaming Hash API (byte-identical to the prior std init/update/
     // final under -Dfips=false; validated provider under -Dfips=true).
@@ -91,6 +99,12 @@ pub fn computeBinderTranscriptHash(hash: Hash, header: *const [4]u8, truncated_b
     };
     var hasher = backend.HashStream.init(alg) catch unreachable;
     defer hasher.deinit();
+    if (prefix) |hrr| {
+        const message_hash_header = [_]u8{ 0xfe, 0, 0, @intCast(hrr.ch1_hash.len) };
+        hasher.update(&message_hash_header) catch unreachable;
+        hasher.update(hrr.ch1_hash.slice()) catch unreachable;
+        hasher.update(hrr.hrr_framed) catch unreachable;
+    }
     hasher.update(header) catch unreachable;
     hasher.update(truncated_body) catch unreachable;
     var digest: [ks.max_digest_length]u8 = undefined;
@@ -220,12 +234,7 @@ pub fn selectPsk(input: PskInput) !?PskOutput {
             header[2] = @intCast((input.ch_raw.len >> 8) & 0xFF);
             header[3] = @intCast(input.ch_raw.len & 0xFF);
 
-            // Compute hash of (Header + TruncatedBody)
-            // For first ClientHello (no HRR), this is the entire binder transcript.
-            // For ClientHello2 after HRR, we would need to include prior messages,
-            // but since we handle HRR separately and this is called for the initial CH,
-            // we compute the hash directly here.
-            const transcript_hash = computeBinderTranscriptHash(input.hash_kind, &header, truncated_ch);
+            const transcript_hash = computeBinderTranscriptHashWithPrefix(input.hash_kind, &header, truncated_ch, input.hrr_prefix);
 
             // 4. Compute expected binder (RFC 8446 §4.2.11.2)
             // finished_key = HKDF-Expand-Label(binder_key, "finished", "", Hash.length)

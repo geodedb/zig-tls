@@ -131,9 +131,9 @@ pub const NamedGroup = enum(u16) {
 };
 
 /// draft-kwiatkowski-tls-ecdhe-mlkem §3 hybrid X25519MLKEM768 sizes.
-/// Concatenation order is ECDH share THEN ML-KEM.
-pub const x25519_mlkem768_ch_keyshare_len: usize = 32 + 1184; // X25519 pub || ML-KEM-768 encap key
-pub const x25519_mlkem768_sh_keyshare_len: usize = 32 + 1088; // X25519 pub || ML-KEM-768 ciphertext
+/// X25519MLKEM768 uses ML-KEM bytes first, followed by X25519.
+pub const x25519_mlkem768_ch_keyshare_len: usize = 1184 + 32; // ML-KEM-768 encap key || X25519 pub
+pub const x25519_mlkem768_sh_keyshare_len: usize = 1088 + 32; // ML-KEM-768 ciphertext || X25519 pub
 pub const x25519_len: usize = 32;
 pub const mlkem768_encap_key_len: usize = 1184;
 pub const mlkem768_ciphertext_len: usize = 1088;

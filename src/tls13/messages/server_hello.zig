@@ -320,7 +320,7 @@ pub fn buildServerHello(
     // draft-kwiatkowski-tls-ecdhe-mlkem: for the X25519MLKEM768 hybrid
     // group the ServerHello key_share is exactly
     // x25519_mlkem768_sh_keyshare_len (1120) bytes
-    // (X25519 pub || ML-KEM-768 ciphertext, provider-concatenated). The
+    // (ML-KEM-768 ciphertext || X25519 pub, provider-concatenated). The
     // encoder already writes key_exchange as a length-prefixed opaque blob,
     // so a 1120-byte slice serializes unchanged; this assertion guards
     // against a malformed hybrid key_share reaching the wire.

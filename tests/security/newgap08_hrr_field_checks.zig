@@ -45,7 +45,7 @@ fn buildHrr(alloc: std.mem.Allocator, f: HrrFields) ![]u8 {
 
 // A minimal valid HRR key_share extension (selected_group x25519) so the parser
 // reaches MissingKeyShare-free territory; field checks fire before/around it.
-const hrr_key_share = [_]u8{ 0x00, 0x33, 0x00, 0x02, 0x00, 0x1d };
+const hrr_key_share = [_]u8{ 0x00, 0x33, 0x00, 0x02, 0x00, 0x1d, 0x00, 0x2b, 0x00, 0x02, 0x03, 0x04 };
 
 test "NEWGAP-08: HRR with legacy_version != 0x0303 is rejected" {
     const alloc = testing.allocator;

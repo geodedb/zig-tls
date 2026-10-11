@@ -79,16 +79,34 @@ fn makeClientCtx() !tls13.Context {
 
 /// Build a framed (4-byte header + body) HRR ServerHello message requesting
 /// the given group, suitable for feeding to client_ctx.processCrypto().
-fn buildFramedHrr(group: tls13_full.NamedGroup, cookie: []const u8) ![]u8 {
+fn buildFramedHrr(group: ?tls13_full.NamedGroup, cookie: []const u8) ![]u8 {
     const hrr_body = try tls13_full.buildHelloRetryRequest(
         testing.allocator,
-        group,
+        group orelse .x25519,
         cookie,
         null, // no session_id echo
     );
     defer testing.allocator.free(hrr_body);
 
-    const framed = try tls13.encodeHandshake(testing.allocator, .server_hello, hrr_body);
+    var body_len = hrr_body.len;
+    if (group == null) {
+        // RFC 8446 §4.2.8 forbids selecting a share already present in CH1.
+        // A cookie-only retry has no key_share extension and retains the key.
+        const ext_offset: usize = 38; // empty session id
+        var pos: usize = ext_offset + 2;
+        while (pos < body_len) {
+            const kind = std.mem.readInt(u16, hrr_body[pos..][0..2], .big);
+            const len = std.mem.readInt(u16, hrr_body[pos + 2 ..][0..2], .big);
+            if (kind == 0x33) {
+                std.mem.copyForwards(u8, hrr_body[pos..], hrr_body[pos + 4 + len ..]);
+                body_len -= 4 + len;
+                std.mem.writeInt(u16, hrr_body[ext_offset..][0..2], @intCast(body_len - ext_offset - 2), .big);
+                break;
+            }
+            pos += 4 + len;
+        }
+    }
+    const framed = try tls13.encodeHandshake(testing.allocator, .server_hello, hrr_body[0..body_len]);
     return framed;
 }
 
@@ -96,7 +114,7 @@ fn buildFramedHrr(group: tls13_full.NamedGroup, cookie: []const u8) ![]u8 {
 // Test 1: Client state reset after HRR
 // ============================================================================
 
-test "QUAL-099: client generates new key pair after HRR" {
+test "QUAL-099: cookie-only HRR retains the original key pair" {
     var client_ctx = try makeClientCtx();
     defer client_ctx.deinit();
     try client_ctx.startClientHandshake();
@@ -109,8 +127,8 @@ test "QUAL-099: client generates new key pair after HRR" {
     const ch_msg = try client_ctx.pollCrypto(testing.allocator, .Initial);
     defer testing.allocator.free(ch_msg);
 
-    // Build synthetic HRR requesting x25519
-    const hrr_msg = try buildFramedHrr(.x25519, "test-cookie");
+    // Build synthetic cookie-only HRR
+    const hrr_msg = try buildFramedHrr(null, "test-cookie");
     defer testing.allocator.free(hrr_msg);
 
     // Feed HRR to client
@@ -120,12 +138,12 @@ test "QUAL-099: client generates new key pair after HRR" {
     // 1. hrr_received flag should be set
     try testing.expect(client_ctx.hrr_received);
 
-    // 2. New key pair should be different from original
+    // 2. Cookie-only retries must retain the original key pair.
     const new_priv = client_ctx.client_priv orelse return error.TestSetupFailed;
     const new_pub = client_ctx.client_pub orelse return error.TestSetupFailed;
 
-    try testing.expect(!std.mem.eql(u8, &original_priv, &new_priv));
-    try testing.expect(!std.mem.eql(u8, &original_pub, &new_pub));
+    try testing.expect(std.mem.eql(u8, &original_priv, &new_priv));
+    try testing.expect(std.mem.eql(u8, &original_pub, &new_pub));
 
     // 3. client_random preserved (RFC 8446 section 4.1.4)
     try testing.expect(client_ctx.client_random != null);
@@ -135,9 +153,8 @@ test "QUAL-099: client generates new key pair after HRR" {
 // Test 2: SecureZero on key material during HRR reset
 // ============================================================================
 
-test "QUAL-099: new key pair is valid after HRR rekey (SEC-036)" {
-    // Verify that after HRR rekey the new key pair is consistent.
-    // sendClientHello2 applies RFC 7748 section 5 clamping.
+test "QUAL-099: retained key pair remains valid after cookie-only HRR" {
+    // Verify that the retained key pair is consistent after the retry.
     var client_ctx = try makeClientCtx();
     defer client_ctx.deinit();
     try client_ctx.startClientHandshake();
@@ -145,7 +162,7 @@ test "QUAL-099: new key pair is valid after HRR rekey (SEC-036)" {
     const ch_msg = try client_ctx.pollCrypto(testing.allocator, .Initial);
     defer testing.allocator.free(ch_msg);
 
-    const hrr_msg = try buildFramedHrr(.x25519, "test-cookie");
+    const hrr_msg = try buildFramedHrr(null, "test-cookie");
     defer testing.allocator.free(hrr_msg);
 
     try client_ctx.processCrypto(.Initial, hrr_msg);
@@ -179,7 +196,7 @@ test "QUAL-099: second ClientHello contains x25519 key share" {
     defer testing.allocator.free(ch1_msg);
 
     // Send HRR
-    const hrr_msg = try buildFramedHrr(.x25519, "test-cookie");
+    const hrr_msg = try buildFramedHrr(null, "test-cookie");
     defer testing.allocator.free(hrr_msg);
     try client_ctx.processCrypto(.Initial, hrr_msg);
 
@@ -215,7 +232,7 @@ test "QUAL-099: client rejects second HRR (RFC 8446 section 4.1.4)" {
     const ch_msg = try client_ctx.pollCrypto(testing.allocator, .Initial);
     defer testing.allocator.free(ch_msg);
 
-    const hrr_msg = try buildFramedHrr(.x25519, "test-cookie");
+    const hrr_msg = try buildFramedHrr(null, "test-cookie");
     defer testing.allocator.free(hrr_msg);
 
     // First HRR should succeed
@@ -251,7 +268,7 @@ test "QUAL-099: CH2 uses same random as CH1 (RFC 8446 section 4.1.4)" {
     var ch1_random: [32]u8 = undefined;
     @memcpy(&ch1_random, ch1_msg[6..38]);
 
-    const hrr_msg = try buildFramedHrr(.x25519, "test-cookie");
+    const hrr_msg = try buildFramedHrr(null, "test-cookie");
     defer testing.allocator.free(hrr_msg);
     try client_ctx.processCrypto(.Initial, hrr_msg);
 
@@ -279,7 +296,7 @@ test "QUAL-099: CH2 includes cookie extension from HRR" {
     defer testing.allocator.free(ch1_msg);
 
     const test_cookie = "hrr-test-cookie-value";
-    const hrr_msg = try buildFramedHrr(.x25519, test_cookie);
+    const hrr_msg = try buildFramedHrr(null, test_cookie);
     defer testing.allocator.free(hrr_msg);
     try client_ctx.processCrypto(.Initial, hrr_msg);
 
@@ -361,4 +378,16 @@ test "QUAL-099: HRR message has special random value" {
 
     // Extract random and verify it's the HRR sentinel
     try testing.expect(tls13_full.isHelloRetryRequest(hrr_body[2..34].*));
+}
+
+// RFC 8446 §4.2.8 requires rejection even when an HRR also has a cookie.
+test "SONNY-4794 HRR cannot request an already offered classical share" {
+    var client = try makeClientCtx();
+    defer client.deinit();
+    try client.startClientHandshake();
+    const msg = try buildFramedHrr(.x25519, "cookie");
+    defer testing.allocator.free(msg);
+    try testing.expectError(error.HrrNoChange, client.processCrypto(.Initial, msg));
+    try testing.expect(client.client_priv == null);
+    try testing.expectEqual(tls13.HandshakePhase.terminated, client.phase);
 }
