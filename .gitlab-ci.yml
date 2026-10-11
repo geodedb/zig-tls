@@ -184,6 +184,8 @@ test-fips:
       optional: true
 
 # Release optimization tests
+# Bound concurrent compiler processes for the many independent test binaries.
+# Autoscaled runners start with empty caches; retain all tests and the 45m limit.
 test-release-safe:
   rules: *verification-rules
   stage: test
@@ -193,7 +195,7 @@ test-release-safe:
   before_script:
     - *install-zig
   script:
-    - zig build test -Doptimize=ReleaseSafe --summary all
+    - zig build test -j2 -Doptimize=ReleaseSafe --summary all
   needs:
     - build
 
@@ -207,7 +209,7 @@ test-release-fast:
   before_script:
     - *install-zig
   script:
-    - zig build test -Doptimize=ReleaseFast --summary all
+    - zig build test -j2 -Doptimize=ReleaseFast --summary all
   needs:
     - build
 
@@ -221,7 +223,7 @@ test-release-small:
   before_script:
     - *install-zig
   script:
-    - zig build test -Doptimize=ReleaseSmall --summary all
+    - zig build test -j2 -Doptimize=ReleaseSmall --summary all
   needs:
     - build
 
