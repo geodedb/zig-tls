@@ -70,7 +70,7 @@ plus a tag) is the git+https lazy dep documented inline in `build.zig.zon`:
 | Area | Non-FIPS (default) | Under `-Dfips=true` |
 |------|--------------------|---------------------|
 | Record AEAD | AES-128/256-GCM **+ ChaCha20-Poly1305** | **AES-GCM only**; ChaCha is rejected at `AeadCipher.init` (`RecordError.UnsupportedCipherSuite`) and dropped from the default cipher-suite list |
-| Named groups | `[x25519]` | `[x25519_mlkem768, x25519]` — the X25519MLKEM768 post-quantum hybrid is preferred. **Standalone X25519 key-agreement is rejected at runtime** (`HandshakeError.UnsupportedKeyShareGroup`) on both client and server because standalone X25519 is not FIPS-approved (only ECDH P-256/384/521 and the hybrid are); see §6 for the hybrid's contract boundary |
+| Named groups | `[x25519]` | `[x25519_mlkem768]` — provider-backed X25519MLKEM768 hybrid exchange. **Standalone X25519 key-agreement is rejected at runtime** (`HandshakeError.UnsupportedKeyShareGroup`) on both client and server because standalone X25519 is not FIPS-approved (only ECDH P-256/384/521 and the hybrid are); see §6 for the wire exchange |
 | HKDF-Expand-Label | std `HkdfShaXXX.expand` | OpenSSL EVP_KDF "HKDF" `MODE=EXPAND_ONLY` via `Kdf.hkdfExpand` |
 | HKDF-Extract / HMAC | std | OpenSSL HMAC / HKDF |
 | CSPRNG (`entropy.fillRandom`) | platform `randomSecure` | SP 800-90A DRBG via `Csprng.bytes` (fail-closed) |
@@ -112,40 +112,35 @@ exact (curve/hash) combinations that remain on `std.crypto`. This keeps the
 non-FIPS path RSA-capable with **no `fips` dependency** and no OpenSSL link.
 (`src/std_shim.zig` is canonical/copy-verbatim and is never edited for this.)
 
-## 6. Documented foundation-contract boundary (X25519MLKEM768 on-wire exchange)
+## 6. Provider-backed X25519MLKEM768 wire exchange
 
-The X25519MLKEM768 hybrid KEM is integrated into the TLS 1.3 key schedule and
-its `key_share` wire format is implemented and tested:
+FIPS Context handshakes use `NamedGroup.x25519_mlkem768` (`0x11ec`). The
+client generates a provider-owned KEM key and exports its public share using
+`Kem.exportPublic`. The server imports the peer share with `Kem.importPublic`
+and uses `Kem.encapsulatePublic`; the client uses `Kem.decapsulate`.
 
-- `NamedGroup.x25519_mlkem768 = 0x11ec`, the draft-fixed size constants
-  (ClientHello key_share 1216, ServerHello key_share 1120), ECDH-first concat
-  order, length validators (client offer + server accept + ServerHello parse),
-  and a local-keypair encapsulate/decapsulate round-trip are ALL exercised on
-  the published contract (`tests/fips_hybrid_kem_test.zig`,
-  `tests/fips_hybrid_keyshare_test.zig`).
+OpenSSL owns both components and their encoding. For this group, ML-KEM comes
+first: the ClientHello share is 1184 + 32 bytes, the ServerHello share is
+1088 + 32 bytes, and the shared secret is 32 + 32 bytes. The full 64-byte
+secret enters the TLS key schedule unchanged. See
+[draft-ietf-tls-ecdhe-mlkem-05 §4](https://datatracker.ietf.org/doc/html/draft-ietf-tls-ecdhe-mlkem-05#section-4).
 
-**Provider note (OpenSSL 3.6.2):** the `X25519MLKEM768` provider KEM is a
-*complete* hybrid — `encapsulate` returns the full 1120-byte ServerHello
-key_share as the ciphertext (the provider concatenates the X25519 leg) and the
-full 64-byte combined shared secret. The consumer does not manually concatenate
-the X25519 leg; OpenSSL owns both legs.
+Only the configured active group can be negotiated. Exact lengths, canonical
+ML-KEM public-key encoding, provider ownership and the hybrid key agreement
+are checked before traffic-secret installation. The client frees its KEM key
+after decapsulation and on errors or termination; shared-secret buffers are
+wiped. Standalone X25519 has no FIPS fallback.
 
-**Boundary (a tracked dependency, not an inline marker):** live on-the-wire
-hybrid exchange still needs TWO `Kem.KeyPair` capabilities the corrected
-foundation contract does not yet publish:
+A cookie-only HelloRetryRequest retains the original key share and recomputes
+PSK binders over the retry transcript. A retry selecting an already-offered
+share is rejected even if it includes a cookie, as required by
+[RFC 8446 §4.2.8](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.2.8).
 
-1. **Export** — the client must serialize its generated ML-KEM encapsulation key
-   to raw bytes for the offer: `Kem.KeyPair.publicBytes(self, out)`
-   (EVP `EVP_PKEY_get_raw_public_key`), mirroring `Sig.KeyPair.publicBytes`.
-2. **Import** — the server must build a `Kem.KeyPair` from the client's raw
-   encapsulation key to encapsulate against it: `Kem.KeyPair.fromPublicBytes(alg, raw)`
-   (EVP `EVP_PKEY_new_raw_public_key_ex` under `"fips=yes"`), mirroring
-   `Sig.KeyPair.fromPublicBytes`.
-
-Until both land, the client-offer encap-key fill, the server-accept
-encapsulate, and the client ServerHello-parse decapsulate arms return
-`HandshakeError.UnsupportedKeyShareGroup` with `// CONTRACT-BOUNDARY:` markers
-in `src/tls13/context.zig`. This is tracked as a foundation-plan dependency.
+`tests/fips_hybrid_handshake_test.zig` exercises authenticated Context peers,
+traffic-secret agreement, SHA-256/SHA-384 suites, PSKs, retry transcripts,
+malformed shares, downgrade rejection and ephemeral-key cleanup. Run it with
+`zig build test-hybrid-handshake -Dfips=true -Dopenssl_path=<prefix> -j2`.
+The tests also run as part of `zig build test` and the existing dual-mode CI.
 
 ## 7. Dependency on the `fips` package + `make deps`
 

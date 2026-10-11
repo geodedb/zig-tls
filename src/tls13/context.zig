@@ -129,28 +129,13 @@ const encodeHandshakeBuf = messages_mod.encodeHandshakeBuf;
 const HsType = messages_mod.HsType;
 const deriveHandshakeTraffic = key_derivation_mod.deriveHandshakeTraffic;
 
-/// X25519MLKEM768 hybrid KEM integration into the TLS 1.3 key schedule
-/// (draft-kwiatkowski-tls-ecdhe-mlkem). Under -Dfips=true the negotiated
-/// hybrid group derives a 64-byte shared secret = X25519_shared (32) ||
-/// ML-KEM-768_shared (32), concatenated in ECDH-first order, which is fed
-/// to `deriveHandshakeTraffic` exactly like the 32-byte X25519 secret.
-///
-/// This is the KEM-into-key-schedule integration point; the full on-wire
-/// `key_share` parse/serialize is implemented in Task 7. The whole branch
-/// is comptime-dead under -Dfips=false (cb.fips_enabled == false), so the
-/// non-fips control flow is unchanged.
-const HybridKem = struct {
-    /// ECDH-first concatenation order per draft §3: X25519 leg then ML-KEM.
-    const x25519_share_len: usize = 32;
-    const mlkem_share_len: usize = 32;
-    const hybrid_shared_len: usize = x25519_share_len + mlkem_share_len; // 64
-
-    /// True only when the active backend is FIPS and the negotiated group is
-    /// the X25519MLKEM768 hybrid. Comptime-dead branch when fips is off.
-    fn isHybrid(group: tls13_full.NamedGroup) bool {
-        return fips_cb.fips_enabled and group == .x25519_mlkem768;
-    }
-};
+// The provider owns the entire X25519MLKEM768 encoding: ML-KEM first,
+// followed by X25519, for both wire shares and the 64-byte shared secret.
+// Standard builds retain their 32-byte key-share and shared-secret buffers.
+const active_group: tls13_full.NamedGroup = if (fips_cb.fips_enabled) .x25519_mlkem768 else .x25519;
+const client_share_len = if (fips_cb.fips_enabled) tls13_full.x25519_mlkem768_ch_keyshare_len else 32;
+const server_share_len = if (fips_cb.fips_enabled) tls13_full.x25519_mlkem768_sh_keyshare_len else 32;
+const shared_secret_len = if (fips_cb.fips_enabled) 64 else 32;
 
 const parseKeyUpdate = messages_mod.parseKeyUpdate;
 const KeyUpdateRequest = messages_mod.KeyUpdateRequest;
@@ -624,6 +609,7 @@ pub const Context = struct {
     negotiated_signature: ?tls13_full.SignatureScheme = null,
     client_priv: ?[32]u8 = null,
     client_pub: ?[32]u8 = null,
+    client_kem: if (fips_cb.fips_enabled) ?fips_cb.Kem.KeyPair else void = if (fips_cb.fips_enabled) null else {},
     local_transport_parameters: ?[]u8 = null,
     peer_quic_transport_parameters: ?[]u8 = null,
     negotiated_alpn: ?[]u8 = null,
@@ -648,6 +634,7 @@ pub const Context = struct {
     // HRR state (only used in HelloRetryRequest path)
     client_random: ?[32]u8 = null, // Client random from first ClientHello (for HRR)
     hrr_sent: bool = false, // Track if we already sent HelloRetryRequest (server)
+    hrr_message: ?[]u8 = null, // Owned framed HRR for CH2 binders after outbound is drained.
     hrr_received: bool = false, // Track if we received HelloRetryRequest (client)
     // NEWGAP-08: cipher_suite selected by the HRR; the subsequent ServerHello
     // MUST select the same one (RFC 8446 §4.1.4).
@@ -696,8 +683,8 @@ pub const Context = struct {
         // GAP-0080: Validate that config.supported_groups only contains
         // implemented groups. x25519 is the classical ECDHE group; under
         // -Dfips=true the X25519MLKEM768 hybrid is also accepted in the
-        // config (its on-wire key_share is handled by the hybrid path,
-        // Task 7). Both are recognized; everything else is rejected.
+        // config. Negotiation requires the active backend's group; a
+        // standalone-X25519-only FIPS configuration fails before keygen.
         for (config.supported_groups) |group| {
             const ok = group == .x25519 or (fips_cb.fips_enabled and group == .x25519_mlkem768);
             if (!ok) return HandshakeError.UnsupportedKeyShareGroup;
@@ -859,10 +846,7 @@ pub const Context = struct {
             secureZero(u8, hs.bytes[0..hs.len]);
         }
         self.handshake_secret = null;
-        if (self.client_priv) |*priv| {
-            secureZero(u8, priv);
-        }
-        self.client_priv = null;
+        self.clearClientKeyShare();
         if (self.server_secret_generated) |*ssg| {
             secureZero(u8, ssg);
         }
@@ -875,6 +859,8 @@ pub const Context = struct {
             secureZero(u8, h.bytes[0..h.len]);
         }
         self.ch1_transcript_hash = null;
+        if (self.hrr_message) |msg| self.allocator.free(msg);
+        self.hrr_message = null;
         self.hash_kind = .sha256;
         self.phase = .initial;
     }
@@ -948,6 +934,10 @@ pub const Context = struct {
     /// - Transcript hash critical: messages added in exact receive order
     /// - State transitions happen in afterHandshakeMessage()
     pub fn processCrypto(self: *Context, level: EncryptionLevel, data: []const u8) !void {
+        if (self.phase == .terminated) return HandshakeError.UnexpectedMessage;
+        // A rejected hybrid handshake cannot retain an ephemeral private key
+        // or install traffic keys on a later call with the same Context.
+        errdefer if (comptime fips_cb.fips_enabled) self.abortHandshake();
         logger.debugPrint("Context.processCrypto: role={s}, level={s}, data_len={}\n", .{ if (self.config.role == .Server) "Server" else "Client", @tagName(level), data.len });
         var stream = self.streams.buffer(level);
 
@@ -995,7 +985,11 @@ pub const Context = struct {
             //     signature over Hash(...Certificate || CertificateVerify),
             //     which never matches the server's Hash(...Certificate),
             //     breaking every RFC-compliant server-authenticated handshake.
-            if (parsed.typ != .finished and parsed.typ != .certificate_verify) {
+            const is_hrr = parsed.typ == .server_hello and parsed.body.len >= 34 and
+                tls13_full.isHelloRetryRequest(parsed.body[2..34].*);
+            // HRR transforms the CH1 transcript inside its handler. Folding
+            // HRR first would incorrectly hash CH1 || HRR as message_hash.
+            if (parsed.typ != .finished and parsed.typ != .certificate_verify and !is_hrr) {
                 self.transcripts.handshake.update(message_bytes);
             }
 
@@ -1344,7 +1338,7 @@ pub const Context = struct {
         // quic-go / mvfst clients was indistinguishable from a
         // transport-level CRYPTO drop. See
         // docs/QUIC_INTEROP_HRR_ISSUE.md.
-        self.state.setClientHello(self.allocator, parsed.body) catch |err| {
+        self.state.setClientHelloForGroup(self.allocator, parsed.body, active_group) catch |err| {
             logger.err(
                 "[TLS-HRR] ClientHello parse failed at level={s}: {s} (body_len={d}, hrr_sent={})",
                 .{ @tagName(level), @errorName(err), parsed.body.len, self.hrr_sent },
@@ -1781,7 +1775,7 @@ pub const Context = struct {
 
         traceHandshake("Client: Received HelloRetryRequest\n", .{});
 
-        const parsed = try hello_retry_mod.parseHelloRetryRequest(body);
+        const parsed = try hello_retry_mod.parseHrrMessage(body);
 
         // NEWGAP-08 (SEC-028 twin): the HRR cipher_suite MUST be one the client
         // offered (RFC 8446 §4.1.3/§4.1.4). Record it so the subsequent
@@ -1799,24 +1793,15 @@ pub const Context = struct {
         if (!hrr_suite_offered) return HandshakeError.IllegalCipherSuiteSelected;
         self.hrr_cipher_suite = hrr_suite;
 
-        // NEWGAP-13: RFC 8446 §4.1.4 — abort with illegal_parameter if the HRR
-        // would not result in any change to the ClientHello. A change requires
-        // either a different key_share group than one already offered, or a
-        // cookie (which CH2 must echo). This client key_shares every group it
-        // supports, so an HRR selecting an already-offered group with no cookie
-        // produces an identical ClientHello2 — the prohibited retry loop.
-        var hrr_group_already_offered = false;
-        for (self.config.supported_groups) |g| {
-            if (g == parsed.selected_group) {
-                hrr_group_already_offered = true;
-                break;
-            }
+        if (parsed.supported_version != 0x0304) return HandshakeError.UnsupportedVersion;
+        if (parsed.selected_group) |group| {
+            if (std.mem.indexOfScalar(tls13_full.NamedGroup, self.config.supported_groups, group) == null)
+                return HandshakeError.UnsupportedKeyShareGroup;
+            // §4.2.8: an HRR cannot select a group already in CH1.key_share,
+            // even when it also carries a cookie. This client offers one.
+            if (group == active_group) return HandshakeError.HrrNoChange;
         }
-        if (parsed.cookie == null and hrr_group_already_offered) {
-            return HandshakeError.HrrNoChange;
-        }
-
-        traceHandshake("Client: HRR requests group: {s}\n", .{@tagName(parsed.selected_group)});
+        self.hash_kind = cipherSuiteHash(hrr_suite);
 
         // RFC 8446 §4.4.1: Update transcript for HelloRetryRequest
         // (message_hash(CH1) + HRR replay prefix, zero-alloc).
@@ -1834,77 +1819,32 @@ pub const Context = struct {
         // Send ClientHello2 with new key_share and (optional) cookie echo.
         try self.sendClientHello2(parsed.selected_group, parsed.cookie);
 
-        traceHandshake("Client: Sent ClientHello2 with group {s}\n", .{@tagName(parsed.selected_group)});
+        traceHandshake("Client: Sent ClientHello2\n", .{});
     }
 
     /// Send ClientHello2 after receiving HelloRetryRequest.
     /// RFC 8446 §4.1.4: Second ClientHello includes cookie and new key_share.
     ///
-    /// QUAL-317: thin adapter — SEC-036/SEC-050 ephemeral-key handling stays
-    /// in Context because it mutates `self.client_priv`/`self.client_pub`;
-    /// the actual CH2 body encoding is delegated to
-    /// `hello_retry_mod.buildClientHello2Body`.
-    fn sendClientHello2(self: *Context, selected_group: tls13_full.NamedGroup, cookie: ?[]const u8) !void {
-        // Generate new key pair for the requested group
-        // Currently only X25519 is supported
-        if (selected_group != .x25519) {
-            return HandshakeError.UnsupportedKeyShareGroup;
+    /// Cookie-only retries retain the original key and reuse the initial
+    /// builder/binder path so PSK identities and transcript binding survive.
+    fn sendClientHello2(self: *Context, selected_group: ?tls13_full.NamedGroup, cookie: ?[]const u8) !void {
+        if (!self.supportsActiveGroup()) return HandshakeError.UnsupportedKeyShareGroup;
+        var share: [client_share_len]u8 = undefined;
+        if (selected_group) |group| {
+            if (group != active_group) return HandshakeError.UnsupportedKeyShareGroup;
+            try self.generateClientKeyShare(&share);
+        } else if (comptime fips_cb.fips_enabled) {
+            // Cookie-only retries must retain the exact original share and
+            // private key. Generating a replacement would violate §4.1.2.
+            const kp = if (self.client_kem) |*value| value else return HandshakeError.UnexpectedMessage;
+            const n = fips_cb.Kem.exportPublic(.x25519_ml_kem_768, kp, &share) catch return HandshakeError.CryptoError;
+            if (n != share.len) return HandshakeError.CryptoError;
+        } else {
+            share = self.client_pub orelse return HandshakeError.UnexpectedMessage;
         }
-
-        // FIPS strict-enforcement (spec §5): standalone X25519 is not a
-        // FIPS-approved key-agreement; the X25519 keygen below runs on bare
-        // std.crypto. Under -Dfips=true reject rather than silently use it.
-        // Comptime-dead under -Dfips=false.
-        if (comptime fips_cb.fips_enabled) {
-            return HandshakeError.UnsupportedKeyShareGroup;
-        }
-
-        // SEC-036: Securely zeroize old private key before generating new one.
-        // Prevents stale key material from remaining in memory on HRR rekey.
-        if (self.client_priv) |*priv| {
-            secureZero(u8, priv);
-            self.client_priv = null;
-        }
-
-        var priv: [32]u8 = undefined;
-        // SEC-050: Zero stack-local private key on all exit paths (error or success).
-        // After copying to self.client_priv, this stack copy is no longer needed.
-        defer secureZero(u8, &priv);
-        // SEC-074: fail-closed entropy (replaces unchecked getrandom).
-        entropy.fillRandom(&priv);
-        // SEC-037: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
-        // Zig's X25519 internally clamps during DH computation, but we clamp here
-        // too to ensure the stored private key bytes are canonical.
-        priv[0] &= 248;
-        priv[31] &= 127;
-        priv[31] |= 64;
-        const pub_key = X25519.recoverPublicKey(priv) catch {
-            return HandshakeError.UnsupportedKeyShareGroup;
-        };
-
-        self.client_priv = priv;
-        self.client_pub = pub_key;
-
-        // QUAL-096: Use shared ClientHello builder for ClientHello2.
-        // RFC 8446 §4.1.4: MUST use same random as ClientHello1.
         const rnd = self.client_random orelse return HandshakeError.UnexpectedMessage;
-
-        const ch_result = try hello_retry_mod.buildClientHello2Body(self.scratch_arena.allocator(), .{
-            .client_random = rnd,
-            .client_pub = pub_key,
-            .selected_group = selected_group,
-            .cipher_suites = self.config.supported_cipher_suites,
-            .supported_groups = self.config.supported_groups,
-            .signature_algorithms = self.config.supported_signature_schemes,
-            .alpn_protocols = self.config.alpn_protocols,
-            .quic_transport_parameters = self.local_transport_parameters orelse self.config.quic_transport_parameters,
-            .cookie = cookie,
-        });
-
-        // PERF-019: Use appendOutboundFramed to write handshake header + body
-        // directly into the outbound buffer, avoiding encodeHandshake allocation.
-        try self.appendOutboundFramed(.Initial, .client_hello, ch_result.body, true);
-        _ = self.scratch_arena.reset(.retain_capacity);
+        self.secrets.initial.reset(); // No 0-RTT after HRR (§4.1.2).
+        try self.emitClientHello(rnd, &share, cookie, true);
     }
 
     /// Get or generate server secret for HRR cookie generation.
@@ -1953,6 +1893,7 @@ pub const Context = struct {
 
         // Delegate cookie generation + HRR body encoding to the pure module.
         const hrr_result = try hello_retry_mod.buildHrrBody(self.scratch_arena.allocator(), .{
+            .cipher_suite = self.negotiated_cipher_suite orelse return HandshakeError.InternalError,
             .server_secret = server_secret,
             .client_random = ch_view.random,
             .ch1_transcript_hash = ch1_hash.slice(),
@@ -1970,11 +1911,15 @@ pub const Context = struct {
         );
 
         // Queue HRR for transmission at Initial encryption level (zero-alloc framing)
-        try self.appendOutboundFramed(.Initial, .server_hello, hrr_result.body, false);
+        const hrr_framed = try encodeHandshake(self.allocator, .server_hello, hrr_result.body);
+        errdefer self.allocator.free(hrr_framed);
+        try self.appendOutbound(.Initial, hrr_framed, false);
+        self.hrr_message = hrr_framed;
         _ = self.scratch_arena.reset(.retain_capacity);
 
         // Mark that we sent HRR (handshake ordering — owned by Context).
         self.hrr_sent = true;
+        self.hrr_cipher_suite = self.negotiated_cipher_suite;
 
         traceHandshake("Server: HelloRetryRequest sent successfully\n", .{});
     }
@@ -2018,14 +1963,18 @@ pub const Context = struct {
             .external_psk_identity = self.config.external_psk_identity,
             .ticket_lookup = if (has_lookup_cb) Shim.lookup else null,
             .ticket_lookup_ctx = @ptrCast(self),
+            .hrr_prefix = if (self.hrr_sent) .{
+                .ch1_hash = self.ch1_transcript_hash orelse return HandshakeError.InternalError,
+                .hrr_framed = self.hrr_message orelse return HandshakeError.InternalError,
+            } else null,
         };
         return psk_selection_mod.selectPsk(input);
     }
     // QUAL-095: Shared state produced by negotiateCipherAndKeys, consumed by
     // the individual message builders and the flight emitter.
     const ServerNegotiationResult = struct {
-        shared: [32]u8,
-        server_pub: [32]u8,
+        shared: [shared_secret_len]u8,
+        server_pub: [server_share_len]u8,
         server_random: [32]u8,
         early_secret: Secret,
         selected_psk_index: ?u16,
@@ -2037,6 +1986,7 @@ pub const Context = struct {
     /// QUAL-095 step 1: Negotiate cipher suite, key share, and PSK.
     /// Returns null when an HRR was sent (caller should return immediately).
     fn negotiateCipherAndKeys(self: *Context) !?ServerNegotiationResult {
+        if (!self.supportsActiveGroup()) return HandshakeError.UnsupportedKeyShareGroup;
         const ch_view = self.state.clientHello() orelse {
             // QUIC-INTEROP-HRR (2026-04-27): negotiate entered without a
             // parsed ClientHello — almost always a callsite bug, but
@@ -2068,6 +2018,8 @@ pub const Context = struct {
             );
             return HandshakeError.NoCipherSuite;
         };
+        if (self.hrr_sent and self.hrr_cipher_suite != cipher_suite)
+            return HandshakeError.IllegalCipherSuiteSelected;
         self.hash_kind = cipherSuiteHash(cipher_suite);
         self.negotiated_cipher_suite = cipher_suite;
         // PERF-004: Lock transcript to the negotiated hash for the server path.
@@ -2114,66 +2066,18 @@ pub const Context = struct {
             return HandshakeError.NoSignatureScheme;
         };
 
-        // draft-kwiatkowski-tls-ecdhe-mlkem: server accept of the
-        // X25519MLKEM768 hybrid key_share (fips-only). Split + length-
-        // validate the inbound 1216-byte client share (X25519 pub [0..32]
-        // || ML-KEM-768 encap key [32..1216]) so malformed hybrid shares
-        // are rejected, then hit the documented contract boundary.
-        if (HybridKem.isHybrid(ch_view.key_share.group)) {
-            const ks_bytes = ch_view.key_share.key;
-            if (ks_bytes.len != tls13_full.x25519_mlkem768_ch_keyshare_len) {
-                logger.err(
-                    "[TLS-HYBRID] negotiate UnsupportedKeyShareGroup (hybrid_bad_len): " ++
-                        "x25519_mlkem768 key.len={d} (expected {d}, raw_group_code=0x{x:0>4})",
-                    .{ ks_bytes.len, tls13_full.x25519_mlkem768_ch_keyshare_len, ch_view.key_share.raw_group_code },
-                );
-                return HandshakeError.UnsupportedKeyShareGroup;
-            }
-            // Wire split (validated): x25519 leg + ML-KEM-768 encap key.
-            const client_x25519_pub = ks_bytes[0..tls13_full.x25519_len];
-            const client_mlkem_encap = ks_bytes[tls13_full.x25519_len..tls13_full.x25519_mlkem768_ch_keyshare_len];
-            _ = client_x25519_pub;
-            _ = client_mlkem_encap;
-            // CONTRACT-BOUNDARY: encapsulating against the client's encap
-            // key needs foundation Kem.KeyPair.fromPublicBytes(
-            //   .x25519_ml_kem_768, raw) (EVP_PKEY_new_raw_public_key_ex
-            //   under "fips=yes"), which the corrected contract does not yet
-            //   publish. The wire-format constants, split, and length
-            //   validation above are exercised now; the encapsulate arm is
-            //   gated until the contract entry lands (see docs/FIPS.md).
-            return HandshakeError.UnsupportedKeyShareGroup;
+        if (ch_view.key_share.group != active_group) {
+            if (self.hrr_sent) return HandshakeError.UnsupportedKeyShareGroup;
+            try self.sendHelloRetryRequest(ch_view, active_group);
+            return null;
         }
-
-        // RFC 8446 §4.1.4: Check if client's key_share group is supported
-        if (ch_view.key_share.group != .x25519) {
-            if (self.hrr_sent) {
-                // QUIC-INTEROP-HRR diagnostic: client ignored our HRR and
-                // re-offered a non-X25519 group. Surface the raw codepoint
-                // so interop logs can distinguish "client retried with the
-                // wrong group" from "no second ClientHello arrived".
-                logger.err(
-                    "[TLS-HRR] post-HRR ClientHello#2 still offers non-X25519 key_share (raw_group_code=0x{x:0>4}, group={s})",
-                    .{ ch_view.key_share.raw_group_code, @tagName(ch_view.key_share.group) },
-                );
-                return HandshakeError.UnsupportedKeyShareGroup;
-            }
-            try self.sendHelloRetryRequest(ch_view, .x25519);
-            return null; // HRR sent; stop flight
-        }
-
-        if (ch_view.key_share.key.len != 32) {
-            // QUIC-INTEROP-HRR (2026-04-27): client offered group=x25519
-            // but the key_exchange field is the wrong length. RFC 7748
-            // §6.1: X25519 public keys are exactly 32 bytes.
-            logger.err(
-                "[TLS-HRR] negotiate UnsupportedKeyShareGroup (x25519_short_key): " ++
-                    "key_share.group=x25519 but key.len={d} (expected 32, raw_group_code=0x{x:0>4}, hrr_sent={})",
-                .{
-                    ch_view.key_share.key.len,
-                    ch_view.key_share.raw_group_code,
-                    self.hrr_sent,
-                },
-            );
+        if (ch_view.key_share.key.len != client_share_len) {
+            logger.err("[TLS-HRR] negotiate UnsupportedKeyShareGroup ({s}): key.len={d}, expected={d}, raw_group_code=0x{x:0>4}", .{
+                if (fips_cb.fips_enabled) "hybrid_bad_len" else "x25519_short_key",
+                ch_view.key_share.key.len,
+                client_share_len,
+                ch_view.key_share.raw_group_code,
+            });
             return HandshakeError.UnsupportedKeyShareGroup;
         }
 
@@ -2220,49 +2124,30 @@ pub const Context = struct {
             }
         }
 
-        // FIPS strict-enforcement (spec §5): standalone X25519 is NOT a
-        // FIPS-approved key-agreement (only ECDH P-256/384/521 and the
-        // X25519MLKEM768 hybrid are). The X25519 recoverPublicKey/scalarmult
-        // below run on bare std.crypto, not the FIPS provider, so under
-        // -Dfips=true this non-approved key exchange MUST fail closed rather
-        // than silently negotiate. Placed AFTER the RFC 8446 §4.2.2 cookie
-        // verification so the cookie security control still runs first.
-        // Comptime-dead under -Dfips=false.
-        if (comptime fips_cb.fips_enabled) {
-            logger.err(
-                "[TLS-FIPS] reject standalone X25519 key_share under -Dfips=true: " ++
-                    "not a FIPS-approved key-agreement (raw_group_code=0x{x:0>4})",
-                .{ch_view.key_share.raw_group_code},
-            );
-            return HandshakeError.UnsupportedKeyShareGroup;
-        }
-
         var server_random: [32]u8 = undefined;
-        // SEC-074: fail-closed entropy (replaces unchecked getrandom).
         entropy.fillRandom(&server_random);
-
-        var server_priv: [32]u8 = undefined;
-        defer secureZero(u8, &server_priv);
-        // SEC-074: fail-closed entropy (replaces unchecked getrandom).
-        entropy.fillRandom(&server_priv);
-        // SEC-048: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
-        // Zig's X25519 internally clamps during DH computation, but we clamp here
-        // too for consistency with sendClientHello2() and to ensure the stored
-        // private key bytes are canonical.
-        server_priv[0] &= 248;
-        server_priv[31] &= 127;
-        server_priv[31] |= 64;
-
-        const server_pub = X25519.recoverPublicKey(server_priv) catch {
-            return HandshakeError.UnsupportedKeyShareGroup;
-        };
-
-        var client_pub: [32]u8 = undefined;
-        @memcpy(&client_pub, ch_view.key_share.key[0..32]);
-
-        const shared = X25519.scalarmult(server_priv, client_pub) catch {
-            return HandshakeError.UnsupportedKeyShareGroup;
-        };
+        var server_pub: [server_share_len]u8 = undefined;
+        var shared: [shared_secret_len]u8 = undefined;
+        defer secureZero(u8, &shared);
+        if (comptime fips_cb.fips_enabled) {
+            var peer = fips_cb.Kem.importPublic(.x25519_ml_kem_768, ch_view.key_share.key) catch
+                return HandshakeError.UnsupportedKeyShareGroup;
+            defer peer.deinit();
+            const result = fips_cb.Kem.encapsulatePublic(.x25519_ml_kem_768, &peer, &server_pub, &shared) catch
+                return HandshakeError.UnsupportedKeyShareGroup;
+            if (result.ct_len != server_pub.len or result.ss_len != shared.len)
+                return HandshakeError.CryptoError;
+        } else {
+            var server_priv: [32]u8 = undefined;
+            defer secureZero(u8, &server_priv);
+            entropy.fillRandom(&server_priv);
+            server_priv[0] &= 248;
+            server_priv[31] &= 127;
+            server_priv[31] |= 64;
+            server_pub = X25519.recoverPublicKey(server_priv) catch return HandshakeError.UnsupportedKeyShareGroup;
+            shared = X25519.scalarmult(server_priv, ch_view.key_share.key[0..32].*) catch
+                return HandshakeError.UnsupportedKeyShareGroup;
+        }
 
         const session_id_opt: ?[]const u8 = if (ch_view.session_id.len != 0) ch_view.session_id else null;
 
@@ -2508,6 +2393,7 @@ pub const Context = struct {
         }
 
         if (decoded.level == .fatal) {
+            self.clearClientKeyShare();
             self.phase = .terminated;
             return HandshakeError.PeerFatalAlert;
         }
@@ -2540,6 +2426,8 @@ pub const Context = struct {
     /// transitioned to `.terminated`; no further handshake/application
     /// progress is accepted.
     pub fn sendCloseNotify(self: *Context) !void {
+        self.clearClientKeyShare();
+        self.phase = .terminated;
         const a = alert_mod.Alert{ .level = .warning, .description = .close_notify };
         const payload = a.encode();
         const app_level = @intFromEnum(EncryptionLevel.Application);
@@ -2565,6 +2453,8 @@ pub const Context = struct {
             .negotiating, .keys_installed => .Handshake,
             .application_ready, .post_handshake, .terminated => .Application,
         };
+        self.clearClientKeyShare();
+        self.phase = .terminated;
         // PERF-249: pre-size outbound for the 2-byte alert payload.
         try self.streams.buffers[@intFromEnum(level)].outbound.ensureUnusedCapacity(self.allocator, payload.len);
         try self.streams.buffers[@intFromEnum(level)].outbound.appendSlice(self.allocator, &payload);
@@ -2607,45 +2497,71 @@ pub const Context = struct {
 
     /// Construct and queue a ClientHello with QUIC extensions when acting as the client.
     /// This must be called by the QUIC layer before polling for Initial CRYPTO data.
+    fn supportsActiveGroup(self: *const Context) bool {
+        return std.mem.indexOfScalar(tls13_full.NamedGroup, self.config.supported_groups, active_group) != null;
+    }
+
+    fn clearClientKeyShare(self: *Context) void {
+        if (comptime fips_cb.fips_enabled) {
+            if (self.client_kem) |*kp| kp.deinit();
+            self.client_kem = null;
+        }
+        if (self.client_priv) |*priv| secureZero(u8, priv);
+        self.client_priv = null;
+        self.client_pub = null;
+    }
+
+    fn abortHandshake(self: *Context) void {
+        self.clearClientKeyShare();
+        if (self.handshake_secret) |*secret| secureZero(u8, &secret.bytes);
+        self.handshake_secret = null;
+        self.secrets.reset();
+        self.phase = .terminated;
+    }
+
+    fn generateClientKeyShare(self: *Context, out: *[client_share_len]u8) !void {
+        self.clearClientKeyShare();
+        errdefer self.clearClientKeyShare();
+        if (comptime fips_cb.fips_enabled) {
+            self.client_kem = fips_cb.Kem.generate(.x25519_ml_kem_768) catch return HandshakeError.CryptoError;
+            const n = fips_cb.Kem.exportPublic(.x25519_ml_kem_768, &self.client_kem.?, out) catch return HandshakeError.CryptoError;
+            if (n != out.len) return HandshakeError.CryptoError;
+        } else {
+            var priv: [32]u8 = undefined;
+            defer secureZero(u8, &priv);
+            entropy.fillRandom(&priv);
+            priv[0] &= 248;
+            priv[31] &= 127;
+            priv[31] |= 64;
+            const pub_key = X25519.recoverPublicKey(priv) catch return HandshakeError.UnsupportedKeyShareGroup;
+            self.client_priv = priv;
+            self.client_pub = pub_key;
+            out.* = pub_key;
+        }
+    }
+
     pub fn startClientHandshake(self: *Context) !void {
         if (self.config.role != .Client) return;
-        if (self.client_priv != null) return; // already started
+        if (self.phase == .terminated) return HandshakeError.UnexpectedMessage;
+        if (self.client_random != null) return; // already started, including after key disposal
+        // Reject unsupported policy before mutating state or generating keys.
+        if (!self.supportsActiveGroup()) return HandshakeError.UnsupportedKeyShareGroup;
+        errdefer self.abortHandshake();
         if (self.config.supported_cipher_suites.len != 0) {
             self.hash_kind = cipherSuiteHash(self.config.supported_cipher_suites[0]);
         }
-        // FIPS strict-enforcement (spec §5): the client key_share below is a
-        // standalone X25519 share generated on bare std.crypto. Standalone
-        // X25519 is not a FIPS-approved key-agreement (only ECDH P-256/384/521
-        // and the X25519MLKEM768 hybrid are), and the hybrid offer is gated on
-        // the documented Kem.KeyPair.publicBytes contract boundary. Under
-        // -Dfips=true fail closed rather than silently offer non-approved
-        // X25519. Comptime-dead under -Dfips=false.
-        if (comptime fips_cb.fips_enabled) {
-            return HandshakeError.UnsupportedKeyShareGroup;
-        }
-        // Generate X25519 key pair
-        var priv: [32]u8 = undefined;
-        // SEC-050: Zero stack-local private key on all exit paths (error or success).
-        // After copying to self.client_priv, this stack copy is no longer needed.
-        defer secureZero(u8, &priv);
-        // SEC-074: fail-closed entropy (replaces unchecked getrandom).
-        entropy.fillRandom(&priv);
-        // SEC-040: Explicit X25519 clamping per RFC 7748 §5 for defense-in-depth.
-        // Zig's X25519 internally clamps during DH computation, but we clamp here
-        // too for consistency with sendClientHello2() and to ensure the stored
-        // private key bytes are canonical.
-        priv[0] &= 248;
-        priv[31] &= 127;
-        priv[31] |= 64;
-        const client_pubkey = X25519.recoverPublicKey(priv) catch return HandshakeError.UnsupportedKeyShareGroup;
-        self.client_priv = priv;
-        self.client_pub = client_pubkey;
+        var client_share: [client_share_len]u8 = undefined;
+        try self.generateClientKeyShare(&client_share);
 
         var rnd: [32]u8 = undefined;
         // SEC-074: fail-closed entropy (replaces unchecked getrandom).
         entropy.fillRandom(&rnd);
         self.client_random = rnd; // Save for potential HRR handling
 
+        try self.emitClientHello(rnd, &client_share, null, false);
+    }
+
+    fn emitClientHello(self: *Context, rnd: [32]u8, client_share: []const u8, cookie: ?[]const u8, retry: bool) !void {
         // Determine PSK parameters
         const has_resumption_psk = self.config.resumption_psk != null;
         const has_external_psk = self.config.external_psk != null and self.config.external_psk_identity != null;
@@ -2661,21 +2577,6 @@ pub const Context = struct {
                 (self.config.resumption_ticket orelse return HandshakeError.MissingResumptionTicket);
         } else null;
 
-        // draft-kwiatkowski-tls-ecdhe-mlkem: when -Dfips=true the default
-        // supported_groups prefers x25519_mlkem768. Offering the hybrid
-        // group's key_share requires the 1216-byte
-        // (X25519 pub || ML-KEM-768 encap key) blob.
-        //
-        // CONTRACT-BOUNDARY: exporting the client's ML-KEM encapsulation key
-        // to bytes for the offer needs foundation
-        // Kem.KeyPair.publicBytes(self, out) (EVP_PKEY_get_raw_public_key),
-        // which the corrected contract does not yet publish. Until it lands,
-        // the client offers the classical X25519 key_share for the first
-        // group; the hybrid encap-key fill arm is gated (see docs/FIPS.md).
-        // The wire-format constants + the server-side split/validation
-        // (negotiateCipherAndKeys above) and the local encapsulate/
-        // decapsulate round-trip (fips_hybrid_keyshare_test) are exercised.
-
         // QUAL-096: Use shared ClientHello builder.
         // PERF-208: Request a framed ClientHello so the 4-byte handshake
         // header is reserved inside the same buffer as the body. This
@@ -2685,13 +2586,15 @@ pub const Context = struct {
         // `ch_result.binder_offset` is already header-inclusive.
         const ch_result = try tls13_full.buildClientHello(self.scratch_arena.allocator(), .{
             .random = rnd,
-            .client_pub = client_pubkey,
+            .key_share_bytes = client_share,
+            .key_share_group = active_group,
             .cipher_suites = self.config.supported_cipher_suites,
             .supported_groups = self.config.supported_groups,
             .signature_algorithms = self.config.supported_signature_schemes,
             .alpn_protocols = self.config.alpn_protocols,
             .quic_transport_parameters = self.local_transport_parameters orelse self.config.quic_transport_parameters,
-            .include_early_data = has_resumption_psk and self.config.enable_early_data,
+            .cookie = cookie,
+            .include_early_data = !retry and has_resumption_psk and self.config.enable_early_data,
             .include_psk = has_any_psk,
             .psk_identity = psk_identity,
             .psk_ticket_age = if (using_external_psk) 0 else self.config.resumption_ticket_age_add,
@@ -2757,7 +2660,7 @@ pub const Context = struct {
             // holds the COMPLETE ClientHello (prefix + binders).
             self.transcripts.handshake.update(msg[truncated_len..]);
 
-            if (self.config.enable_early_data) {
+            if (!retry and self.config.enable_early_data) {
                 // R7-01: RFC 8446 §7.1 — client_early_traffic_secret is derived
                 // over Transcript-Hash(complete ClientHello), INCLUDING the PSK
                 // binders, to match the server (which folds the full CH). The
@@ -2858,7 +2761,7 @@ pub const Context = struct {
         pos += 2;
         if (pos + exts_len > body.len) return HandshakeError.UnexpectedMessage;
         const exts_end = pos + exts_len;
-        var server_pub: ?[32]u8 = null;
+        var server_share: ?[]const u8 = null;
         var found_supported_versions = false;
         var server_selected_psk_index: ?u16 = null;
         // SEC-092 (subsumes SEC-078) / NEWGAP-07 (= QUAL-387): track raw u16
@@ -2891,36 +2794,10 @@ pub const Context = struct {
                 if (elen < 4) return HandshakeError.MissingKeyShare;
                 const group = readU16(body[pos .. pos + 2]);
                 const klen = readU16(body[pos + 2 .. pos + 4]);
-                // draft-kwiatkowski-tls-ecdhe-mlkem: accept the
-                // X25519MLKEM768 hybrid ServerHello key_share (fips-only):
-                // group=0x11ec, klen=1120 (X25519 pub || ML-KEM-768
-                // ciphertext, provider-concatenated). Length-validated here.
-                if (fips_cb.fips_enabled and group == @intFromEnum(tls13_full.NamedGroup.x25519_mlkem768)) {
-                    if (klen != tls13_full.x25519_mlkem768_sh_keyshare_len or pos + 4 + klen > pos + elen) {
-                        return HandshakeError.UnsupportedKeyShareGroup;
-                    }
-                    // CONTRACT-BOUNDARY: recovering the hybrid shared secret
-                    // via cb.Kem.decapsulate needs the client's stored hybrid
-                    // KEM KeyPair, which in turn needs the encap-key export
-                    // (Kem.KeyPair.publicBytes) to have been sent in the
-                    // offer — not yet on the published contract. decapsulate
-                    // itself is on the contract; this arm activates once the
-                    // offer can be sent (see docs/FIPS.md). The 1120-byte
-                    // length validation + split happen now.
+                if (group != @intFromEnum(active_group) or !self.supportsActiveGroup() or
+                    klen != server_share_len or 4 + @as(usize, klen) != elen)
                     return HandshakeError.UnsupportedKeyShareGroup;
-                }
-                if (group != 0x001d or klen != 32 or pos + 4 + 32 > pos + elen) return HandshakeError.UnsupportedKeyShareGroup;
-                // FIPS strict-enforcement (spec §5): a standalone X25519
-                // ServerHello key_share leads to the std.crypto X25519
-                // scalarmult below, which is not FIPS-approved. The client
-                // never offers X25519 under -Dfips=true, so reject this
-                // server-selected group defensively. Comptime-dead off-fips.
-                if (comptime fips_cb.fips_enabled) {
-                    return HandshakeError.UnsupportedKeyShareGroup;
-                }
-                var kp: [32]u8 = undefined;
-                @memcpy(&kp, body[pos + 4 .. pos + 4 + 32]);
-                server_pub = kp;
+                server_share = body[pos + 4 .. pos + elen];
             } else if (etype == @intFromEnum(tls13_full.ExtensionType.pre_shared_key)) {
                 // RFC 8446 §4.2.11: Server's pre_shared_key extension contains
                 // a single selected_identity value (u16).
@@ -2931,8 +2808,8 @@ pub const Context = struct {
         }
         // RFC 8446 §4.2.1: supported_versions is REQUIRED in ServerHello
         if (!found_supported_versions) return HandshakeError.UnsupportedVersion;
-        if (server_pub == null) return HandshakeError.MissingKeyShare;
-        const priv = self.client_priv orelse return HandshakeError.UnexpectedMessage;
+        if (pos != exts_end or exts_end != body.len) return HandshakeError.UnexpectedMessage;
+        const peer_share = server_share orelse return HandshakeError.MissingKeyShare;
 
         // RFC 8446 §4.2.11: Validate pre_shared_key extension from server
         const early_secret = if (server_selected_psk_index) |psk_idx| blk: {
@@ -2959,14 +2836,18 @@ pub const Context = struct {
             break :blk key_derivation_mod.deriveEarlySecret(self.hash_kind, null);
         };
 
-        // SAFETY: server_pub null case returns MissingKeyShare at the guard above (line: `if (server_pub == null)`).
-        var shared = X25519.scalarmult(priv, server_pub.?) catch return HandshakeError.UnsupportedKeyShareGroup;
+        var shared: [shared_secret_len]u8 = undefined;
         defer secureZero(u8, &shared);
-        // SEC-055: Zero client_priv after DH computation completes.
-        // The scalarmult already copied the key internally, so the field
-        // is no longer needed and should not linger in memory.
-        if (self.client_priv) |*p| secureZero(u8, p);
-        self.client_priv = null;
+        if (comptime fips_cb.fips_enabled) {
+            const kp = if (self.client_kem) |*value| value else return HandshakeError.UnexpectedMessage;
+            const n = fips_cb.Kem.decapsulate(.x25519_ml_kem_768, kp, peer_share, &shared) catch
+                return HandshakeError.CryptoError;
+            if (n != shared.len) return HandshakeError.CryptoError;
+        } else {
+            const priv = self.client_priv orelse return HandshakeError.UnexpectedMessage;
+            shared = X25519.scalarmult(priv, peer_share[0..32].*) catch return HandshakeError.UnsupportedKeyShareGroup;
+        }
+        self.clearClientKeyShare();
         const sh_snapshot = self.transcripts.handshake.finalize(self.hash_kind);
         const hs = deriveHandshakeTraffic(self.hash_kind, shared[0..], sh_snapshot, &early_secret);
         self.handshake_secret = hs.handshake;
@@ -3743,15 +3624,36 @@ test "RFC 8446 §4.2.11: ServerHello PSK index non-zero round-trip" {
 // HRR (HelloRetryRequest) Tests (QUAL-099)
 // ============================================================================
 
+fn buildCookieOnlyTestHrr(allocator: std.mem.Allocator, cookie: []const u8) ![]u8 {
+    const body = try tls13_full.buildHelloRetryRequest(allocator, .x25519, cookie, null);
+    defer allocator.free(body);
+    // The compatibility builder always appends a selected-group extension.
+    // This fixture requests only a cookie, so remove that extension entirely.
+    const ext_offset: usize = 38; // empty legacy session id
+    var pos: usize = ext_offset + 2;
+    while (pos < body.len) {
+        const kind = std.mem.readInt(u16, body[pos..][0..2], .big);
+        const len = std.mem.readInt(u16, body[pos + 2 ..][0..2], .big);
+        if (kind == 0x33) {
+            std.mem.copyForwards(u8, body[pos..], body[pos + 4 + len ..]);
+            const body_len = body.len - 4 - len;
+            std.mem.writeInt(u16, body[ext_offset..][0..2], @intCast(body_len - ext_offset - 2), .big);
+            return allocator.dupe(u8, body[0..body_len]);
+        }
+        pos += 4 + len;
+    }
+    return error.TestMissingKeyShareExtension;
+}
+
 test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
     // SEC-077: allow_insecure=.testing_only_i_know_what_i_am_doing panics
     // unless the library was built with -Dtls-insecure-testing=true.
     if (!build_options.tls_insecure_testing) return error.SkipZigTest;
     // Exercises the full HRR code path through the Context API:
     //   1. Client sends ClientHello1 (with x25519)
-    //   2. Server sends HRR requesting x25519 (with cookie)
+    //   2. Server sends a cookie-only HRR
     //   3. Client handles HRR: updates transcript, generates ClientHello2
-    //   4. Verify: hrr_received flag, new outbound data, key regeneration
+    //   4. Verify: hrr_received flag, new outbound data, retained key share
     const allocator = std.testing.allocator;
 
     const tp_bytes: []const u8 = &[_]u8{};
@@ -3777,14 +3679,9 @@ test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
 
     const original_pub = ctx.client_pub.?;
 
-    // Build a HelloRetryRequest asking for x25519 with a cookie
+    // Build a cookie-only HelloRetryRequest; selecting x25519 again is invalid.
     const cookie_data = "test_cookie_for_hrr_binding";
-    const hrr_body = try tls13_full.buildHelloRetryRequest(
-        allocator,
-        .x25519,
-        cookie_data,
-        null,
-    );
+    const hrr_body = try buildCookieOnlyTestHrr(allocator, cookie_data);
     defer allocator.free(hrr_body);
 
     // Verify the HRR body contains the special random value
@@ -3807,9 +3704,9 @@ test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
     // First byte of outbound should be 0x01 (ClientHello message type)
     try std.testing.expectEqual(@as(u8, 0x01), initial_buf.outbound.items[0]);
 
-    // Client must regenerate its key share
+    // A cookie-only retry MUST retain the original key share (RFC 8446 §4.1.2).
     const new_pub = ctx.client_pub.?;
-    try std.testing.expect(!std.mem.eql(u8, &original_pub, &new_pub));
+    try std.testing.expectEqualSlices(u8, &original_pub, &new_pub);
 }
 
 test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
@@ -3839,7 +3736,7 @@ test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
     try ctx.startClientHandshake();
 
     // First HRR should succeed
-    const hrr_body = try tls13_full.buildHelloRetryRequest(allocator, .x25519, "cookie1", null);
+    const hrr_body = try buildCookieOnlyTestHrr(allocator, "cookie1");
     defer allocator.free(hrr_body);
 
     const hrr_msg = try encodeHandshake(allocator, .server_hello, hrr_body);
@@ -3849,7 +3746,7 @@ test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
     try std.testing.expect(ctx.hrr_received);
 
     // Second HRR must be rejected
-    const hrr_body2 = try tls13_full.buildHelloRetryRequest(allocator, .x25519, "cookie2", null);
+    const hrr_body2 = try buildCookieOnlyTestHrr(allocator, "cookie2");
     defer allocator.free(hrr_body2);
 
     const hrr_msg2 = try encodeHandshake(allocator, .server_hello, hrr_body2);
@@ -3888,7 +3785,7 @@ test "QUAL-099: HRR transcript manipulation preserves integrity" {
     // Snapshot transcript hash before HRR
     const hash_before = ctx.transcripts.handshake.finalize(.sha256);
 
-    const hrr_body = try tls13_full.buildHelloRetryRequest(allocator, .x25519, "test_cookie", null);
+    const hrr_body = try buildCookieOnlyTestHrr(allocator, "test_cookie");
     defer allocator.free(hrr_body);
 
     const hrr_msg = try encodeHandshake(allocator, .server_hello, hrr_body);

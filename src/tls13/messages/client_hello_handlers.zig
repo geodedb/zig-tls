@@ -52,6 +52,7 @@ pub const PskIdentity = client_hello.PskIdentity;
 pub const ParseCtx = struct {
     ch: *ClientHello,
     alloc: std.mem.Allocator,
+    preferred_group: core_types.NamedGroup = .x25519,
 };
 
 /// State threaded through each per-extension builder.
@@ -119,25 +120,18 @@ fn buildServerName(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Alloc
 // ============================================================================
 
 fn parseSupportedGroups(ctx: *ParseCtx, data: []const u8) anyerror!void {
-    if (data.len >= 2) {
-        const groups_len = helpers.readU16(data[0..2]);
-        if (2 + groups_len <= data.len) {
-            var groups = try std.ArrayList(core_types.NamedGroup).initCapacity(ctx.alloc, 4);
-            defer groups.deinit(ctx.alloc);
-
-            var g_pos: usize = 2;
-            while (g_pos + 2 <= 2 + groups_len) : (g_pos += 2) {
-                const group = helpers.readU16(data[g_pos .. g_pos + 2]);
-                if (group == 0x001d) { // x25519
-                    try groups.append(ctx.alloc, .x25519);
-                }
-            }
-
-            if (groups.items.len > 0) {
-                ctx.ch.supported_groups = try groups.toOwnedSlice(ctx.alloc);
-            }
-        }
+    if (data.len < 2) return error.TooShort;
+    const groups_len: usize = helpers.readU16(data[0..2]);
+    if (groups_len == 0 or groups_len % 2 != 0 or 2 + groups_len != data.len)
+        return error.MalformedExtensions;
+    var groups = try std.ArrayList(core_types.NamedGroup).initCapacity(ctx.alloc, 4);
+    defer groups.deinit(ctx.alloc);
+    var pos: usize = 2;
+    while (pos < data.len) : (pos += 2) {
+        if (std.enums.fromInt(core_types.NamedGroup, helpers.readU16(data[pos .. pos + 2]))) |group|
+            try groups.append(ctx.alloc, group);
     }
+    if (groups.items.len > 0) ctx.ch.supported_groups = try groups.toOwnedSlice(ctx.alloc);
 }
 
 fn buildSupportedGroups(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
@@ -215,75 +209,45 @@ fn buildSignatureAlgorithms(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.
 // ============================================================================
 
 fn parseKeyShare(ctx: *ParseCtx, data: []const u8) anyerror!void {
-    // RFC 8446 §4.1.4 / §4.2.8: the server MUST send HelloRetryRequest when
-    // it cannot find a mutually supported key_share group rather than
-    // failing the handshake. To make the HRR gate in
-    // `negotiateCipherAndKeys` reachable, the parser must surface what the
-    // client offered — even when it is not a group we natively support
-    // (e.g. NIST P-256, X25519+Kyber768 hybrid).
-    //
-    // Behavior:
-    //   1. Prefer X25519 when present (and 32-byte key) — server proceeds
-    //      directly without HRR.
-    //   2. Otherwise record the FIRST entry as a "client offered an
-    //      unsupported group" sentinel. The orchestrator then issues HRR.
-    //   3. When no entries are present, leave `key_share = null` so
-    //      `ClientHelloInfo.parse` raises MissingKeyShare per §4.2.8.
-    if (data.len < 2) return;
-    const shares_len = helpers.readU16(data[0..2]);
-    if (2 + shares_len > data.len) return;
+    if (data.len < 2) return error.TooShort;
+    const shares_len: usize = helpers.readU16(data[0..2]);
+    if (2 + shares_len != data.len) return error.MalformedExtensions;
 
-    var ks_pos: usize = 2;
-    var first_unsupported: ?KeyShareEntry = null;
-
-    while (ks_pos + 4 <= 2 + shares_len) {
-        const group_raw = helpers.readU16(data[ks_pos .. ks_pos + 2]);
-        const key_len = helpers.readU16(data[ks_pos + 2 .. ks_pos + 4]);
-        ks_pos += 4;
-
-        if (ks_pos + key_len > 2 + shares_len) break;
-
-        // Preferred path: X25519 with the RFC 7748 §6.1 32-byte public key.
-        if (group_raw == 0x001d and key_len == 32) {
-            ctx.ch.key_share = KeyShareEntry{
-                .group = .x25519,
-                .key_exchange = data[ks_pos .. ks_pos + key_len],
-                .raw_group_code = group_raw,
-            };
-            return;
+    var pos: usize = 2;
+    var first: ?KeyShareEntry = null;
+    var preferred: ?KeyShareEntry = null;
+    var seen = std.enums.EnumSet(core_types.NamedGroup).initEmpty();
+    while (pos < data.len) {
+        if (data.len - pos < 4) return error.TooShort;
+        const group_raw = helpers.readU16(data[pos .. pos + 2]);
+        const key_len: usize = helpers.readU16(data[pos + 2 .. pos + 4]);
+        pos += 4;
+        if (key_len == 0 or key_len > data.len - pos) return error.MalformedExtensions;
+        const known = std.enums.fromInt(core_types.NamedGroup, group_raw);
+        if (known) |group| {
+            if (seen.contains(group)) return error.UnsupportedKeyShareGroup;
+            seen.insert(group);
         }
-
-        // Record the first non-X25519 entry as an HRR-trigger sentinel.
-        // SEC-057: use `std.enums.fromInt` for known groups; for codepoints
-        // that are not in our NamedGroup enum (e.g. PQ-hybrid 0x6399),
-        // fall back to `.secp256r1` as a generic non-X25519 placeholder.
-        // The orchestrator at `negotiateCipherAndKeys` only inspects
-        // `group == .x25519`, so any non-X25519 sentinel is sufficient
-        // to trigger HRR. The `raw_group_code` field preserves the
-        // original codepoint exactly so future logic can distinguish
-        // (for example) secp256r1 from x25519_kyber768_draft00.
-        if (first_unsupported == null) {
-            const group_known = std.enums.fromInt(core_types.NamedGroup, group_raw);
-            const group_for_orchestrator = group_known orelse core_types.NamedGroup.secp256r1;
-            first_unsupported = KeyShareEntry{
-                .group = group_for_orchestrator,
-                .key_exchange = data[ks_pos .. ks_pos + key_len],
-                .raw_group_code = group_raw,
-            };
-        }
-
-        ks_pos += key_len;
+        const entry = KeyShareEntry{
+            .group = known orelse .secp256r1,
+            .key_exchange = data[pos .. pos + key_len],
+            .raw_group_code = group_raw,
+        };
+        if (first == null) first = entry;
+        if (group_raw == @intFromEnum(ctx.preferred_group)) preferred = entry;
+        pos += key_len;
     }
-
-    if (first_unsupported) |entry| {
-        ctx.ch.key_share = entry;
-    }
+    // Validate the entire vector, including entries after a preferred share.
+    ctx.ch.key_share = preferred orelse first;
 }
 
 fn buildKeyShare(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocator) anyerror!void {
     const params = ctx.params;
     const group_val: u16 = @intFromEnum(params.key_share_group);
-    const key_share_entry_len: u16 = 2 + 2 + 32; // group(2) + key_len(2) + key(32)
+    const key = params.key_share_bytes orelse &params.client_pub;
+    if (key.len == 0 or key.len > std.math.maxInt(u16) - 6) return error.UnsupportedKeyShareGroup;
+    const key_len: u16 = @intCast(key.len);
+    const key_share_entry_len: u16 = 4 + key_len;
     const key_share_ext_len: u16 = key_share_entry_len + 2; // entries_list_len(2) + entry
     try out.appendSlice(alloc, &.{
         0x00,
@@ -294,10 +258,10 @@ fn buildKeyShare(ctx: *BuildCtx, out: *std.ArrayList(u8), alloc: std.mem.Allocat
         @intCast(key_share_entry_len & 0xff),
         @intCast(group_val >> 8),
         @intCast(group_val & 0xff),
-        0x00,
-        32,
+        @intCast(key_len >> 8),
+        @intCast(key_len & 0xff),
     });
-    try out.appendSlice(alloc, &params.client_pub);
+    try out.appendSlice(alloc, key);
 }
 
 // ============================================================================

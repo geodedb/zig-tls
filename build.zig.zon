@@ -42,8 +42,8 @@
         // Includes the verified release-signature and algorithm-policy fixes
         // required by SONNY-4779, SONNY-4781 and SONNY-4782.
         .fips = .{
-            .url = "git+https://gitlab.com/devnw/zig/fips.git#571f09ca5277dbdfab0d103450eb1b0353e0c810",
-            .hash = "fips-0.1.2-1wf3naAACABLDDJ-ZoCElXmeDwwT-TU6zlj68xSWQ6Qi",
+            .url = "git+https://gitlab.com/devnw/zig/fips.git#5cbc2113eb4143eaf8deb2c9b4fa7210a51e8558",
+            .hash = "fips-0.1.2-1wf3nUNuCAA6sYRjNCvUfOUJJe-MNRaGDZHODfYpoX1S",
             .lazy = true,
         },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.

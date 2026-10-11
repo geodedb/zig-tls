@@ -106,16 +106,11 @@ pub const Config = struct {
     ///
     /// **Role:** Both (client advertises, server selects).
     ///
-    /// **Valid values:** x25519 (currently the only implemented group).
-    /// Slice must be non-empty.
-    ///
-    /// Negotiation: Client sends key_share for preferred groups; server selects one.
-    ///
-    /// **Default (non-fips):** [x25519]. **Default (-Dfips=true):**
-    /// [x25519_mlkem768, x25519] — the post-quantum hybrid group is
-    /// preferred, with classical X25519 as fallback.
+    /// The active group must be configured: x25519 in standard mode, or
+    /// x25519_mlkem768 in FIPS mode. Standalone X25519 is not a FIPS fallback.
+    /// The client emits one key share for the active group.
     supported_groups: []const tls13_full.NamedGroup = if (cb.fips_enabled)
-        &.{ tls13_full.NamedGroup.x25519_mlkem768, tls13_full.NamedGroup.x25519 }
+        &.{tls13_full.NamedGroup.x25519_mlkem768}
     else
         &.{tls13_full.NamedGroup.x25519},
 

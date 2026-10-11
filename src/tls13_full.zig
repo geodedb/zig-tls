@@ -128,6 +128,7 @@ pub const KeyShareEntry = client_hello_mod.KeyShareEntry;
 pub const PskIdentity = client_hello_mod.PskIdentity;
 pub const PreSharedKey = client_hello_mod.PreSharedKey;
 pub const parseClientHello = client_hello_mod.parseClientHello;
+pub const parseClientHelloForGroup = client_hello_mod.parseClientHelloForGroup;
 pub const ClientHelloParams = client_hello_mod.ClientHelloParams;
 pub const ClientHelloResult = client_hello_mod.ClientHelloResult;
 pub const buildClientHello = client_hello_mod.buildClientHello;

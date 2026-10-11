@@ -5,11 +5,11 @@ const cb = @import("crypto_backend");
 const tls13_full = @import("tls13_full");
 
 // The hybrid key_share byte layout (draft-kwiatkowski-tls-ecdhe-mlkem §3):
-// ClientHello entry = X25519 pub (32) || ML-KEM-768 encap key (1184) = 1216;
-// ServerHello entry = X25519 pub (32) || ML-KEM-768 ciphertext (1088) = 1120;
+// ClientHello entry = ML-KEM-768 encap key (1184) || X25519 pub (32) = 1216;
+// ServerHello entry = ML-KEM-768 ciphertext (1088) || X25519 pub (32) = 1120;
 // the combined shared secret is 64 bytes.
 //
-// IMPORTANT (OpenSSL provider behavior, confirmed against 3.6.2): the
+// IMPORTANT (OpenSSL provider behavior, confirmed against 3.6.5): the
 // "X25519MLKEM768" provider KEM is a COMPLETE hybrid — `encapsulate`
 // returns the full 1120-byte ServerHello key_share as the ciphertext
 // (the X25519 ephemeral public key is concatenated by the provider, ECDH
@@ -18,7 +18,7 @@ const tls13_full = @import("tls13_full");
 // both legs. So enc.ct_len == sh_keyshare_len (1120) and enc.ss_len == 64.
 // This test pins those provider-reported lengths and the pinned
 // Kem.EncapResult named return type against a locally-owned keypair (NOT
-// the server-against-peer path, which is a documented contract boundary).
+// the server-against-peer path, covered by fips_hybrid_handshake_test.zig).
 // fips-only.
 test "FIPS hybrid key_share - draft sizes and concat order" {
     if (comptime !cb.fips_enabled) return error.SkipZigTest;

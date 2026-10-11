@@ -30,6 +30,8 @@ const std = @import("std");
 const testing = std.testing;
 const tls13 = @import("tls13");
 const tls13_full = @import("tls13_full");
+const active_group: tls13_full.NamedGroup = if (tls13.fips_enabled) .x25519_mlkem768 else .x25519;
+const active_code: u16 = @intFromEnum(active_group);
 const quic_logger = @import("quic_logger");
 
 // ============================================================================
@@ -137,7 +139,7 @@ fn buildFramedClientHello(allocator: std.mem.Allocator, opts: BuildOpts) ![]u8 {
     if (opts.group_code) |g| {
         if (g != 0x001d) try sg_groups.append(allocator, g);
     }
-    try sg_groups.append(allocator, 0x001d);
+    try sg_groups.append(allocator, active_code);
     const sg_list_len: u16 = @intCast(sg_groups.items.len * 2);
     const sg_ext_len: u16 = sg_list_len + 2;
     try exts.appendSlice(allocator, &[_]u8{ 0x00, 0x0a });
@@ -212,7 +214,7 @@ fn makeServerCtx() !tls13.Context {
     return tls13.Context.init(.{
         .allocator = testing.allocator,
         .role = .Server,
-        .supported_groups = &.{.x25519},
+        .supported_groups = &.{active_group},
         .supported_signature_schemes = &.{.ed25519},
         .quic_transport_parameters = &[_]u8{},
     }, .{});
@@ -222,7 +224,7 @@ fn makeServerCtxNoSigSchemes() !tls13.Context {
     return tls13.Context.init(.{
         .allocator = testing.allocator,
         .role = .Server,
-        .supported_groups = &.{.x25519},
+        .supported_groups = &.{active_group},
         .supported_signature_schemes = &.{},
         .quic_transport_parameters = &[_]u8{},
     }, .{});
@@ -440,7 +442,7 @@ test "[TLS-HRR] negotiate NoSignatureScheme (no-overlap) surfaces diagnostic" {
     try testing.expect(captureContains("no_overlap"));
 }
 
-test "[TLS-HRR] negotiate UnsupportedKeyShareGroup (X25519 short key) surfaces diagnostic" {
+test "[TLS-HRR] negotiate UnsupportedKeyShareGroup (active group short key) surfaces diagnostic" {
     // RFC 7748 §6.1: X25519 public keys are 32 bytes. A CH offering
     // group=0x001d with a non-32-byte key trips the
     // `key.len != 32` guard in `negotiateCipherAndKeys`. Diagnostic
@@ -454,11 +456,11 @@ test "[TLS-HRR] negotiate UnsupportedKeyShareGroup (X25519 short key) surfaces d
     // 31-byte X25519 key (off by one — also rejected by parseKeyShare's
     // X25519 fast path, so it falls through to the unsupported-sentinel
     // path with group=.x25519 set by the std.enums.fromInt mapping).
-    var short_key: [31]u8 = undefined;
+    var short_key: [if (tls13.fips_enabled) 1215 else 31]u8 = undefined;
     @memset(&short_key, 0x77);
 
     const ch1 = try buildFramedClientHello(testing.allocator, .{
-        .group_code = 0x001d,
+        .group_code = active_code,
         .key_bytes = &short_key,
     });
     defer testing.allocator.free(ch1);
@@ -470,7 +472,7 @@ test "[TLS-HRR] negotiate UnsupportedKeyShareGroup (X25519 short key) surfaces d
 
     try testing.expect(captureContains("[TLS-HRR] negotiate"));
     try testing.expect(captureContains("UnsupportedKeyShareGroup"));
-    try testing.expect(captureContains("x25519_short_key"));
+    try testing.expect(captureContains(if (tls13.fips_enabled) "hybrid_bad_len" else "x25519_short_key"));
 }
 
 // ============================================================================
@@ -681,7 +683,7 @@ test "[TLS-HS] secret install reports on_secret_available=fired when callback wi
     var server_ctx = try tls13.Context.init(.{
         .allocator = testing.allocator,
         .role = .Server,
-        .supported_groups = &.{.x25519},
+        .supported_groups = &.{active_group},
         .supported_signature_schemes = &.{.ed25519},
         .quic_transport_parameters = &[_]u8{},
     }, .{ .on_secret_available = Stub.cb });

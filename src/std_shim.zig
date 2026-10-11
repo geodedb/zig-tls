@@ -569,6 +569,29 @@ pub const Kem = struct {
             _ = self;
         }
     };
+    pub const PublicKey = struct {
+        pub fn deinit(self: *PublicKey) void {
+            _ = self;
+        }
+    };
+    pub fn exportPublic(alg: policy.KemAlg, kp: *KeyPair, out: []u8) Error!usize {
+        _ = alg;
+        _ = kp;
+        _ = out;
+        return error.Unsupported;
+    }
+    pub fn importPublic(alg: policy.KemAlg, wire: []const u8) Error!PublicKey {
+        _ = alg;
+        _ = wire;
+        return error.Unsupported;
+    }
+    pub fn encapsulatePublic(alg: policy.KemAlg, pk: *PublicKey, ct_out: []u8, ss_out: []u8) Error!EncapResult {
+        _ = alg;
+        _ = pk;
+        _ = ct_out;
+        _ = ss_out;
+        return error.Unsupported;
+    }
     // ML-KEM + hybrids are fips-only (std has no ML-KEM).
     pub fn generate(alg: policy.KemAlg) Error!KeyPair {
         _ = alg;

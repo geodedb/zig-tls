@@ -261,6 +261,12 @@ pub const PreSharedKey = struct {
 /// }
 /// ```
 pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientHello {
+    return parseClientHelloForGroup(allocator, data, .x25519);
+}
+
+/// Parse all key shares and prefer the caller's active key-agreement group.
+/// The first other share is retained so the server can request a retry.
+pub fn parseClientHelloForGroup(allocator: std.mem.Allocator, data: []const u8, preferred_group: core_types.NamedGroup) !ClientHello {
     if (data.len < 34) return error.TooShort;
 
     var ch = ClientHello{
@@ -362,7 +368,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
     // QUAL-339: ParseCtx threads ch + allocator into per-extension handlers.
     // Handlers only populate fields on `ch`; they never own cleanup or touch
     // psk_seen — both concerns stay at this outer-loop scope.
-    var parse_ctx = handlers_mod.ParseCtx{ .ch = &ch, .alloc = allocator };
+    var parse_ctx = handlers_mod.ParseCtx{ .ch = &ch, .alloc = allocator, .preferred_group = preferred_group };
 
     while (pos + 4 <= ext_end) {
         const ext_type_raw = helpers.readU16(data[pos .. pos + 2]);
@@ -418,6 +424,7 @@ pub fn parseClientHello(allocator: std.mem.Allocator, data: []const u8) !ClientH
         pos += ext_data_len;
     }
 
+    if (pos != ext_end or ext_end != data.len) return error.MalformedExtensions;
     return ch;
 }
 
@@ -440,7 +447,10 @@ pub const ClientHelloParams = struct {
     random: [32]u8,
 
     /// Client public key for key_share extension (RFC 8446 §4.2.8).
-    client_pub: [32]u8,
+    client_pub: [32]u8 = .{0} ** 32,
+
+    /// Provider-encoded key share; overrides client_pub for variable-length groups.
+    key_share_bytes: ?[]const u8 = null,
 
     /// Named group for the key_share entry (default: x25519).
     key_share_group: core_types.NamedGroup = .x25519,
