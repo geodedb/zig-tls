@@ -3624,15 +3624,36 @@ test "RFC 8446 §4.2.11: ServerHello PSK index non-zero round-trip" {
 // HRR (HelloRetryRequest) Tests (QUAL-099)
 // ============================================================================
 
+fn buildCookieOnlyTestHrr(allocator: std.mem.Allocator, cookie: []const u8) ![]u8 {
+    const body = try tls13_full.buildHelloRetryRequest(allocator, .x25519, cookie, null);
+    defer allocator.free(body);
+    // The compatibility builder always appends a selected-group extension.
+    // This fixture requests only a cookie, so remove that extension entirely.
+    const ext_offset: usize = 38; // empty legacy session id
+    var pos: usize = ext_offset + 2;
+    while (pos < body.len) {
+        const kind = std.mem.readInt(u16, body[pos..][0..2], .big);
+        const len = std.mem.readInt(u16, body[pos + 2 ..][0..2], .big);
+        if (kind == 0x33) {
+            std.mem.copyForwards(u8, body[pos..], body[pos + 4 + len ..]);
+            const body_len = body.len - 4 - len;
+            std.mem.writeInt(u16, body[ext_offset..][0..2], @intCast(body_len - ext_offset - 2), .big);
+            return allocator.dupe(u8, body[0..body_len]);
+        }
+        pos += 4 + len;
+    }
+    return error.TestMissingKeyShareExtension;
+}
+
 test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
     // SEC-077: allow_insecure=.testing_only_i_know_what_i_am_doing panics
     // unless the library was built with -Dtls-insecure-testing=true.
     if (!build_options.tls_insecure_testing) return error.SkipZigTest;
     // Exercises the full HRR code path through the Context API:
     //   1. Client sends ClientHello1 (with x25519)
-    //   2. Server sends HRR requesting x25519 (with cookie)
+    //   2. Server sends a cookie-only HRR
     //   3. Client handles HRR: updates transcript, generates ClientHello2
-    //   4. Verify: hrr_received flag, new outbound data, key regeneration
+    //   4. Verify: hrr_received flag, new outbound data, retained key share
     const allocator = std.testing.allocator;
 
     const tp_bytes: []const u8 = &[_]u8{};
@@ -3658,14 +3679,9 @@ test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
 
     const original_pub = ctx.client_pub.?;
 
-    // Build a HelloRetryRequest asking for x25519 with a cookie
+    // Build a cookie-only HelloRetryRequest; selecting x25519 again is invalid.
     const cookie_data = "test_cookie_for_hrr_binding";
-    const hrr_body = try tls13_full.buildHelloRetryRequest(
-        allocator,
-        .x25519,
-        cookie_data,
-        null,
-    );
+    const hrr_body = try buildCookieOnlyTestHrr(allocator, cookie_data);
     defer allocator.free(hrr_body);
 
     // Verify the HRR body contains the special random value
@@ -3688,9 +3704,9 @@ test "QUAL-099: Client handles HelloRetryRequest and generates ClientHello2" {
     // First byte of outbound should be 0x01 (ClientHello message type)
     try std.testing.expectEqual(@as(u8, 0x01), initial_buf.outbound.items[0]);
 
-    // Client must regenerate its key share
+    // A cookie-only retry MUST retain the original key share (RFC 8446 §4.1.2).
     const new_pub = ctx.client_pub.?;
-    try std.testing.expect(!std.mem.eql(u8, &original_pub, &new_pub));
+    try std.testing.expectEqualSlices(u8, &original_pub, &new_pub);
 }
 
 test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
@@ -3720,7 +3736,7 @@ test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
     try ctx.startClientHandshake();
 
     // First HRR should succeed
-    const hrr_body = try tls13_full.buildHelloRetryRequest(allocator, .x25519, "cookie1", null);
+    const hrr_body = try buildCookieOnlyTestHrr(allocator, "cookie1");
     defer allocator.free(hrr_body);
 
     const hrr_msg = try encodeHandshake(allocator, .server_hello, hrr_body);
@@ -3730,7 +3746,7 @@ test "QUAL-099: Client rejects duplicate HelloRetryRequest" {
     try std.testing.expect(ctx.hrr_received);
 
     // Second HRR must be rejected
-    const hrr_body2 = try tls13_full.buildHelloRetryRequest(allocator, .x25519, "cookie2", null);
+    const hrr_body2 = try buildCookieOnlyTestHrr(allocator, "cookie2");
     defer allocator.free(hrr_body2);
 
     const hrr_msg2 = try encodeHandshake(allocator, .server_hello, hrr_body2);
@@ -3769,7 +3785,7 @@ test "QUAL-099: HRR transcript manipulation preserves integrity" {
     // Snapshot transcript hash before HRR
     const hash_before = ctx.transcripts.handshake.finalize(.sha256);
 
-    const hrr_body = try tls13_full.buildHelloRetryRequest(allocator, .x25519, "test_cookie", null);
+    const hrr_body = try buildCookieOnlyTestHrr(allocator, "test_cookie");
     defer allocator.free(hrr_body);
 
     const hrr_msg = try encodeHandshake(allocator, .server_hello, hrr_body);
