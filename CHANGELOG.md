@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-10-11
+
+### Fixed
+
+- FIPS hybrid key exchange completes end to end. ClientHello key shares are
+  exported, and peer shares imported, through the fips seam's provider-backed
+  KEM public-key API (SONNY-4794).
+- The FIPS provider pin and the strict TLS policy are aligned (SONNY-4779).
+
+### Changed
+
+- fips v0.1.3 (the first release with the KEM public-key wire API) and
+  thread-pool v0.2.8. Replaces the interim pin to an unreleased fips branch
+  commit.
+- MR pipelines run the full TLS verification again (SONNY-4786). Pre-commit
+  tool hooks isolate Git state (SONNY-4778).
+- CI: create GitLab Releases with the job token.
+
 ## [0.1.21] - 2026-09-12
 
 ### Changed
