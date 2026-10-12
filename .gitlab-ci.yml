@@ -25,6 +25,7 @@ default:
   tags:
     - company
     - linux
+    - x86
 
 include:
   # SEC-061: Components pinned to commit SHAs (not tags) so an upstream
@@ -34,24 +35,41 @@ include:
   #
   # Security scanning
   - component: gitlab.com/devnw/ci-catalog/security-sast@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+    inputs:
+      tags: ["company", "linux", "x86"]
   - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+    inputs:
+      tags: ["company", "linux", "x86"]
   - component: gitlab.com/devnw/ci-catalog/security-secrets@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+    inputs:
+      tags: ["company", "linux", "x86"]
   - component: gitlab.com/devnw/ci-catalog/security-gitleaks@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+    inputs:
+      tags: ["company", "linux", "x86"]
 
   # Code quality
   - component: gitlab.com/devnw/ci-catalog/zig-format@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+    inputs:
+      tags: ["company", "linux", "x86"]
 
   # SBOM
   - component: gitlab.com/devnw/ci-catalog/sbom-generate@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+    inputs:
+      tags: ["company", "linux", "x86"]
   - component: gitlab.com/devnw/ci-catalog/sbom-scan@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+    inputs:
+      tags: ["company", "linux", "x86"]
 
   # Release
   - component: gitlab.com/devnw/ci-catalog/release-semantic@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
     inputs:
+      tags: ["company", "linux", "x86"]
       # Create the GitLab Release with CI_JOB_TOKEN: the group GITLAB_TOKEN
       # lacks api scope, so the default glab path fails with 403 (SONNY-2447).
       release_auth: job_token
   - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.55.8
+    inputs:
+      tags: ["company", "linux", "x86"]
 
 variables:
   ZIG_VERSION: "0.16.0"
@@ -423,3 +441,17 @@ sbom-generate:
 
 sbom-scan:
   rules: *verification-rules
+
+# Validate test inputs in the package Zig actually distributes.
+test-source-package:
+  rules: *verification-rules
+  stage: test
+  image: debian:bookworm-slim
+  timeout: 30m
+  <<: *cache-zig
+  before_script:
+    - *install-zig
+    - apt-get install -y --no-install-recommends git
+  script:
+    - python3 scripts/check_source_package.py --jobs 2
+  needs: []
