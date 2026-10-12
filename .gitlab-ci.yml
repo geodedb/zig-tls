@@ -5,7 +5,12 @@
 # Prefer the MR pipeline once a feature branch has an open MR. Preserve
 # default-branch/tag releases and scheduled, API, and triggered pipelines.
 workflow:
+  auto_cancel:
+    on_new_commit: interruptible
   rules:
+    - if: '$CI_COMMIT_TAG'
+      auto_cancel:
+        on_new_commit: none
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
       when: never
@@ -22,6 +27,7 @@ workflow:
 # `image:`, and has no apt-get / GNU sha256sum). The Debian-based
 # install-zig template + bookworm-slim images require a Linux runner.
 default:
+  interruptible: true
   tags:
     - company
     - linux
