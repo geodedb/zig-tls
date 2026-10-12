@@ -451,7 +451,8 @@ test-source-package:
   <<: *cache-zig
   before_script:
     - *install-zig
-    - apt-get install -y --no-install-recommends git
+    - apt-get install -y --no-install-recommends git libssl-dev pkg-config
   script:
+    - python3 scripts/test_source_package.py
     - python3 scripts/check_source_package.py --jobs 2
   needs: []

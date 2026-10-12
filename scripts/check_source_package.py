@@ -6,10 +6,59 @@
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+
+def extract_regular_archive(archive, destination):
+    """Extract regular source files into a new empty private directory.
+
+    Python 3.11.2 in the CI image predates tarfile's extraction filters. Do not
+    fall back to unrestricted extractall: validate the complete namespace first,
+    reject links/special entries, and create files exclusively without restoring
+    archive ownership or privileged mode bits.
+    """
+    destination = Path(destination)
+    if (
+        destination.is_symlink()
+        or not destination.is_dir()
+        or any(destination.iterdir())
+    ):
+        raise ValueError("source destination must be an empty real directory")
+    members = {}
+    for member in archive.getmembers():
+        name = member.name.rstrip("/") if member.isdir() else member.name
+        path = PurePosixPath(name)
+        if (
+            not name
+            or path.is_absolute()
+            or str(path) != name
+            or any(part in ("", ".", "..") for part in name.split("/"))
+            or "\\" in name
+            or ":" in name
+            or "\x00" in name
+            or name in members
+            or not (member.isdir() or member.isfile())
+        ):
+            raise ValueError("source archive contains an unsafe member")
+        members[name] = member
+    for name in members:
+        for parent in PurePosixPath(name).parents:
+            previous = members.get(str(parent))
+            if previous is not None and not previous.isdir():
+                raise ValueError("source archive file is also a parent")
+    for name, member in members.items():
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if member.isdir():
+            target.mkdir(exist_ok=True)
+            continue
+        with archive.extractfile(member) as source, target.open("xb") as output:
+            shutil.copyfileobj(source, output)
+        target.chmod(member.mode & 0o777)
 
 
 def main():
@@ -36,7 +85,7 @@ def main():
         checkout = temporary / "checkout"
         checkout.mkdir()
         with tarfile.open(archive) as source:
-            source.extractall(checkout, filter="data")
+            extract_regular_archive(source, checkout)
         cache = temporary / "cache"
         package_hash = subprocess.check_output(
             [zig, "fetch", "--global-cache-dir", str(cache), str(archive)],
@@ -49,7 +98,7 @@ def main():
         extracted = temporary / "extracted"
         extracted.mkdir()
         with tarfile.open(package_archive) as package:
-            package.extractall(extracted, filter="data")
+            extract_regular_archive(package, extracted)
         package_root = extracted / package_hash
         print(f"Checking filtered source package {package_hash}", flush=True)
         for target in [[], ["test"], ["test-vectors"], ["test-conformance"]]:
