@@ -47,40 +47,31 @@ include:
   # commit that updates SHA + comment together.
   #
   # Security scanning
-  - component: gitlab.com/devnw/ci-catalog/security-sast@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
-    inputs:
-      tags: ["company", "linux", "x86"]
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
-    inputs:
-      tags: ["company", "linux", "x86"]
-  - component: gitlab.com/devnw/ci-catalog/security-secrets@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
-    inputs:
-      tags: ["company", "linux", "x86"]
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@aad997d40e358eeef7ec943f761498341c37c724  # was v1.55.8 (2026-10-10)
     inputs:
       tags: ["company", "linux", "x86"]
 
   # Code quality
-  - component: gitlab.com/devnw/ci-catalog/zig-format@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/zig-format@aad997d40e358eeef7ec943f761498341c37c724  # was v1.55.8 (2026-10-10)
     inputs:
       tags: ["company", "linux", "x86"]
 
   # SBOM
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@aad997d40e358eeef7ec943f761498341c37c724  # was v1.55.8 (2026-10-10)
     inputs:
       tags: ["company", "linux", "x86"]
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@aad997d40e358eeef7ec943f761498341c37c724  # was v1.55.8 (2026-10-10)
     inputs:
       tags: ["company", "linux", "x86"]
 
   # Release
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@aad997d40e358eeef7ec943f761498341c37c724  # was v1.55.8 (2026-10-10)
     inputs:
       tags: ["company", "linux", "x86"]
       # Create the GitLab Release with CI_JOB_TOKEN: the group GITLAB_TOKEN
       # lacks api scope, so the default glab path fails with 403 (SONNY-2447).
       release_auth: job_token
-  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.57.0
+  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@aad997d40e358eeef7ec943f761498341c37c724
     inputs:
       tags: ["company", "linux", "x86"]
 
