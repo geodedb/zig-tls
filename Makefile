@@ -7,7 +7,7 @@
 #   make clean        - Clean build artifacts
 #   make help         - Show this help message
 
-.PHONY: all build test test-unit test-vectors test-conformance conformance clean check fmt help install-deps test-dual
+.PHONY: all build test test-unit test-vectors test-conformance conformance clean check fmt help install-deps test-dual test-fips
 
 # OpenSSL FIPS install prefix used by the -Dfips=true build (override with
 # OPENSSL_PREFIX=...). The FIPS provider built by `make deps` in the fips
@@ -40,10 +40,14 @@ test: test-unit test-vectors
 test-dual:
 	@echo "🧪 FIPS dual-mode: -Dfips=false (std_shim)..."
 	$(ZIG) build test --summary all
-	@echo "🔐 FIPS dual-mode: -Dfips=true (OpenSSL FIPS provider)..."
-	OPENSSL_CONF=$(OPENSSL_PREFIX)/ssl/openssl.cnf $(ZIG) build test -Dfips=true -Dopenssl_path=$(OPENSSL_PREFIX) --summary all
+	$(MAKE) test-fips
 	@echo ""
 	@echo "✅ FIPS dual-mode tests completed"
+
+# CI already runs the default backend in its required test job.
+test-fips:
+	@echo "🔐 FIPS backend: -Dfips=true (OpenSSL FIPS provider)..."
+	OPENSSL_CONF=$(OPENSSL_PREFIX)/ssl/openssl.cnf $(ZIG) build test -Dfips=true -Dopenssl_path=$(OPENSSL_PREFIX) --summary all
 
 # Run unit tests for all modules
 test-unit:

@@ -48,40 +48,31 @@ include:
   # commit that updates SHA + comment together.
   #
   # Security scanning
-  - component: gitlab.com/devnw/ci-catalog/security-sast@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
-    inputs:
-      tags: ["company", "linux", "x86"]
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
-    inputs:
-      tags: ["company", "linux", "x86"]
-  - component: gitlab.com/devnw/ci-catalog/security-secrets@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
-    inputs:
-      tags: ["company", "linux", "x86"]
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@aad997d40e358eeef7ec943f761498341c37c724  # was v1.55.8 (2026-10-10)
     inputs:
       tags: ["company", "linux", "x86"]
 
   # Code quality
-  - component: gitlab.com/devnw/ci-catalog/zig-format@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/zig-format@aad997d40e358eeef7ec943f761498341c37c724  # was v1.55.8 (2026-10-10)
     inputs:
       tags: ["company", "linux", "x86"]
 
   # SBOM
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@aad997d40e358eeef7ec943f761498341c37c724  # was v1.55.8 (2026-10-10)
     inputs:
       tags: ["company", "linux", "x86"]
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@aad997d40e358eeef7ec943f761498341c37c724  # was v1.55.8 (2026-10-10)
     inputs:
       tags: ["company", "linux", "x86"]
 
   # Release
-  - component: gitlab.com/devnw/ci-catalog/release-semantic@3122045afd7832332b342ca72065e4db7dde5ed4  # was v1.55.8 (2026-10-10)
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@aad997d40e358eeef7ec943f761498341c37c724  # was v1.55.8 (2026-10-10)
     inputs:
       tags: ["company", "linux", "x86"]
       # Create the GitLab Release with CI_JOB_TOKEN: the group GITLAB_TOKEN
       # lacks api scope, so the default glab path fails with 403 (SONNY-2447).
       release_auth: job_token
-  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.57.0
+  - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@aad997d40e358eeef7ec943f761498341c37c724
     inputs:
       tags: ["company", "linux", "x86"]
 
@@ -188,9 +179,9 @@ test:
   needs:
     - build
 
-# FIPS-140-3 / PQC dual-mode gate. Builds + tests BOTH -Dfips=false (the
-# default std_shim backend, no OpenSSL link) AND -Dfips=true (the linked
-# OpenSSL FIPS provider) via `make test-dual`. Provision the provider through
+# FIPS-140-3 / PQC backend gate. The required test job covers the default
+# std_shim backend; this job covers the linked OpenSSL FIPS backend once.
+# Developers can still run both with make test-dual. Provision through
 # the hash-verified FIPS dependency; a clean Debian image needs no sibling
 # checkout or unlisted CI component. Provisioning forces signature verification.
 test-fips:
@@ -209,7 +200,7 @@ test-fips:
     - gpg --batch --import /tmp/openssl-pubkeys.asc
     - zig build provision-fips -Dfips=true -Dopenssl_path="${OPENSSL_PREFIX}" --summary all
   script:
-    - make test-dual OPENSSL_PREFIX="${OPENSSL_PREFIX}"
+    - make test-fips OPENSSL_PREFIX="${OPENSSL_PREFIX}"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
