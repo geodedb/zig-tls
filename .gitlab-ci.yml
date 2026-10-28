@@ -6,6 +6,7 @@
 # default-branch/tag releases and scheduled, API, and triggered pipelines.
 workflow:
   auto_cancel:
+    on_job_failure: all
     on_new_commit: interruptible
   rules:
     - if: '$CI_COMMIT_TAG'
