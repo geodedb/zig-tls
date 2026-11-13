@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.26] - 2026-11-13
+
+### Security
+
+- A server that rejected a client's certificate (mTLS: chain validation or
+  CertificateVerify signature failed) freed the stored CertificateVerify
+  signature but kept `peer_cert_verify_sig` pointing at it, so
+  `Context.deinit` freed it a second time: a double free any client could
+  trigger against a server with `request_client_cert`, and a non-null
+  `peer_cert_verify_sig` after a failed verification. The field is now
+  cleared on failure, as the server-certificate path already did
+  (SONNY-6457).
+
+### Fixed
+
+- `Config.trusted_ca_der` also applies on the server, to client
+  certificates (mTLS): a server that lists the CAs it trusts there trusts
+  only them and completes a client chain sent without its CA
+  (`cert_handlers.validateClientChainAndLeaf`, `.client_auth` EKU). It
+  used to validate the chain as sent against the process-global trust
+  store, so a client leaf signed by a trusted CA but sent alone was
+  rejected. Without `trusted_ca_der` the server behaves as before.
+- Chain completion from `trusted_ca_der` appends the anchors that issued
+  the presented chain (subject/issuer match) instead of every anchor the
+  peer did not send, so listing several unrelated anchors no longer makes
+  the chain walk fail (SONNY-6457).
+- HKDF-Expand-Label accepts every label and context RFC 8446 §7.1 allows
+  (`"tls13 " + label` up to 255 bytes, so a label of up to 249 bytes, and a
+  context of up to 255). The HkdfLabel was built in a fixed 128-byte buffer,
+  so `expandLabelHash` and `Context.exportKeyingMaterial` / `exportSecret`
+  failed with `error.BufferTooSmall` for a label longer than 115 bytes.
+  Longer labels or contexts now fail with `error.LabelTooLong` /
+  `error.ContextTooLong` instead of being truncated (SONNY-6457).
+
 ## [0.1.25] - 2026-11-12
 
 ### Fixed

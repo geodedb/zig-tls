@@ -2963,7 +2963,7 @@ pub const Context = struct {
     /// `HandshakeError.UnexpectedMessage` before the exporter master secret
     /// exists, `error.ExporterLengthTooLarge` when `out` is longer than
     /// HKDF-Expand can produce (255 * Hash.length), and
-    /// `error.BufferTooSmall` when the label does not fit the HkdfLabel.
+    /// `error.LabelTooLong` for a label over 249 bytes (RFC 8446 §7.1).
     pub fn exportKeyingMaterial(self: *Context, label: []const u8, context: []const u8, out: []u8) !void {
         const exp_slot = &self.secrets.exporter_master;
         if (!exp_slot.valid) return HandshakeError.UnexpectedMessage;
@@ -3335,8 +3335,15 @@ pub const Context = struct {
         const parsed = try tls13_full.parseCertificateVerify(body);
 
         // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
+        // SONNY-6457: on any failure below, clear the field as well as
+        // freeing the copy (as handleCertificateVerify does): it used to
+        // keep pointing at the freed copy, so a rejected client certificate
+        // was freed again in deinit (and read as "CertificateVerify seen").
         const sig_copy = try self.allocator.dupe(u8, parsed.signature);
-        errdefer self.allocator.free(sig_copy);
+        errdefer {
+            self.allocator.free(sig_copy);
+            self.peer_cert_verify_sig = null;
+        }
         if (self.peer_cert_verify_sig) |old_sig| self.allocator.free(old_sig);
         self.peer_cert_verify_sig = sig_copy;
         self.peer_cert_verify_alg = parsed.algorithm;
@@ -3352,15 +3359,22 @@ pub const Context = struct {
             // SEC-031: Pass client_auth EKU purpose for mTLS client certs
             // PERF-207: validate + parse leaf in one pass (avoids re-parsing chain[0]).
             // PERF-016: Uses cached trust store to avoid RwLock contention.
-            var client_leaf = x509.validateChainReturnParsed(
-                self.allocator,
-                chain,
-                now_unix,
-                "", // No hostname validation for client certs
-                .secure, // SEC-077: full validation for client auth path
-                .client_auth,
-                self.cached_trust_store,
-            ) catch |err| {
+            // SONNY-6457: with configured anchors (trusted_ca_der), trust only
+            // them and complete a leaf-only client chain from them, as the
+            // server-certificate path does.
+            const client_anchors = self.config.trusted_ca_der orelse &.{};
+            var client_leaf = (if (client_anchors.len > 0)
+                cert_handlers.validateClientChainAndLeaf(self.allocator, chain, now_unix, client_anchors)
+            else
+                x509.validateChainReturnParsed(
+                    self.allocator,
+                    chain,
+                    now_unix,
+                    "", // No hostname validation for client certs
+                    .secure, // SEC-077: full validation for client auth path
+                    .client_auth,
+                    self.cached_trust_store,
+                )) catch |err| {
                 traceHandshake("Server: Client certificate chain validation failed: {}\n", .{err});
                 return HandshakeError.CertificateValidationFailed;
             };

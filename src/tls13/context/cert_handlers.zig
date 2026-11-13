@@ -271,8 +271,9 @@ pub fn validateChainAndLeaf(
 ///
 /// GAP-0838: when `trusted_ca_der` is non-empty, validation is pinned to those
 /// caller-provided anchors — (a) each anchor's SPKI becomes the trust root,
-/// and (b) anchors the peer did not present are appended, so a server that
-/// sends only its leaf still chains up to a trusted, self-signed CA.
+/// and (b) the anchors that issued the presented chain are appended, so a
+/// server that sends only its leaf still chains up to a trusted CA
+/// (`validateWithAnchors`).
 pub fn validateChainLeafAndIssuer(
     alloc: std.mem.Allocator,
     chain: [][]const u8,
@@ -295,40 +296,94 @@ pub fn validateChainLeafAndIssuer(
         ) catch return HandshakeError.CertificateValidationFailed;
     }
 
-    // GAP-0838: build a complete path to a caller-pinned trust anchor.
-    //
-    // (a) Trust anchors by SPKI: parse each configured CA cert and collect its
-    //     SubjectPublicKeyInfo, which the per-connection trust store matches
-    //     against the chain's terminal (root) cert.
-    // (b) Complete the chain: append each anchor that the peer did not already
-    //     present, so a server that sends only its leaf (no intermediates /
-    //     root) still chains up to a trusted, self-signed CA.
+    return validateWithAnchors(alloc, chain, now_unix, server_name, insecure, .server_auth, trusted_ca_der) catch |e| switch (e) {
+        error.OutOfMemory => e,
+        else => HandshakeError.CertificateValidationFailed,
+    };
+}
+
+/// SONNY-6457: validate a client certificate chain (mTLS, `.client_auth`
+/// EKU, no name check) against the server's configured anchors, completing
+/// a leaf-only chain from them exactly as `validateChainLeafAndIssuer` does
+/// for server certificates. Returns the parsed leaf (caller owns).
+pub fn validateClientChainAndLeaf(
+    alloc: std.mem.Allocator,
+    chain: [][]const u8,
+    now_unix: i64,
+    trusted_ca_der: []const []const u8,
+) !x509.Certificate {
+    if (trusted_ca_der.len == 0) return HandshakeError.CertificateValidationFailed;
+    var parsed = validateWithAnchors(alloc, chain, now_unix, "", .secure, .client_auth, trusted_ca_der) catch |e| switch (e) {
+        error.OutOfMemory => return e,
+        else => return HandshakeError.CertificateValidationFailed,
+    };
+    if (parsed.issuer) |*iss| iss.deinit(alloc);
+    return parsed.leaf;
+}
+
+/// Build a complete path to a caller-pinned trust anchor and validate it.
+///
+/// (a) Trust anchors by SPKI: each configured CA's SubjectPublicKeyInfo is
+///     the only trusted root for this call.
+/// (b) Complete the chain (RFC 5280 §6.1): starting from the last
+///     certificate the peer sent, append the configured anchor whose subject
+///     is that certificate's issuer, until the path ends in a self-issued
+///     certificate or no anchor issued it. SONNY-6457: this used to append
+///     EVERY anchor the peer had not sent, so the chain walk (each
+///     certificate signed by the next) failed as soon as a second, unrelated
+///     anchor was configured.
+fn validateWithAnchors(
+    alloc: std.mem.Allocator,
+    chain: [][]const u8,
+    now_unix: i64,
+    server_name: []const u8,
+    insecure: x509.InsecureValidation,
+    purpose: x509.EkuPurpose,
+    trusted_ca_der: []const []const u8,
+) !x509.LeafAndIssuer {
+    if (chain.len == 0) return HandshakeError.CertificateValidationFailed;
+
     var anchor_spkis = std.ArrayList([]const u8).empty;
     defer {
-        for (anchor_spkis.items) |s| alloc.free(s);
+        for (anchor_spkis.items) |sp| alloc.free(sp);
         anchor_spkis.deinit(alloc);
     }
+    var anchor_subjects = std.ArrayList(struct { der: []const u8, subject: []u8 }).empty;
+    defer {
+        for (anchor_subjects.items) |a| alloc.free(a.subject);
+        anchor_subjects.deinit(alloc);
+    }
+    for (trusted_ca_der) |anchor_der| {
+        var parsed = x509.parseCert(alloc, anchor_der) catch continue;
+        defer parsed.deinit(alloc);
+        const spki_copy = try alloc.dupe(u8, parsed.spki);
+        anchor_spkis.append(alloc, spki_copy) catch |e| {
+            alloc.free(spki_copy);
+            return e;
+        };
+        const subject_copy = try alloc.dupe(u8, parsed.subject_der);
+        anchor_subjects.append(alloc, .{ .der = anchor_der, .subject = subject_copy }) catch |e| {
+            alloc.free(subject_copy);
+            return e;
+        };
+    }
+
     var effective = std.ArrayList([]const u8).empty;
     defer effective.deinit(alloc);
     try effective.appendSlice(alloc, chain);
-
-    for (trusted_ca_der) |anchor_der| {
-        var parsed = x509.parseCert(alloc, anchor_der) catch continue;
-        const spki_copy = alloc.dupe(u8, parsed.spki) catch |e| {
-            parsed.deinit(alloc);
-            return e;
-        };
-        parsed.deinit(alloc);
-        try anchor_spkis.append(alloc, spki_copy);
-
-        var already_present = false;
-        for (chain) |c| {
-            if (std.mem.eql(u8, c, anchor_der)) {
-                already_present = true;
-                break;
-            }
-        }
-        if (!already_present) try effective.append(alloc, anchor_der);
+    var added: usize = 0;
+    while (added < anchor_subjects.items.len) : (added += 1) {
+        var last = x509.parseCert(alloc, effective.items[effective.items.len - 1]) catch break;
+        defer last.deinit(alloc);
+        if (std.mem.eql(u8, last.subject_der, last.issuer_der)) break; // path ends at a self-issued cert
+        const next: ?[]const u8 = for (anchor_subjects.items) |a| {
+            if (!std.mem.eql(u8, a.subject, last.issuer_der)) continue;
+            const already = for (effective.items) |e| {
+                if (std.mem.eql(u8, e, a.der)) break true;
+            } else false;
+            if (!already) break a.der;
+        } else null;
+        try effective.append(alloc, next orelse break);
     }
 
     const prev = tl_trusted_anchor_spkis;
@@ -342,9 +397,9 @@ pub fn validateChainLeafAndIssuer(
         now_unix,
         server_name,
         insecure,
-        .server_auth,
+        purpose,
         anchor_ts,
-    ) catch return HandshakeError.CertificateValidationFailed;
+    );
 }
 
 /// QUAL-357: Validates an OCSP stapled response against the leaf certificate.
