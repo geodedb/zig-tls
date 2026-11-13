@@ -216,7 +216,9 @@ pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, contex
     // 128-byte buffer refused exporter labels longer than 115 bytes.
     var label_buf: [max_hkdf_label_len]u8 = undefined;
     const info = try hkdfLabel(&label_buf, label, context, @as(u16, @intCast(out.len)));
-    defer secureZero(u8, &label_buf);
+    // Wipe only the bytes written: wiping all 514 on every call cost ~22% of
+    // HKDF-Expand-Label throughput (quic perf gate, SONNY-6457).
+    defer secureZero(u8, info);
 
     const prk_slice = prk.slice();
     // TLS 1.3 HKDF-Expand-Label is HKDF-Expand-only (RFC 5869 §2.3): the PRK is
