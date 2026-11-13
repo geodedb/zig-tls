@@ -120,6 +120,41 @@ test "exporter: label and context separate the outputs; oversized requests are r
     try testing.expectError(error.ExporterLengthTooLarge, ctx.exportKeyingMaterial("EXPORTER-a", "", too_long));
 }
 
+test "exporter: labels up to the RFC 8446 §7.1 maximum are accepted; longer ones are refused" {
+    // HkdfLabel.label is opaque<7..255> = "tls13 " + Label, so a label may be
+    // up to 249 bytes. Every length past 115 used to fail with BufferTooSmall
+    // (a fixed 128-byte HkdfLabel buffer).
+    const alloc = testing.allocator;
+    const secret = [_]u8{0x3c} ** 32;
+    var ctx = try contextWithExporterMaster(alloc, .sha256, &secret);
+    defer ctx.deinit();
+
+    const max_label = [_]u8{'L'} ** 249;
+    inline for (.{ 116, 200, 249 }) |n| {
+        var got: [32]u8 = undefined;
+        var want: [32]u8 = undefined;
+        try ctx.exportKeyingMaterial(max_label[0..n], "ctx", &got);
+        refExporter(Sha256, HkdfSha256, &secret, max_label[0..n], "ctx", &want);
+        try testing.expectEqualSlices(u8, &want, &got);
+    }
+
+    // The longest context an HkdfLabel carries (255 bytes) goes through
+    // HKDF-Expand-Label directly together with the longest label.
+    const prk = ks.Secret.fromSlice(.sha256, &secret);
+    const max_context = [_]u8{0xc7} ** 255;
+    var got: [32]u8 = undefined;
+    var want: [32]u8 = undefined;
+    try ks.expandLabelHash(.sha256, &prk, &max_label, &max_context, &got);
+    refExpandLabel(HkdfSha256, &secret, &max_label, &max_context, &want);
+    try testing.expectEqualSlices(u8, &want, &got);
+
+    // Past the wire limits: refused, never truncated.
+    const long_label = [_]u8{'L'} ** 250;
+    try testing.expectError(error.LabelTooLong, ctx.exportKeyingMaterial(&long_label, "", &got));
+    const long_context = [_]u8{0} ** 256;
+    try testing.expectError(error.ContextTooLong, ks.expandLabelHash(.sha256, &prk, "exporter", &long_context, &got));
+}
+
 test "exporter: refused before the handshake has produced the exporter master secret" {
     var ctx = try tls13.Context.init(.{ .allocator = testing.allocator, .role = .Client }, .{});
     defer ctx.deinit();
