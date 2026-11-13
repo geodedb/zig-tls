@@ -360,7 +360,10 @@ pub const Config = struct {
     /// CA-issued cluster peer cert verify when the server presents leaf-only
     /// (geode GAP-0838: GEODE_CLUSTER_CA_CERT plumbed here).
     ///
-    /// **Role:** Client (verifying the server's certificate).
+    /// **Role:** Client (verifying the server's certificate) and Server
+    /// (verifying a client certificate when `request_client_cert` is set;
+    /// SONNY-6457): the anchors that issued the presented chain are appended
+    /// by subject/issuer match, so several unrelated anchors may be listed.
     /// **Default:** null (fall back to the global trust store / self-signed path).
     trusted_ca_der: ?[]const []const u8 = null,
 

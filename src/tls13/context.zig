@@ -3359,15 +3359,22 @@ pub const Context = struct {
             // SEC-031: Pass client_auth EKU purpose for mTLS client certs
             // PERF-207: validate + parse leaf in one pass (avoids re-parsing chain[0]).
             // PERF-016: Uses cached trust store to avoid RwLock contention.
-            var client_leaf = x509.validateChainReturnParsed(
-                self.allocator,
-                chain,
-                now_unix,
-                "", // No hostname validation for client certs
-                .secure, // SEC-077: full validation for client auth path
-                .client_auth,
-                self.cached_trust_store,
-            ) catch |err| {
+            // SONNY-6457: with configured anchors (trusted_ca_der), trust only
+            // them and complete a leaf-only client chain from them, as the
+            // server-certificate path does.
+            const client_anchors = self.config.trusted_ca_der orelse &.{};
+            var client_leaf = (if (client_anchors.len > 0)
+                cert_handlers.validateClientChainAndLeaf(self.allocator, chain, now_unix, client_anchors)
+            else
+                x509.validateChainReturnParsed(
+                    self.allocator,
+                    chain,
+                    now_unix,
+                    "", // No hostname validation for client certs
+                    .secure, // SEC-077: full validation for client auth path
+                    .client_auth,
+                    self.cached_trust_store,
+                )) catch |err| {
                 traceHandshake("Server: Client certificate chain validation failed: {}\n", .{err});
                 return HandshakeError.CertificateValidationFailed;
             };

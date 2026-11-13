@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Config.trusted_ca_der` also applies on the server, to client
+  certificates (mTLS): a server that lists the CAs it trusts there trusts
+  only them and completes a client chain sent without its CA
+  (`cert_handlers.validateClientChainAndLeaf`, `.client_auth` EKU). It
+  used to validate the chain as sent against the process-global trust
+  store, so a client leaf signed by a trusted CA but sent alone was
+  rejected. Without `trusted_ca_der` the server behaves as before.
+- Chain completion from `trusted_ca_der` appends the anchors that issued
+  the presented chain (subject/issuer match) instead of every anchor the
+  peer did not send, so listing several unrelated anchors no longer makes
+  the chain walk fail (SONNY-6457).
 - HKDF-Expand-Label accepts every label and context RFC 8446 §7.1 allows
   (`"tls13 " + label` up to 255 bytes, so a label of up to 249 bytes, and a
   context of up to 255). The HkdfLabel was built in a fixed 128-byte buffer,
