@@ -1127,6 +1127,25 @@ pub fn build(b: *std.Build) void {
     const exporter_step = b.step("test-exporter", "Run RFC 8446 §7.5 exporter regressions (independent values, client/server agreement)");
     exporter_step.dependOn(&run_exporter_test.step);
 
+    // SONNY-6457: chain completion from configured trust anchors (client
+    // certificates sent leaf-only; several anchors on either side).
+    const client_chain_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/client_chain_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        }),
+    });
+    const run_client_chain_test = b.addRunArtifact(client_chain_test);
+    test_step.dependOn(&run_client_chain_test.step);
+    const client_chain_step = b.step("test-client-chain", "Run chain-completion regressions (leaf-only client certificates against configured CAs; several anchors)");
+    client_chain_step.dependOn(&run_client_chain_test.step);
+
     // TLS 1.3 Key Update Tests
     const key_update_test = b.addTest(.{
         .root_module = b.createModule(.{
