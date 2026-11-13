@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- HKDF-Expand-Label accepts every label and context RFC 8446 §7.1 allows
+  (`"tls13 " + label` up to 255 bytes, so a label of up to 249 bytes, and a
+  context of up to 255). The HkdfLabel was built in a fixed 128-byte buffer,
+  so `expandLabelHash` and `Context.exportKeyingMaterial` / `exportSecret`
+  failed with `error.BufferTooSmall` for a label longer than 115 bytes.
+  Longer labels or contexts now fail with `error.LabelTooLong` /
+  `error.ContextTooLong` instead of being truncated (SONNY-6457).
+
 ## [0.1.25] - 2026-11-12
 
 ### Fixed

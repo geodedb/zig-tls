@@ -196,26 +196,25 @@ pub fn extractHash(hash: Hash, salt: ?[]const u8, ikm: []const u8) Secret {
 /// ## Parameters
 /// - `prk`: Pseudorandom key from HKDF-Extract (or a prior Derive-Secret).
 ///   Must satisfy `prk.len == digestLength(hash)`.
-/// - `label`: Label without the "tls13 " prefix. Combined length with the
-///   prefix must fit in the internal 128-byte `HkdfLabel` buffer (label
-///   body up to ~115 bytes; TLS 1.3 labels are far shorter).
-/// - `context`: Optional context bytes (often a transcript hash). Must also
-///   fit within the same 128-byte buffer.
+/// - `label`: Label without the "tls13 " prefix; at most 249 bytes, so that
+///   "tls13 " + label fits HkdfLabel.label<7..255>.
+/// - `context`: Optional context bytes (often a transcript hash); at most
+///   255 bytes (HkdfLabel.context<0..255>).
 /// - `out`: Destination slice. `out.len` becomes the HkdfLabel `length`
 ///   field and must be <= 255 * Hash.length (HKDF limit).
 ///
 /// ## Errors
-/// `error.BufferTooSmall` if the encoded `HkdfLabel` exceeds the 128-byte
-/// stack buffer (not reachable for any in-tree caller).
+/// `error.LabelTooLong` / `error.ContextTooLong` past those limits (never
+/// truncated). Not reachable for any in-tree caller with a fixed label.
 ///
 /// ## RFC Reference
 /// - RFC 8446 §7.1 - HKDF-Expand-Label definition
 pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, context: []const u8, out: []u8) !void {
     // PERF-045: Use a stack buffer directly instead of FixedBufferAllocator.
-    // Max HkdfLabel size: 2 + 1 + 6 + label.len + 1 + context.len.
-    // With SHA-384 (48-byte hash) and longest label (~12 bytes), this is ~70 bytes.
-    // 128 bytes provides comfortable headroom.
-    var label_buf: [128]u8 = undefined;
+    // SONNY-6457: sized for the largest HkdfLabel RFC 8446 §7.1 allows
+    // (label<7..255>, context<0..255>), not just the in-tree labels: a
+    // 128-byte buffer refused exporter labels longer than 115 bytes.
+    var label_buf: [max_hkdf_label_len]u8 = undefined;
     const info = try hkdfLabel(&label_buf, label, context, @as(u16, @intCast(out.len)));
     defer secureZero(u8, &label_buf);
 
@@ -254,8 +253,9 @@ pub fn expandLabelHash(hash: Hash, prk: *const Secret, label: []const u8, contex
 pub fn deriveSecretHash(hash: Hash, secret: *const Secret, label: []const u8, context: []const u8) Secret {
     var derived = Secret.empty();
     derived.len = @intCast(digestLength(hash));
-    // SAFETY: label and context lengths are known at call sites; total HkdfLabel fits within 256-byte
-    // fixed buffer used by expandLabelHash, so the allocation cannot fail.
+    // SAFETY: callers pass a label of at most 249 bytes and a context of at
+    // most 255 (RFC 8446 §7.1); expandLabelHash's buffer holds any such
+    // HkdfLabel, so it cannot fail.
     expandLabelHash(hash, secret, label, context, derived.sliceMut()) catch unreachable;
     return derived;
 }
@@ -455,6 +455,10 @@ pub const initial_salt_v2: [20]u8 = .{
     0x81, 0xbe, 0x6e, 0x26, 0x9d, 0xcb, 0xf9, 0xbd, 0x2e, 0xd9,
 };
 
+/// Largest encoded HkdfLabel (RFC 8446 §7.1): uint16 length, then
+/// label<7..255> and context<0..255> with their one-byte lengths.
+pub const max_hkdf_label_len = 2 + 1 + 255 + 1 + 255;
+
 fn toU8(v: usize) u8 {
     return @as(u8, @intCast(v));
 }
@@ -474,10 +478,9 @@ fn toU8(v: usize) u8 {
 /// The "tls13 " prefix is automatically prepended to the label parameter.
 ///
 /// PERF-045: Zero-allocation variant that writes into a caller-provided stack buffer
-/// instead of using an allocator. The max HkdfLabel size is bounded:
-/// 2 (length) + 1 (label_len) + 6 ("tls13 ") + label.len + 1 (ctx_len) + context.len.
-/// TLS 1.3 labels are at most ~12 bytes and context is at most 48 bytes (SHA-384),
-/// so 80 bytes is a safe upper bound. Callers use a 128-byte stack buffer.
+/// instead of using an allocator. The HkdfLabel size is
+/// 2 (length) + 1 (label_len) + 6 ("tls13 ") + label.len + 1 (ctx_len) + context.len,
+/// at most `max_hkdf_label_len` (514) for the lengths RFC 8446 allows.
 ///
 /// ## Parameters
 /// - `buf`: Caller-provided output buffer (must be at least 2+1+6+label.len+1+context.len)
@@ -490,10 +493,13 @@ fn toU8(v: usize) u8 {
 ///
 /// ## RFC Reference
 /// RFC 8446 §7.1 - Key Schedule and HKDF-Expand-Label definition
-fn hkdfLabel(buf: []u8, label: []const u8, context: []const u8, out_len: u16) error{BufferTooSmall}![]u8 {
+fn hkdfLabel(buf: []u8, label: []const u8, context: []const u8, out_len: u16) error{ BufferTooSmall, LabelTooLong, ContextTooLong }![]u8 {
     // RFC 8446 §7.1 - HkdfLabel structure encoding
     const prefix = "tls13 ";
     const full_label_len = prefix.len + label.len;
+    // opaque label<7..255>; opaque context<0..255>: refuse, never truncate.
+    if (full_label_len > 255) return error.LabelTooLong;
+    if (context.len > 255) return error.ContextTooLong;
     const total = 2 + 1 + full_label_len + 1 + context.len;
     if (buf.len < total) return error.BufferTooSmall;
     var i: usize = 0;

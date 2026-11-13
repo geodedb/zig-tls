@@ -2963,7 +2963,7 @@ pub const Context = struct {
     /// `HandshakeError.UnexpectedMessage` before the exporter master secret
     /// exists, `error.ExporterLengthTooLarge` when `out` is longer than
     /// HKDF-Expand can produce (255 * Hash.length), and
-    /// `error.BufferTooSmall` when the label does not fit the HkdfLabel.
+    /// `error.LabelTooLong` for a label over 249 bytes (RFC 8446 §7.1).
     pub fn exportKeyingMaterial(self: *Context, label: []const u8, context: []const u8, out: []u8) !void {
         const exp_slot = &self.secrets.exporter_master;
         if (!exp_slot.valid) return HandshakeError.UnexpectedMessage;
