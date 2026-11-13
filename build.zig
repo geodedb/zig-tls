@@ -1107,6 +1107,26 @@ pub fn build(b: *std.Build) void {
     const run_tls13_handshake_test = b.addRunArtifact(tls13_handshake_test);
     test_step.dependOn(&run_tls13_handshake_test.step);
 
+    // RFC 8446 §7.5 exporter: independent std.crypto values + client/server
+    // agreement over in-memory handshakes (SONNY-6448).
+    const exporter_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/exporter_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tls13", .module = tls13_mod },
+                .{ .name = "quic_tls", .module = key_schedule_mod },
+                .{ .name = "x509", .module = x509_mod },
+                .{ .name = "tls13_full", .module = tls13_full_mod },
+            },
+        }),
+    });
+    const run_exporter_test = b.addRunArtifact(exporter_test);
+    test_step.dependOn(&run_exporter_test.step);
+    const exporter_step = b.step("test-exporter", "Run RFC 8446 §7.5 exporter regressions (independent values, client/server agreement)");
+    exporter_step.dependOn(&run_exporter_test.step);
+
     // TLS 1.3 Key Update Tests
     const key_update_test = b.addTest(.{
         .root_module = b.createModule(.{
