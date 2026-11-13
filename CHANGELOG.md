@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.26] - 2026-11-13
+
 ### Security
 
 - A server that rejected a client's certificate (mTLS: chain validation or
