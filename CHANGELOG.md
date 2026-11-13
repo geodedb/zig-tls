@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- A server that rejected a client's certificate (mTLS: chain validation or
+  CertificateVerify signature failed) freed the stored CertificateVerify
+  signature but kept `peer_cert_verify_sig` pointing at it, so
+  `Context.deinit` freed it a second time: a double free any client could
+  trigger against a server with `request_client_cert`, and a non-null
+  `peer_cert_verify_sig` after a failed verification. The field is now
+  cleared on failure, as the server-certificate path already did
+  (SONNY-6457).
+
 ### Fixed
 
 - HKDF-Expand-Label accepts every label and context RFC 8446 §7.1 allows

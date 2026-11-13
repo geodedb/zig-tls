@@ -3335,8 +3335,15 @@ pub const Context = struct {
         const parsed = try tls13_full.parseCertificateVerify(body);
 
         // QUAL-128: Dupe before free to prevent dangling pointer on OOM.
+        // SONNY-6457: on any failure below, clear the field as well as
+        // freeing the copy (as handleCertificateVerify does): it used to
+        // keep pointing at the freed copy, so a rejected client certificate
+        // was freed again in deinit (and read as "CertificateVerify seen").
         const sig_copy = try self.allocator.dupe(u8, parsed.signature);
-        errdefer self.allocator.free(sig_copy);
+        errdefer {
+            self.allocator.free(sig_copy);
+            self.peer_cert_verify_sig = null;
+        }
         if (self.peer_cert_verify_sig) |old_sig| self.allocator.free(old_sig);
         self.peer_cert_verify_sig = sig_copy;
         self.peer_cert_verify_alg = parsed.algorithm;
