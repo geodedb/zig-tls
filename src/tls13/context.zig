@@ -2946,20 +2946,36 @@ pub const Context = struct {
         self.flags.metadata_notified = true;
     }
 
-    /// Derive exporter secret material per RFC 8446 §7.5 using the finished transcript hash.
+    /// RFC 8446 §7.5 exporter with an empty context: fills `out` with
+    /// TLS-Exporter(label, "", out.len). In TLS 1.3 an empty context and no
+    /// context give the same value. See `exportKeyingMaterial`.
     pub fn exportSecret(self: *Context, label: []const u8, out: []u8) !void {
+        return self.exportKeyingMaterial(label, "", out);
+    }
+
+    /// RFC 8446 §7.5 exporter: fills `out` with
+    ///
+    ///   TLS-Exporter(label, context, out.len) =
+    ///       HKDF-Expand-Label(Derive-Secret(exporter_master_secret, label, ""),
+    ///                         "exporter", Hash(context), out.len)
+    ///
+    /// Both ends of a connection derive the same value. Fails with
+    /// `HandshakeError.UnexpectedMessage` before the exporter master secret
+    /// exists, `error.ExporterLengthTooLarge` when `out` is longer than
+    /// HKDF-Expand can produce (255 * Hash.length), and
+    /// `error.BufferTooSmall` when the label does not fit the HkdfLabel.
+    pub fn exportKeyingMaterial(self: *Context, label: []const u8, context: []const u8, out: []u8) !void {
         const exp_slot = &self.secrets.exporter_master;
         if (!exp_slot.valid) return HandshakeError.UnexpectedMessage;
         const hash = exp_slot.hash;
-        const th = self.transcripts.finished_hash.get(hash) orelse blk: {
-            var snap = self.transcripts.handshake;
-            break :blk snap.finalize(hash);
-        };
-        const derived = ks.deriveSecretHash(hash, &exp_slot.value, label, th.slice());
-        const derived_slice = derived.slice();
-        const n = @min(out.len, derived_slice.len);
-        @memcpy(out[0..n], derived_slice[0..n]);
-        if (n < out.len) @memset(out[n..], 0);
+        if (out.len > 255 * ks.digestLength(hash)) return error.ExporterLengthTooLarge;
+        const empty_hash = ks.hashBytes(hash, "");
+        var derived = ks.Secret.empty();
+        derived.len = @intCast(ks.digestLength(hash));
+        defer secureZero(u8, derived.sliceMut());
+        try ks.expandLabelHash(hash, &exp_slot.value, label, empty_hash.slice(), derived.sliceMut());
+        const context_hash = ks.hashBytes(hash, context);
+        try ks.expandLabelHash(hash, &derived, "exporter", context_hash.slice(), out);
     }
 
     /// Initiate a key update (RFC 8446 §4.6.3).

@@ -74,6 +74,12 @@ test "exporter: SHA-256 matches an independent RFC 8446 §7.5 computation" {
     inline for (.{ 16, 32, 80 }) |len| {
         var got: [len]u8 = undefined;
         var want: [len]u8 = undefined;
+        try ctx.exportKeyingMaterial("EXPORTER-test", "some context", &got);
+        refExporter(Sha256, HkdfSha256, &secret, "EXPORTER-test", "some context", &want);
+        try testing.expectEqualSlices(u8, &want, &got);
+
+        // exportSecret is the empty-context form (RFC 8446 §7.5: no context
+        // and an empty context give the same value in TLS 1.3).
         try ctx.exportSecret("EXPORTER-test", &got);
         refExporter(Sha256, HkdfSha256, &secret, "EXPORTER-test", "", &want);
         try testing.expectEqualSlices(u8, &want, &got);
@@ -88,15 +94,37 @@ test "exporter: SHA-384 matches an independent RFC 8446 §7.5 computation" {
 
     var got: [64]u8 = undefined;
     var want: [64]u8 = undefined;
-    try ctx.exportSecret("EXPORTER-Channel-Binding", &got);
+    try ctx.exportKeyingMaterial("EXPORTER-Channel-Binding", "", &got);
     refExporter(Sha384, HkdfSha384, &secret, "EXPORTER-Channel-Binding", "", &want);
     try testing.expectEqualSlices(u8, &want, &got);
+}
+
+test "exporter: label and context separate the outputs; oversized requests are refused" {
+    const alloc = testing.allocator;
+    const secret = [_]u8{0x11} ** 32;
+    var ctx = try contextWithExporterMaster(alloc, .sha256, &secret);
+    defer ctx.deinit();
+
+    var a: [32]u8 = undefined;
+    var b: [32]u8 = undefined;
+    var c: [32]u8 = undefined;
+    try ctx.exportKeyingMaterial("EXPORTER-a", "", &a);
+    try ctx.exportKeyingMaterial("EXPORTER-b", "", &b);
+    try ctx.exportKeyingMaterial("EXPORTER-a", "x", &c);
+    try testing.expect(!std.mem.eql(u8, &a, &b));
+    try testing.expect(!std.mem.eql(u8, &a, &c));
+
+    // HKDF-Expand yields at most 255 * Hash.length bytes.
+    const too_long = try alloc.alloc(u8, 255 * 32 + 1);
+    defer alloc.free(too_long);
+    try testing.expectError(error.ExporterLengthTooLarge, ctx.exportKeyingMaterial("EXPORTER-a", "", too_long));
 }
 
 test "exporter: refused before the handshake has produced the exporter master secret" {
     var ctx = try tls13.Context.init(.{ .allocator = testing.allocator, .role = .Client }, .{});
     defer ctx.deinit();
     var out: [32]u8 = undefined;
+    try testing.expectError(error.UnexpectedMessage, ctx.exportKeyingMaterial("EXPORTER-a", "", &out));
     try testing.expectError(error.UnexpectedMessage, ctx.exportSecret("EXPORTER-a", &out));
 }
 
@@ -143,9 +171,13 @@ fn expectPeersAgree(client: *tls13.Context, server: *tls13.Context) !void {
     try server.exportSecret("EXPORTER-geode-test", &s_out);
     try testing.expectEqualSlices(u8, &c_out, &s_out);
 
+    try client.exportKeyingMaterial("EXPORTER-geode-test", "ctx", &c_out);
+    try server.exportKeyingMaterial("EXPORTER-geode-test", "ctx", &s_out);
+    try testing.expectEqualSlices(u8, &c_out, &s_out);
+
     // And it is the RFC value over the connection's exporter master secret.
     var want: [48]u8 = undefined;
-    refExporter(Sha256, HkdfSha256, client.secrets.exporter_master.slice(), "EXPORTER-geode-test", "", &want);
+    refExporter(Sha256, HkdfSha256, client.secrets.exporter_master.slice(), "EXPORTER-geode-test", "ctx", &want);
     try testing.expectEqualSlices(u8, &want, &c_out);
 }
 

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Context.exportSecret` now computes the RFC 8446 §7.5 exporter, so the
+  client and the server of one connection export the same value. It used to
+  run Derive-Secret over the label and each side's own transcript hash
+  (client: through its CertificateVerify, server: through server Finished),
+  so the two ends disagreed, and it zero-filled output past the hash length.
+  Requests longer than 255 * Hash.length now fail with
+  `error.ExporterLengthTooLarge` (SONNY-6448).
+
+### Added
+
+- `Context.exportKeyingMaterial(label, context, out)`: the RFC 8446 §7.5
+  exporter with a context value. `exportSecret(label, out)` is the
+  empty-context form (SONNY-6448).
+
 ## [0.1.22] - 2026-10-11
 
 ### Fixed
