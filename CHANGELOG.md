@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.27] - 2026-11-13
+
+### Fixed
+
+- HKDF-Expand-Label wiped its whole 514-byte label buffer on every call
+  since 0.1.26 (it was 128 bytes before), a 22% throughput loss measured
+  by the quic performance gate. It now wipes only the bytes it wrote
+  (SONNY-6457).
+
 ## [0.1.26] - 2026-11-13
 
 ### Security
