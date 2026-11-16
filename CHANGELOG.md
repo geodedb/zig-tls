@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.28] - 2026-11-15
+
+### Changed
+
+- Converge on thread-pool v0.2.11, clearing the v0.2.9 vs v0.2.11 diamond
+  in the otel dependency tree (SONNY-6630).
+
 ## [0.1.27] - 2026-11-13
 
 ### Fixed
